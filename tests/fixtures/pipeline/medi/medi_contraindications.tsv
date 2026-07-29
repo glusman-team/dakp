@@ -1,3 +1,4 @@
-drug_name	contraindicated_condition	source_score
-Ibuprofen	asthma	0.9
-Ibuprofen	peptic ulcer disease	0.8
+active_ingredient	contraindications	disease_contraindicated	final_normalized_drug_id	final_normalized_drug_label	final_normalized_disease_id	final_normalized_disease_label	drug_name	contraindicated_condition	source_score
+Ibuprofen	Patients with aspirin-exacerbated respiratory disease or known hypersensitivity to ibuprofen.	asthma	UNII:WK2XYI10QM	Ibuprofen	MONDO:0004979	asthma	Ibuprofen	asthma	0.90
+Warfarin	Contraindicated in pregnant women except when the benefit clearly outweighs the risk.	pregnancy	UNII:5A9Q8V7QX1	Warfarin			Warfarin	pregnancy	0.00
+Methotrexate	Contraindicated in patients with severe renal or hepatic impairment.	kidney disease	UNII:YL5Y8Z9Y8F	Methotrexate	MONDO:0005154	renal failure	Methotrexate	kidney disease	0.75
