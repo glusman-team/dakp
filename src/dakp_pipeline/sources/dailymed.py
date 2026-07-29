@@ -1,27 +1,243 @@
-"""DailyMed SPL fetcher (stub)."""
+"""DailyMed SPL acquisition — real fetcher behind the :class:`Fetcher` protocol.
+
+Two acquisition profiles, both idempotent and content-addressed (BLAKE3 manifest +
+checksums), and both recording source provenance (URL / ETag / Last-Modified) into the
+artifact manifest:
+
+* ``mock``  — ingest the tiny SPL fixture(s) under ``ctx.fixture_root`` into the
+  content-addressed store, tagging each manifest with a ``fixture://`` source block.
+  No network; this is what the test suite exercises.
+* real     — download the DailyMed full-release index + release ZIPs using **stdlib
+  ``urllib`` only** (no ``requests``), streaming each release into the content-addressed
+  store. Re-ingesting an identical release is a cache hit; conditional GET
+  (``If-None-Match`` / ``If-Modified-Since``) skips bytes the server confirms unchanged.
+
+The legacy ``DailyMed/bin/getFullRelease.pl`` is intentionally **not** replicated: it
+destructively stashed whole download directories (``rm -r $ddir.prev``; ``mv $ddir
+$ddir.prev``) before re-fetching. This fetcher never moves or deletes shared state — it
+only ever *adds* immutable, content-addressed artifacts and overwrites human-readable
+aliases in place.
+
+``fetch = DailyMedFetcher().fetch`` is exposed at module scope so tests can
+``monkeypatch.setattr(dailymed, "fetch", ...)``. The internal ``_download_full_release``
+is also module-level so wiring tests can stub it (no real network in CI).
+"""
 
 from __future__ import annotations
 
+import http
+import re
+import shutil
+import urllib.error
+import urllib.request
+from datetime import UTC, datetime
+from pathlib import Path
+
+from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.sources import ingest_fixtures, require_mock
+from dakp_pipeline.io.downloads import infer_media_type
+from dakp_pipeline.io.manifests import SourceBlock
+from dakp_pipeline.logging_setup import bind
+from dakp_pipeline.paths import Workdir
+
+# DailyMed "all drug labels" full-release listing (legacy getFullRelease.pl target).
+FULL_RELEASE_INDEX_URL = "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
+# Anchors the parser to the "Full Releases" section of the index page.
+_FULL_RELEASES_HEADING = "Full Releases"
+# Matches release ZIP hrefs as written by the DailyMed index page, e.g.
+#   <a href="https://dailymed-data.nlm.nih.gov/public-release-files/dm_spl_release_human_rx_part1.zip">
+_RELEASE_ZIP_HREF = re.compile(r'href="(?P<url>https?://[^"]+\.zip)"', re.IGNORECASE)
 
 # Fixture paths relative to fixture_root (see tests/fixtures/pipeline/).
-_DAILYMED_FIXTURES = ("dailymed/dailymed_spl.xml.gz",)
+_DAILYMED_FIXTURES: tuple[str, ...] = ("dailymed/dailymed_spl.xml.gz",)
+
+_DOWNLOAD_TIMEOUT = 60.0
+_CHUNK = 1 << 20  # 1 MiB streaming window.
 
 
 class DailyMedFetcher:
-    """Acquire DailyMed SPL full-release artifacts.
-
-    Mock profile ingests the tiny SPL fixture; real full-release acquisition (idempotent
-    download, manifest/checksums, no destructive stashing) lands in Milestone 2.
-    """
+    """Acquire DailyMed SPL full-release artifacts (mock fixtures or real network)."""
 
     def fetch(self, ctx: TaskContext) -> list[ArtifactRef]:
-        require_mock(ctx, "dailymed")
-        return ingest_fixtures(ctx, _DAILYMED_FIXTURES, namespace="dailymed")
+        if ctx.profile == "mock":
+            return _ingest_fixtures(ctx)
+        return _download_full_release(ctx)
 
 
-# Module-level default for monkeypatchability: tests do `monkeypatch.setattr(dailymed, "fetch", ...)`.
 fetch = DailyMedFetcher().fetch
 
-__all__ = ["DailyMedFetcher", "fetch"]
+
+# --- mock profile --------------------------------------------------------------
+
+
+def _ingest_fixtures(ctx: TaskContext) -> list[ArtifactRef]:
+    """Content-address each DailyMed fixture and return refs with fixture provenance."""
+    if ctx.fixture_root is None:
+        msg = "TaskContext.fixture_root is None; cannot ingest DailyMed fixtures"
+        raise ValueError(msg)
+    store = ArtifactStore(Workdir(ctx.workdir))
+    log = bind(task_id="fetch_dailymed", profile=ctx.profile)
+    refs: list[ArtifactRef] = []
+    for name in _DAILYMED_FIXTURES:
+        path = ctx.fixture_root / name
+        if not path.exists():
+            msg = f"DailyMed fixture not found: {path}"
+            raise FileNotFoundError(msg)
+        ref, cache_hit = store.ingest(path, alias=f"dailymed/{name}", source=SourceBlock(url=f"fixture://{name}", retrieved_at=_now_iso()))
+        refs.append(ref)
+        log.info("ingested fixture", artifact_id=ref.blake3, cache_hit=cache_hit, fixture=name)
+    return refs
+
+
+# --- real profile (stdlib only; never exercised by the test suite) -------------
+
+
+def _download_full_release(ctx: TaskContext) -> list[ArtifactRef]:
+    """Download the DailyMed full release into the content-addressed store.
+
+    Idempotent and non-destructive: each release ZIP is streamed to a workdir-local
+    staging file, then :meth:`ArtifactStore.ingest` copies it into ``by-hash/<hex>/``
+    (cache hit if identical). The staging file is removed after ingest; shared state is
+    never renamed or deleted. Conditional headers skip bytes the server reports unchanged.
+    """
+    store = ArtifactStore(Workdir(ctx.workdir))
+    staging = Workdir(ctx.workdir).root / ".staging" / "dailymed"
+    staging.mkdir(parents=True, exist_ok=True)
+    log = bind(task_id="fetch_dailymed", profile=ctx.profile)
+
+    index_html = _fetch_index(ctx, staging, store)
+    release_urls = _parse_release_zips(index_html)
+    log.info("discovered dailyMed full releases", count=len(release_urls))
+    if not release_urls:
+        msg = "no DailyMed full-release ZIPs found in index (the listing page layout may have changed)"
+        raise RuntimeError(msg)
+
+    refs: list[ArtifactRef] = []
+    for url in release_urls:
+        ref = _download_one(url, staging, store)
+        if ref is not None:  # always set; None only if a cached ref could not be resolved
+            refs.append(ref)
+    return refs
+
+
+def _fetch_index(ctx: TaskContext, staging: Path, store: ArtifactStore) -> str:
+    """Fetch (and cache) the full-release index HTML, returning its text.
+
+    On HTTP 304 the previously cached store copy is read instead of re-downloading.
+    """
+    alias = "dailymed/spl-resources-all-drug-labels.html"
+    dest = staging / "spl-resources-all-drug-labels.html"
+    source = _prior_source(store, alias=alias)
+    etag, last_modified = _conditional_download(FULL_RELEASE_INDEX_URL, dest, source)
+    if not dest.exists():
+        cached = _cached_ref(store, alias=alias)
+        if cached is None:
+            msg = "server returned 304 for the DailyMed index but no cached copy exists"
+            raise RuntimeError(msg)
+        return cached.uri.read_text(encoding="utf-8", errors="replace")
+    store.ingest(dest, alias=alias, source=SourceBlock(url=FULL_RELEASE_INDEX_URL, etag=etag, last_modified=last_modified, retrieved_at=_now_iso()))
+    text = dest.read_text(encoding="utf-8", errors="replace")
+    dest.unlink(missing_ok=True)
+    return text
+
+
+def _parse_release_zips(index_html: str) -> list[str]:
+    """Return the ordered, de-duplicated full-release ZIP URLs from the index page.
+
+    Only links appearing after the ``Full Releases`` heading are kept, mirroring the
+    legacy Perl parser's section scan.
+    """
+    head = index_html.find(_FULL_RELEASES_HEADING)
+    section = index_html[head:] if head != -1 else index_html
+    seen: set[str] = set()
+    urls: list[str] = []
+    for match in _RELEASE_ZIP_HREF.finditer(section):
+        url = match.group("url")
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
+
+
+def _download_one(url: str, staging: Path, store: ArtifactStore) -> ArtifactRef | None:
+    """Download one release ZIP into the store.
+
+    On HTTP 304 the previously cached artifact is returned unchanged (idempotent re-run).
+    Returns ``None`` only if no cached artifact can be resolved for the alias.
+    """
+    name = url.rsplit("/", 1)[-1]
+    alias = f"dailymed/{name}"
+    dest = staging / name
+    source = _prior_source(store, alias=alias)
+    etag, last_modified = _conditional_download(url, dest, source)
+    if not dest.exists():
+        # 304 Not Modified: the cached artifact is still current — return it, do not drop it.
+        return _cached_ref(store, alias=alias)
+    ref, _ = store.ingest(dest, alias=alias, source=SourceBlock(url=url, etag=etag, last_modified=last_modified, retrieved_at=_now_iso()))
+    dest.unlink(missing_ok=True)  # staged copy no longer needed once content-addressed
+    return ref
+
+
+def _conditional_download(url: str, dest: Path, source: SourceBlock | None) -> tuple[str | None, str | None]:
+    """Stream ``url`` to ``dest`` with conditional headers; return (etag, last_modified).
+
+    On HTTP 304 the destination is left absent and ``(None, None)`` is returned so the
+    caller treats the artifact as cache-fresh. Any other HTTP error is raised. A stale
+    staging file is removed before the request so it can never masquerade as fresh.
+    """
+    headers: dict[str, str] = {}
+    if source is not None:
+        if source.etag:
+            headers["If-None-Match"] = source.etag
+        if source.last_modified:
+            headers["If-Modified-Since"] = source.last_modified
+    dest.unlink(missing_ok=True)  # never let a stale staging file masquerade as fresh
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=_DOWNLOAD_TIMEOUT) as resp:
+            etag = resp.headers.get("ETag")
+            last_modified = resp.headers.get("Last-Modified")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with dest.open("wb") as handle:
+                shutil.copyfileobj(resp, handle, length=_CHUNK)
+            return etag, last_modified
+    except urllib.error.HTTPError as exc:
+        if exc.code == http.HTTPStatus.NOT_MODIFIED:
+            exc.close()
+            return None, None
+        raise
+
+
+def _prior_source(store: ArtifactStore, *, alias: str) -> SourceBlock | None:
+    """Read the source block previously recorded for ``alias`` (for conditional GET)."""
+    alias_path = Workdir(store.workdir.root).aliases / alias
+    if not alias_path.exists():
+        return None
+    artifact_id = alias_path.read_text(encoding="utf-8").strip()
+    manifest = store.read_manifest(artifact_id)
+    return manifest.source if manifest is not None else None
+
+
+def _cached_ref(store: ArtifactStore, *, alias: str) -> ArtifactRef | None:
+    """Reconstruct an :class:`ArtifactRef` for an already-ingested artifact (used on 304).
+
+    Reads the alias + sibling ``.path`` pointer written by :meth:`ArtifactStore.ingest`.
+    Returns ``None`` if the alias or path pointer is missing.
+    """
+    wd = Workdir(store.workdir.root)
+    id_path = wd.aliases / alias
+    if not id_path.exists():
+        return None
+    artifact_id = id_path.read_text(encoding="utf-8").strip()
+    path_file = wd.aliases / f"{alias}.path"
+    if not path_file.exists():
+        return None
+    uri = Path(path_file.read_text(encoding="utf-8").strip())
+    return ArtifactRef(uri=uri, blake3=artifact_id, media_type=infer_media_type(uri), manifest=store.manifest_path(artifact_id))
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+__all__ = ["FULL_RELEASE_INDEX_URL", "DailyMedFetcher", "fetch"]
