@@ -1,101 +1,198 @@
-"""Approved-treatment assertion shaper.
+"""Approved-treatment assertion aggregation (Milestone 5).
 
-Builds ``approved_treats_assertions.tsv`` from DailyMed SPL indications joined to
-Drugs@FDA approvals, with disease objects mapped via the lexical dictionary baseline.
-Subject/object CURIEs are populated where the dictionary resolves them; everything else
-is left for Tablassert/fullmap canonical resolution (Milestone 4+).
+Builds ``approved_treats_assertions.tsv``: FDA-approved drug→condition assertions.
+
+Aggregation rule (explicit and tested)
+---------------------------------------
+An approved-treats row requires an **NDA-bearing drug-indication pair** that satisfies all of:
+
+1. the pair's NDA maps (Drugs@FDA ``products``) to an ingredient — confirming a real FDA
+   application;
+2. the NDA has a **DailyMed SPL approval** (``spl_approvals``); and
+3. that approved SPL set has an **indications-and-usage section** (LOINC ``34067-9``) — the
+   SPL indication support.
+
+Candidate drug-indication pairs come from **FAERS** (``cases.parquet`` rows carrying an NDA +
+indication) — the primary source. The current pipeline wires this stage with DailyMed +
+Drugs@FDA only (FAERS joins this stage in a later milestone), so when no FAERS case table is
+present the candidates fall back to DailyMed SPL indication sections whose text names a
+dictionary condition. Both paths apply the *same* three-part filter above.
+
+Provenance (``approval_ids``, ``supporting_spl_sets``, ``supporting_spl_documents``) is
+aggregated per ``(subject, object)`` as deduplicated, sorted, pipe-joined lists. Subject CURIEs
+are populated only where DailyMed already gives a UNII; object CURIEs come from the lexical
+disease baseline. Canonical CURIE mapping is a later milestone (text-first).
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
+from typing import Any
+
 import polars as pl
 
 from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_FAERS, KL_ASSERTION, join_pipe, match_diseases, row_for
-from dakp_pipeline.io import schemas
-from dakp_pipeline.io.artifact_store import ArtifactStore
+from dakp_pipeline.assertions.evidence import (
+    DailyMedEvidence,
+    build_dailymed_evidence,
+    build_drugsfda_ingredient_map,
+    find_faers_cases,
+    normalize_nda,
+    sorted_pipe,
+    write_assertion_table,
+)
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.io.manifests import OperationBlock, TableBlock
-from dakp_pipeline.paths import Workdir
 
 _TABLE = "approved_treats_assertions"
+_PREDICATE = "biolink:treats"
+_STATUS = "approved_for_condition"
 
 
 class ApprovedTreatsShaper:
     def transform(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
         disease_map: dict[str, dict[str, str]] = ctx.params.get("disease_map", {})  # type: ignore[assignment]
-        spl = _first_parquet(inputs, "dailymed")
-        if spl is None:
-            return []
-        spl_frame = schemas.read_table(spl.uri)
-        drugsfda_ndas = _drugsfda_appl_nos(inputs)
-
-        rows: list[dict[str, str]] = []
-        for rec in spl_frame.iter_rows(named=True):
-            ingredient = str(rec.get("active_ingredient_name", "") or "")
-            section_text = str(rec.get("section_text", "") or "")
-            set_id = str(rec.get("spl_set_id", "") or "")
-            approval_code = str(rec.get("approval_code", "") or "")
-            for disease in match_diseases(section_text, disease_map):
-                approval_ids = join_pipe(approval_code, *(f"NDA:{n}" for n in drugsfda_ndas))
-                rows.append(
-                    row_for(
-                        _TABLE,
-                        subject_text=ingredient,
-                        subject_category="ChemicalEntity",
-                        predicate="biolink:treats",
-                        object_text=disease["text"],
-                        object_curie=disease["curie"],
-                        object_name=disease["name"],
-                        object_category=disease["category"],
-                        approval_ids=approval_ids,
-                        supporting_spl_sets=set_id,
-                        supporting_spl_documents=str(rec.get("spl_document_id", "") or ""),
-                        clinical_approval_status="approved_for_condition",
-                        knowledge_level=KL_ASSERTION,
-                        agent_type=AT_MANUAL,
-                        primary_knowledge_source=INFORES_DAKP,
-                        upstream_resource_ids=join_pipe(INFORES_DAILYMED, INFORES_FAERS),
-                    )
-                )
-
-        return _write_assertion(_TABLE, rows, inputs, ctx)
+        dailymed = build_dailymed_evidence(inputs)
+        drugsfda_map = build_drugsfda_ingredient_map(inputs)
+        faers_cases = find_faers_cases(inputs)
+        rows = build_approved_treats_rows(faers_cases, dailymed, drugsfda_map, disease_map)
+        return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_approved_treats")
 
 
-def _first_parquet(inputs: list[ArtifactRef], name_part: str) -> ArtifactRef | None:
-    for ref in inputs:
-        if name_part in str(ref.uri) and ref.uri.suffix == ".parquet":
-            return ref
-    return None
+def build_approved_treats_rows(
+    faers_cases: pl.DataFrame | None, dailymed: DailyMedEvidence, drugsfda_map: Mapping[str, set[str]], disease_map: Mapping[str, Mapping[str, str]]
+) -> list[dict[str, str]]:
+    """Aggregate approved-treats assertion rows (pure; deterministic ordering)."""
+    candidates = _faers_candidates(faers_cases, disease_map) if faers_cases is not None else _dailymed_candidates(dailymed, disease_map)
+
+    aggregated: dict[tuple[str, str], dict[str, Any]] = {}
+    for cand in candidates:
+        norm = cand["norm_nda"]
+        if norm not in drugsfda_map:  # (1) NDA must map (Drugs@FDA) to an ingredient
+            continue
+        sets, docs = dailymed.indication_support(norm)
+        if not sets:  # (2)+(3) DailyMed approval AND SPL indication-section support
+            continue
+        subject_text, subject_curie = _subject_for_sets(dailymed, sets, cand["fallback_subject"])
+        if not subject_text:
+            continue
+        key = (subject_text, cand["object_text"])
+        agg = aggregated.setdefault(
+            key,
+            {
+                "subject_text": subject_text,
+                "subject_curie": subject_curie,
+                "object_text": cand["object_text"],
+                "object_curie": cand["object_curie"],
+                "object_name": cand["object_name"],
+                "object_category": cand["object_category"],
+                "approval_ids": [],
+                "sets": [],
+                "docs": [],
+            },
+        )
+        agg["approval_ids"].append(dailymed.approval_display.get(norm) or norm)
+        agg["sets"].extend(sets)
+        agg["docs"].extend(docs)
+        if not agg["subject_curie"] and subject_curie:
+            agg["subject_curie"] = subject_curie
+        if not agg["object_curie"] and cand["object_curie"]:
+            agg["object_curie"] = cand["object_curie"]
+
+    return [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]
 
 
-def _drugsfda_appl_nos(inputs: list[ArtifactRef]) -> list[str]:
-    ref = _first_parquet(inputs, "drugsfda")
-    if ref is None:
-        return []
-    frame = schemas.read_table(ref.uri)
-    if "appl_no" not in frame.columns:
-        return []
-    return [str(v) for v in frame.get_column("appl_no").to_list() if str(v).strip()]
-
-
-def _write_assertion(table: str, rows: list[dict[str, str]], inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
-    frame = pl.DataFrame(rows, schema=schemas.columns_for(table)) if rows else pl.DataFrame(schema=schemas.columns_for(table))
-    out = Workdir(ctx.workdir).tabular / f"{table}.tsv"
-    rows_written = schemas.write_tsv(frame, out)
-    store = ArtifactStore(Workdir(ctx.workdir))
-    input_ids = [ref.blake3 for ref in inputs]
-    ref = store.register(
-        out,
-        media_type=schemas.TSV_MEDIA_TYPE,
-        rows=rows_written,
-        schema_fingerprint=schemas.schema_fingerprint(schemas.columns_for(table)),
-        inputs=input_ids,
-        operation=OperationBlock(name=f"shape_{table}"),
-        table=TableBlock(rows=rows_written, schema_fingerprint=schemas.schema_fingerprint(schemas.columns_for(table))),
+def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
+    return row_for(
+        _TABLE,
+        subject_text=agg["subject_text"],
+        subject_curie=agg["subject_curie"],
+        subject_name=agg["subject_text"],
+        subject_category="ChemicalEntity",
+        predicate=_PREDICATE,
+        object_text=agg["object_text"],
+        object_curie=agg["object_curie"],
+        object_name=agg["object_name"],
+        object_category=agg["object_category"],
+        approval_ids=sorted_pipe(agg["approval_ids"]),
+        supporting_spl_sets=sorted_pipe(agg["sets"]),
+        supporting_spl_documents=sorted_pipe(agg["docs"]),
+        clinical_approval_status=_STATUS,
+        knowledge_level=KL_ASSERTION,
+        agent_type=AT_MANUAL,
+        primary_knowledge_source=INFORES_DAKP,
+        upstream_resource_ids=join_pipe(INFORES_DAILYMED, INFORES_FAERS),
     )
-    return [ref]
+
+
+def _subject_for_sets(dailymed: DailyMedEvidence, sets: list[str], fallback: str) -> tuple[str, str]:
+    """Subject ingredient (name, UNII) from the first supporting SPL set, else the FAERS fallback."""
+    for set_id in sets:  # already sorted deterministically
+        if set_id in dailymed.set_ingredient:
+            return dailymed.set_ingredient[set_id]
+    return fallback.strip(), ""
+
+
+def _object_attrs(text: str, disease_map: Mapping[str, Mapping[str, str]]) -> tuple[str, str, str]:
+    """Resolve ``(curie, name, category)`` for an object text via the lexical disease baseline."""
+    matches = match_diseases(text, disease_map)
+    if matches:
+        match = matches[0]
+        return match["curie"], match["name"], match["category"]
+    return "", text, "Disease"
+
+
+def _faers_candidates(faers_cases: pl.DataFrame, disease_map: Mapping[str, Mapping[str, str]]) -> Iterator[dict[str, str]]:
+    """NDA-bearing FAERS drug-indication pairs (deduplicated by NDA + indication)."""
+    seen: set[tuple[str, str]] = set()
+    for rec in faers_cases.iter_rows(named=True):
+        norm = normalize_nda(rec.get("nda") or rec.get("nda_raw"))
+        indication = str(rec.get("indication") or "").strip()
+        if not norm or not indication:
+            continue
+        key = (norm, indication)
+        if key in seen:
+            continue
+        seen.add(key)
+        curie, name, category = _object_attrs(indication, disease_map)
+        yield {
+            "norm_nda": norm,
+            "object_text": indication,
+            "object_curie": curie,
+            "object_name": name,
+            "object_category": category,
+            "fallback_subject": str(rec.get("ingredient") or rec.get("drugname") or "").strip(),
+        }
+
+
+def _dailymed_candidates(dailymed: DailyMedEvidence, disease_map: Mapping[str, Mapping[str, str]]) -> Iterator[dict[str, str]]:
+    """Fallback candidates: dictionary conditions named in approved SPL indication sections."""
+    set_to_ndas: dict[str, set[str]] = {}
+    for norm, sets in dailymed.approval_sets.items():
+        for set_id in sets:
+            set_to_ndas.setdefault(set_id, set()).add(norm)
+
+    seen: set[tuple[str, str]] = set()
+    for set_id in sorted(dailymed.indication_docs):
+        ndas = sorted(set_to_ndas.get(set_id, ()))
+        if not ndas:
+            continue
+        for _doc_id, text in dailymed.indication_docs[set_id]:
+            for match in match_diseases(text, disease_map):
+                for norm in ndas:
+                    key = (norm, match["text"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    yield {
+                        "norm_nda": norm,
+                        "object_text": match["text"],
+                        "object_curie": match["curie"],
+                        "object_name": match["name"],
+                        "object_category": match["category"],
+                        "fallback_subject": "",
+                    }
 
 
 transform = ApprovedTreatsShaper().transform
 
-__all__ = ["ApprovedTreatsShaper", "transform"]
+__all__ = ["ApprovedTreatsShaper", "build_approved_treats_rows", "transform"]
