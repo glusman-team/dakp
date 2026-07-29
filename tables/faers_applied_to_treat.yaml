@@ -1,0 +1,36 @@
+template:
+  source:
+    kind: text
+    local: data/tabular/faers_applied_to_treat_assertions.tsv
+    url: "https://example.invalid/dakp/generated/faers_applied_to_treat_assertions.tsv"
+    delimiter: "\t"
+  statement:
+    subject:
+      method: column
+      encoding: A
+      prioritize:
+        - Drug
+        - SmallMolecule
+        - ChemicalEntity
+    predicate: applied_to_treat
+    object:
+      method: column
+      encoding: F
+      prioritize:
+        - Disease
+        - PhenotypicFeature
+  provenance:
+    override:
+      infores: "infores:multiomics-drugapprovals"
+      upstream_resource_ids:
+        - "infores:faers"
+        - "infores:dailymed"
+      knowledge_level: observation
+      agent_type: manual_validation_of_automated_agent
+  annotations:
+    - annotation: number_of_cases
+      method: column
+      encoding: J
+    - annotation: clinical_approval_status
+      method: column
+      encoding: K
