@@ -1,0 +1,39 @@
+template:
+  source:
+    kind: text
+    local: data/tabular/approved_treats_assertions.tsv
+    url: "https://example.invalid/dakp/generated/approved_treats_assertions.tsv"
+    delimiter: "\t"
+  statement:
+    subject:
+      method: column
+      encoding: A
+      prioritize:
+        - Drug
+        - SmallMolecule
+        - ChemicalEntity
+    predicate: treats
+    object:
+      method: column
+      encoding: F
+      prioritize:
+        - Disease
+        - PhenotypicFeature
+  provenance:
+    override:
+      infores: "infores:multiomics-drugapprovals"
+      upstream_resource_ids:
+        - "infores:dailymed"
+        - "infores:faers"
+      knowledge_level: knowledge_assertion
+      agent_type: manual_validation_of_automated_agent
+  annotations:
+    - annotation: approval_ids
+      method: column
+      encoding: J
+    - annotation: supporting_spl_sets
+      method: column
+      encoding: K
+    - annotation: clinical_approval_status
+      method: column
+      encoding: M

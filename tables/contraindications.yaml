@@ -1,0 +1,39 @@
+template:
+  source:
+    kind: text
+    local: data/tabular/contraindication_assertions.tsv
+    url: "https://example.invalid/dakp/generated/contraindication_assertions.tsv"
+    delimiter: "\t"
+  statement:
+    subject:
+      method: column
+      encoding: A
+      prioritize:
+        - Drug
+        - SmallMolecule
+        - ChemicalEntity
+    predicate: contraindicated_in
+    object:
+      method: column
+      encoding: F
+      prioritize:
+        - Disease
+        - PhenotypicFeature
+  provenance:
+    override:
+      infores: "infores:multiomics-drugapprovals"
+      upstream_resource_ids:
+        - "infores:medi"
+        - "infores:dailymed"
+      knowledge_level: knowledge_assertion
+      agent_type: manual_validation_of_automated_agent
+  annotations:
+    - annotation: supporting_spl_sets
+      method: column
+      encoding: J
+    - annotation: medi_version
+      method: column
+      encoding: K
+    - annotation: source_score
+      method: column
+      encoding: L
