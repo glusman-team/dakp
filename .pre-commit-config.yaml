@@ -1,0 +1,27 @@
+# Python-only hooks for the DAKP Milestone-1 scaffold (Go hooks land in a later milestone).
+# Modeled on ../Tablassert/.pre-commit-config.yaml.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^(src|tests)/.*\.py$
+      - id: ruff-format
+        files: ^(src|tests)/.*\.py$
+  - repo: local
+    hooks:
+      - id: pyright
+        name: pyright
+        entry: uv run pyright
+        language: system
+        types: [python]
+        files: ^(src|tests)/.*\.py$
+        pass_filenames: false
+      - id: pytest
+        name: pytest
+        entry: uv run pytest -q
+        language: system
+        types: [python]
+        files: ^(src|tests)/
+        pass_filenames: false
