@@ -1,27 +1,38 @@
-"""Pure-Python pipeline runner.
+"""Pure-Python pipeline runner — the single source of truth for orchestration.
 
-``run_pipeline`` is the single orchestration entry point shared by the CLI and the
-(optional) Airflow DAG. It wires the staged stubs end-to-end and is fully
-monkeypatchable: fetchers and :mod:`dakp_pipeline.tablassert.run` are always resolved
-through their owning module at call time, so ``monkeypatch.setattr(module, "fetch", ...)``
-and ``monkeypatch.setattr("dakp_pipeline.tablassert.run", ...)`` take effect (see the
-integration test in ``PLAN.md``).
+``run_pipeline`` wires every stage end-to-end and is fully monkeypatchable: fetchers and
+``dakp_pipeline.tablassert.run`` are always resolved through their owning module/package at
+call time, so ``monkeypatch.setattr(dailymed, "fetch", ...)`` and
+``monkeypatch.setattr("dakp_pipeline.tablassert.run", ...)`` take effect (PLAN.md sketch).
 
-Milestone 1 ships a *minimal* runner that exercises config/paths/logging and returns an
-empty :class:`PipelineResult`. The full wiring (acquire -> extract -> shape -> handoff)
-is filled in by the pipeline-runner commit.
+The Airflow DAG (:mod:`dakp_pipeline.dags.dakp_build`) is a thin TaskFlow wrapper around
+these same stage functions; this runner is what the CLI and tests exercise.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import polars as pl
+
+from dakp_pipeline import tablassert as _tablassert
+from dakp_pipeline.assertions import approved_treats, contraindications, observed_uses
 from dakp_pipeline.config import Profile, load_profile
+from dakp_pipeline.extract import drugsfda_products, faers_ascii, spl_xml
+from dakp_pipeline.io import schemas
+from dakp_pipeline.io.artifact_store import ArtifactStore
+from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
+from dakp_pipeline.io.manifests import OperationBlock, TableBlock
 from dakp_pipeline.logging_setup import bind, configure_logging
 from dakp_pipeline.paths import Workdir
+from dakp_pipeline.sources import dailymed, drugsfda, faers, medi
+from dakp_pipeline.tablassert import configs as _tablassert_configs
+from dakp_pipeline.translator import contract as translator_contract
 
 
 @dataclass
@@ -60,22 +71,147 @@ def run_pipeline(
     run_airflow: bool = False,
     params: Mapping[str, Any] | None = None,
 ) -> PipelineResult:
-    """Run the (mocked) DAKP pipeline end-to-end.
+    """Run the DAKP pipeline end-to-end (mock profile needs no network/Tablassert).
 
-    Milestone-1 minimal implementation: resolve the profile, materialize the workdir,
-    configure logging, and return an empty result. Real stage wiring lands in the
-    pipeline-runner commit; the signature and monkeypatchable boundaries are stable now.
+    Stages: acquire -> extract -> shape assertions -> generate Tablassert configs ->
+    Tablassert handoff -> write build summary. The ``run_airflow`` flag only toggles
+    Airflow-targeted logging; actual Airflow task decomposition lives in the DAG module.
     """
     resolved_profile = load_profile(profile)
     wd = Workdir(Path(workdir))
     wd.create()
-    configure_logging(wd.logs.parent, level="INFO")
 
-    fixture = Path(fixture_root) if fixture_root is not None else None
+    if run_airflow:
+        try:
+            import airflow  # noqa: F401  # type: ignore[import-not-found]
+        except ImportError as exc:  # pragma: no cover - requires airflow extra
+            msg = "run_airflow=True requires the airflow extra; install with `uv sync --extra airflow`"
+            raise RuntimeError(msg) from exc
+
+    configure_logging(wd.root, level="INFO", for_airflow=run_airflow)
+    ctx = _build_context(resolved_profile, wd, fixture_root, params)
+
     log = bind(task_id="run_pipeline", profile=profile, workdir=str(wd.root))
-    log.info("pipeline start (milestone-1 minimal runner)", fixture_root=str(fixture))
+    log.info("pipeline start")
 
-    return PipelineResult(workdir=wd, profile=resolved_profile)
+    # 1. Acquire sources (mock profile ingests fixtures into the content-addressed store).
+    dm_raw = dailymed.fetch(ctx)
+    faers_raw = faers.fetch(ctx)
+    drugsfda_raw = drugsfda.fetch(ctx)
+    medi_raw = medi.fetch(ctx)
+    log.info("sources acquired", dailymed=len(dm_raw), faers=len(faers_raw), drugsfda=len(drugsfda_raw), medi=len(medi_raw))
+
+    # 2. Extract raw -> interim parquet tables.
+    dm_ext = spl_xml.extract(dm_raw, ctx)
+    faers_ext = faers_ascii.extract(faers_raw, ctx)
+    drugsfda_ext = drugsfda_products.extract(drugsfda_raw, ctx)
+    medi_ext = _extract_medi(medi_raw, ctx)
+
+    # 3. Shape assertion tables (uncompressed TSV, Tablassert-facing).
+    approved = approved_treats.transform([*dm_ext, *drugsfda_ext], ctx)
+    uses = observed_uses.transform([*faers_ext, *dm_ext], ctx)
+    contra = contraindications.transform([*medi_ext, *dm_ext], ctx)
+    assertion_refs = [*approved, *uses, *contra]
+
+    # 4. Generate Tablassert Graph + per-table configs.
+    config_refs = _tablassert_configs.generate(assertion_refs, ctx)
+
+    # 5. Tablassert handoff (mock writes a deferred-handoff manifest; no KGX compiler).
+    kgx_refs = _tablassert.run(assertion_refs, config_refs, ctx)
+
+    # 6. Translator-readiness contract + build summary.
+    report = translator_contract.validate(assertion_refs)
+    build_summary = _write_build_summary(wd, profile, assertion_refs, kgx_refs, report)
+
+    tables = {ref.uri.stem: TableResult(ref.uri.stem, ref.uri, ref.rows or 0) for ref in assertion_refs}
+    log.info("pipeline complete", tables=len(tables), build_summary=str(build_summary))
+    return PipelineResult(workdir=wd, profile=resolved_profile, tables=tables, build_summary=build_summary)
+
+
+# --- helpers --------------------------------------------------------------------
+
+
+def _build_context(profile: Profile, wd: Workdir, fixture_root: Path | str | None, extra: Mapping[str, Any] | None) -> TaskContext:
+    fixture = Path(fixture_root) if fixture_root is not None else None
+    disease_map = _load_disease_map(fixture) if fixture is not None else {}
+    params: dict[str, Any] = {
+        "disease_map": disease_map,
+        "mock_sources": profile.mock_sources,
+        "run_tablassert": profile.run_tablassert,
+        "quarter_limit": profile.quarter_limit,
+        "force": profile.force,
+    }
+    if extra:
+        params.update(extra)
+    return TaskContext(
+        profile=profile.name, workdir=wd.root, fixture_root=fixture, threads=profile.threads, memory_budget_gb=profile.memory_budget_gb, params=params
+    )
+
+
+def _load_disease_map(fixture_root: Path) -> dict[str, dict[str, str]]:
+    """Load the lexical disease dictionary (fast baseline) from the ontology fixture."""
+    path = fixture_root / "ontology" / "disease_map.tsv"
+    if not path.exists():
+        return {}
+    frame = pl.read_csv(path, separator="\t")
+    mapping: dict[str, dict[str, str]] = {}
+    for rec in frame.iter_rows(named=True):
+        text = str(rec.get("text", "") or "").strip()
+        if not text:
+            continue
+        mapping[text] = {
+            "curie": str(rec.get("curie", "") or ""),
+            "name": str(rec.get("name", text) or text),
+            "category": str(rec.get("category", "Disease") or "Disease"),
+        }
+    return mapping
+
+
+def _extract_medi(inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
+    """Normalize the MEDI contraindications TSV into an interim parquet table.
+
+    There is no dedicated ``extract/medi`` module in Milestone 1 (the MEDI fixture is
+    already a clean table); this in-runner normalization gives it a uniform parquet
+    artifact + manifest. Real MEDI extraction (sheet/row provenance, DailyMed support
+    scoring) lands in Milestone 3.
+    """
+    store = ArtifactStore(Workdir(ctx.workdir))
+    refs: list[ArtifactRef] = []
+    for ref in inputs:
+        if "medi" not in ref.uri.name.lower():
+            continue
+        frame = schemas.read_table(ref.uri)
+        out = Workdir(ctx.workdir).interim / "medi" / "contraindications.parquet"
+        rows_written = schemas.write_parquet(frame, out)
+        refs.append(
+            store.register(
+                out,
+                media_type=schemas.PARQUET_MEDIA_TYPE,
+                rows=rows_written,
+                inputs=[ref.blake3],
+                operation=OperationBlock(name="extract_medi"),
+                table=TableBlock(rows=rows_written),
+            )
+        )
+    return refs
+
+
+def _write_build_summary(
+    wd: Workdir, profile: str, assertion_refs: list[ArtifactRef], kgx_refs: list[ArtifactRef], report: translator_contract.ContractReport
+) -> Path:
+    summary_path = wd.reports / "build_summary.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "schema_version": "dakp.build_summary.v1",
+        "profile": profile,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "workdir": str(wd.root),
+        "tables": [{"name": ref.uri.stem, "path": str(ref.uri), "rows": ref.rows, "artifact_id": ref.blake3} for ref in assertion_refs],
+        "tablassert": {"handoff_refs": [str(ref.uri) for ref in kgx_refs]},
+        "translator_contract": {"ok": report.ok, "problems": report.problems, "tables": report.tables},
+    }
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary_path
 
 
 __all__ = ["PipelineResult", "TableResult", "run_pipeline"]

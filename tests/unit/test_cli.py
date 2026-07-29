@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
@@ -36,10 +35,5 @@ def test_mock_profile_requires_fixture_root() -> None:
     assert exc_info.value.code == 2
 
 
-def test_run_pipeline_minimal_returns_empty_result(tmp_path: Path) -> None:
-    from dakp_pipeline.pipeline import run_pipeline
-
-    result = run_pipeline(profile="mock", fixture_root=tmp_path / "fixtures", workdir=tmp_path / "work", run_airflow=False)
-    assert result.profile.name == "mock"
-    assert result.workdir.root == tmp_path / "work"
-    assert result.tables == {}
+# End-to-end run_pipeline behavior (with real fixtures + monkeypatching) is covered by
+# tests/integration/test_mock_pipeline.py.
