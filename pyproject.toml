@@ -1,0 +1,123 @@
+[project]
+name = "dakp-pipeline"
+version = "0.1.0"
+description = "Drug Approvals Knowledge Provider (DAKP) rebuild: reproducible, content-addressed pipeline producing DailyMed / Drugs@FDA / FAERS / MEDI treatment and contraindication assertion tables for Tablassert."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "ISB", email = "software@isbscience.org" }]
+license = { text = "Apache-2.0" }
+keywords = [
+    "knowledge graph",
+    "ncats translator",
+    "drug approvals",
+    "dailymed",
+    "faers",
+    "etl pipeline",
+]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+# Minimal approved runtime dependencies only (see PLAN.md "Dependency philosophy").
+# Stdlib first; Airflow lives in the optional `airflow` group and is NOT required
+# for `uv sync` base install or for `pytest`.
+dependencies = [
+    "blake3>=1.0.0",
+    "loguru>=0.7.3",
+    "polars>=1.30.0",
+    "pydantic>=2.12.0",
+]
+
+[project.scripts]
+dakp = "dakp_pipeline.cli:main"
+
+[project.optional-dependencies]
+# Airflow orchestration is optional: `uv sync --extra airflow`. Tests never need it.
+airflow = [
+    "apache-airflow>=2.10,<3",
+    "pendulum>=3",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.5.1",
+    "pyright>=1.1.411",
+    "pytest>=9.0.0",
+    "ruff>=0.15.6",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dakp_pipeline"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["network: tests that require internet access"]
+
+[tool.ruff]
+line-length = 150
+indent-width = 4
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = [
+    # Legacy Perl/Python source kept only for audit (PLAN.md "reuse" / "ref/legacy").
+    # The new DAG never imports them; ruff/pyright must not lint them.
+    "bin",
+    "DailyMed",
+    "DrugsFDA",
+    "FAERS",
+    "HPO",
+    "MONDO",
+    "matrix",
+    "ref",
+    "data",
+    "tmp",
+]
+
+[tool.ruff.lint]
+select = [
+    "E4",  # pycodestyle E4xx
+    "E7",  # pycodestyle E7xx
+    "E9",  # pycodestyle E9xx
+    "F",   # pyflakes
+    "RUF100", # stale noqa
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "C4",  # flake8-comprehensions
+    "PT",  # flake8-pytest-style
+    "RUF", # ruff-specific
+    "TID", # flake8-tidy-imports
+    "I",   # isort
+    "PIE", # flake8-pie
+    "RET", # flake8-return
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E731",  # allow lambda assignments (used in monkeypatchable stubs / tests)
+]
+
+[tool.ruff.lint.isort]
+# Align with `format.skip-magic-trailing-comma = true` (avoids ruff incompatibility warning).
+split-on-trailing-comma = false
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = true
+
+[tool.pyright]
+include = ["src", "tests"]
+exclude = ["data", "tmp", ".venv"]
+pythonVersion = "3.12"
+strictListInference = true
+strictDictionaryInference = true
+strictSetInference = true
+reportMissingTypeStubs = false
+reportUnusedImport = true
+reportUnusedVariable = true
+reportDuplicateImport = true

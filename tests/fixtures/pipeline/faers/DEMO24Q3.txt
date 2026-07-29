@@ -1,0 +1,3 @@
+primaryid$caseid$occp_cod$reporter_country
+1001$5001$MD$US
+1002$5002$PH$GB
