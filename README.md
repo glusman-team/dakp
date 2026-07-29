@@ -158,7 +158,7 @@ config YAMLs (`graph.yaml` + 3 tables), `build_summary.json`,
 ## Provenance semantics
 
 Translator provenance is modeled to match the `../DINGO` translator-ingests reference
-([`DINGO/src/translator_ingest/ingests/dakp/`](../DINGO/src/translator_ingest/ingests/dakp/)).
+(local sibling repo: `../DINGO/src/translator_ingest/ingests/dakp/`).
 Each assertion table carries `primary_knowledge_source`, `upstream_resource_ids`
 (`|`-joined infores ids), `knowledge_level`, and `agent_type` columns
 ([`src/dakp_pipeline/io/schemas.py`](./src/dakp_pipeline/io/schemas.py)); the generated
