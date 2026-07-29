@@ -7,6 +7,7 @@ baseline* for Milestone 1; canonical fullmap/Tablassert resolution lands in Mile
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from dakp_pipeline.io import schemas
@@ -21,7 +22,7 @@ KL_ASSERTION = "knowledge_assertion"
 AT_MANUAL = "manual_validation_of_automated_agent"
 
 
-def match_diseases(text: str, disease_map: dict[str, dict[str, str]]) -> list[dict[str, str]]:
+def match_diseases(text: str, disease_map: Mapping[str, Mapping[str, str]]) -> list[dict[str, str]]:
     """Substring-match disease-map keys against ``text`` (case-insensitive).
 
     Returns one match dict per disease found (``text``, ``curie``, ``name``,
@@ -48,3 +49,6 @@ def join_pipe(*parts: str) -> str:
 
 
 __all__ = ["AT_MANUAL", "INFORES_DAILYMED", "INFORES_DAKP", "INFORES_FAERS", "INFORES_MEDI", "KL_ASSERTION", "join_pipe", "match_diseases", "row_for"]
+
+# Shared evidence helpers (NDA normalization, SPL-support joining, provenance assembly) live in
+# :mod:`dakp_pipeline.assertions.evidence`; import them from there directly.
