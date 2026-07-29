@@ -1,3 +1,7 @@
 ApplNo	ApplType	ProductNo	DrugName	ActiveIngredient	MarketingStatusName
-012345	NDA	001	Examplestatin	Examplestatin	Prescription
-017977	NDA	001	Ibuprofen	Ibuprofen	Prescription
+012345	NDA	001	Examplestatin	EXAMPLESTATIN	Prescription
+017977	NDA	001	Ibuprofen	IBUPROFEN	Prescription
+207500	NDA	001	Realdrug	REALDRUG	Prescription
+125557	BLA	001	Keytruda	PEMBROLIZUMAB	Prescription
+075123	ANDA	001	Ezetimibe and Simvastatin	EZETIMIBE; SIMVASTATIN	Prescription
+090123	ANDA	001	Genericgen	GENERICGEN	Over-the-counter

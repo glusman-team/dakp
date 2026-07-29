@@ -1,0 +1,5 @@
+ApplNo	ApplType	SponsorName	CommonOrOriginalName	SubmissionClassification	OrphanStatus
+012345	NDA	Example Pharma Inc	Examplestatin	Type 1 - New Molecular Entity	No
+207500	NDA	Another Pharma Inc	Realdrug	Type 5 - New Formulation or New Manufacturer	No
+125557	BLA	Merck Sharp & Dohme	Pembrolizumab	Type 1 - New Molecular Entity	No
+075123	ANDA	Generic Co	Ezetimibe and Simvastatin	Generic	No
