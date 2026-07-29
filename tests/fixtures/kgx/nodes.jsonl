@@ -1,0 +1,6 @@
+{"id": "CHEBI:27786", "name": "dacarbazine", "category": ["biolink:ChemicalEntity", "biolink:SmallMolecule"]}
+{"id": "CHEBI:31236", "name": "ibuprofen", "category": ["biolink:Drug", "biolink:ChemicalEntity"]}
+{"id": "CHEBI:135935", "name": "terfenadine", "category": ["biolink:ChemicalEntity"]}
+{"id": "MONDO:0020696", "name": "Hodgkin lymphoma", "category": ["biolink:Disease"]}
+{"id": "HP:0002783", "name": "Recurrent lower respiratory tract infections", "category": ["biolink:PhenotypicFeature"]}
+{"id": "MONDO:0005068", "name": "cardiac arrhythmia", "category": ["biolink:Disease"]}
