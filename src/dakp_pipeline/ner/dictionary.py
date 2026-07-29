@@ -34,8 +34,8 @@ def normalize_text(text: str) -> str:
 
     Deterministic: lowercase, strip HTML tags, drop possessive ``'s``, replace every
     non-alphanumeric ASCII run with a single space, and trim. Mirrors the legacy
-    ``cleanText`` + lowercase behavior without the lossy ligature folding (kept as a
-    lexical matching fallback instead, so dictionary keys stay stable).
+    ``cleanText`` + lowercase behavior; the legacy lossy ligature folding (oe/ae/ou) is
+    intentionally omitted so dictionary keys stay stable and predictable.
     """
     lowered = text.lower()
     lowered = _HTML_TAG.sub(" ", lowered)
@@ -57,22 +57,23 @@ def normalize_with_map(text: str) -> tuple[str, list[int]]:
     out_idx: list[int] = []
     i = 0
     n = len(text)
-    in_tag = False
-    tag_start = 0
     while i < n:
         ch = text[i]
-        if in_tag:
-            if ch == ">":
-                in_tag = False
-                # Emit a single boundary space for the whole tag (mapped to '<').
-                out_chars.append(" ")
-                out_idx.append(tag_start)
-            i += 1
-            continue
         if ch == "<":
-            in_tag = True
-            tag_start = i
-            i += 1
+            close = text.find(">", i + 1)
+            if close != -1:
+                # Well-formed tag: emit one boundary space (mapped to the '<') and skip
+                # the whole tag. Mirrors normalize_text's `<[^>]*>` regex.
+                out_chars.append(" ")
+                out_idx.append(i)
+                i = close + 1
+            else:
+                # Lone '<' with no closing '>': the regex would not match it, so it falls
+                # through to the punctuation rule. Treat it as a boundary space here too,
+                # keeping normalize_with_map consistent with normalize_text.
+                out_chars.append(" ")
+                out_idx.append(i)
+                i += 1
             continue
         # Drop possessive 's (apostrophe + s/S): emit nothing.
         if ch == "'" and i + 1 < n and text[i + 1] in "sS":
@@ -86,10 +87,6 @@ def normalize_with_map(text: str) -> tuple[str, list[int]]:
             out_chars.append(" ")
             out_idx.append(i)
         i += 1
-    if in_tag:
-        # Unterminated tag at EOF: close the boundary space at the '<'.
-        out_chars.append(" ")
-        out_idx.append(tag_start)
 
     # Collapse whitespace runs, keeping the index of each run's first character.
     collapsed_chars: list[str] = []

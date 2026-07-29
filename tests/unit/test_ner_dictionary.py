@@ -68,6 +68,34 @@ def test_normalize_with_map_handles_html_and_possessive_offsets() -> None:
     assert text[index_map[pstart] : index_map[pstart] + 4] == "pain"
 
 
+def test_normalize_with_map_agrees_with_normalize_text() -> None:
+    """The offset-preserving normalizer must produce the same string as normalize_text,
+    including the lone-'<' / unterminated-tag cases that previously diverged."""
+    cases = [
+        "plain text",
+        "5 < 10 mg",  # lone '<' with no closing '>'
+        "heart <b failure",  # unterminated tag
+        "a < b and c > d",  # '<' ... '>' span
+        "patient's <b>headache</b>",  # well-formed tag + possessive
+        "Peptic-Ulcer Disease",
+        "  leading and trailing  ",
+        "<leading> tag",
+        "trailing tag <x",
+    ]
+    for text in cases:
+        normalized, index_map = normalize_with_map(text)
+        assert normalized == normalize_text(text), text
+        assert len(index_map) == len(normalized), text
+
+
+def test_normalize_with_map_lone_angle_bracket_keeps_following_text() -> None:
+    normalized, index_map = normalize_with_map("take 5 < 10 mg aspirin")
+    assert normalized == "take 5 10 mg aspirin"
+    # The text after the lone '<' is preserved and still maps back to the original.
+    start = normalized.index("aspirin")
+    assert index_map[start] == "take 5 < 10 mg aspirin".index("aspirin")
+
+
 # --- source / category semantics ----------------------------------------------
 
 

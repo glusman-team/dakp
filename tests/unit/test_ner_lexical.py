@@ -83,6 +83,17 @@ def test_no_substring_false_positive() -> None:
     assert [m.mention_text for m in mentions] == ["headache"]
 
 
+def test_lone_angle_bracket_does_not_drop_following_text() -> None:
+    # SPL dosage text like "5 < 10 mg" must not swallow the rest of the field.
+    index = DictionaryIndex.from_entries([_entry("aspirin", "DRUGBANK:DB00945", category="Drug", source="DRUGBANK")])
+    matcher = LexicalMatcher(index)
+    mentions = matcher.match("take 5 < 10 mg aspirin daily")
+    assert [m.mention_text for m in mentions] == ["aspirin"]
+    assert mentions[0].semantic_group == "drug"
+    text = "take 5 < 10 mg aspirin daily"
+    assert text[mentions[0].mention_start : mentions[0].mention_end] == "aspirin"
+
+
 # --- greedy longest-phrase-first ----------------------------------------------
 
 

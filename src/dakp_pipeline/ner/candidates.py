@@ -286,7 +286,10 @@ class MentionCandidateTransformer:
     def _records_for(name: str, uri: str, frame: pl.DataFrame) -> list[TextRecord]:
         if "spl_sections" in name:
             return text_records_from_dailymed_sections(frame)
-        if name in {"cases.parquet", "faers_cases.tsv"} or "faers_cases" in name or ("faers" in uri and name == "cases.parquet"):
+        # FAERS case rows: the public TSV, or the global/per-quarter cases parquet (which
+        # lives under a faers/ interim dir). Requiring the faers path avoids mis-dispatching
+        # an unrelated file that happens to be named cases.parquet.
+        if name == "faers_cases.tsv" or (name == "cases.parquet" and "faers" in uri):
             return text_records_from_faers_cases(frame)
         return []
 
