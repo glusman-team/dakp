@@ -1,0 +1,3 @@
+primaryid$indi_drug_seq$indi_pt
+1001$1$hypercholesterolemia
+1002$1$headache

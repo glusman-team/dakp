@@ -1,0 +1,3 @@
+drug_name	contraindicated_condition	source_score
+Ibuprofen	asthma	0.9
+Ibuprofen	peptic ulcer disease	0.8

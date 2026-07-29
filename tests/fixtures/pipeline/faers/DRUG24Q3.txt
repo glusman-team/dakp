@@ -1,0 +1,3 @@
+primaryid$drug_seq$drugname$role_cod$nda$ingredient
+1001$1$Examplestatin$PS$012345$Examplestatin
+1002$1$Ibuprofen$PS$017977$Ibuprofen
