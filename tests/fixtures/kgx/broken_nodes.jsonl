@@ -1,0 +1,6 @@
+{"id": "CHEBI:99999", "name": "exampledrug", "category": ["biolink:Drug"]}
+{"id": "CHEBI:11111", "category": ["biolink:Drug"]}
+{"id": "MONDO:99999", "name": "bad category disease", "category": ["Disease"]}
+{"id": "CHEBI:99999", "name": "exampledrug-dup", "category": ["biolink:Drug"]}
+{"id": "MONDO:7777777", "name": "some disease", "category": ["biolink:Disease"]}
+{"id": "HP:0000001", "name": "some phenotype", "category": ["biolink:PhenotypicFeature"]}
