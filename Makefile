@@ -2,23 +2,20 @@
 # All Python runs through uv; Go runs through the go/ module. `make help` lists targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup install install-ner install-airflow install-kg install-kg-qc install-all test cov coverage \
+.PHONY: help setup install install-ner install-kg install-kg-qc install-all test cov coverage \
 	lint lint-fix fmt fmt-check typecheck check pre-commit \
-	build-go test-go vet-go fmt-go-check check-go check-all run-mock clean
+	build-go test-go vet-go fmt-go-check check-go check-all bundle run down clean
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  %-18s %s\n",$$1,$$2}' $(MAKEFILE_LIST) | sort
 
 # ---- Environment / install -------------------------------------------------
 
-setup install: ## Install base + dev dependencies (uv sync)
+setup install: ## Install runtime + dev deps (uv sync; Airflow 3 is now a hard dependency)
 	uv sync
 
 install-ner: ## Install the heavy biomedical NER backend (GLiNER zero-shot; pulls torch)
 	uv sync --extra ner
-
-install-airflow: ## Install the optional Airflow orchestration extra
-	uv sync --extra airflow
 
 install-kg: ## Install the Tablassert KG-build extra (PyPI tablassert; laptop-safe)
 	uv sync --extra kg
@@ -26,7 +23,7 @@ install-kg: ## Install the Tablassert KG-build extra (PyPI tablassert; laptop-sa
 install-kg-qc: ## Install the heavy Tablassert QC-audit extra (adds torch/sentence-transformers)
 	uv sync --extra kg-qc
 
-install-all: ## Install every optional extra (ner + airflow + kg + kg-qc)
+install-all: ## ONE-COMMAND full install: every extra (ner + kg + kg-qc) for a complete production run
 	uv sync --all-extras
 
 # ---- Python quality gate ---------------------------------------------------
@@ -75,10 +72,17 @@ check-go: build-go vet-go test-go fmt-go-check ## Full Go gate (build + vet + te
 
 check-all: check check-go ## Full gate: Python + Go
 
-# ---- Run -------------------------------------------------------------------
+# ---- Run (Airflow-native; native Go SDK workers) ---------------------------
 
-run-mock: ## Run the mocked end-to-end pipeline (no network, no real Tablassert)
-	uv run dakp run --profile mock --fixture-root tests/fixtures/pipeline --workdir tmp/mock-run
+bundle: ## Build + pack the native Go bundle into the coordinator's executables_root
+	mkdir -p tmp/airflow-home/executable-bundles
+	cd go && go tool airflow-go-pack --output ../tmp/airflow-home/executable-bundles/dakp-bundle ./cmd/dakp-bundle
+
+run: ## ONE-COMMAND end-to-end run via Airflow (bundle + Airflow + trigger + wait). PROFILE/WORKDIR/FIXTURE_ROOT env override
+	bash scripts/dakp_up.sh
+
+down: ## Stop the Airflow standalone started by `make run`
+	bash scripts/dakp_down.sh
 
 # ---- Hygiene ---------------------------------------------------------------
 
