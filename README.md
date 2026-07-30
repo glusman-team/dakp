@@ -10,7 +10,7 @@ the operational entry point and links into [`docs/`](./docs).
 > store are in place, and the pipeline runs end-to-end on tiny mocked fixtures with **no
 > network and no real Tablassert/Airflow installed**. Real source downloaders/extractors,
 > NER/canonical resolution, and the live Tablassert integration land in later milestones
-> (see [Roadmap](#roadmap)). The `sample` and `wenceslaus_full` profiles exist as
+> (see [Roadmap](#roadmap)). The `sample` and `prod` profiles exist as
 > declarations but their fetchers and Tablassert call are stubs that fail loudly today.
 
 ## Why a rebuild
@@ -70,9 +70,9 @@ startup rather than silently defaulting.
 | --- | --- | --- | --- | --- |
 | `mock` | 1 | 1 GiB | fixtures only | deferred (writes handoff manifest) |
 | `sample` | 4 | 8 GiB | real, bounded sample | deferred |
-| `wenceslaus_full` | 64 | 128 GiB | real full build | delegates to `../Tablassert` |
+| `prod` | 64 | 128 GiB | real full build | delegates to `../Tablassert` |
 
-> `sample` and `wenceslaus_full` fetchers are **Milestone-2 stubs**: calling them today
+> `sample` and `prod` fetchers are **Milestone-2 stubs**: calling them today
 > raises `NotImplementedError` ("only the mock profile is implemented"). Real acquisition
 > and the live Tablassert call land in Milestones 2 and 7 respectively.
 
@@ -84,7 +84,7 @@ workstation-class host; design also keeps laptop-safe modes.
 
 ```bash
 uv sync --extra airflow          # Airflow is an optional dependency group
-uv run dakp run --profile wenceslaus_full \
+uv run dakp run --profile prod \
   --workdir /local_raid1/dakp
 # or via the Airflow scheduler: trigger the dakp_build DAG
 ```

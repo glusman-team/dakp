@@ -3,7 +3,7 @@
 Runs the benchmark on the tiny mock fixtures (fast, no network, no Tablassert) and asserts
 the report JSON has the deterministic shape the harness promises: per-stage timings + call
 counts + cache outcomes in canonical stage order, run-wide totals (wall-time, peak memory,
-rows/throughput, cache hit/miss), and an environment block. Also covers the ``wenceslaus_full``
+rows/throughput, cache hit/miss), and an environment block. Also covers the ``prod``
 opt-in guard, argument validation, warm-cache behavior across iterations, and that the
 non-invasive stage instrumentation is fully restored after the run.
 """
@@ -138,9 +138,9 @@ def test_warm_rerun_produces_cache_hits(tmp_path: Path) -> None:
 # --- guards and validation --------------------------------------------------------
 
 
-def test_wenceslaus_full_requires_opt_in(tmp_path: Path) -> None:
+def test_prod_requires_opt_in(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="allow_full"):
-        run_benchmark(profile="wenceslaus_full", workdir=tmp_path / "work")
+        run_benchmark(profile="prod", workdir=tmp_path / "work")
 
 
 def test_unknown_profile_raises(tmp_path: Path) -> None:

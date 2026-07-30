@@ -25,7 +25,7 @@ A successful run prints `Pipeline complete` and the `build_summary.json` path.
 
 ### `NotImplementedError: real acquisition for '<source>' lands in Milestone 2`
 
-You ran a non-mock profile (`sample` or `wenceslaus_full`). Real source downloaders are
+You ran a non-mock profile (`sample` or `prod`). Real source downloaders are
 not implemented yet — only the `mock` profile ingests fixtures. **Fix:** use
 `--profile mock` until Milestone 2.
 

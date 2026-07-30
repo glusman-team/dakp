@@ -41,7 +41,7 @@ def test_module_imports_without_airflow() -> None:
 
 def test_dag_params_expose_required_knobs() -> None:
     assert set(dakp_build.DAG_PARAMS) >= _REQUIRED_PARAMS
-    assert dakp_build.DAG_PARAMS["profile"] in {"mock", "sample", "wenceslaus_full"}
+    assert dakp_build.DAG_PARAMS["profile"] in {"mock", "sample", "prod"}
 
 
 def test_stage_callable_mapping_matches_run_pipeline() -> None:

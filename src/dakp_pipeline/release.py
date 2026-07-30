@@ -62,7 +62,7 @@ class ReleaseResult:
 def _tsv_columns_and_rows(path: Path) -> tuple[list[str], int]:
     """Read a TSV's header columns and data-row count without loading the whole frame.
 
-    Cheap even for ``wenceslaus_full``-sized tables: reads the header line, then counts the
+    Cheap even for ``prod``-sized tables: reads the header line, then counts the
     remaining lines. An empty file yields ``([], 0)``; a header-only file yields ``(cols, 0)``.
     """
     with path.open("r", encoding="utf-8") as handle:

@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True, metavar="<command>")
 
     run = sub.add_parser("run", help="Run the pipeline (mock profile needs no network).")
-    run.add_argument("--profile", default="mock", choices=("mock", "sample", "wenceslaus_full"), help="Execution profile (default: mock).")
+    run.add_argument("--profile", default="mock", choices=("mock", "sample", "prod"), help="Execution profile (default: mock).")
     run.add_argument("--fixture-root", type=Path, default=None, help="Directory of mock source fixtures (required for the mock profile).")
     run.add_argument(
         "--workdir", type=Path, default=Path("data"), help="Pipeline workdir root; all artifacts are written under here (default: ./data)."

@@ -6,22 +6,22 @@ ship as human-readable declarations of the same knobs.
 
 Three profiles (per ``PLAN.md`` "Resolved planning decisions" + performance tiers):
 
-* ``mock``          — tiny fixtures, all external calls monkeypatchable, CI-friendly.
-* ``sample``        — laptop-safe bounded sample, real acquisition but limited scope.
-* ``wenceslaus_full``— real full build on the 80-thread / 187 GiB workstation.
+* ``mock``   — tiny fixtures, all external calls monkeypatchable, CI-friendly.
+* ``sample`` — laptop-safe bounded sample, real acquisition but limited scope.
+* ``prod``   — real full build on the 80-thread / 187 GiB workstation (the ``wenceslaus`` host).
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-PROFILES: frozenset[str] = frozenset({"mock", "sample", "wenceslaus_full"})
+PROFILES: frozenset[str] = frozenset({"mock", "sample", "prod"})
 
 
 class Profile(BaseModel):
     """Execution profile: concurrency budgets and source-acquisition behavior."""
 
-    name: str = Field(description="Profile name (mock | sample | wenceslaus_full).")
+    name: str = Field(description="Profile name (mock | sample | prod).")
     threads: int = Field(ge=1, description="Worker threads/processes per task.")
     memory_budget_gb: int = Field(ge=1, description="Soft per-task memory budget in GiB.")
     quarter_limit: int | None = Field(default=None, description="Cap FAERS quarters processed (dev/sample); None = all available.")
@@ -34,11 +34,9 @@ _MOCK = Profile(name="mock", threads=1, memory_budget_gb=1, quarter_limit=1, moc
 
 _SAMPLE = Profile(name="sample", threads=4, memory_budget_gb=8, quarter_limit=1, mock_sources=False, force=False, run_tablassert=False)
 
-_WENCESLAUS_FULL = Profile(
-    name="wenceslaus_full", threads=64, memory_budget_gb=128, quarter_limit=None, mock_sources=False, force=False, run_tablassert=True
-)
+_PROD = Profile(name="prod", threads=64, memory_budget_gb=128, quarter_limit=None, mock_sources=False, force=False, run_tablassert=True)
 
-_PROFILE_TABLE: dict[str, Profile] = {"mock": _MOCK, "sample": _SAMPLE, "wenceslaus_full": _WENCESLAUS_FULL}
+_PROFILE_TABLE: dict[str, Profile] = {"mock": _MOCK, "sample": _SAMPLE, "prod": _PROD}
 
 
 def load_profile(name: str, **overrides: object) -> Profile:

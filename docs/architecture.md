@@ -111,7 +111,7 @@ delegated to Tablassert's QC in Milestone 6+.
 
 ## Sharding and concurrency
 
-The DAG targets `wenceslaus_full` (80 logical CPUs, 187 GiB RAM, `/local_raid1`) with
+The DAG targets `prod` (80 logical CPUs, 187 GiB RAM, `/local_raid1`) with
 dynamic task mapping and partitioned artifacts so no step becomes a serial bottleneck.
 Concurrency is configurable per task class; the profile carries the budgets
 (`threads`, `memory_budget_gb`, `quarter_limit`).

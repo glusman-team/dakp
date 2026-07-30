@@ -373,5 +373,5 @@ def test_run_dispatches_to_real_outside_mock_profile(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
 
-    run_tablassert(assertion_refs, config_refs, _ctx(workdir, profile="wenceslaus_full", run_tablassert=True))
+    run_tablassert(assertion_refs, config_refs, _ctx(workdir, profile="prod", run_tablassert=True))
     assert _read_report(workdir)["mode"] == "real"
