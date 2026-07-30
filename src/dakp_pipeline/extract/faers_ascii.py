@@ -613,8 +613,9 @@ def _reduce_cases(per_quarter: list[pl.DataFrame]) -> tuple[pl.DataFrame, pl.Dat
         else pl.DataFrame(schema=_DEDUP_AUDIT_COLUMNS)
     )
     kept = kept.drop(["_dedup_key", "_winning_quarter"])
-    if not kept.is_empty():
-        kept = kept.sort(_CASE_SORT_KEY)
+    # kept is never empty here: each dedup-key group keeps its max-quarter row(s). Sorting an
+    # empty frame is a no-op, so this is unconditional (no dead empty-guard branch).
+    kept = kept.sort(_CASE_SORT_KEY)
     if not dedup_audit.is_empty():
         dedup_audit = dedup_audit.sort(_AUDIT_SORT_KEY)
     return kept.select(_CASE_COLUMNS), dedup_audit

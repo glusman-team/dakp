@@ -16,3 +16,9 @@ dist/
 /data/
 /tmp/
 /local_raid1/
+
+# coverage artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
