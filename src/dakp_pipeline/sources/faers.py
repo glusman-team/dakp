@@ -37,7 +37,7 @@ from dakp_pipeline.sources import ingest_fixtures
 
 # FDA exports index lists quarterly ASCII zips as faers_ascii_<YYYY>q<N>.zip.
 FDA_FAERS_INDEX_URL = "https://fis.fda.gov/content/Exports"
-_FAERS_ZIP_RE = re.compile(r"faers_ascii_\d{4}q\d\.zip", re.IGNORECASE)
+_FAERS_ZIP_RE = re.compile(r"faers_ascii_(\d{4})q(\d)\.zip", re.IGNORECASE)
 # Quarter label embedded in a FAERS filename, e.g. DEMO24Q3.txt or faers_ascii_2024q3.zip.
 _QUARTER_IN_NAME_RE = re.compile(r"(\d{2})q(\d)", re.IGNORECASE)
 _DEFAULT_TIMEOUT = 120.0
@@ -61,10 +61,8 @@ def discover_quarters(index_html: str, *, base_url: str = FDA_FAERS_INDEX_URL) -
     found: dict[str, str] = {}
     for match in _FAERS_ZIP_RE.finditer(index_html):
         filename = match.group(0)
-        year_q = re.search(r"(\d{4})q(\d)", filename, re.IGNORECASE)
-        if not year_q:
-            continue
-        label = f"{year_q.group(1)[-2:]}Q{year_q.group(2)}"
+        # The zip regex already captures (year, quarter); a match always has both groups.
+        label = f"{match.group(1)[-2:]}Q{match.group(2)}"
         url = filename if filename.lower().startswith("http") else f"{base_url.rstrip('/')}/{filename}"
         found[label] = url
     # Lexicographic reverse sort == most-recent first for zero-padded 2-digit years

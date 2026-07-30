@@ -195,10 +195,9 @@ class DrugsFDAProductsExtractor:
             warnings.append({"table": "submissions", "message": "no Submissions table found in inputs"})
 
         # 4. Lookup tables (name/ingredient/ndc/marketing-status -> appl_no) ---
-        if products_frame is not None:
+        if products is not None and products_frame is not None:
             lookups_frame = _build_lookups(products_frame)
-            lookups_blake = _input_blake3(products, inputs)
-            refs.append(self._register_parquet(wd, store, lookups_frame, "lookups", LOOKUPS_COLUMNS, lookups_blake, 0))
+            refs.append(self._register_parquet(wd, store, lookups_frame, "lookups", LOOKUPS_COLUMNS, [products[2]], 0))
 
         # 5. Parse warnings (deterministic provenance record) ------------------
         warnings_out = wd.interim / "drugsfda" / "extract_warnings.jsonl"
@@ -389,8 +388,6 @@ def _rename_to_canonical(frame: pl.DataFrame, field_aliases: dict[str, list[str]
         src_to_orig.setdefault(_norm_key(column), column)
     rename: dict[str, str] = {}
     for canonical, aliases in field_aliases.items():
-        if canonical in rename:
-            continue
         for alias in aliases:
             orig = src_to_orig.get(_norm_key(alias))
             if orig is not None and orig not in rename.values():
@@ -616,12 +613,6 @@ def _record_id(kind: str, appl_type: str, appl_no_stripped: str, row_index: int,
 def _frame_of(rows: list[dict[str, str]], columns: list[str]) -> pl.DataFrame:
     schema = dict.fromkeys(columns, pl.Utf8)
     return pl.DataFrame(rows, schema=schema)
-
-
-def _input_blake3(matched: tuple[pl.DataFrame, str, str] | None, inputs: list[ArtifactRef]) -> list[str]:
-    if matched is None:
-        return [ref.blake3 for ref in inputs]
-    return [matched[2]]
 
 
 def _tsv_row_count(path: Path) -> int:
