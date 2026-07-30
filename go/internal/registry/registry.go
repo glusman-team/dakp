@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 )
@@ -120,7 +121,8 @@ func Usage(w io.Writer, prog string) {
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	prog := "dakp-worker"
 	if len(args) > 0 && args[0] != "" {
-		prog = args[0]
+		// Basename so `go run` (whose argv0 is a temp build path) still prints a clean name.
+		prog = filepath.Base(args[0])
 	}
 	err := Dispatch(ctx, args)
 	switch {
