@@ -12,7 +12,6 @@ Covers:
 * record-id fallbacks (ndc / row).
 * per-table missing-application-number warnings and submission appl_type inheritance
   (already-set vs map-miss).
-* the opt-in Go delegation path's missing-frame branches, driven offline via ``MockGoRunner``.
 """
 
 from __future__ import annotations
@@ -29,7 +28,6 @@ from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.downloads import infer_media_type
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.workers import go_runner
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -262,51 +260,3 @@ def test_submission_appl_type_inheritance_set_vs_map_miss(tmp_path: Path) -> Non
     assert by_no["12345"]["appl_no_raw"] == "NDA012345"  # raw rebuilt from inherited type
     assert by_no["20000"]["appl_type"] == "BLA"  # already set, untouched
     assert by_no["77777"]["appl_type"] == ""  # map miss -> empty
-
-
-# --- Go delegation path: missing-frame branches (offline via MockGoRunner) -----
-
-
-def _mock_go(monkeypatch: pytest.MonkeyPatch, write_frames: dict[str, list[str]]) -> None:
-    """Route the extractor's Go runner to a MockGoRunner that writes selected empty TSVs."""
-    monkeypatch.setattr(go_runner, "go_available", lambda: True)
-    runner = go_runner.MockGoRunner()
-
-    def handler(args: tuple[str, ...]) -> tuple[str, str]:
-        out_dir = Path(args[-1])
-        out_dir.mkdir(parents=True, exist_ok=True)
-        for name, columns in write_frames.items():
-            pl.DataFrame(schema=dict.fromkeys(columns, pl.Utf8)).write_csv(out_dir / f"{name}.tsv", separator="\t")
-        return ("", "")
-
-    runner.set_handler("drugsfda", handler)
-    monkeypatch.setattr(go_runner, "get_runner", lambda: runner)
-
-
-def test_go_path_with_all_frames_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _mock_go(
-        monkeypatch,
-        {
-            "drugsfda_products": dp.PRODUCTS_COLUMNS,
-            "drugsfda_applications": dp.APPLICATIONS_COLUMNS,
-            "drugsfda_submissions": dp.SUBMISSIONS_COLUMNS,
-            "drugsfda_lookups": dp.LOOKUPS_COLUMNS,
-        },
-    )
-    products = _tsv(tmp_path, "drugsfda_products.tsv", "ApplNo\tApplType\tDrugName", "012345\tNDA\tDrugX")
-    refs = dp.extract([products], _ctx(tmp_path / "work", use_go_workers=True))
-    names = [r.uri.name for r in refs]
-    # products parquet + products tsv + applications + submissions + lookups + warnings jsonl.
-    assert names.count("products.parquet") == 1
-    assert "drugsfda_products.tsv" in names
-    assert "applications.parquet" in names
-    assert "submissions.parquet" in names
-    assert "lookups.parquet" in names
-    assert "extract_warnings.jsonl" in names
-
-
-def test_go_path_with_no_frames_emits_only_warnings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _mock_go(monkeypatch, {})  # worker writes nothing -> every frame is None
-    products = _tsv(tmp_path, "drugsfda_products.tsv", "ApplNo\tApplType\tDrugName", "012345\tNDA\tDrugX")
-    refs = dp.extract([products], _ctx(tmp_path / "work", use_go_workers=True))
-    assert [r.uri.name for r in refs] == ["extract_warnings.jsonl"]

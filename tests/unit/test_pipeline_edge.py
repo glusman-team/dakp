@@ -1,9 +1,9 @@
-"""Edge-case tests for ``dakp_pipeline.pipeline`` helpers.
+"""Edge-case tests for the pipeline result types + runtime helpers.
 
 Covers the small public surface the end-to-end tests skip: ``TableResult.exists()``, the
 ``PipelineResult.table()`` KeyError path (both the "<none>" and the populated-available
-messages), the ``run_airflow=True`` guard (airflow extra absent -> RuntimeError), and the
-``_load_disease_map`` empty-file / blank-text-row branches.
+messages), the ``runtime.write_build_summary`` regression-violation serialization, and the
+``runtime._load_disease_map`` empty-file / blank-text-row branches.
 """
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ import pytest
 from dakp_pipeline.config import load_profile
 from dakp_pipeline.io.contracts import ArtifactRef
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.pipeline import PipelineResult, TableResult, _load_disease_map, _write_build_summary, run_pipeline
+from dakp_pipeline.pipeline import PipelineResult, TableResult
+from dakp_pipeline.runtime import _load_disease_map, write_build_summary
 from dakp_pipeline.translator.contract import ContractReport
 from dakp_pipeline.translator.regression import RegressionReport, RegressionViolation
 
@@ -41,12 +42,6 @@ def test_pipeline_result_table_unknown_name_lists_available(tmp_path: Path) -> N
         result.table("nope")
 
 
-def test_run_pipeline_run_airflow_requires_extra(tmp_path: Path) -> None:
-    # airflow is not installed -> the import guard raises a clear RuntimeError.
-    with pytest.raises(RuntimeError, match="run_airflow=True requires the airflow extra"):
-        run_pipeline(profile="mock", workdir=tmp_path, run_airflow=True)
-
-
 def test_write_build_summary_serializes_regression_violations(tmp_path: Path) -> None:
     wd = Workdir(tmp_path)
     wd.create()
@@ -58,7 +53,7 @@ def test_write_build_summary_serializes_regression_violations(tmp_path: Path) ->
         row_count=1,
         violations=[RegressionViolation("biolink:treats", "knowledge_level", "1 row(s): expected 'knowledge_assertion'")],
     )
-    summary = _write_build_summary(wd, "mock", [ref], [], report, regression)
+    summary = write_build_summary(wd, "mock", [ref], [], report, regression)
     text = summary.read_text(encoding="utf-8")
     assert '"translator_regression"' in text
     assert '"knowledge_level"' in text

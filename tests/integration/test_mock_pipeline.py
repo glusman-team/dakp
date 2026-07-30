@@ -1,10 +1,10 @@
 """End-to-end mocked pipeline test (PLAN.md "Monkeypatch-first full-pipeline test sketch").
 
-Runs the full pipeline with NO network and NO real Tablassert/Airflow installed
-(``run_airflow=False``). Fetchers are monkeypatched to load fixtures via ``ctx.fixture()``,
-and ``dakp_pipeline.tablassert.run`` is replaced with a fake — proving every external
-boundary is substitutable. The default (unpatched) mock path is also exercised to mirror
-the CLI acceptance command.
+Runs the full pipeline (the pure-Python ``run_pipeline`` test harness) with NO network and NO real
+Tablassert. Fetchers are monkeypatched to load fixtures via ``ctx.fixture()``, and
+``dakp_pipeline.tablassert.run`` is replaced with a fake — proving every external boundary is
+substitutable. The default (unpatched) mock path is also exercised. (The native Go extract path is
+validated by ``make run`` + the Go parity tests; the Airflow DAG wiring by ``test_dag.py``.)
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ def test_full_pipeline_uses_mocked_sources(monkeypatch, tmp_path: Path) -> None:
     # No real Tablassert on the dev laptop.
     monkeypatch.setattr("dakp_pipeline.tablassert.run", _fake_tablassert_run)
 
-    result = run_pipeline(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "work", run_airflow=False)
+    result = run_pipeline(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "work")
 
     assert result.table("approved_treats_assertions").rows > 0
     assert result.table("faers_applied_to_treat_assertions").rows > 0
@@ -58,7 +58,7 @@ def test_full_pipeline_uses_mocked_sources(monkeypatch, tmp_path: Path) -> None:
 def test_default_mock_path_matches_cli_acceptance(tmp_path: Path) -> None:
     """The unpatched mock path (default fetchers + mock tablassert handoff) runs clean,
     mirroring `uv run dakp run --profile mock ...`."""
-    result = run_pipeline(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "work", run_airflow=False)
+    result = run_pipeline(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "work")
 
     for table in ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions"):
         assert result.table(table).rows > 0

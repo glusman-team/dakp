@@ -27,7 +27,6 @@ from __future__ import annotations
 import io
 import json
 import re
-import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -40,7 +39,6 @@ from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import OperationBlock, TableBlock
 from dakp_pipeline.logging_setup import bind
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.workers import go_runner
 
 # --- normalized column contracts ------------------------------------------------
 
@@ -140,8 +138,6 @@ class DrugsFDAProductsExtractor:
     """Parse Drugs@FDA tab-delimited tables into normalized parquet + a Tablassert TSV."""
 
     def extract(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
-        if go_runner.should_use_go(ctx):
-            return self._extract_via_go(inputs, ctx)
         wd = Workdir(ctx.workdir)
         store = ArtifactStore(wd)
         log = bind(task_id="extract_drugsfda_products")
@@ -246,67 +242,6 @@ class DrugsFDAProductsExtractor:
             operation=OperationBlock(name="extract_drugsfda_products_section"),
             table=TableBlock(rows=rows, schema_fingerprint=fingerprint, warnings=warning_count),
         )
-
-    def _extract_via_go(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
-        """Delegate parsing to the Go ``drugsfda`` worker, repackaging its TSVs identically.
-
-        Go reads the tab-delimited tables and writes products/applications/submissions/lookups
-        as uncompressed TSV (byte-for-byte parity; see ``go/internal/drugsfda``). We read them
-        back through the SAME parquet/TSV registration as the Python path so the returned refs
-        (names, order, schemas) are unchanged.
-        """
-        wd = Workdir(ctx.workdir)
-        store = ArtifactStore(wd)
-        log = bind(task_id="extract_drugsfda_products")
-        input_ids = [ref.blake3 for ref in inputs]
-
-        with tempfile.TemporaryDirectory() as scratch:
-            stage = Path(scratch)
-            in_dir = go_runner.stage_inputs(inputs, stage / "in")
-            out_dir = stage / "out"
-            out_dir.mkdir()
-            result = go_runner.get_runner().run_table("drugsfda", in_dir, out_dir)
-            frames = {
-                name: go_runner.read_go_tsv(out_dir / f"{name}.tsv")
-                for name in ("drugsfda_products", "drugsfda_applications", "drugsfda_submissions", "drugsfda_lookups")
-                if (out_dir / f"{name}.tsv").exists()
-            }
-        warnings = go_runner.go_warnings(result)
-        refs: list[ArtifactRef] = []
-
-        products = frames.get("drugsfda_products")
-        if products is not None:
-            refs.append(self._register_parquet(wd, store, products, "products", PRODUCTS_COLUMNS, input_ids, warnings))
-            tsv_out = wd.tabular / "drugsfda_products.tsv"
-            schemas.write_tsv(products.select(PRODUCTS_COLUMNS), tsv_out)
-            refs.append(self._register_tsv(store, tsv_out, PRODUCTS_COLUMNS, input_ids, warnings))
-        applications = frames.get("drugsfda_applications")
-        if applications is not None:
-            refs.append(self._register_parquet(wd, store, applications, "applications", APPLICATIONS_COLUMNS, input_ids, warnings))
-        submissions = frames.get("drugsfda_submissions")
-        if submissions is not None:
-            refs.append(self._register_parquet(wd, store, submissions, "submissions", SUBMISSIONS_COLUMNS, input_ids, warnings))
-        lookups = frames.get("drugsfda_lookups")
-        if lookups is not None:
-            refs.append(self._register_parquet(wd, store, lookups, "lookups", LOOKUPS_COLUMNS, input_ids, 0))
-
-        # Parse-warning provenance record (Go records warnings in its slog stream; the JSONL is
-        # kept empty so the ref set matches the Python path).
-        warnings_out = wd.interim / "drugsfda" / "extract_warnings.jsonl"
-        _write_warnings_jsonl(warnings_out, [])
-        refs.append(
-            store.register(
-                warnings_out,
-                media_type="application/x-ndjson",
-                rows=0,
-                inputs=input_ids,
-                operation=OperationBlock(name="extract_drugsfda_warnings"),
-                table=TableBlock(rows=0),
-            )
-        )
-        rows_total = products.height if products is not None else 0
-        log.info("extracted Drugs@FDA via Go worker", products=rows_total, warnings=warnings, outputs=len(refs))
-        return refs
 
 
 extract = DrugsFDAProductsExtractor().extract

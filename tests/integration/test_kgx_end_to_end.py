@@ -112,7 +112,7 @@ def kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
     work = tmp_path_factory.mktemp("dakp-kgx-e2e") / "work"
 
     # (1) Hermetic mock pipeline -> assertion TSVs (data/tabular/) + generated tables/*.yaml configs.
-    run_pipeline(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=work, run_airflow=False)
+    run_pipeline(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=work)
 
     # (2) Tiny fullmap at <work>/.fullmap/fullmap.redb (graph.yaml's `fullmap: ".fullmap"` resolves
     #     relative to the build cwd = <work>). Built in a child process so the build-kg subprocess

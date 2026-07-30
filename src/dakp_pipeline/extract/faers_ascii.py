@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import io
 import re
-import tempfile
 import zipfile
 from collections import defaultdict
 from collections.abc import Iterator
@@ -58,7 +57,6 @@ from dakp_pipeline.io.content_hash import hash_bytes
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import OperationBlock, TableBlock
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.workers import go_runner
 
 _DELIMITER = "$"
 _FAMILIES = ("DEMO", "DRUG", "INDI", "REAC", "RPSR", "DELETE")
@@ -143,8 +141,6 @@ class FAERSASCIIExtractor:
     """Parse FAERS ASCII into normalized parquet tables + a per-quarter case join."""
 
     def extract(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
-        if go_runner.should_use_go(ctx):
-            return self._extract_via_go(inputs, ctx)
         warnings = _Warnings()
         by_quarter_family: dict[str, dict[str, pl.DataFrame]] = defaultdict(dict)
         for source in _iter_faers_sources(inputs):
@@ -258,85 +254,6 @@ class FAERSASCIIExtractor:
         )
         # cases_ref first so the observed-uses shaper's _first_parquet("faers") resolves it.
         return [cases_ref, tsv_ref, delete_ref, dedup_ref, warnings_ref, *normalized_refs]
-
-    def _extract_via_go(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
-        """Delegate parsing/joining to the Go ``faers`` worker, repackaging its TSVs.
-
-        Go parses the ``$``-delimited ASCII, builds the DELETE-filtered cross-quarter-deduped
-        case table, and writes ``faers_cases.tsv`` (+ ``delete_audit.tsv`` / ``dedup_audit.tsv``)
-        as uncompressed TSV (byte-for-byte parity; see ``go/internal/faers``). We read them back
-        and register the same public artifacts the Python path returns: the global ``cases.parquet``
-        FIRST (so ``find_faers_cases`` resolves it), the public ``faers_cases.tsv``, and the two
-        audit parquets. The Go public TSV is a projection of the rich interim case table, so the
-        reconstructed ``cases.parquet`` carries the public columns and leaves the Python-only
-        provenance columns (``nda_raw``/``role_cod``/``drug_seq``/...) empty.
-        """
-        wd = Workdir(ctx.workdir)
-        store = ArtifactStore(wd)
-        input_ids = [ref.blake3 for ref in inputs]
-
-        with tempfile.TemporaryDirectory() as scratch:
-            stage = Path(scratch)
-            in_dir = go_runner.stage_inputs(inputs, stage / "in")
-            out_dir = stage / "out"
-            out_dir.mkdir()
-            result = go_runner.get_runner().run_table("faers", in_dir, out_dir)
-            cases = go_runner.read_go_tsv(out_dir / "faers_cases.tsv")
-            delete_path = out_dir / "delete_audit.tsv"
-            dedup_path = out_dir / "dedup_audit.tsv"
-            delete_audit = go_runner.read_go_tsv(delete_path) if delete_path.exists() else pl.DataFrame(schema=_DELETE_AUDIT_COLUMNS)
-            dedup_audit = go_runner.read_go_tsv(dedup_path) if dedup_path.exists() else pl.DataFrame(schema=_DEDUP_AUDIT_COLUMNS)
-        warnings_total = go_runner.go_warnings(result)
-
-        # Reconstruct the global cases interim table from the public TSV projection so the first
-        # returned ref is cases.parquet (matching the Python path's ref shape for downstream).
-        cases_full = _ensure_cols(cases.fill_null(""), tuple(_CASE_COLUMNS)).select(_CASE_COLUMNS)
-        cases_ref = self._write_table(
-            cases_full, wd.interim / "faers" / "cases.parquet", "cases", input_ids, warnings_total, store, fingerprint=_CASE_COLUMNS, partitions=1
-        )
-
-        tsv_frame = cases.select(schemas.FAERS_CASES_COLUMNS)
-        schemas.write_tsv(tsv_frame, wd.interim / "faers" / "faers_cases.tsv")
-        tsv_fp = schemas.schema_fingerprint(schemas.FAERS_CASES_COLUMNS)
-        tsv_ref = store.register(
-            wd.interim / "faers" / "faers_cases.tsv",
-            media_type=schemas.TSV_MEDIA_TYPE,
-            rows=cases.height,
-            schema_fingerprint=tsv_fp,
-            inputs=input_ids,
-            operation=OperationBlock(name="emit_faers_cases_tsv"),
-            table=TableBlock(rows=cases.height, schema_fingerprint=tsv_fp, warnings=warnings_total),
-        )
-        delete_ref = self._write_table(
-            _ensure_cols(delete_audit.fill_null(""), tuple(_DELETE_AUDIT_COLUMNS)).select(_DELETE_AUDIT_COLUMNS),
-            wd.interim / "faers" / "delete_audit.parquet",
-            "delete_audit",
-            input_ids,
-            warnings_total,
-            store,
-            fingerprint=_DELETE_AUDIT_COLUMNS,
-        )
-        dedup_ref = self._write_table(
-            _ensure_cols(dedup_audit.fill_null(""), tuple(_DEDUP_AUDIT_COLUMNS)).select(_DEDUP_AUDIT_COLUMNS),
-            wd.interim / "faers" / "dedup_audit.parquet",
-            "dedup_audit",
-            input_ids,
-            warnings_total,
-            store,
-            fingerprint=_DEDUP_AUDIT_COLUMNS,
-        )
-        warnings_ref = self._write_table(
-            pl.DataFrame(schema=_WARNINGS_COLUMNS),
-            wd.interim / "faers" / "warnings.parquet",
-            "warnings",
-            input_ids,
-            warnings_total,
-            store,
-            fingerprint=_WARNINGS_COLUMNS,
-        )
-
-        logger.info("faers extract complete via Go worker", artifact_id=result.artifact_id, cases=cases.height, warnings=warnings_total)
-        return [cases_ref, tsv_ref, delete_ref, dedup_ref, warnings_ref]
 
     def _write_table(
         self,

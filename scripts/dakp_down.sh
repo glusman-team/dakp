@@ -15,15 +15,16 @@ if [[ -f "$PIDFILE" ]]; then
   fi
   rm -f "$PIDFILE"
 fi
-# Reap any lingering standalone components (scheduler/triggerer/workers/uvicorn). Never touch
-# unrelated processes (e.g. the aoe daemon that owns port 8080).
+# Reap any lingering standalone components (api_server/scheduler/triggerer/workers/uvicorn). The
+# patterns match only Airflow processes (the aoe daemon that owns 8080 is "aoe", never "airflow").
 pkill -TERM -f "airflow standalone" 2>/dev/null
+pkill -TERM -f "airflow api_server" 2>/dev/null
 pkill -TERM -f "airflow scheduler" 2>/dev/null
 pkill -TERM -f "airflow triggerer" 2>/dev/null
 pkill -TERM -f "airflow worker" 2>/dev/null
 pkill -TERM -f "airflow serve-logs" 2>/dev/null
 sleep 2
-pkill -9 -f "airflow standalone" 2>/dev/null
-pkill -9 -f "airflow scheduler" 2>/dev/null
-pkill -9 -f "airflow worker" 2>/dev/null
+# Catch-all for any reparented Airflow children.
+pkill -9 -f "airflow" 2>/dev/null
+sleep 1
 echo ">>> Airflow stopped"

@@ -161,7 +161,6 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
         profile="prod",
         fixture_root=_FIXTURE_ROOT,  # only loads the disease map; fetchers DOWNLOAD (mock_sources=False)
         workdir=workdir,
-        run_airflow=False,
         params={"quarter_limit": 1, "release_limit": 1},
     )
 
@@ -206,16 +205,3 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
     source_urls = _manifest_source_urls(workdir)
     assert any(u.startswith("https://dailymed-data.nlm.nih.gov") for u in source_urls)
     assert not any(u.startswith("fixture") for u in source_urls)
-
-
-def test_cli_exposes_prod_profile_and_smoke_bounds() -> None:
-    """`dakp run --help` advertises the prod profile and the bounded-smoke overrides."""
-    import sys
-
-    proc = subprocess.run([sys.executable, "-m", "dakp_pipeline.cli", "run", "--help"], check=False, capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stderr
-    assert "mock" in proc.stdout
-    assert "sample" in proc.stdout
-    assert "prod" in proc.stdout
-    assert "--quarter-limit" in proc.stdout
-    assert "--release-limit" in proc.stdout

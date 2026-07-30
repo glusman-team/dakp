@@ -36,7 +36,6 @@ id + local key) so re-runs are byte-stable and joins across tables are lossless.
 from __future__ import annotations
 
 import gzip
-import tempfile
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -52,7 +51,6 @@ from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import OperationBlock, TableBlock
 from dakp_pipeline.logging_setup import bind
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.workers import go_runner
 
 # LOINC section codes DAKP consumes, with stable output names (PLAN.md "Sharded DailyMed
 # extraction sketch"). Codes absent here are still extracted; the name just falls back
@@ -85,10 +83,6 @@ SPL_SECTIONS_COLUMNS: list[str] = [
     "release_file",
     "xml_path",
 ]
-
-# The five normalized tables the Go ``dailymed`` worker writes as uncompressed TSV (same
-# column contracts as the parquet tables above; see go/internal/dailymed).
-_GO_TABLES: tuple[str, ...] = ("spl_documents", "spl_sets", "spl_approvals", "spl_ingredients", "spl_sections")
 
 
 @dataclass
@@ -127,8 +121,6 @@ class DocumentRecord:
 
 class SPLXMLExtractor:
     def extract(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
-        if go_runner.should_use_go(ctx):
-            return self._extract_via_go(inputs, ctx)
         wd = Workdir(ctx.workdir)
         store = ArtifactStore(wd)
         interim_dir = wd.interim / "dailymed"
@@ -220,59 +212,6 @@ class SPLXMLExtractor:
             sections=len(section_rows),
             warnings=total_warnings,
         )
-        return refs
-
-    def _extract_via_go(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
-        """Delegate parsing to the Go ``dailymed`` worker, repackaging its TSVs identically.
-
-        Go does the streaming XML parse and emits the five normalized tables as uncompressed
-        TSV (byte-for-byte parity with the Python path; see ``go/internal/dailymed``). We read
-        those TSVs back and run them through the SAME parquet/TSV writers + manifest registration
-        as the Python path, so the returned refs (names, order, schemas) are unchanged.
-        """
-        spl_inputs = [ref for ref in inputs if _looks_like_spl(ref.uri)]
-        wd = Workdir(ctx.workdir)
-        store = ArtifactStore(wd)
-        interim_dir = wd.interim / "dailymed"
-        interim_dir.mkdir(parents=True, exist_ok=True)
-        log = bind(task_id="extract_dailymed_spl")
-        operation = OperationBlock(name="extract_dailymed_spl")
-        input_ids = [ref.blake3 for ref in spl_inputs]
-
-        with tempfile.TemporaryDirectory() as scratch:
-            stage = Path(scratch)
-            in_dir = go_runner.stage_inputs(spl_inputs, stage / "in")
-            out_dir = stage / "out"
-            out_dir.mkdir()
-            result = go_runner.get_runner().run_table("dailymed", in_dir, out_dir)
-            frames = {name: go_runner.read_go_tsv(out_dir / f"{name}.tsv") for name in _GO_TABLES}
-        warnings = go_runner.go_warnings(result)
-
-        specs = [
-            ("spl_documents", schemas.DAILYMED_SPL_DOCUMENTS_COLUMNS, interim_dir / "spl_documents.parquet"),
-            ("spl_sets", SPL_SETS_COLUMNS, interim_dir / "spl_sets.parquet"),
-            ("spl_approvals", SPL_APPROVALS_COLUMNS, interim_dir / "spl_approvals.parquet"),
-            ("spl_ingredients", SPL_INGREDIENTS_COLUMNS, interim_dir / "spl_ingredients.parquet"),
-            ("spl_sections", SPL_SECTIONS_COLUMNS, interim_dir / "spl_sections.parquet"),
-        ]
-        # spl_documents is registered FIRST (the locked public contract), exactly as the Python path.
-        refs: list[ArtifactRef] = [
-            _write_parquet(go_runner.go_rows(frames[name]), columns, out, store, operation, schemas.schema_fingerprint(columns), warnings, input_ids)
-            for name, columns, out in specs
-        ]
-        refs.append(
-            _write_tsv(
-                go_runner.go_rows(frames["spl_sections"]),
-                SPL_SECTIONS_COLUMNS,
-                wd.tabular / "dailymed_spl_sections.tsv",
-                store,
-                operation,
-                schemas.schema_fingerprint(SPL_SECTIONS_COLUMNS),
-                warnings,
-                input_ids,
-            )
-        )
-        log.info("extracted dailyMed SPL via Go worker", artifact_id=result.artifact_id, warnings=warnings)
         return refs
 
 

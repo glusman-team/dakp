@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from dakp_pipeline import acquire
+from dakp_pipeline import acquire, runtime
 from dakp_pipeline.config import DownloadConfig, load_profile
 from dakp_pipeline.dags import dakp_build
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
@@ -181,26 +181,22 @@ def test_acquire_all_mock_profile_runs_every_source(tmp_path: Path) -> None:
 
 
 def test_dag_module_importable_and_acquisition_wired() -> None:
-    assert isinstance(dakp_build._AIRFLOW_AVAILABLE, bool)
     assert dakp_build.DAG_ID == "dakp_build"
     assert dakp_build.DOWNLOAD_POOL == "dakp_download"
-    # The acquisition manifest still maps to the real fetchers (test_dag.py contract preserved).
-    assert dakp_build.STAGE_CALLABLES["acquire_dailymed"] is dailymed.fetch
-    assert dakp_build.STAGE_CALLABLES["acquire_faers"] is faers.fetch
-    assert dakp_build.STAGE_CALLABLES["acquire_drugsfda"] is drugsfda.fetch
+    # The acquisition tasks are present in the constructed DAG (they delegate to acquire.*, whose
+    # fetcher delegation is covered by test_acquire_source_helpers_delegate_to_fetcher).
+    task_ids = {t.task_id for t in dakp_build.dag_obj.tasks}
+    assert {"acquire_dailymed", "acquire_faers", "acquire_drugsfda"} <= task_ids
 
 
-def test_ctx_from_params_forwards_drugsfda_url_override(monkeypatch, tmp_path: Path) -> None:
+def test_build_context_forwards_drugsfda_url_override(monkeypatch, tmp_path: Path) -> None:
     custom = load_profile("sample").model_copy(update={"download": DownloadConfig(drugsfda_url="https://example.test/drugsfda.zip")})
-    monkeypatch.setattr(dakp_build, "load_profile", lambda name, **overrides: custom)
-    ctx = dakp_build._ctx_from_params({"profile": "sample", "workdir": str(tmp_path), "fixture_root": str(_FIXTURE_ROOT)})
+    monkeypatch.setattr(runtime, "load_profile", lambda name, **overrides: custom)
+    ctx = runtime.build_context_from_config({"profile": "sample", "workdir": str(tmp_path), "fixture_root": str(_FIXTURE_ROOT)})
     assert ctx.params["drugsfda_url"] == "https://example.test/drugsfda.zip"
 
 
 def test_dag_includes_acquisition_tasks_and_pools() -> None:
-    if not dakp_build._AIRFLOW_AVAILABLE:
-        pytest.skip("apache-airflow not installed; DAG graph construction needs the airflow extra")
-
     dag = dakp_build.dag_obj
     acquire_ids = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ner_models", "acquire_ontologies"}
     assert acquire_ids <= {t.task_id for t in dag.tasks}
