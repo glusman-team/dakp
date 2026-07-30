@@ -46,13 +46,12 @@ from pathlib import Path
 from typing import Any
 
 from dakp_pipeline.assertions import INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, row_for
-from dakp_pipeline.assertions.evidence import build_dailymed_evidence, find_table, sorted_pipe, write_assertion_table
+from dakp_pipeline.assertions.evidence import build_dailymed_evidence, sorted_pipe, write_assertion_table
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.ner.ner import DiseaseNER, Mention, extract_contraindication_diseases
 
 _TABLE = "contraindication_assertions"
 _PREDICATE = "biolink:contraindicated_in"
-_INGREDIENTS_FILE = "spl_ingredients.parquet"
 _ONTOLOGY_FIXTURE = Path("ontology") / "disease_map.tsv"
 
 #: Agent type for text-mined contraindications (matches the DAKP RIG ``contraindicated_in``).
@@ -90,11 +89,10 @@ def build_contraindication_rows(inputs: Iterable[ArtifactRef], ner: DiseaseNER) 
     the mined mention TEXT; object CURIE/name/category are left empty for Tablassert.
     """
     evidence = build_dailymed_evidence(inputs)
-    ingredients_by_set = _active_ingredients_by_set(inputs)
 
     aggregated: dict[tuple[str, str], dict[str, Any]] = {}
     for set_id in sorted(evidence.contraindication_docs):
-        ingredients = ingredients_by_set.get(set_id, [])
+        ingredients = evidence.active_ingredients_by_set.get(set_id, [])
         if not ingredients:
             continue
         for doc_id, text in evidence.contraindication_docs[set_id]:
@@ -106,34 +104,6 @@ def build_contraindication_rows(inputs: Iterable[ArtifactRef], ner: DiseaseNER) 
                     _accumulate(aggregated, set_id, doc_id, ingredient_name, ingredient_unii, object_text, mention)
 
     return [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]
-
-
-def _active_ingredients_by_set(inputs: Iterable[ArtifactRef]) -> dict[str, list[tuple[str, str]]]:
-    """Map ``spl_set_id`` -> sorted ``[(ingredient_name, ingredient_unii)]`` for active ingredients.
-
-    Reads ``spl_ingredients.parquet`` directly (rather than the single-ingredient-per-set
-    evidence index) so a combination product pairs a mention with *every* active moiety.
-    Deterministic: de-duplicated and sorted per set.
-    """
-    ingredients = find_table(list(inputs), _INGREDIENTS_FILE)
-    by_set: dict[str, list[tuple[str, str]]] = {}
-    if ingredients is None:
-        return by_set
-    seen: set[tuple[str, str, str]] = set()
-    for rec in ingredients.iter_rows(named=True):
-        if str(rec.get("role") or "").strip().lower() != "active":
-            continue
-        set_id = str(rec.get("spl_set_id") or "").strip()
-        name = str(rec.get("ingredient_name") or "").strip()
-        unii = str(rec.get("ingredient_unii") or "").strip()
-        if not set_id or not name:
-            continue
-        key = (set_id, name.lower(), unii)
-        if key in seen:
-            continue
-        seen.add(key)
-        by_set.setdefault(set_id, []).append((name, unii))
-    return {set_id: sorted(pairs) for set_id, pairs in by_set.items()}
 
 
 def _accumulate(

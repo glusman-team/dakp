@@ -1,4 +1,4 @@
-"""FAERS ASCII extraction (Milestone 3, FAERS).
+"""FAERS ASCII extraction.
 
 Parses each quarter's ``$``-delimited FAERS ASCII files into normalized parquet tables
 (``DEMO``, ``DRUG``, ``INDI``, ``REAC``, ``RPSR``, ``DELETE``) and then builds a per-quarter
@@ -156,8 +156,8 @@ class FAERSASCIIExtractor:
             logger.warning("faers extract: no FAERS ASCII sources parsed")
             return []
 
-        store = ArtifactStore(Workdir(ctx.workdir))
         wd = Workdir(ctx.workdir)
+        store = ArtifactStore(wd)
         input_ids = [ref.blake3 for ref in inputs]
 
         normalized_refs: list[ArtifactRef] = []

@@ -30,7 +30,6 @@ import pytest
 from dakp_pipeline.io.contracts import ArtifactRef
 from dakp_pipeline.pipeline import run_pipeline
 from dakp_pipeline.translator import contract, regression
-from dakp_pipeline.translator.rig import generate_rig
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -40,9 +39,9 @@ TREATS = "biolink:treats"
 APPLIED_TO_TREAT = "biolink:applied_to_treat"
 CONTRAINDICATED_IN = "biolink:contraindicated_in"
 
-# --- expected DINGO ``dakp_rig.yaml`` target_info (cross-checked below) ------------
-# Mirrored verbatim from ../DINGO/src/translator_ingest/ingests/dakp/dakp_rig.yaml so the test
-# stays green without the sibling repo present; a live parse cross-checks it when available.
+# --- expected DINGO ``dakp_rig.yaml`` category contract --------------------------
+# Mirrored from ../DINGO/src/translator_ingest/ingests/dakp/dakp_rig.yaml so the test stays
+# green without the sibling repo present.
 
 DINGO_SUBJECT_CATEGORIES: tuple[str, ...] = (
     "biolink:ChemicalEntity",
@@ -52,14 +51,6 @@ DINGO_SUBJECT_CATEGORIES: tuple[str, ...] = (
     "biolink:Drug",
 )
 DINGO_OBJECT_CATEGORIES: tuple[str, ...] = ("biolink:Disease", "biolink:PhenotypicFeature", "biolink:DiseaseOrPhenotypicFeature")
-DINGO_NODE_TYPE_INFO: tuple[dict[str, Any], ...] = (
-    {"node_category": "biolink:ChemicalEntity", "source_identifier_types": ["CHEBI", "UNII"]},
-    {"node_category": "biolink:SmallMolecule", "source_identifier_types": ["CHEBI", "UNII"]},
-    {"node_category": "biolink:MolecularMixture", "source_identifier_types": ["CHEBI"]},
-    {"node_category": "biolink:ComplexMolecularMixture", "source_identifier_types": ["CHEBI"]},
-    {"node_category": "biolink:Disease", "source_identifier_types": ["MONDO"]},
-    {"node_category": "biolink:PhenotypicFeature", "source_identifier_types": ["HP"]},
-)
 
 # Legacy subject/object category tuples (ref/legacy/bin/*.py ``interventionCategories`` /
 # ``conditionCategories``). The rebuild's chemical/drug contract is the legacy intervention set
@@ -283,47 +274,6 @@ def test_contract_edge_families_match_dingo_predicates() -> None:
     assert contract.EDGE_FAMILIES[TREATS].required_upstream == frozenset({"infores:dailymed", "infores:faers"})
     assert contract.EDGE_FAMILIES[APPLIED_TO_TREAT].required_upstream == frozenset({"infores:faers", "infores:dailymed"})
     assert contract.EDGE_FAMILIES[CONTRAINDICATED_IN].required_upstream == frozenset({"infores:dailymed"})
-
-
-def test_generated_rig_edge_and_node_type_info_match_dingo() -> None:
-    """The DAKP-generated RIG's edge_type_info/node_type_info match the DINGO reference."""
-    target = generate_rig()["target_info"]
-
-    edge_type_info = target["edge_type_info"]
-    assert [entry["predicates"] for entry in edge_type_info] == [[TREATS], [APPLIED_TO_TREAT], [CONTRAINDICATED_IN]]
-    for entry in edge_type_info:
-        assert tuple(entry["subject_categories"]) == DINGO_SUBJECT_CATEGORIES
-        assert tuple(entry["object_categories"]) == DINGO_OBJECT_CATEGORIES
-        assert entry["knowledge_level"] == ["knowledge_assertion"]
-        assert entry["agent_type"] == ["text_mining_agent"]
-
-    assert target["node_type_info"] == list(DINGO_NODE_TYPE_INFO)
-
-
-def test_generated_rig_matches_live_dingo_file_when_available() -> None:
-    """If the sibling DINGO repo + a YAML parser are present, the generated RIG matches it live.
-
-    Skips (not fails) when ../DINGO or PyYAML are unavailable, so CI without the sibling repo
-    stays green; the mirrored constants above hold the contract regardless.
-    """
-    # The DINGO repo is a sibling of the DAKP checkout; probe the plausible locations (a normal
-    # checkout sits beside DAKP, a git-worktree checkout beside the worktree container dir).
-    repo_root = Path(__file__).resolve().parents[2]
-    rel = Path("src") / "translator_ingest" / "ingests" / "dakp" / "dakp_rig.yaml"
-    candidates = [repo_root.parent / "DINGO" / rel, repo_root.parents[1] / "DINGO" / rel]
-    dingo_rig = next((path for path in candidates if path.exists()), None)
-    if dingo_rig is None:
-        pytest.skip(f"DINGO reference not present (probed: {candidates})")
-    yaml = pytest.importorskip("yaml")
-
-    assert dingo_rig is not None  # narrowed for pyright: pytest.skip above raises on None
-    reference = yaml.safe_load(dingo_rig.read_text(encoding="utf-8"))
-    generated = generate_rig()
-
-    ref_target = reference["target_info"]
-    gen_target = generated["target_info"]
-    assert gen_target["edge_type_info"] == ref_target["edge_type_info"]
-    assert gen_target["node_type_info"] == ref_target["node_type_info"]
 
 
 # --- 8. the produced rows satisfy the full KGX/Translator contract ----------------

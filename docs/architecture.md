@@ -115,9 +115,7 @@ KGX node/edge records against the DAKP Translator contract (`validate_kgx`: node
 biolink-prefixed categories, the three edge families with chemical/drug subjects +
 disease/phenotype objects, and the per-family infores provenance chain). The legacy-informed
 regression guardrail ([`translator/regression.py`](../src/dakp_pipeline/translator/regression.py))
-re-checks the family/provenance/`clinical_approval_status` invariants on every build, and
-[`translator/rig.py`](../src/dakp_pipeline/translator/rig.py) generates the Reference Ingest Guide
-matching `../DINGO/src/translator_ingest/ingests/dakp/dakp_rig.yaml`.
+re-checks the family/provenance/`clinical_approval_status` invariants on every build.
 
 ## Sharding and concurrency
 
@@ -183,7 +181,7 @@ This is the most important architectural rule: **DAKP shapes tables; Tablassert 
 | NER mention extraction (text + type only) | ontology CURIE/name/category resolution |
 | shaping assertion-ready TSV | KGX NDJSON compilation + writing |
 | generating Graph/table config YAML | deduplication + deterministic UUIDs |
-| content-addressed caching of raw + tabular artifacts | RIG generation |
+| content-addressed caching of raw + tabular artifacts | build-cache / QC artifacts |
 | the Translator-readiness column/KGX contract | full Biolink/Translator validation/QC |
 
 If a needed Biolink slot is not exposed cleanly by Tablassert, the fix is upstreamed into

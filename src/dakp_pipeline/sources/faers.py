@@ -1,4 +1,4 @@
-"""FAERS quarterly ASCII acquisition (Milestone 2).
+"""FAERS quarterly ASCII acquisition.
 
 Real acquisition discovers quarterly ASCII zips from the FDA exports index, downloads each
 into the BLAKE3 content-addressed store (idempotent — re-downloading identical bytes is a
@@ -22,7 +22,6 @@ from __future__ import annotations
 import re
 import urllib.request
 from collections import defaultdict
-from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -155,11 +154,6 @@ def _http_download(url: str, dest: Path, *, timeout: float) -> Path:
     return dest
 
 
-def iter_quarter_sources(quarters: Iterable[QuarterSource]) -> Iterable[QuarterSource]:
-    """Expose discovered quarters for inspection/tests (identity passthrough)."""
-    yield from quarters
-
-
 fetch = FAERSFetcher().fetch
 
-__all__ = ["FDA_FAERS_INDEX_URL", "FAERSFetcher", "QuarterSource", "discover_quarters", "fetch", "iter_quarter_sources"]
+__all__ = ["FDA_FAERS_INDEX_URL", "FAERSFetcher", "QuarterSource", "discover_quarters", "fetch"]

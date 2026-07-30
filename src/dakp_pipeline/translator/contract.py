@@ -4,7 +4,7 @@ Two layers of validation:
 
 * :func:`validate` — the lightweight assertion-table contract used by the runner/DAG:
   every public assertion table exists with its declared column contract.
-* :func:`validate_kgx` — full KGX/Translator contract validation (Milestone 8) over the
+* :func:`validate_kgx` — full KGX/Translator contract validation over the
   node/edge JSONL that Tablassert emits. Since Tablassert is not run in tests, callers
   validate small fixture KGX that mirrors its output. Checks, in order per entity:
 

@@ -80,12 +80,3 @@ class Workdir:
         """Create the full directory tree (idempotent)."""
         for path in (self.by_hash, self.aliases, self.interim, self.tabular, self.kgx, self.manifests, self.store, self.reports, self.logs):
             path.mkdir(parents=True, exist_ok=True)
-
-
-def default_workdir() -> Workdir:
-    """Workdir used when the caller does not pass one (repo-local ``data/``).
-
-    Production/full builds always pass an explicit workdir; this default exists only
-    for ad-hoc local invocation and tests.
-    """
-    return Workdir(Path("data"))

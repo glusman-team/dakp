@@ -1,8 +1,7 @@
-"""Go worker runner (stub).
+"""Go worker runner integration.
 
-Heavy parsing/extraction workers become native Go CLIs in later milestones; Airflow/CLI
-tasks remain thin Python orchestrators that shell out via :func:`run_worker`. Milestone 1
-ships only the stub — the ``go/`` tree and Go hooks land later.
+Heavy parsing/extraction workers are native Go CLIs; Airflow/CLI tasks remain thin Python
+orchestrators that shell out through :mod:`dakp_pipeline.workers.go_runner`.
 """
 
 from __future__ import annotations

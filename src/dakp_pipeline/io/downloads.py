@@ -1,8 +1,7 @@
 """Source acquisition helpers.
 
-Milestone 1 ships only the media-type inference and a clearly-stubbed HTTP downloader.
-Real network acquisition (DailyMed/FAERS/Drugs@FDA downloaders with manifests and
-checksums) lands in **Milestone 2**; the mock profile never reaches :func:`http_download`.
+Network acquisition lives in the source-specific fetchers. This module provides the shared
+media-type inference used by artifact manifests.
 """
 
 from __future__ import annotations
@@ -34,15 +33,4 @@ def infer_media_type(path: Path) -> str:
     return "application/octet-stream"
 
 
-def http_download(url: str, dest: Path, *, timeout: float = 60.0) -> Path:
-    """Download ``url`` to ``dest``.
-
-    Stub: real acquisition (idempotent, manifest/checksum, no destructive stashing) is
-    implemented in Milestone 2. Calling this from a non-mock profile in Milestone 1 fails
-    loudly rather than silently pretending to download.
-    """
-    msg = "http_download() is a Milestone-1 stub; real source acquisition lands in Milestone 2. The mock profile must never reach this path."
-    raise NotImplementedError(msg)
-
-
-__all__ = ["http_download", "infer_media_type"]
+__all__ = ["infer_media_type"]

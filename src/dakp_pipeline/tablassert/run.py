@@ -1,4 +1,4 @@
-"""Tablassert runner — invoke the INSTALLED ``tablassert`` CLI (Milestone 7).
+"""Tablassert runner — invoke the INSTALLED ``tablassert`` CLI.
 
 DAKP ships NO local KGX compiler and keeps ``tablassert`` an OPTIONAL dependency (PLAN.md
 "Tablassert modeling layer" / "Dependency philosophy"). The real runner

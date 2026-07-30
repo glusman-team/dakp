@@ -1,4 +1,4 @@
-"""Drugs@FDA product/application/submission extractor (Milestone 3).
+"""Drugs@FDA product/application/submission extractor.
 
 Parses the FDA Drugs@FDA tab-delimited data files (the ``media/89850`` ZIP contents —
 ``Products.txt`` / ``Applications.txt`` / ``Submissions.txt`` — or their fixture mirrors)

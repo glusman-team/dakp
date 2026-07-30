@@ -1,4 +1,4 @@
-"""Approved-treatment assertion aggregation (Milestone 5).
+"""Approved-treatment assertion aggregation.
 
 Builds ``approved_treats_assertions.tsv``: FDA-approved drug→condition assertions.
 

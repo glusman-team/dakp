@@ -1,4 +1,4 @@
-"""Shared evidence helpers for the assertion-aggregation stage (Milestone 5).
+"""Shared evidence helpers for the assertion-aggregation stage.
 
 Pure, testable building blocks used by every assertion shaper:
 
@@ -22,7 +22,7 @@ mapping is a later milestone.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -75,34 +75,32 @@ def sorted_pipe(values: Iterable[Any]) -> str:
     return "|".join(merge_unique(values))
 
 
-def pick(record: Mapping[str, Any], *names: str) -> str:
-    """First non-empty value among ``names`` in ``record`` (column-alias resolution).
-
-    Lets a shaper read either the canonical extractor columns or the legacy fixture/shim
-    columns without branching per source. Missing keys and ``None`` are treated as empty.
-    """
-    for name in names:
-        value = record.get(name)
-        if value is None:
-            continue
-        text = str(value).strip()
-        if text:
-            return text
-    return ""
-
-
 # --- input table resolution -----------------------------------------------------
+
+_TableIndex = dict[str, list[ArtifactRef]]
+
+
+def _table_index(inputs: Iterable[ArtifactRef]) -> _TableIndex:
+    """Index refs by basename, preserving input order for duplicate names."""
+    index: _TableIndex = {}
+    for ref in inputs:
+        index.setdefault(ref.uri.name, []).append(ref)
+    return index
+
+
+def _read_indexed_table(index: _TableIndex, filename: str) -> pl.DataFrame | None:
+    """Read the first readable table matching ``filename`` from a prebuilt input index."""
+    for ref in index.get(filename, []):
+        try:
+            return schemas.read_table(ref.uri)
+        except Exception as exc:
+            logger.warning("skipping unreadable input {} ({})", ref.uri, exc)
+    return None
 
 
 def find_table(inputs: Iterable[ArtifactRef], filename: str) -> pl.DataFrame | None:
     """Read the first parquet/tsv input whose ``uri.name`` equals ``filename``."""
-    for ref in inputs:
-        if ref.uri.name == filename:
-            try:
-                return schemas.read_table(ref.uri)
-            except Exception as exc:
-                logger.warning("skipping unreadable input {} ({})", ref.uri, exc)
-    return None
+    return _read_indexed_table(_table_index(inputs), filename)
 
 
 def find_faers_cases(inputs: Iterable[ArtifactRef]) -> pl.DataFrame | None:
@@ -148,7 +146,8 @@ class DailyMedEvidence:
 
     approval_sets: dict[str, set[str]] = field(default_factory=dict)  # norm_nda -> {spl_set_id}
     approval_display: dict[str, str] = field(default_factory=dict)  # norm_nda -> display approval id
-    set_ingredient: dict[str, tuple[str, str]] = field(default_factory=dict)  # spl_set_id -> (name, unii)
+    set_ingredient: dict[str, tuple[str, str]] = field(default_factory=dict)  # spl_set_id -> first active (name, unii)
+    active_ingredients_by_set: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> all active (name, unii)
     indication_docs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> [(doc_id, text)]
     contraindication_docs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> [(doc_id, text)]
 
@@ -181,8 +180,9 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
     shapers degrade gracefully rather than failing.
     """
     evidence = DailyMedEvidence()
+    index = _table_index(inputs)
 
-    approvals = find_table(list(inputs), "spl_approvals.parquet")
+    approvals = _read_indexed_table(index, "spl_approvals.parquet")
     if approvals is not None:
         for rec in approvals.iter_rows(named=True):
             norm = normalize_nda(rec.get("approval_id") or rec.get("approval_code"))
@@ -192,18 +192,27 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
             evidence.approval_sets.setdefault(norm, set()).add(set_id)
             evidence.approval_display.setdefault(norm, str(rec.get("approval_id") or rec.get("approval_code") or "").strip())
 
-    ingredients = find_table(list(inputs), "spl_ingredients.parquet")
+    ingredients = _read_indexed_table(index, "spl_ingredients.parquet")
     if ingredients is not None:
+        seen_ingredients: set[tuple[str, str, str]] = set()
         for rec in ingredients.iter_rows(named=True):
             if str(rec.get("role") or "").strip().lower() != "active":
                 continue
             set_id = str(rec.get("spl_set_id") or "").strip()
             name = str(rec.get("ingredient_name") or "").strip()
-            if not set_id or not name or set_id in evidence.set_ingredient:
+            unii = str(rec.get("ingredient_unii") or "").strip()
+            if not set_id or not name:
                 continue
-            evidence.set_ingredient[set_id] = (name, str(rec.get("ingredient_unii") or "").strip())
+            key = (set_id, name.lower(), unii)
+            if key in seen_ingredients:
+                continue
+            seen_ingredients.add(key)
+            evidence.active_ingredients_by_set.setdefault(set_id, []).append((name, unii))
+            evidence.set_ingredient.setdefault(set_id, (name, unii))
+        for pairs in evidence.active_ingredients_by_set.values():
+            pairs.sort()
 
-    sections = find_table(list(inputs), "spl_sections.parquet")
+    sections = _read_indexed_table(index, "spl_sections.parquet")
     if sections is not None:
         for rec in sections.iter_rows(named=True):
             set_id = str(rec.get("spl_set_id") or "").strip()
@@ -230,7 +239,7 @@ def build_drugsfda_ingredient_map(inputs: Iterable[ArtifactRef]) -> dict[str, se
     :func:`normalize_nda` so it joins against FAERS (stripped) and DailyMed (padded) NDAs alike.
     """
     mapping: dict[str, set[str]] = {}
-    products = find_table(list(inputs), "products.parquet")
+    products = find_table(inputs, "products.parquet")
     if products is None:
         return mapping
     for rec in products.iter_rows(named=True):
@@ -282,7 +291,6 @@ __all__ = [
     "find_table",
     "merge_unique",
     "normalize_nda",
-    "pick",
     "sorted_pipe",
     "write_assertion_table",
 ]

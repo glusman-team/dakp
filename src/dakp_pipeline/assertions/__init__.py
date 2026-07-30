@@ -2,7 +2,7 @@
 
 Shared helpers (disease-map lookup, provenance constants, row builder) live here so each
 shaper stays a thin, auditable join. Disease mapping is a fast exact-match *dictionary
-baseline* for Milestone 1; canonical fullmap/Tablassert resolution lands in Milestone 4.
+baseline*; canonical fullmap/Tablassert resolution is delegated to Tablassert.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ def match_diseases(text: str, disease_map: Mapping[str, Mapping[str, str]]) -> l
 
     Returns one match dict per disease found (``text``, ``curie``, ``name``,
     ``category``). This is the lexical baseline; fullmap/Tablassert resolution replaces
-    it in Milestone 4.
+    the Tablassert/fullmap resolution layer.
     """
     lowered = (text or "").lower()
     matches: list[dict[str, str]] = []

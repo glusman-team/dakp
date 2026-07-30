@@ -13,8 +13,11 @@ from pathlib import Path
 import pytest
 
 from dakp_pipeline.config import load_profile
+from dakp_pipeline.io.contracts import ArtifactRef
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.pipeline import PipelineResult, TableResult, _load_disease_map, run_pipeline
+from dakp_pipeline.pipeline import PipelineResult, TableResult, _load_disease_map, _write_build_summary, run_pipeline
+from dakp_pipeline.translator.contract import ContractReport
+from dakp_pipeline.translator.regression import RegressionReport, RegressionViolation
 
 
 def test_table_result_exists_reflects_filesystem(tmp_path: Path) -> None:
@@ -42,6 +45,24 @@ def test_run_pipeline_run_airflow_requires_extra(tmp_path: Path) -> None:
     # airflow is not installed -> the import guard raises a clear RuntimeError.
     with pytest.raises(RuntimeError, match="run_airflow=True requires the airflow extra"):
         run_pipeline(profile="mock", workdir=tmp_path, run_airflow=True)
+
+
+def test_write_build_summary_serializes_regression_violations(tmp_path: Path) -> None:
+    wd = Workdir(tmp_path)
+    wd.create()
+    ref = ArtifactRef(uri=wd.tabular / "approved_treats_assertions.tsv", blake3="b3:aa", media_type="text/tab-separated-values", rows=1)
+    report = ContractReport(ok=True, tables={"approved_treats_assertions": {"rows": 1, "missing_columns": []}})
+    regression = RegressionReport(
+        ok=False,
+        families_seen=["biolink:treats"],
+        row_count=1,
+        violations=[RegressionViolation("biolink:treats", "knowledge_level", "1 row(s): expected 'knowledge_assertion'")],
+    )
+    summary = _write_build_summary(wd, "mock", [ref], [], report, regression)
+    text = summary.read_text(encoding="utf-8")
+    assert '"translator_regression"' in text
+    assert '"knowledge_level"' in text
+    assert "expected 'knowledge_assertion'" in text
 
 
 def test_load_disease_map_missing_file_returns_empty(tmp_path: Path) -> None:

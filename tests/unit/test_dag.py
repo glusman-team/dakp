@@ -50,6 +50,7 @@ def test_stage_callable_mapping_matches_run_pipeline() -> None:
     from dakp_pipeline.sources import dailymed, drugsfda, faers
     from dakp_pipeline.tablassert import configs as tablassert_configs
     from dakp_pipeline.translator import contract as translator_contract
+    from dakp_pipeline.translator import regression
 
     expected = {
         "acquire_dailymed": dailymed.fetch,
@@ -64,6 +65,7 @@ def test_stage_callable_mapping_matches_run_pipeline() -> None:
         "generate_tablassert_configs": tablassert_configs.generate,
         "run_tablassert": tablassert.run,
         "validate_contract": translator_contract.validate,
+        "check_regression": regression.check_assertion_tables,
         "write_build_summary": pipeline._write_build_summary,
     }
     assert expected == dakp_build.STAGE_CALLABLES

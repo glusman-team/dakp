@@ -1,4 +1,4 @@
-"""``dakp_build`` Airflow TaskFlow DAG — the full PLAN.md task graph (Milestone 6).
+"""``dakp_build`` Airflow TaskFlow DAG — the full pipeline task graph.
 
 This is a thin TaskFlow wrapper around the **same stage functions** that
 :func:`dakp_pipeline.pipeline.run_pipeline` calls, so DAG behavior is identical to the
@@ -46,6 +46,7 @@ from dakp_pipeline.paths import Workdir
 from dakp_pipeline.sources import dailymed, drugsfda, faers
 from dakp_pipeline.tablassert import configs as tablassert_configs
 from dakp_pipeline.translator import contract as translator_contract
+from dakp_pipeline.translator import regression
 
 try:
     from airflow.decorators import dag, task  # type: ignore[import-not-found]
@@ -115,8 +116,9 @@ STAGE_CALLABLES: dict[str, Callable[..., Any]] = {
     # tablassert handoff (tablassert/)
     "generate_tablassert_configs": tablassert_configs.generate,
     "run_tablassert": tablassert.run,
-    # translator-readiness contract + build summary (translator/ + pipeline)
+    # translator-readiness contract/regression + build summary (translator/ + pipeline)
     "validate_contract": translator_contract.validate,
+    "check_regression": regression.check_assertion_tables,
     "write_build_summary": pipeline._write_build_summary,
 }
 
@@ -240,7 +242,8 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
         ctx = _ctx_from_params(context.get("params"))
         assertion_refs = [*approved, *uses, *contra]
         report = STAGE_CALLABLES["validate_contract"](assertion_refs)
-        summary = STAGE_CALLABLES["write_build_summary"](Workdir(ctx.workdir), ctx.profile, assertion_refs, kgx, report)
+        regression_report = STAGE_CALLABLES["check_regression"](assertion_refs)
+        summary = STAGE_CALLABLES["write_build_summary"](Workdir(ctx.workdir), ctx.profile, assertion_refs, kgx, report, regression_report)
         return str(summary)
 
     dm_raw = acquire_dailymed()

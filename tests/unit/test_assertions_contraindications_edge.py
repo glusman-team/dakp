@@ -2,8 +2,8 @@
 
 Targets: ``default_ner`` fallback when the fixture lacks an ontology (and when fixture_root is
 None); a contraindication set with no active ingredient; a blank mined span; ingredient rows with
-missing fields / duplicates; a second observation of the same (subject, object) pair unioning
-support; the empty-scores ``_max_score`` guard; and the shaper honoring / ignoring an injected
+missing fields / duplicates in the shared evidence cache; a second observation of the same
+(subject, object) pair unioning support; the empty-scores ``_max_score`` guard; and the shaper honoring / ignoring an injected
 ``params["ner"]``. Inputs are tiny parquet tables built in tmp so no ``[ner]`` extra is needed.
 """
 
@@ -15,13 +15,8 @@ from typing import Any
 
 import polars as pl
 
-from dakp_pipeline.assertions.contraindications import (
-    ContraindicationsShaper,
-    _active_ingredients_by_set,
-    _max_score,
-    build_contraindication_rows,
-    default_ner,
-)
+from dakp_pipeline.assertions.contraindications import ContraindicationsShaper, _max_score, build_contraindication_rows, default_ner
+from dakp_pipeline.assertions.evidence import build_dailymed_evidence
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
@@ -119,7 +114,7 @@ def test_blank_mined_span_is_skipped(tmp_path: Path) -> None:
     assert build_contraindication_rows([sections, ingredients], _BlankNER()) == []  # whitespace-only -> skipped
 
 
-# --- _active_ingredients_by_set: missing fields + duplicates --------------------
+# --- DailyMedEvidence.active_ingredients_by_set: missing fields + duplicates ----
 
 
 def test_active_ingredients_skip_missing_fields_inactive_and_duplicates(tmp_path: Path) -> None:
@@ -135,14 +130,15 @@ def test_active_ingredients_skip_missing_fields_inactive_and_duplicates(tmp_path
             ("active", "SET", "OtherDrug", "UNII:Z"),  # kept
         ],
     )
-    by_set = _active_ingredients_by_set([ingredients])
-    assert by_set == {"SET": [("DrugY", "UNII:Y"), ("OtherDrug", "UNII:Z")]}  # sorted, deduped
+    evidence = build_dailymed_evidence([ingredients])
+    assert evidence.active_ingredients_by_set == {"SET": [("DrugY", "UNII:Y"), ("OtherDrug", "UNII:Z")]}  # sorted, deduped
+    assert evidence.set_ingredient == {"SET": ("DrugY", "UNII:Y")}  # first active ingredient retained for treatment fallback
 
 
 def test_active_ingredients_empty_without_ingredients_table(tmp_path: Path) -> None:
     sections = _sections(tmp_path, [("SET-Y", "SET-Y#d", "asthma")])
-    assert _active_ingredients_by_set([sections]) == {}  # no spl_ingredients.parquet present
-    assert _active_ingredients_by_set([]) == {}
+    assert build_dailymed_evidence([sections]).active_ingredients_by_set == {}  # no spl_ingredients.parquet present
+    assert build_dailymed_evidence([]).active_ingredients_by_set == {}
 
 
 # --- second observation of the same pair unions support -------------------------

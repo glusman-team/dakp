@@ -30,6 +30,7 @@ from dakp_pipeline.paths import Workdir
 from dakp_pipeline.sources import dailymed, drugsfda, faers
 from dakp_pipeline.tablassert import configs as _tablassert_configs
 from dakp_pipeline.translator import contract as translator_contract
+from dakp_pipeline.translator import regression
 
 
 @dataclass
@@ -118,7 +119,8 @@ def run_pipeline(
 
     # 6. Translator-readiness contract + build summary.
     report = translator_contract.validate(assertion_refs)
-    build_summary = _write_build_summary(wd, profile, assertion_refs, kgx_refs, report)
+    regression_report = regression.check_assertion_tables(assertion_refs)
+    build_summary = _write_build_summary(wd, profile, assertion_refs, kgx_refs, report, regression_report)
 
     tables = {ref.uri.stem: TableResult(ref.uri.stem, ref.uri, ref.rows or 0) for ref in assertion_refs}
     log.info("pipeline complete", tables=len(tables), build_summary=str(build_summary))
@@ -170,7 +172,12 @@ def _load_disease_map(fixture_root: Path) -> dict[str, dict[str, str]]:
 
 
 def _write_build_summary(
-    wd: Workdir, profile: str, assertion_refs: list[ArtifactRef], kgx_refs: list[ArtifactRef], report: translator_contract.ContractReport
+    wd: Workdir,
+    profile: str,
+    assertion_refs: list[ArtifactRef],
+    kgx_refs: list[ArtifactRef],
+    report: translator_contract.ContractReport,
+    regression_report: regression.RegressionReport,
 ) -> Path:
     summary_path = wd.reports / "build_summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -182,6 +189,15 @@ def _write_build_summary(
         "tables": [{"name": ref.uri.stem, "path": str(ref.uri), "rows": ref.rows, "artifact_id": ref.blake3} for ref in assertion_refs],
         "tablassert": {"handoff_refs": [str(ref.uri) for ref in kgx_refs]},
         "translator_contract": {"ok": report.ok, "problems": report.problems, "tables": report.tables},
+        "translator_regression": {
+            "ok": regression_report.ok,
+            "families_seen": regression_report.families_seen,
+            "row_count": regression_report.row_count,
+            "violations": [
+                {"family": violation.family, "invariant": violation.invariant, "message": violation.message}
+                for violation in regression_report.violations
+            ],
+        },
     }
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary_path

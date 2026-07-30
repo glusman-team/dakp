@@ -4,12 +4,12 @@ Drives the REAL (non-mock) acquisition paths fully offline by monkeypatching the
 ``urllib.request.urlopen`` boundary (DailyMed) and the module download helpers (Drugs@FDA /
 FAERS), plus the small defensive branches the happy-path suite never reaches:
 
-* ``sources/__init__`` — ``require_mock`` non-mock raise; ``ingest_fixtures`` None-root raise.
+* ``sources/__init__`` — ``ingest_fixtures`` None-root raise.
 * ``sources/drugsfda`` — real fetch success + idempotent cache hit + URL override; the
   ``finally`` cleanup branch when the staged file is absent.
 * ``sources/faers`` — mock discovery skipping quarter-less fixtures, empty-fixture-dir
-  ``[]``, remote no-quarters ``[]``, ``iter_quarter_sources`` passthrough, real
-  ``download_quarter`` via a monkeypatched HTTP download.
+  ``[]``, remote no-quarters ``[]``, real ``download_quarter`` via a monkeypatched HTTP
+  download.
 * ``sources/dailymed`` — mock fixture-missing/None-root errors; the full real release
   pipeline (index fetch -> release ZIP -> per-member SPL ingest) with canned HTTP responses;
   release_limit; conditional-GET headers; HTTP 304 handling for both the index and a release
@@ -31,7 +31,7 @@ import pytest
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import TaskContext
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.sources import dailymed, drugsfda, faers, ingest_fixtures, require_mock
+from dakp_pipeline.sources import dailymed, drugsfda, faers, ingest_fixtures
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -42,16 +42,7 @@ def _ctx(tmp_path: Path, *, profile: str = "mock", fixture_root: Path | None = _
     return TaskContext(profile=profile, workdir=wd, fixture_root=fixture_root, threads=1, memory_budget_gb=1, params=params)
 
 
-# --- sources/__init__: require_mock + ingest_fixtures --------------------------
-
-
-def test_require_mock_raises_for_non_mock_profile(tmp_path: Path) -> None:
-    with pytest.raises(NotImplementedError, match="Milestone 2"):
-        require_mock(_ctx(tmp_path, profile="prod"), "faers")
-
-
-def test_require_mock_passes_for_mock_profile(tmp_path: Path) -> None:
-    require_mock(_ctx(tmp_path, profile="mock"), "faers")  # no raise
+# --- sources/__init__: ingest_fixtures ----------------------------------------
 
 
 def test_ingest_fixtures_requires_fixture_root(tmp_path: Path) -> None:
@@ -139,11 +130,6 @@ def test_faers_remote_no_quarters_returns_empty(tmp_path: Path, monkeypatch: pyt
     fetcher = faers.FAERSFetcher()
     monkeypatch.setattr(fetcher, "fetch_index", lambda ctx: "<html>nothing here</html>")
     assert fetcher.fetch(_ctx(tmp_path, profile="sample")) == []
-
-
-def test_faers_iter_quarter_sources_is_identity_passthrough() -> None:
-    quarters = [faers.QuarterSource("24Q3", "u1"), faers.QuarterSource("24Q1", "u2")]
-    assert list(faers.iter_quarter_sources(quarters)) == quarters
 
 
 def test_faers_download_quarter_ingests_via_monkeypatched_http(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

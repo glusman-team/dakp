@@ -1,4 +1,4 @@
-"""NER mention-extraction layer (PLAN.md Milestone 4) — ONE composite backend, mentions only.
+"""NER mention-extraction layer — ONE composite backend, mentions only.
 
 DAKP extracts disease/phenotype **mentions** (text spans + entity type). It never resolves
 terms to ontology CURIEs — ontology mapping is exclusively Tablassert's job (fullmap/BABEL at
@@ -9,21 +9,11 @@ is the single composite backend (gazetteer-first, GLiNER-augmented; see ``ner/BE
   (term -> type; no CURIE/name/category).
 * :mod:`~dakp_pipeline.ner.lexical` — deterministic lexical :class:`Mention` matcher.
 * :mod:`~dakp_pipeline.ner.ner` — the single :class:`DiseaseNER` backend + entry points.
-* :mod:`~dakp_pipeline.ner.candidates` — unique mention-string inventory emission.
 * :mod:`~dakp_pipeline.ner.model_cache` — idempotent model download/cache (production mode).
 """
 
 from __future__ import annotations
 
-from dakp_pipeline.ner.candidates import (
-    MENTION_CANDIDATES_COLUMNS,
-    MentionCandidateTransformer,
-    TextRecord,
-    resolve_mention_candidates,
-    text_records_from_dailymed_sections,
-    text_records_from_faers_cases,
-    write_mention_candidates,
-)
 from dakp_pipeline.ner.dictionary import (
     CONTRAINDICATION_DISEASE_TYPES,
     TYPE_DISEASE,
@@ -50,22 +40,15 @@ __all__ = [
     "DEFAULT_THRESHOLD",
     "EMBEDDED_GAZETTEER",
     "LEGACY_SYNONYMS",
-    "MENTION_CANDIDATES_COLUMNS",
     "TYPE_DISEASE",
     "TYPE_PHENOTYPE",
     "DiseaseNER",
     "Gazetteer",
     "LexicalMatcher",
     "Mention",
-    "MentionCandidateTransformer",
-    "TextRecord",
     "canonical_type",
     "extract_contraindication_diseases",
     "extract_disease_mentions",
     "normalize_text",
     "normalize_with_map",
-    "resolve_mention_candidates",
-    "text_records_from_dailymed_sections",
-    "text_records_from_faers_cases",
-    "write_mention_candidates",
 ]

@@ -1,4 +1,4 @@
-"""Generate Tablassert Graph + per-table config YAMLs (Milestone 7).
+"""Generate Tablassert Graph + per-table config YAMLs.
 
 DAKP does everything up to the shape Tablassert consumes, then emits ONE Graph config
 (``tables/graph.yaml``) plus one table config per assertion table. The configs match the

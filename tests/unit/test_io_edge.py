@@ -7,8 +7,7 @@ Targets the error/defensive branches the happy-path suite never reaches:
   miss, alias + ``.path`` pointer writes, tree-hash determinism + empty dir.
 * ``contracts`` — ``TaskContext.fixture`` with a ``None`` fixture_root (ValueError) and a
   missing fixture (FileNotFoundError); frozen-dataclass reprs/equality.
-* ``downloads`` — the Milestone-1 ``http_download`` stub (NotImplementedError) and
-  ``infer_media_type`` compound/unknown/uppercase suffixes.
+* ``downloads`` — ``infer_media_type`` compound/unknown/uppercase suffixes.
 * ``schemas`` — ``columns_for`` unknown-table KeyError + registry-copy isolation,
   ``read_table`` parquet-vs-TSV dispatch, fingerprint order-sensitivity.
 * ``content_hash`` / ``manifests`` — already 100%; adversarial robustness only
@@ -221,12 +220,7 @@ def test_protocol_classes_are_runtime_checkable() -> None:
     assert not isinstance(object(), contracts.Fetcher)
 
 
-# --- downloads: stub + media-type inference ------------------------------------
-
-
-def test_http_download_stub_raises(tmp_path: Path) -> None:
-    with pytest.raises(NotImplementedError, match="Milestone-1 stub"):
-        downloads.http_download("https://example.invalid/x.zip", tmp_path / "x.zip")
+# --- downloads: media-type inference -------------------------------------------
 
 
 @pytest.mark.parametrize(

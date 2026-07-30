@@ -20,13 +20,10 @@ from __future__ import annotations
 
 import logging
 import sys
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
-
-_CONFIGURED = False
 
 
 class InterceptHandler(logging.Handler):
@@ -87,8 +84,6 @@ def configure_logging(workdir: Path | None = None, level: str = "INFO", *, for_a
         for_airflow: When ``True``, also forward loguru records into the ``airflow.task``
             stdlib logger (Airflow must be importable). Tests never set this.
     """
-    global _CONFIGURED
-
     logger.remove()
 
     # Primary human-facing sink: structured stderr. Auto-colorize only on a real TTY
@@ -116,8 +111,6 @@ def configure_logging(workdir: Path | None = None, level: str = "INFO", *, for_a
         # Keep a reference so the sink is not GC'd; loguru already retains it.
         _AIRFLOW_SINKS.append(sink_id)
 
-    _CONFIGURED = True
-
 
 _AIRFLOW_SINKS: list[int] = []
 
@@ -132,8 +125,5 @@ def bind(**fields: Any) -> Any:
     """
     return logger.bind(**fields)
 
-
-# Re-export logger type for annotations that need it without importing loguru everywhere.
-LoggerLike = Callable[..., None]
 
 __all__ = ["InterceptHandler", "bind", "configure_logging", "logger"]

@@ -1,4 +1,4 @@
-"""Legacy-informed regression guardrails (Milestone 8).
+"""Legacy-informed regression guardrails.
 
 Asserts the produced assertion/edge set preserves the three DAKP edge families and their
 Translator provenance semantics — without requiring edge-for-edge equality with the legacy

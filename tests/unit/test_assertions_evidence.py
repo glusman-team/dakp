@@ -1,8 +1,8 @@
 """Unit tests for the shared assertion-evidence helpers (Milestone 5).
 
-Covers NDA join-key normalization, provenance column assembly (dedup/sort/pipe), column-alias
-resolution, DailyMed SPL-support indexing, and Drugs@FDA NDA→ingredient mapping — all against the
-real extractor outputs where a frame is needed.
+Covers NDA join-key normalization, provenance column assembly (dedup/sort/pipe), DailyMed
+SPL-support indexing, and Drugs@FDA NDA→ingredient mapping — all against the real extractor
+outputs where a frame is needed.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from dakp_pipeline.assertions.evidence import (
     find_faers_cases,
     merge_unique,
     normalize_nda,
-    pick,
     sorted_pipe,
 )
 from dakp_pipeline.io.contracts import ArtifactRef
@@ -58,14 +57,6 @@ def test_sorted_pipe_is_deterministic_list_encoding() -> None:
     # Order-independent => deterministic regardless of insertion order.
     assert sorted_pipe(["SET-A", "SET-B"]) == sorted_pipe(["SET-B", "SET-A"])
     assert sorted_pipe([]) == ""
-
-
-def test_pick_resolves_first_nonempty_alias() -> None:
-    rec = {"a": "", "b": None, "c": "  value  ", "d": "other"}
-    assert pick(rec, "a", "b", "c", "d") == "value"
-    assert pick(rec, "missing", "d") == "other"
-    assert pick(rec, "missing", "also_missing") == ""
-    assert pick({}, "a") == ""
 
 
 # --- DailyMed SPL-support index -------------------------------------------------

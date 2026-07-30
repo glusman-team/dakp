@@ -1,4 +1,4 @@
-"""FAERS observed-use (applied_to_treat) assertion aggregation (Milestone 5).
+"""FAERS observed-use (applied_to_treat) assertion aggregation.
 
 Builds ``faers_applied_to_treat_assertions.tsv``: real-world drug→condition uses observed in
 FAERS adverse-event reports, without any approval claim.

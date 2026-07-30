@@ -128,10 +128,6 @@ Columns: `appl_no`, `appl_type`, `product_no`, `drug_name`, `active_ingredient`,
 
 ## Other contracts
 
-- `data/tabular/mention_candidates.tsv` — the unique mention-string inventory, emitted by the
-  NER candidate stage ([`ner/candidates.py`](../src/dakp_pipeline/ner/candidates.py),
-  `MentionCandidateTransformer`). Mentions carry text + type only (no CURIE); ontology resolution
-  is Tablassert's job.
 - PLAN.md Phase 3 sketches a `data/tabular/faers_drug_indication_counts.tsv`; today the FAERS
   shaper folds those counts directly into `faers_applied_to_treat_assertions` via `case_count`, so
   no separate table is emitted.

@@ -1,8 +1,8 @@
 """DAKP pipeline: reproducible, content-addressed build of treatment and contraindication assertion tables.
 
-See ``PLAN.md`` for the full approved specification. Milestone 1 ships the project
-scaffold, BLAKE3 content-addressed store, and a fully mocked end-to-end pipeline that
-runs with no network and no real Tablassert/Airflow installed.
+See ``PLAN.md`` for the approved specification. The package ships a BLAKE3
+content-addressed store, real source acquisition/extraction, assertion shaping, optional
+Airflow orchestration, and a mock end-to-end profile that runs without network access.
 """
 
 from __future__ import annotations

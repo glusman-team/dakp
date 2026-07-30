@@ -1,9 +1,9 @@
-"""Source fetchers (stubs). Real network acquisition lands in **Milestone 2**.
+"""Source fetchers for DailyMed, FAERS, and Drugs@FDA.
 
-Each module exposes a module-level :func:`fetch` (the default instance method) so tests
+Each source module exposes a module-level :func:`fetch` (the default instance method) so tests
 can ``monkeypatch.setattr(dailymed, "fetch", ...)`` and the pure-Python runner can call
-``dailymed.fetch(ctx)``. In the ``mock`` profile, fetchers ingest tiny fixtures into the
-content-addressed store; any other profile fails loudly (no silent network fallback).
+``dailymed.fetch(ctx)``. Mock profiles ingest tiny fixtures into the content-addressed store;
+real profiles use source-specific stdlib downloaders.
 """
 
 from __future__ import annotations
@@ -11,17 +11,6 @@ from __future__ import annotations
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
-
-
-def require_mock(ctx: TaskContext, source_name: str) -> None:
-    """Raise ``NotImplementedError`` unless the profile is mock.
-
-    The mock profile loads fixtures; real DailyMed/FAERS/Drugs@FDA acquisition is
-    implemented in Milestone 2.
-    """
-    if ctx.profile != "mock":
-        msg = f"real acquisition for {source_name!r} lands in Milestone 2; only the mock profile is implemented (got profile={ctx.profile!r})"
-        raise NotImplementedError(msg)
 
 
 def ingest_fixtures(ctx: TaskContext, names: tuple[str, ...], *, namespace: str) -> list[ArtifactRef]:
@@ -38,4 +27,4 @@ def ingest_fixtures(ctx: TaskContext, names: tuple[str, ...], *, namespace: str)
     return refs
 
 
-__all__ = ["ingest_fixtures", "require_mock"]
+__all__ = ["ingest_fixtures"]

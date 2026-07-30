@@ -129,8 +129,9 @@ class SPLXMLExtractor:
     def extract(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
         if go_runner.should_use_go(ctx):
             return self._extract_via_go(inputs, ctx)
-        store = ArtifactStore(Workdir(ctx.workdir))
-        interim_dir = Workdir(ctx.workdir).interim / "dailymed"
+        wd = Workdir(ctx.workdir)
+        store = ArtifactStore(wd)
+        interim_dir = wd.interim / "dailymed"
         interim_dir.mkdir(parents=True, exist_ok=True)
         log = bind(task_id="extract_dailymed_spl")
 
@@ -206,14 +207,7 @@ class SPLXMLExtractor:
         # Uncompressed TSV of the section table for Tablassert handoff.
         refs.append(
             _write_tsv(
-                section_rows,
-                SPL_SECTIONS_COLUMNS,
-                Workdir(ctx.workdir).tabular / "dailymed_spl_sections.tsv",
-                store,
-                operation,
-                sections_fp,
-                total_warnings,
-                input_ids,
+                section_rows, SPL_SECTIONS_COLUMNS, wd.tabular / "dailymed_spl_sections.tsv", store, operation, sections_fp, total_warnings, input_ids
             )
         )
 

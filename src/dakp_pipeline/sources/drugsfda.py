@@ -1,4 +1,4 @@
-"""Drugs@FDA data-files fetcher (Milestone 2).
+"""Drugs@FDA data-files fetcher.
 
 Acquires the FDA "Drugs@FDA Data Files" ZIP — the same artifact the legacy
 ``ref/legacy/DrugsFDA/bin/download.pl`` fetched from ``https://www.fda.gov/media/89850/download`` —

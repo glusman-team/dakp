@@ -9,6 +9,7 @@ the CLI acceptance command.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from dakp_pipeline.io.artifact_store import ArtifactStore
@@ -46,6 +47,9 @@ def test_full_pipeline_uses_mocked_sources(monkeypatch, tmp_path: Path) -> None:
     assert result.table("contraindication_assertions").rows > 0
     assert result.build_summary is not None
     assert result.build_summary.exists()
+    summary = json.loads(result.build_summary.read_text(encoding="utf-8"))
+    assert summary["translator_regression"]["ok"] is True
+    assert set(summary["translator_regression"]["families_seen"]) == {"biolink:treats", "biolink:applied_to_treat", "biolink:contraindicated_in"}
 
     # The fake Tablassert wrote its placeholder KGX marker.
     assert (tmp_path / "work" / "data" / "kgx" / "fake_nodes.jsonl").exists()
@@ -66,3 +70,6 @@ def test_default_mock_path_matches_cli_acceptance(tmp_path: Path) -> None:
     assert (tmp_path / "work" / "data" / "reports" / "tablassert_handoff.json").exists()
     assert result.build_summary is not None
     assert result.build_summary.exists()
+    summary = json.loads(result.build_summary.read_text(encoding="utf-8"))
+    assert summary["translator_regression"]["ok"] is True
+    assert summary["translator_regression"]["violations"] == []

@@ -146,10 +146,10 @@ uv run pytest tests/integration/test_semantic_equivalence.py -q   # semantic-pre
 uv run pytest -q                                                  # full suite (incl. regression guardrail)
 ```
 
-The live DINGO cross-check (`test_generated_rig_matches_live_dingo_file_when_available`) parses
-`../DINGO/.../dakp_rig.yaml` and asserts the DAKP-generated RIG's `edge_type_info` /
-`node_type_info` match it; it skips (not fails) when the sibling repo or a YAML parser is absent,
-so CI stays green without them.
+The DINGO contract checks keep local constants mirrored from `../DINGO/.../dakp_rig.yaml` and
+assert the DAKP `contract.py` category tuples, predicates, and upstream infores chains match the
+reference ingest. DAKP no longer ships its own RIG generator; RIG compilation stays on the
+Tablassert side of the delegation boundary.
 
 ## Related
 
