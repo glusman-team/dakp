@@ -1086,3 +1086,16 @@ Approach:
 4. Fan out as 2–3 parallel workers by module area (disjoint test files) to avoid collisions; integrate + run the full coverage gate.
 
 Acceptance: `uv run pytest --cov` reports the target coverage with no missing branches (or only explicitly-pragma'd unreachable lines); full gate (ruff/format/pyright + Go) stays green.
+
+## Developer DX: Makefile
+
+A root `Makefile` (mirroring Tablassert's) provides routine command shortcuts so developers don't have to remember the exact `uv`/`go` invocations:
+
+- **Install:** `make setup` (base+dev), `make install-ner` (heavy GLiNER + SciSpacy/spacy NER backends), `make install-airflow`, `make install-all`.
+- **Python gate:** `make test`, `make cov`/`make coverage` (branch coverage, fail_under=100), `make lint`, `make lint-fix`, `make fmt`, `make fmt-check`, `make typecheck`, `make check` (full Python gate), `make pre-commit`.
+- **Go gate:** `make build-go`, `make test-go`, `make vet-go`, `make fmt-go-check`, `make check-go` (full Go gate).
+- **Combined:** `make check-all` (Python + Go).
+- **Run:** `make run-mock` (mocked end-to-end pipeline).
+- **Hygiene:** `make clean`.
+
+`make help` lists all targets. The `install-ner` target installs the optional `[ner]` extra (gliner/scispacy/spacy/huggingface_hub) needed for the real SOTA contraindication NER backends; the base install and full test suite run without it.
