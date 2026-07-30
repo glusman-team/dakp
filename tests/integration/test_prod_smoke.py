@@ -150,6 +150,10 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
     requested: list[str] = []
     _install_fake_http(monkeypatch, requested)
     run_module = importlib.import_module("dakp_pipeline.tablassert.run")
+    # The real runner guards on tablassert being installed (the optional [kg] extra); fake the
+    # availability probe too so this smoke run stays offline and tablassert-independent, exactly
+    # like the faked subprocess below (Tablassert is not a base dependency).
+    monkeypatch.setattr(run_module, "tablassert_available", lambda: True)
     monkeypatch.setattr(run_module, "run_subprocess", _fake_tablassert_subprocess)
 
     workdir = tmp_path / "work"

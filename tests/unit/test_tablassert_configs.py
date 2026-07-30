@@ -13,7 +13,9 @@ These tests never import or require ``../Tablassert`` to be installed.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -25,7 +27,14 @@ from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.tablassert import configs as tablassert_configs
-from dakp_pipeline.tablassert.run import MockTablassertRunner, TablassertRunner
+from dakp_pipeline.tablassert.run import (
+    TABLASERT_DIR_ENV,
+    MockTablassertRunner,
+    TablassertRunner,
+    _resolve_tablassert_dir,
+    qc_runtime_available,
+    tablassert_available,
+)
 from dakp_pipeline.tablassert.run import run as run_tablassert
 
 # The package ``__init__`` re-exports the ``run`` *function*, shadowing the ``run`` submodule
@@ -274,12 +283,80 @@ def test_mock_runner_writes_deferred_handoff_report(tmp_path: Path) -> None:
     assert len(report["config_inputs"]) == 4  # graph + 3 tables
 
 
+# --- runner: availability probes (importlib.util.find_spec seams) -----------------
+
+
+def _fake_find_spec(present: frozenset[str]):
+    """An ``importlib.util.find_spec`` stand-in: a name is importable iff it is in ``present``."""
+
+    def find_spec(name: str, *args: object, **kwargs: object) -> object:
+        return object() if name in present else None
+
+    return find_spec
+
+
+def test_tablassert_available_reflects_importability(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec(frozenset({"tablassert"})))
+    assert tablassert_available() is True
+    monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec(frozenset()))
+    assert tablassert_available() is False
+
+
+def test_qc_runtime_available_reflects_importability(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec(frozenset({"sentence_transformers"})))
+    assert qc_runtime_available() is True
+    monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec(frozenset()))
+    assert qc_runtime_available() is False
+
+
+# --- runner: command construction (pure; no process spawned) ----------------------
+
+
+def test_build_command_editable_override_prefix() -> None:
+    command = TablassertRunner().build_command(Path("tables/graph.yaml"), ".fullmap", tablassert_dir="../Tablassert")
+    assert command == ["uv", "run", "--with-editable", "../Tablassert", "tablassert", "build-kg", "tables/graph.yaml", "--fullmap", ".fullmap"]
+
+
+def test_build_command_prefers_installed_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: "/venv/bin/tablassert")
+    command = TablassertRunner().build_command(Path("tables/graph.yaml"), ".fullmap")
+    assert command == ["/venv/bin/tablassert", "build-kg", "tables/graph.yaml", "--fullmap", ".fullmap"]
+
+
+def test_build_command_falls_back_to_uv_extra_kg(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    command = TablassertRunner().build_command(Path("tables/graph.yaml"), ".fullmap")
+    assert command == ["uv", "run", "--extra", "kg", "tablassert", "build-kg", "tables/graph.yaml", "--fullmap", ".fullmap"]
+
+
+def test_build_command_appends_qc_and_release_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    command = TablassertRunner().build_command(Path("graph.yaml"), ".fullmap", qc=True, release=True)
+    assert command == ["uv", "run", "--extra", "kg", "tablassert", "build-kg", "graph.yaml", "--fullmap", ".fullmap", "--qc", "--release"]
+
+
+def test_resolve_tablassert_dir_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(TABLASERT_DIR_ENV, raising=False)
+    # ctx param wins over env and runner default.
+    assert _resolve_tablassert_dir("/runner", "/param") == "/param"
+    # env wins over the runner default when no param is given.
+    monkeypatch.setenv(TABLASERT_DIR_ENV, "/env")
+    assert _resolve_tablassert_dir("/runner", None) == "/env"
+    # runner default is used when neither param nor env is set.
+    monkeypatch.delenv(TABLASERT_DIR_ENV, raising=False)
+    assert _resolve_tablassert_dir("/runner", None) == "/runner"
+    # None everywhere -> the installed PyPI package.
+    assert _resolve_tablassert_dir(None, None) is None
+
+
 # --- runner: real subprocess boundary (monkeypatched; no real Tablassert) ---------
 
 
-def test_real_runner_builds_exact_command(tmp_path: Path) -> None:
-    command = TablassertRunner().build_command(Path("tables/graph.yaml"), ".fullmap", "../Tablassert")
-    assert command == ["uv", "run", "--with-editable", "../Tablassert", "tablassert", "build-kg", "tables/graph.yaml", "--fullmap", ".fullmap"]
+def _patch_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the runner's DEFAULT installed-package path deterministically (no editable dir)."""
+    monkeypatch.delenv(TABLASERT_DIR_ENV, raising=False)  # ignore any real dev override in the env
+    monkeypatch.setattr(_RUN_MODULE, "tablassert_available", lambda: True)
+    monkeypatch.setattr(shutil, "which", lambda name: None)  # -> the `uv run --extra kg` prefix
 
 
 def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -294,6 +371,7 @@ def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
         calls.append((command, cwd))
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="built kg\n", stderr="")
 
+    _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
 
     refs = TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir))
@@ -303,7 +381,7 @@ def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert len(calls) == 1
     command, cwd = calls[0]
     assert cwd == workdir.root
-    assert command[:6] == ["uv", "run", "--with-editable", "../Tablassert", "tablassert", "build-kg"]
+    assert command[:6] == ["uv", "run", "--extra", "kg", "tablassert", "build-kg"]
     assert command[-2:] == ["--fullmap", ".fullmap"]
     assert command[6] == str(workdir.root / "tables" / "graph.yaml")
 
@@ -313,6 +391,9 @@ def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert report["exit_code"] == 0
     assert report["stdout"] == "built kg\n"
     assert report["command"] == command
+    assert report["tablassert_dir"] is None
+    assert report["qc"] is False
+    assert report["release"] is False
 
 
 def test_real_runner_records_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -324,6 +405,7 @@ def test_real_runner_records_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=command, returncode=2, stdout="", stderr="boom")
 
+    _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
     TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir))
 
@@ -346,11 +428,89 @@ def test_real_runner_honors_ctx_overrides(monkeypatch: pytest.MonkeyPatch, tmp_p
         seen.append(command)
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
+    # A tablassert_dir override selects the editable-checkout prefix AND bypasses the availability
+    # check (uv resolves the local checkout transiently), so it runs even when tablassert is absent.
+    monkeypatch.setattr(_RUN_MODULE, "tablassert_available", lambda: False)
     monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
     TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, tablassert_dir="/opt/tablassert", fullmap="data/fullmap"))
 
-    assert seen[0][3] == "/opt/tablassert"  # --with-editable <dir>
+    assert seen[0][:5] == ["uv", "run", "--with-editable", "/opt/tablassert", "tablassert"]
     assert seen[0][-1] == "data/fullmap"  # --fullmap <path>
+
+
+def test_real_runner_raises_when_tablassert_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    workdir = Workdir(tmp_path / "work")
+    workdir.create()
+    assertion_refs = _assertion_refs(workdir)
+    config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
+
+    monkeypatch.delenv(TABLASERT_DIR_ENV, raising=False)
+    monkeypatch.setattr(_RUN_MODULE, "tablassert_available", lambda: False)
+
+    with pytest.raises(RuntimeError, match="uv sync --extra kg"):
+        TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir))
+
+
+def test_real_runner_appends_qc_when_runtime_available(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    workdir = Workdir(tmp_path / "work")
+    workdir.create()
+    assertion_refs = _assertion_refs(workdir)
+    config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
+
+    seen: list[list[str]] = []
+
+    def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        seen.append(command)
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    _patch_installed(monkeypatch)
+    monkeypatch.setattr(_RUN_MODULE, "qc_runtime_available", lambda: True)
+    monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, qc=True))
+
+    assert "--qc" in seen[0]
+    assert _read_report(workdir)["qc"] is True
+
+
+def test_real_runner_skips_qc_when_runtime_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    workdir = Workdir(tmp_path / "work")
+    workdir.create()
+    assertion_refs = _assertion_refs(workdir)
+    config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
+
+    seen: list[list[str]] = []
+
+    def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        seen.append(command)
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    _patch_installed(monkeypatch)
+    monkeypatch.setattr(_RUN_MODULE, "qc_runtime_available", lambda: False)
+    monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, qc=True))
+
+    assert "--qc" not in seen[0]
+    assert _read_report(workdir)["qc"] is False
+
+
+def test_real_runner_appends_release_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    workdir = Workdir(tmp_path / "work")
+    workdir.create()
+    assertion_refs = _assertion_refs(workdir)
+    config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
+
+    seen: list[list[str]] = []
+
+    def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        seen.append(command)
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    _patch_installed(monkeypatch)
+    monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, release=True))
+
+    assert "--release" in seen[0]
+    assert _read_report(workdir)["release"] is True
 
 
 # --- module-level dispatch --------------------------------------------------------
@@ -382,6 +542,7 @@ def test_run_dispatches_to_real_outside_mock_profile(monkeypatch: pytest.MonkeyP
     def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok", stderr="")
 
+    _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
 
     run_tablassert(assertion_refs, config_refs, _ctx(workdir, profile="prod", run_tablassert=True))
