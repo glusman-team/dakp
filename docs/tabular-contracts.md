@@ -29,15 +29,15 @@ FDA-approved treatment assertions from DailyMed indications joined to Drugs@FDA 
 | Column | Example |
 | --- | --- |
 | `subject_text` | `Examplestatin` |
-| `subject_curie` | `""` *(empty until fullmap resolution)* |
-| `subject_name` | `""` *(empty until fullmap resolution)* |
+| `subject_curie` | `UNII:QFX8B1R4QF` *(DailyMed-provided UNII; fullmap refines the chemical category)* |
+| `subject_name` | `Examplestatin` |
 | `subject_category` | `ChemicalEntity` |
 | `predicate` | `biolink:treats` |
 | `object_text` | `hypercholesterolemia` |
 | `object_curie` | `MONDO:0005154` |
 | `object_name` | `hypercholesterolemia` |
 | `object_category` | `Disease` |
-| `approval_ids` | `012345` *(DailyMed approval code + `NDA:<n>` from Drugs@FDA, `\|`-joined)* |
+| `approval_ids` | `012345` *(DailyMed approval display code, `\|`-joined; digit-normalized for the Drugs@FDA join)* |
 | `supporting_spl_sets` | `SETID-EXAMPLESTATIN-001` |
 | `supporting_spl_documents` | `SETID-EXAMPLESTATIN-001#34067-9` |
 | `clinical_approval_status` | `approved_for_condition` |
@@ -46,14 +46,19 @@ FDA-approved treatment assertions from DailyMed indications joined to Drugs@FDA 
 | `primary_knowledge_source` | `infores:multiomics-drugapprovals` |
 | `upstream_resource_ids` | `infores:dailymed\|infores:faers` |
 
-> `subject_curie` / `subject_name` are empty in the scaffold: the lexical baseline maps
-> only disease **objects**. Subject resolution is delegated to fullmap (Milestone 4+).
+> `treats` subjects carry the DailyMed-provided UNII straight from the SPL source
+> (source-provided, not DAKP-mapped); the lexical baseline populates disease **object** CURIEs.
+> Canonical category refinement (e.g. SmallMolecule vs ChemicalEntity) is delegated to
+> Tablassert/fullmap at `build-kg`.
 
 ### `data/tabular/faers_applied_to_treat_assertions.tsv`
 
-FAERS-observed drug/indication use, aggregated to case counts. `predicate =
-biolink:applied_to_treat`, `knowledge_level = observation` (scaffold value
-`statistical_association` pending the Milestone-5 label audit).
+FAERS-observed drug/indication use, aggregated to distinct-case counts. `predicate =
+biolink:applied_to_treat`, `knowledge_level = statistical_association`,
+`clinical_approval_status = observed_use` (the preserved FAERS label/status — see
+[`semantic-equivalence.md`](./semantic-equivalence.md#deliberate-refinements). The Tablassert
+config's family-level `provenance.override` stamps `knowledge_level: observation`, the DINGO
+ingest value). FAERS subjects carry no source drug id, so `subject_curie` is empty for fullmap.
 
 | Column | Example |
 | --- | --- |
@@ -76,7 +81,7 @@ biolink:applied_to_treat`, `knowledge_level = observation` (scaffold value
 ### `data/tabular/contraindication_assertions.tsv`
 
 Contraindication assertions text-mined from DailyMed SPL contraindication sections (LOINC
-`34070-3`) via a configurable NER backend. `predicate = biolink:contraindicated_in`,
+`34070-3`) via the single composite NER backend. `predicate = biolink:contraindicated_in`,
 `knowledge_level = knowledge_assertion`, `agent_type = text_mining_agent`.
 
 | Column | Example |
@@ -86,10 +91,10 @@ Contraindication assertions text-mined from DailyMed SPL contraindication sectio
 | `subject_name` | `Ibuprofen` |
 | `subject_category` | `ChemicalEntity` |
 | `predicate` | `biolink:contraindicated_in` |
-| `object_text` | `asthma` |
-| `object_curie` | `MONDO:0004979` |
-| `object_name` | `asthma` |
-| `object_category` | `Disease` |
+| `object_text` | `asthma` *(the mined mention text)* |
+| `object_curie` | `""` *(empty by design — fullmap resolves the mention)* |
+| `object_name` | `""` *(empty by design)* |
+| `object_category` | `""` *(empty by design)* |
 | `supporting_spl_sets` | `SETID-IBUPROFEN-002` |
 | `supporting_spl_documents` | `SETID-IBUPROFEN-002#34070-3` |
 | `source_score` | `1` *(max NER span score)* |
@@ -121,25 +126,27 @@ Columns: `appl_no`, `appl_type`, `product_no`, `drug_name`, `active_ingredient`,
 `marketing_status_name`. `appl_no` digit-normalized for FAERS joins. See
 [`sources.md`](./sources.md#drugsfda).
 
-## Planned contracts (not yet emitted)
+## Other contracts
 
-PLAN.md Phase 3 proposes additional public TSVs for the full build. They are **not**
-emitted by the scaffold and have no committed column order yet:
-
-- `data/tabular/faers_drug_indication_counts.tsv` — `case_count`, `nda`, `drug_name`,
-  `ingredient_name`, `indication_text`, `source_quarters`. (Today the FAERS shaper folds
-  counts directly into `faers_applied_to_treat_assertions` via `case_count`.)
-- `data/tabular/mention_candidates.tsv` — source-aware mention spans with candidate CURIEs,
-  ranks, and normalization notes. Lands with the NER/candidate pipeline (Milestone 4).
+- `data/tabular/mention_candidates.tsv` — the unique mention-string inventory, emitted by the
+  NER candidate stage ([`ner/candidates.py`](../src/dakp_pipeline/ner/candidates.py),
+  `MentionCandidateTransformer`). Mentions carry text + type only (no CURIE); ontology resolution
+  is Tablassert's job.
+- PLAN.md Phase 3 sketches a `data/tabular/faers_drug_indication_counts.tsv`; today the FAERS
+  shaper folds those counts directly into `faers_applied_to_treat_assertions` via `case_count`, so
+  no separate table is emitted.
 
 ## Validation
 
-The [`translator/contract.validate`](../src/dakp_pipeline/translator/contract.py)
-readiness gate checks every table in `ASSERTION_TABLES` is present and readable, and that
-no declared column is missing. Results are written into `build_summary.json`
-(`translator_contract.ok`, per-table `missing_columns`). Full Biolink/Translator validation
-(predicate/category compatibility, dangling-node detection) is largely delegated to
-Tablassert's QC in Milestone 6+.
+The [`translator/contract.py`](../src/dakp_pipeline/translator/contract.py) readiness gate has two
+layers: `validate` checks every table in `ASSERTION_TABLES` is present and readable with no missing
+declared column (results land in `build_summary.json`: `translator_contract.ok`, per-table
+`missing_columns`); `validate_kgx` validates KGX node/edge records against the DAKP Translator
+contract (node coverage, biolink-prefixed categories, the three edge families with chemical/drug
+subjects + disease/phenotype objects, and the per-family infores provenance chain). The legacy
+provenance/label invariants are re-checked on every build by
+[`translator/regression.py`](../src/dakp_pipeline/translator/regression.py); Tablassert owns the
+final full-graph QC.
 
 ## Related
 

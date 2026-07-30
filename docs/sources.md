@@ -1,167 +1,113 @@
 # Sources
 
-Per-source notes for the three first-scope sources (DailyMed, Drugs@FDA, FAERS) plus
-the ontology dictionary baseline. For each: where the fixture lives, what the fetcher and
-extractor do today, the schema, and the real-acquisition target. Fetchers live in
-[`sources/`](../src/dakp_pipeline/sources/), extractors in [`extract/`](../src/dakp_pipeline/extract/).
+Per-source notes for the three sources (DailyMed, Drugs@FDA, FAERS) plus the lexical disease
+baseline. For each: where the fixture lives, what the fetcher and extractor do, the schema, and
+the real-acquisition endpoint. Fetchers live in [`sources/`](../src/dakp_pipeline/sources/),
+extractors in [`extract/`](../src/dakp_pipeline/extract/).
 
-> **Milestone-1 status.** Only the `mock` profile is implemented. Each fetcher calls
-> `require_mock(ctx, ...)` and raises `NotImplementedError` for any other profile; real
-> network acquisition is Milestone 2. Fixtures are tiny and deterministic so the whole
-> pipeline runs with no network.
+Real acquisition uses **stdlib HTTP** (no `requests`), is content-addressed and idempotent, and is
+exercised offline in CI by [`tests/integration/test_prod_smoke.py`](../tests/integration/test_prod_smoke.py)
+(HTTP layer mocked). The `mock` profile ingests fixtures instead of hitting the network.
 
 ## DailyMed (SPL)
 
-Structured Product Labeling — FDA drug labels, the source of approved indications and
-contraindication text.
+Structured Product Labeling — FDA drug labels, the source of approved indications **and** the
+contraindication text DAKP NER-mines.
 
 | | |
 | --- | --- |
 | Fixture | [`tests/fixtures/pipeline/dailymed/dailymed_spl.xml.gz`](../tests/fixtures/pipeline/dailymed/dailymed_spl.xml.gz) |
-| Fetcher | [`sources/dailymed.py`](../src/dakp_pipeline/sources/dailymed.py) `DailyMedFetcher` — ingests `dailymed/dailymed_spl.xml.gz`, namespace `dailymed` |
-| Extractor | [`extract/spl_xml.py`](../src/dakp_pipeline/extract/spl_xml.py) `SPLXMLExtractor` |
+| Fetcher | [`sources/dailymed.py`](../src/dakp_pipeline/sources/dailymed.py) `DailyMedFetcher` — full-release ZIPs (mock: `dailymed/dailymed_spl.xml.gz`) |
+| Extractor | [`extract/spl_xml.py`](../src/dakp_pipeline/extract/spl_xml.py) `SPLXMLExtractor` (Go parity: [`go/internal/dailymed`](../go/internal/dailymed)) |
 
-**Fixture shape.** A simplified, namespace-free analog of HL7 v3 SPL — a gzipped
-`<splBatch>` of `<document>` elements, carrying exactly the fields DAKP needs:
+**Extraction.** `SPLXMLExtractor.extract` streams the gzip (`gzip` + `xml.etree`, constant memory
+per document), auto-detects HL7 v3 vs the namespace-free mock shape, and emits five normalized
+tables: `spl_documents`, `spl_sets`, `spl_approvals`, `spl_ingredients`, `spl_sections`.
+Recognized LOINC section codes ([`SECTION_CODE_NAMES`](../src/dakp_pipeline/extract/spl_xml.py)):
 
-```xml
-<splBatch>
-  <document>
-    <setId>SETID-EXAMPLESTATIN-001</setId>
-    <activeIngredient name="Examplestatin" unii="QFX8B1R4QF"/>
-    <approval code="012345" type="NDA"/>
-    <section loinc="34067-9" name="INDICATIONS AND USAGE">
-      Examplestatin is indicated for the treatment of hypercholesterolemia ...
-    </section>
-  </document>
-  ...
-</splBatch>
-```
+| LOINC | Name | Used for |
+| --- | --- | --- |
+| `34067-9` | indications_and_usage | `treats` SPL support |
+| `34070-3` | contraindications | `contraindicated_in` NER mining |
+| `34066-1` | boxed_warning | (extracted, not first-scope) |
+| `42229-5` | warnings_and_precautions | (extracted, not first-scope) |
 
-**Extraction.** `SPLXMLExtractor.extract` streams the gzip (`gzip` + `xml.etree`), emits
-one row **per section** into `data/interim/dailymed/spl_documents.parquet`, and registers
-it with the store. `spl_document_id` is `<setId>#<loinc>` when a LOINC is present.
-Whitespace in section text is collapsed. Recognized LOINC section codes
-([`SECTION_CODE_NAMES`](../src/dakp_pipeline/extract/spl_xml.py)):
-
-| LOINC | Name |
-| --- | --- |
-| `34067-9` | indications_and_usage |
-| `34070-3` | contraindications |
-| `34066-1` | boxed_warning |
-| `42229-5` | warnings_and_precautions |
-
-**Output schema** — `DAILYMED_SPL_DOCUMENTS_COLUMNS` (see
-[`tabular-contracts.md`](./tabular-contracts.md)): `spl_document_id`, `spl_set_id`,
-`xml_path`, `release_file`, `approval_code`, `approval_type`, `loinc_code`,
-`section_name`, `section_text`, `active_ingredient_name`, `active_ingredient_unii`.
-
-**Target real acquisition (Milestone 2–3).** DailyMed full-release ZIPs (legacy
-`ref/legacy/DailyMed/bin/getFullRelease.pl`), idempotent download with manifest/checksums and no
-destructive stashing. Sharded by release ZIP → inner ZIP/XML bin. Streaming extraction into
-document/set/approval/ingredient/section/LOINC/evidence tables, partitioned by release/bin,
-retaining XML provenance and parse warnings. Source: <https://dailymed.nlm.nih.gov/dailymed/>.
+**Real acquisition.** DailyMed full-release ZIPs, idempotent download with manifest/checksums,
+sharded by release ZIP → inner ZIP/XML bin, `release_limit` bounds scope. Source:
+<https://dailymed.nlm.nih.gov/dailymed/>.
 
 ## FAERS
 
 FDA Adverse Event Reporting System quarterly ASCII extracts — the source of observed
-(applied-to-treat) drug/indication use counts.
+(applied-to-treat) drug/indication use counts and the NDA-bearing drug-indication pairs that seed
+`treats`.
 
 | | |
 | --- | --- |
-| Fixtures | [`tests/fixtures/pipeline/faers/`](../tests/fixtures/pipeline/faers/) — `DEMO24Q3.txt`, `DRUG24Q3.txt`, `INDI24Q3.txt` |
-| Fetcher | [`sources/faers.py`](../src/dakp_pipeline/sources/faers.py) `FAERSFetcher` — ingests the three files, namespace `faers` |
-| Extractor | [`extract/faers_ascii.py`](../src/dakp_pipeline/extract/faers_ascii.py) `FAERSASCIIExtractor` |
+| Fixtures | [`tests/fixtures/pipeline/faers/`](../tests/fixtures/pipeline/faers/) — `DEMO24Q3.txt`, `DRUG24Q3.txt`, `INDI24Q3.txt`, `REAC24Q3.txt` |
+| Fetcher | [`sources/faers.py`](../src/dakp_pipeline/sources/faers.py) `FAERSFetcher` — quarterly ASCII ZIPs |
+| Extractor | [`extract/faers_ascii.py`](../src/dakp_pipeline/extract/faers_ascii.py) `FAERSASCIIExtractor` (Go parity: [`go/internal/faers`](../go/internal/faers)) |
 
-**Fixture shape.** Modern FAERS ASCII is `$`-delimited; the fixtures mirror that for one
-quarter (`24Q3`):
+**Extraction.** Partitions inputs by family (`DEMO`/`DRUG`/`INDI`/`REAC`/`RPSR`/`DELETE`), parses
+the `$`-delimited rows, joins **within the quarter** on `primaryid` (INDI×DRUG, left-joining DEMO
+metadata + REAC reactions), honors DELETEd primaryids, then reduces across quarters with caseid
+dedup (most-recent-wins). NDA numbers are digit-normalized so they join consistently with Drugs@FDA
+`ApplNo`. Output: `data/interim/faers/cases.parquet`, schema `FAERS_CASES_COLUMNS` (`quarter`,
+`primaryid`, `caseid`, `source`, `occp_cod`, `reporter_country`, `drugname`, `ingredient`, `nda`,
+`indication`, `effects`).
 
-```text
-# DEMO24Q3.txt
-primaryid$caseid$occp_cod$reporter_country
-1001$5001$MD$US
-# DRUG24Q3.txt
-primaryid$drug_seq$drugname$role_cod$nda$ingredient
-1001$1$Examplestatin$PS$012345$Examplestatin
-# INDI24Q3.txt
-primaryid$indi_drug_seq$indi_pt
-1001$1$hypercholesterolemia
-```
-
-**Extraction.** `FAERSASCIIExtractor.extract` partitions inputs by family
-(`DEMO`/`DRUG`/`INDI`/`REAC`/`RPSR`/`DELETE`), parses the `$`-delimited rows, and joins
-**within the quarter** on `primaryid` (indications are indexed by `primaryid`; each drug
-row pulls in its case demographics + `"; "`-joined indication text). NDA numbers are
-digit-normalized so they join consistently with Drugs@FDA `ApplNo`. Output:
-`data/interim/faers/cases.parquet`, schema `FAERS_CASES_COLUMNS`
-(`quarter`, `primaryid`, `caseid`, `source`, `occp_cod`, `reporter_country`, `drugname`,
-`ingredient`, `nda`, `indication`, `effects`).
-
-**Target real acquisition (Milestone 2–3).** Quarterly FAERS ASCII ZIPs (legacy
-`ref/legacy/FAERS/bin/getLatest.pl`), quarter discovery with a `quarter_limit` dev mode. Per-quarter
-`DEMO`/`DRUG`/`INDI`/`REAC`/`RPSR`/`DELETE` parquet tables plus case-level joins and
-dedup/delete audit tables; aggregate across quarters only after per-quarter artifacts are
-complete. Source: <https://fis.fda.gov/content/Exports/> (FAERS quarterly data files).
+**Real acquisition.** Quarterly FAERS ASCII ZIPs, quarter discovery with a `quarter_limit` bound;
+per-quarter artifacts complete before cross-quarter aggregation. Source:
+<https://fis.fda.gov/content/Exports/> (FAERS quarterly data files).
 
 ## Drugs@FDA
 
-FDA application/product/action data — the source of NDA/BLA/ANDA approval identifiers and
-marketing status.
+FDA application/product/action data — the source of NDA/BLA/ANDA approval identifiers and marketing
+status; confirms an NDA is a real FDA application and yields the approved ingredient(s).
 
 | | |
 | --- | --- |
 | Fixture | [`tests/fixtures/pipeline/drugsfda/drugsfda_products.tsv`](../tests/fixtures/pipeline/drugsfda/drugsfda_products.tsv) |
-| Fetcher | [`sources/drugsfda.py`](../src/dakp_pipeline/sources/drugsfda.py) `DrugsFDAFetcher` — ingests `drugsfda/drugsfda_products.tsv`, namespace `drugsfda` |
-| Extractor | [`extract/drugsfda_products.py`](../src/dakp_pipeline/extract/drugsfda_products.py) `DrugsFDAProductsExtractor` |
+| Fetcher | [`sources/drugsfda.py`](../src/dakp_pipeline/sources/drugsfda.py) `DrugsFDAFetcher` — data-files ZIP |
+| Extractor | [`extract/drugsfda_products.py`](../src/dakp_pipeline/extract/drugsfda_products.py) `DrugsFDAProductsExtractor` (Go parity: [`go/internal/drugsfda`](../go/internal/drugsfda)) |
 
-**Fixture shape.** A header-cased TSV (the extractor normalizes mixed-case headers):
+**Extraction.** Normalizes the products/applications/submissions tables to canonical lowercase
+columns, keeps the raw application number **and** both normalized forms (`appl_no` padded,
+`appl_no_stripped` digit-only) for consistent joins with FAERS `nda`. Output:
+`data/interim/drugsfda/products.parquet` (+ applications/submissions/lookups).
 
-```text
-ApplNo	ApplType	ProductNo	DrugName	ActiveIngredient	MarketingStatusName
-012345	NDA	001	Examplestatin	Examplestatin	Prescription
-017977	NDA	001	Ibuprofen	Ibuprofen	Prescription
-```
+**Real acquisition.** Drugs@FDA data-files download. Source: <https://www.accessdata.fda.gov/scripts/cder/daf/>.
 
-**Extraction.** `DrugsFDAProductsExtractor.extract` reads the TSV, renames columns to
-canonical lowercase (`ApplNo` → `appl_no`, etc.), selects the product columns, and
-digit-normalizes `appl_no` for consistent joins with FAERS `nda`. Output:
-`data/interim/drugsfda/products.parquet`, columns `appl_no`, `appl_type`, `product_no`,
-`drug_name`, `active_ingredient`, `marketing_status_name`.
+## Contraindications (NER-mined from DailyMed — not a fetched source)
 
-**Target real acquisition (Milestone 2–3).** Drugs@FDA download (legacy
-`ref/legacy/DrugsFDA/bin/download.pl`), normalized product/application/submission tables preserving
-NDA/BLA/ANDA variants with and without leading zeroes, plus lookup tables for proprietary
-names, ingredients, application numbers, marketing status, and product NDCs. Source:
-<https://www.accessdata.fda.gov/scripts/cder/daf/>.
-
-## Contraindications (text-mined from DailyMed, not a fetched source)
-
-Contraindication assertions are **mined directly** from DailyMed SPL "Contraindications"
-sections (LOINC `34070-3`) using a pluggable NER backend — there is no separate
-contraindication source to acquire. This replaces the former externally-sourced
-contraindication list.
+Contraindication assertions are **mined directly** from DailyMed SPL "Contraindications" sections
+(LOINC `34070-3`) using DAKP's single composite NER backend — there is no separate contraindication
+source to acquire. This **replaces the legacy MEDI/Matrix xlsx** (`infores:medi`); see
+[`semantic-equivalence.md`](./semantic-equivalence.md#improvements) for why this is better.
 
 | | |
 | --- | --- |
 | Input | the DailyMed `spl_sections.parquet` contraindication sections + `spl_ingredients.parquet` active ingredients |
 | Miner | [`assertions/contraindications.py`](../src/dakp_pipeline/assertions/contraindications.py) `build_contraindication_rows` |
-| NER backend | [`ner/backends.py`](../src/dakp_pipeline/ner/backends.py) `extract_contraindication_diseases` — `mock`/`dictionary` offline; `gliner`/`scispacy` via the `[ner]` extra |
+| NER backend | [`ner/ner.py`](../src/dakp_pipeline/ner/ner.py) `extract_contraindication_diseases` — the single composite `DiseaseNER` (offline gazetteer / production gazetteer+GLiNER) |
 
-**Mining.** For each SPL set with a contraindication section and ≥1 active ingredient, the
-NER backend extracts disease/phenotype mentions from the section text; each mention is paired
-with the set's active ingredient(s) to form a `biolink:contraindicated_in` assertion. Object
-CURIEs are resolved from the ontology dictionary baseline where the mention is known.
+**Mining.** For each SPL set with a contraindication section and ≥1 active ingredient, the NER
+backend extracts disease/phenotype mentions from the section text; each mention is paired with each
+active ingredient of that set to form a `biolink:contraindicated_in` assertion. The **object is the
+mined mention TEXT** — `object_curie` / `object_name` / `object_category` are intentionally left
+empty for Tablassert/fullmap to resolve at `build-kg` (DAKP does not map mentions to CURIEs). The
+subject carries its text + UNII straight from the SPL source.
 
 ```text
 section: "Contraindicated in patients with asthma or known hypersensitivity to ibuprofen."
-  -> Ibuprofen (UNII:WK2XYI10QM) --contraindicated_in--> asthma (MONDO:0004979)
+  -> Ibuprofen (UNII:WK2XYI10QM) --contraindicated_in--> "asthma" (mention; fullmap resolves the CURIE)
 ```
 
 **Provenance.** `primary_knowledge_source = infores:multiomics-drugapprovals`,
 `upstream_resource_ids = infores:dailymed`, `agent_type = text_mining_agent`,
 `knowledge_level = knowledge_assertion`.
 
-## Ontology dictionary baseline (not a fetcher source)
+## Lexical disease baseline (not a fetched source)
 
 | | |
 | --- | --- |
@@ -169,8 +115,12 @@ section: "Contraindicated in patients with asthma or known hypersensitivity to i
 | Loader | [`pipeline._load_disease_map`](../src/dakp_pipeline/pipeline.py) → `ctx.params["disease_map"]` |
 | Consumer | [`assertions.match_diseases`](../src/dakp_pipeline/assertions/__init__.py) |
 
-This is the fast **exact-match dictionary baseline** for disease objects, not a fetched
-source with its own fetcher. It maps mention text → curie/name/category:
+A fast **exact-match dictionary baseline** (mention text → curie/name/category) used to populate
+**object** CURIEs for the `treats` and `applied_to_treat` families where the mention is known.
+**Canonical resolution is still Tablassert/fullmap's job**: contraindication objects are left empty
+for fullmap, and subject CURIEs come from the source (DailyMed UNII), not from this dictionary. In
+production the fullmap resolves everything; this baseline keeps the assertion tables evidence-rich
+and the mock pipeline deterministic.
 
 ```text
 text	curie	name	category
@@ -179,21 +129,16 @@ headache	HP:0002315	headache	PhenotypicFeature
 asthma	MONDO:0004979	asthma	Disease
 ```
 
-Per PLAN.md, DAKP does **not** build custom NER indexes in first-scope; Tablassert/fullmap
-owns canonical resolution. This fixture exists only to populate object CURIEs during the
-scaffold stage; fullmap replaces it in Milestone 4. Subject CURIEs/name are left empty
-today (subjects are not dictionary-mapped) and are resolved by fullmap during modeling.
-
 ## Media types
 
-[`io/downloads.infer_media_type`](../src/dakp_pipeline/io/downloads.py) maps suffixes to
-IANA-ish media types recorded in each artifact manifest (e.g. `.xml.gz` →
-`application/gzip`, `.parquet` → `application/vnd.apache.parquet`, `.tsv` →
-`text/tab-separated-values`). `http_download(...)` is a Milestone-1 stub that raises
-`NotImplementedError`; real acquisition lands in Milestone 2.
+[`io/downloads.infer_media_type`](../src/dakp_pipeline/io/downloads.py) maps suffixes to IANA-ish
+media types recorded in each artifact manifest (e.g. `.xml.gz` → `application/gzip`, `.parquet` →
+`application/vnd.apache.parquet`, `.tsv` → `text/tab-separated-values`). `http_download(...)`
+performs the real stdlib-HTTP fetch with manifest/checksum capture.
 
 ## Related
 
 - [`tabular-contracts.md`](./tabular-contracts.md) — the exact column contracts these sources feed.
 - [`architecture.md`](./architecture.md) — how acquisition/extraction fit the layered model.
-- [`README.md`](../README.md#how-to-add-a-new-source) — the "add a new source" checklist.
+- [`semantic-equivalence.md`](./semantic-equivalence.md) — why contraindications moved off MEDI.
+- [`../README.md`](../README.md#how-to-add-a-new-source) — the "add a new source" checklist.
