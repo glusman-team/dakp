@@ -138,6 +138,7 @@ def _build_context(profile: Profile, wd: Workdir, fixture_root: Path | str | Non
         "quarter_limit": profile.quarter_limit,
         "release_limit": profile.release_limit,
         "force": profile.force,
+        "use_go_workers": profile.use_go_workers,
     }
     if extra:
         params.update(extra)
