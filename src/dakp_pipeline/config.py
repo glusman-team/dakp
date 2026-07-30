@@ -25,6 +25,7 @@ class Profile(BaseModel):
     threads: int = Field(ge=1, description="Worker threads/processes per task.")
     memory_budget_gb: int = Field(ge=1, description="Soft per-task memory budget in GiB.")
     quarter_limit: int | None = Field(default=None, description="Cap FAERS quarters processed (dev/sample); None = all available.")
+    release_limit: int | None = Field(default=None, description="Cap DailyMed full releases processed (dev/sample/smoke); None = all available.")
     mock_sources: bool = Field(description="If True, fetchers load fixtures instead of the network (mock profile).")
     force: bool = Field(default=False, description="Ignore cached artifacts and rerun every stage.")
     run_tablassert: bool = Field(default=False, description="Invoke real ../Tablassert at the handoff stage (deferred in mock profile).")

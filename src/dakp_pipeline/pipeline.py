@@ -139,6 +139,7 @@ def _build_context(profile: Profile, wd: Workdir, fixture_root: Path | str | Non
         "mock_sources": profile.mock_sources,
         "run_tablassert": profile.run_tablassert,
         "quarter_limit": profile.quarter_limit,
+        "release_limit": profile.release_limit,
         "force": profile.force,
     }
     if extra:
@@ -178,7 +179,10 @@ def _extract_medi(inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactR
     store = ArtifactStore(Workdir(ctx.workdir))
     refs: list[ArtifactRef] = []
     for ref in inputs:
-        if "medi" not in ref.uri.name.lower():
+        # Accept the mock fixture (``medi_contraindications.tsv``) and the real release
+        # asset (``contraindicationList-<version>.xlsx``); mirrors extract.medi._looks_like_medi.
+        name = ref.uri.name.lower()
+        if "medi" not in name and "contraindication" not in name:
             continue
         frame = schemas.read_table(ref.uri)
         out = Workdir(ctx.workdir).interim / "medi" / "contraindications.parquet"

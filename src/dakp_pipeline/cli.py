@@ -34,6 +34,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--run-airflow", action="store_true", help="Execute via the Airflow DAG instead of the pure-Python runner (requires airflow extra)."
     )
+    run.add_argument(
+        "--quarter-limit", type=int, default=None, help="Cap FAERS quarters processed (overrides the profile; e.g. 1 for a bounded smoke run)."
+    )
+    run.add_argument(
+        "--release-limit",
+        type=int,
+        default=None,
+        help="Cap DailyMed full releases processed (overrides the profile; e.g. 1 for a bounded smoke run).",
+    )
+    run.add_argument("--force", action="store_true", help="Ignore cached artifacts and rerun every stage (overrides the profile).")
     return parser
 
 
@@ -44,7 +54,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         if args.profile == "mock" and args.fixture_root is None:
             parser.error("--fixture-root is required for the mock profile")
-        result = run_pipeline(profile=args.profile, fixture_root=args.fixture_root, workdir=args.workdir, run_airflow=args.run_airflow)
+        # Scope/force overrides forwarded to the profile via run_pipeline's params merge.
+        params: dict[str, object] = {}
+        if args.quarter_limit is not None:
+            params["quarter_limit"] = args.quarter_limit
+        if args.release_limit is not None:
+            params["release_limit"] = args.release_limit
+        if args.force:
+            params["force"] = True
+        result = run_pipeline(
+            profile=args.profile, fixture_root=args.fixture_root, workdir=args.workdir, run_airflow=args.run_airflow, params=params or None
+        )
         summary = result.build_summary
         print(f"Pipeline complete: workdir={result.workdir.root}")
         if summary is not None:

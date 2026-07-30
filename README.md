@@ -10,8 +10,9 @@ the operational entry point and links into [`docs/`](./docs).
 > store are in place, and the pipeline runs end-to-end on tiny mocked fixtures with **no
 > network and no real Tablassert/Airflow installed**. Real source downloaders/extractors,
 > NER/canonical resolution, and the live Tablassert integration land in later milestones
-> (see [Roadmap](#roadmap)). The `sample` and `prod` profiles exist as
-> declarations but their fetchers and Tablassert call are stubs that fail loudly today.
+> (see [Roadmap](#roadmap)). The real source downloaders (stdlib HTTP) are implemented and
+> a **bounded `prod` smoke run** — real fetchers/extractors over mocked HTTP — is exercised
+> offline in CI; the full multi-TB build and the live Tablassert call land in later milestones.
 
 ## Why a rebuild
 
@@ -72,9 +73,11 @@ startup rather than silently defaulting.
 | `sample` | 4 | 8 GiB | real, bounded sample | deferred |
 | `prod` | 64 | 128 GiB | real full build | delegates to `../Tablassert` |
 
-> `sample` and `prod` fetchers are **Milestone-2 stubs**: calling them today
-> raises `NotImplementedError` ("only the mock profile is implemented"). Real acquisition
-> and the live Tablassert call land in Milestones 2 and 7 respectively.
+> The real fetchers use stdlib HTTP (no `requests`) and are content-addressed and
+> idempotent. `prod` defaults to the full scope (`quarter_limit` / `release_limit` unset =
+> all quarters/releases) and delegates to `../Tablassert`; bound it with `--quarter-limit`
+> / `--release-limit` for a tiny real smoke run (below). The live Tablassert call requires a
+> local `../Tablassert` checkout (Milestone 7).
 
 ## Running the full build on `wenceslaus`
 
@@ -89,9 +92,29 @@ uv run dakp run --profile prod \
 # or via the Airflow scheduler: trigger the dakp_build DAG
 ```
 
-Until Milestones 2 + 7 land, this raises at the first real acquisition step. The
-concurrency budgets, sharding model, and `/local_raid1` I/O guidance are documented in
+Acquisition and extraction are implemented; the full build needs real network access to the
+FDA/DailyMed sources and a local `../Tablassert` checkout for the live handoff (Milestone 7).
+The concurrency budgets, sharding model, and `/local_raid1` I/O guidance are documented in
 [`docs/architecture.md`](./docs/architecture.md).
+
+### Bounded `prod` smoke run
+
+To validate the **real** fetcher → extractor → aggregation → Tablassert-handoff path without
+the multi-TB full build, bound the scope so only one FAERS quarter and one DailyMed release
+are processed:
+
+```bash
+uv run dakp run --profile prod \
+  --quarter-limit 1 --release-limit 1 \
+  --workdir /tmp/dakp-prod-smoke
+```
+
+`--quarter-limit` caps FAERS quarters (most-recent first) and `--release-limit` caps DailyMed
+full releases; both default to the profile value (`prod` = all). `--force` reruns every stage
+ignoring the BLAKE3 cache. The real downloaders hit the network here; the offline integration
+test [`tests/integration/test_prod_smoke.py`](./tests/integration/test_prod_smoke.py) exercises
+the exact same real code path with the HTTP layer mocked (fixtures served "as if downloaded"),
+so it passes in CI with no network and no real Tablassert.
 
 ## The DAG
 

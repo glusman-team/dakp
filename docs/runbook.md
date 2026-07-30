@@ -7,7 +7,7 @@ scaffold and the patterns that carry forward to the full build.
 
 ```bash
 uv sync                       # base install (polars, loguru, blake3, pydantic); no Airflow
-uv run pytest -q              # 24 unit + integration tests, no network
+uv run pytest -q              # unit + integration tests, no network
 ```
 
 ## Running the mock pipeline
@@ -21,13 +21,32 @@ uv run dakp run --profile mock \
 Outputs land under `/tmp/dakp-mock/` (see [`README.md`](../README.md#where-things-land)).
 A successful run prints `Pipeline complete` and the `build_summary.json` path.
 
+## Running a bounded `prod` smoke run
+
+The `prod` profile runs the **real** fetchers/extractors. Bound the scope so a smoke run
+stays tiny (one FAERS quarter, one DailyMed release):
+
+```bash
+uv run dakp run --profile prod \
+  --quarter-limit 1 --release-limit 1 \
+  --workdir /tmp/dakp-prod-smoke
+```
+
+This hits the real FDA/DailyMed network endpoints. For an **offline** exercise of the same
+real code path (HTTP layer mocked, fixtures served "as if downloaded"), run
+`uv run pytest -q tests/integration/test_prod_smoke.py` — it passes in CI with no network and
+no real Tablassert (the Tablassert *handoff* runs its real runner; only the `../Tablassert`
+subprocess is faked).
+
 ## Common failures
 
-### `NotImplementedError: real acquisition for '<source>' lands in Milestone 2`
+### Network / download errors on a non-mock profile
 
-You ran a non-mock profile (`sample` or `prod`). Real source downloaders are
-not implemented yet — only the `mock` profile ingests fixtures. **Fix:** use
-`--profile mock` until Milestone 2.
+`sample` and `prod` run the real stdlib-HTTP downloaders (DailyMed full releases, FAERS
+quarterly zips, Drugs@FDA data files, the MEDI release asset), so they need network access to
+the FDA/DailyMed/GitHub endpoints. A fetch failure raises loudly (no silent fixture fallback).
+**Fix:** check connectivity/proxy, or validate the real path offline with the bounded smoke
+test above. Bound scope with `--quarter-limit` / `--release-limit` to keep a real run small.
 
 ### `--fixture-root is required for the mock profile`
 
