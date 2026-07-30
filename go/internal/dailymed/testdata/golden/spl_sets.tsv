@@ -1,0 +1,4 @@
+source_record_id	spl_set_id	release_file	xml_path
+b3:d81e003d6ca28fd48a89fb05d6fe8df33845d0a8b6b5e80100c2ef0587c71773	SETID-EXAMPLESTATIN-001	dailymed_spl.xml.gz	dailymed_spl.xml.gz
+b3:fed2719d5c47bc175ff9cbf4425d585dbe9d25450697f8011534169d5fce82a8	SETID-IBUPROFEN-002	dailymed_spl.xml.gz	dailymed_spl.xml.gz
+b3:41c2bd568e57cdc8291ae648be9077e62a7f67119895b93dbea577f71b50e149	SETID-OMEPRAZOLE-003	dailymed_spl.xml.gz	dailymed_spl.xml.gz
