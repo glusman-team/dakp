@@ -19,12 +19,16 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
-# Minimal approved runtime dependencies only (see PLAN.md "Dependency philosophy").
-# Stdlib first; Airflow lives in the optional `airflow` group and is NOT required
-# for `uv sync` base install or for `pytest`.
+# Runtime dependencies (see plans/airflow-native-go-workers.md). Airflow 3 is now a HARD
+# dependency: the pipeline is Airflow-native (the DAG is the only orchestrator and the Go
+# extractors run as native Airflow Go SDK bundle workers). `uv sync` installs the core runtime;
+# `uv sync --all-extras` (or `make install`) adds the heavy NER + Tablassert backends needed for
+# a full production run in one go.
 dependencies = [
+    "apache-airflow>=3,<4",
     "blake3>=1.0.0",
     "loguru>=0.7.3",
+    "pendulum>=3",
     "polars>=1.30.0",
     "pydantic>=2.12.0",
 ]
@@ -33,11 +37,6 @@ dependencies = [
 dakp = "dakp_pipeline.cli:main"
 
 [project.optional-dependencies]
-# Airflow orchestration is optional: `uv sync --extra airflow`. Tests never need it.
-airflow = [
-    "apache-airflow>=2.10,<3",
-    "pendulum>=3",
-]
 # Biomedical NER backend (GLiNER zero-shot — the production half of the single composite
 # DiseaseNER) is optional and HEAVY (pulls torch/transformers): `uv sync --extra ner`. The base
 # install and the whole test suite run WITHOUT this extra: the offline gazetteer mode is
