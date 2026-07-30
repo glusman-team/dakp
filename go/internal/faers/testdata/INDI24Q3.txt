@@ -1,0 +1,4 @@
+PRIMARYID$INDI_DRUG_SEQ$INDI_PT$
+1001$1$hypercholesterolemia$
+1002$1$headache$
+1003$1$back pain$

@@ -1,0 +1,3 @@
+PRIMARYID$DRUG_SEQ$DRUGNAME$ROLE_COD$NDA_NUM$PROD_AI$
+2001$1$OldStatin$PS$012345$OldStatin$
+2002$1$Aspirin$PS$020000$Acetylsalicylic acid$
