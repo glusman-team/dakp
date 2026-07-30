@@ -1,5 +1,11 @@
 # Plan: Airflow-Native Rebuild — Native Go SDK Workers + Airflow-Dependent Design
 
+> **STATUS — COMPLETE (all phases).** The pipeline is Airflow-native with native Go SDK workers.
+> One command runs it end to end: `make install-all` then `make run` (verified: mock run exits 0,
+> all 14 DAG tasks succeed with the 3 `extract_*` tasks running as native Go bundle workers;
+> translator contract + regression ok). Gate: ruff + pyright clean, pytest 100.0% branch coverage,
+> Go gate green. Phases 0–6 below are all done.
+
 ## Context
 
 **The question that prompted this:** does the pipeline use Airflow's native Go workers (the
