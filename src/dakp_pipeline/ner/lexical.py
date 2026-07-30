@@ -117,9 +117,9 @@ class LexicalMatcher:
         mentions: list[Mention] = []
         covered: list[tuple[int, int]] = []  # accepted normalized-space spans
         for term in self._terms:
+            # Every term comes from dictionary.normalized_terms(), so lookup() is always
+            # non-empty here (the index never stores an empty entry tuple for a key).
             entries = self._dictionary.lookup(term)
-            if not entries:
-                continue
             for start in _find_word_bounded(normalized, term):
                 end = start + len(term)
                 if _overlaps_any(start, end, covered):
