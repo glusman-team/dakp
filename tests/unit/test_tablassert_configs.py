@@ -332,7 +332,7 @@ def test_build_command_falls_back_to_uv_extra_kg(monkeypatch: pytest.MonkeyPatch
 def test_build_command_appends_qc_and_release_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)
     command = TablassertRunner().build_command(Path("graph.yaml"), ".fullmap", qc=True, release=True)
-    assert command[-2:] == ["--qc", "--release"]
+    assert command == ["uv", "run", "--extra", "kg", "tablassert", "build-kg", "graph.yaml", "--fullmap", ".fullmap", "--qc", "--release"]
 
 
 def test_resolve_tablassert_dir_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -354,6 +354,7 @@ def test_resolve_tablassert_dir_precedence(monkeypatch: pytest.MonkeyPatch) -> N
 
 def _patch_installed(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force the runner's DEFAULT installed-package path deterministically (no editable dir)."""
+    monkeypatch.delenv(TABLASERT_DIR_ENV, raising=False)  # ignore any real dev override in the env
     monkeypatch.setattr(_RUN_MODULE, "tablassert_available", lambda: True)
     monkeypatch.setattr(shutil, "which", lambda name: None)  # -> the `uv run --extra kg` prefix
 

@@ -75,7 +75,9 @@ def _command_prefix(tablassert_dir: str | None) -> list[str]:
 
     Editable override (dev against a local checkout): ``uv run --with-editable <dir> tablassert``;
     installed package: the venv ``tablassert`` binary when it is on ``PATH``, otherwise
-    ``uv run --extra kg tablassert`` (lets uv resolve the ``[kg]`` extra).
+    ``uv run --extra kg tablassert`` (uv materializes the ``[kg]`` console script for the rare
+    importable-but-no-PATH-binary case; the availability guard in ``TablassertRunner.run`` has
+    already confirmed ``tablassert`` is importable before this fallback is reachable).
     """
     if tablassert_dir:
         return ["uv", "run", "--with-editable", tablassert_dir, "tablassert"]
