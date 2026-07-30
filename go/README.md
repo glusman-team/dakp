@@ -183,3 +183,60 @@ added here. When an extractor needs parquet, add
 [`github.com/parquet-go/parquet-go`](https://github.com/parquet-go/parquet-go) with a
 single `go get github.com/parquet-go/parquet-go` (a one-line `go.mod` change) and write TSV
 for the Tablassert handoff regardless.
+
+## Extractors
+
+### `drugsfda` — Drugs@FDA product/application/submission extractor
+
+Self-registered subcommand (`cmd/dakp-worker/drugsfda.go`, `init()` → `registry.Register`,
+same pattern as `hash.go`) backed by `internal/drugsfda`. Parses the Drugs@FDA
+tab-delimited tables (`Products.txt` / `Applications.txt` / `Submissions.txt`, or fixture
+mirrors like `drugsfda_products.tsv`) into normalized **products / applications /
+submissions / lookups** tables and writes the uncompressed TSV source-section tables for
+Tablassert handoff. It is the Go mirror of
+`src/dakp_pipeline/extract/drugsfda_products.py` and is **byte-for-byte compatible** with
+it: the golden fixtures in `internal/drugsfda/testdata/golden/` are computed with the
+Python reference (polars 1.43.1), and `TestParityGoldenTSV` asserts identical bytes.
+
+```bash
+# development:
+go run ./cmd/dakp-worker drugsfda <input-dir> <out-dir>
+# e.g. go run ./cmd/dakp-worker drugsfda internal/drugsfda/testdata /tmp/out
+```
+
+- **`<input-dir>`** — directory of loose Drugs@FDA TSV/TXT tables, classified by filename
+  (`drugsfda.Classify`: stems ending in `products`/`applications`/`submissions`, or the
+  singular `product`/`application`/`submission`; sub-tables like `SubmissionPropertyType.txt`
+  are ignored). Recognized files are parsed concurrently (`errgroup` + `SetLimit`,
+  `-limit=N`, default 4).
+- **`<out-dir>`** — receives `drugsfda_products.tsv`, `drugsfda_applications.tsv`,
+  `drugsfda_submissions.tsv`, `drugsfda_lookups.tsv` (each written only when its source
+  table is present; lookups derive from products).
+- **stdout** — one JSON summary: per-output `path`, `artifact_id` (`b3:<hex>`), `rows`,
+  `media_type`, `schema_fingerprint`, plus the input `b3:<hex>` hashes, warning count, and
+  `elapsed_ms`. **stderr** — `log/slog` JSON logs (`task_id=extract_drugsfda_products`).
+
+Application numbers keep the raw `APPLICATIONNUMBER` **and** both normalized forms
+(`appl_no` with leading zeroes, `appl_no_stripped` without), porting the legacy
+`readNDAproducts` `s/^(NDA|BLA|ANDA)0*(.+)/`. `source_record_id` uses the Drugs@FDA string
+form (`drugsfda:product:NDA12345:001`, `drugsfda:application:NDA12345`,
+`drugsfda:submission:NDA12345:1`) to match the Python reference exactly — not a `b3:` hash;
+`b3:<hex>` is used for artifact/content ids. Submissions inherit `appl_type` from
+products/applications (the real `Submissions.txt` carries none).
+
+TSV columns (ordered):
+
+- **products** — `source_record_id source_file appl_no_raw appl_type appl_no
+  appl_no_stripped product_no drug_name active_ingredient form route strength
+  reference_drug reference_standard product_ndc marketing_status_name`
+- **applications** — `source_record_id source_file appl_no_raw appl_type appl_no
+  appl_no_stripped sponsor_name common_or_original_name submission_classification
+  orphan_status`
+- **submissions** — `source_record_id source_file appl_no_raw appl_type appl_no
+  appl_no_stripped submission_type submission_no submission_status
+  submission_status_date submission_notes`
+- **lookups** — `lookup_type term appl_no appl_no_stripped appl_type`
+
+Empty cells render as `""` (literal quotes) and fields containing a quote/tab/CR/LF are
+quoted with doubled quotes — exactly polars `write_csv(separator="\t")` behavior, so Go and
+Python TSV bytes match.
