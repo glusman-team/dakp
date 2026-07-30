@@ -183,3 +183,45 @@ added here. When an extractor needs parquet, add
 [`github.com/parquet-go/parquet-go`](https://github.com/parquet-go/parquet-go) with a
 single `go get github.com/parquet-go/parquet-go` (a one-line `go.mod` change) and write TSV
 for the Tablassert handoff regardless.
+
+## DailyMed SPL extractor (`dailymed` subcommand)
+
+The first per-source extractor, added via the self-registration pattern (a NEW
+`cmd/dakp-worker/dailymed.go` + `internal/dailymed/` package — `main.go` unchanged). It is a
+faithful Go port of the Python reference `src/dakp_pipeline/extract/spl_xml.py`.
+
+```bash
+# Extract a directory/shard of gzipped (or plain) SPL XML into uncompressed TSV tables:
+go run ./cmd/dakp-worker dailymed <input-dir> <output-dir>
+go run ./cmd/dakp-worker dailymed -limit 8 <input-dir> <output-dir>   # bounded concurrency
+```
+
+Behavior:
+
+- **Streaming + gzip-aware:** `encoding/xml` token streaming builds one `<document>` tree at
+  a time (constant memory per document, never the whole file); `.xml.gz` inputs are
+  transparently gunzipped. HL7 v3 (real DailyMed, `urn:hl7-org:v3`) and the namespace-free
+  **mock** shape are auto-detected and parsed.
+- **Five normalized TSV tables** written uncompressed to `<output-dir>` (the
+  Tablassert-facing handoff; parquet stays deferred): `spl_documents.tsv`, `spl_sets.tsv`,
+  `spl_approvals.tsv`, `spl_ingredients.tsv`, `spl_sections.tsv`.
+- **Column contracts** match the Python `SPL_*_COLUMNS` / `DAILYMED_SPL_DOCUMENTS_COLUMNS`
+  exactly (same order and names). `source_record_id` uses the shared
+  `internal/pipeline.SourceRecordID` (parity-locked to `spl_xml._source_record_id`).
+- **stdout** — the `b3:<hex>` tree hash of the output directory (canonical artifact id of
+  the produced tables). **stderr** — structured JSON logs (`log/slog`) with `task_id`,
+  per-table row counts, `warnings`, `input_ids`, `output_hash`, `elapsed_ms`.
+- **Deterministic:** input files are processed in sorted order and per-file results are
+  reassembled in input order, so bounded-parallel extraction (`-limit`) is byte-stable.
+
+### Cross-language parity (tested)
+
+`internal/dailymed/testdata/` holds the DailyMed fixture (byte-identical to the Python
+`tests/fixtures/pipeline/dailymed/dailymed_spl.xml.gz`, same BLAKE3) plus a tiny HL7 v3
+fixture, and `testdata/golden/*.tsv` — the five tables rendered by the **Python** extractor
+through `polars.write_csv(separator="\t")`. `TestGoldenTSVParity` asserts the Go TSV output
+is **byte-for-byte identical** to those goldens, including polars' quoting rule (empty
+string → `""`; tab/quote/CR/LF → quoted with doubled inner quotes; see
+`TestTSVFieldQuotingMatchesPolars`). To refresh the goldens after a Python contract change,
+re-run `spl_xml.extract` on the fixture and `pl.read_parquet(ref.uri).write_csv(out,
+separator="\t")` for each table.
