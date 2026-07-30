@@ -121,9 +121,9 @@ def test_acquire_ner_models_mock_profile_is_noop(tmp_path: Path) -> None:
 def test_default_ner_models_falls_back_to_gliner(tmp_path: Path) -> None:
     assert acquire.default_ner_models(_ctx("mock", tmp_path)) == []
     # Non-mock with no config override defaults to the GLiNER checkpoint the backend loads.
-    from dakp_pipeline.ner import backends
+    from dakp_pipeline.ner.ner import DEFAULT_MODEL
 
-    assert acquire.default_ner_models(_ctx("sample", tmp_path)) == [backends.DEFAULT_GLINER_MODEL]
+    assert acquire.default_ner_models(_ctx("sample", tmp_path)) == [DEFAULT_MODEL]
 
 
 # --- ontology / fullmap acquisition ---------------------------------------------

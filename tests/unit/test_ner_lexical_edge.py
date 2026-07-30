@@ -1,23 +1,35 @@
 """Edge-case tests for ``dakp_pipeline.ner.lexical`` (drive to 100% branch coverage).
 
-Covers the empty-needle guard of the private ``_find_word_bounded`` helper plus adversarial
-matching: blank/ignored text, whole-field vs per-mention ignore, opt-in synonyms (with the
-lower synonym score and preserved original offsets), greedy longest-first matching, multiple
-candidate entries per span, section propagation, and determinism.
+Targets the private helpers directly (``_find_word_bounded`` empty-needle guard + boundary
+positions, ``_overlaps_any`` short-circuit branches, ``_mention_sort_key``), the frozen/
+hashable :class:`Mention`, and every remaining ``match`` branch: empty gazetteer, the
+empty/blank/ignored whole-field guard, custom + empty ignore lists, the opt-in synonym path
+(including an identity synonym and a multi-synonym ``;``-joined note), and per-mention
+ignore filtering.
 """
 
 from __future__ import annotations
 
-from dakp_pipeline.ner.dictionary import DictionaryEntry, DictionaryIndex
-from dakp_pipeline.ner.lexical import DEFAULT_IGNORE_TERMS, DIRECT_SCORE, LEGACY_SYNONYMS, SYNONYM_SCORE, LexicalMatcher, _find_word_bounded
+from dataclasses import FrozenInstanceError
+
+import pytest
+
+from dakp_pipeline.ner.dictionary import Gazetteer
+from dakp_pipeline.ner.lexical import (
+    DEFAULT_IGNORE_TERMS,
+    DIRECT_SCORE,
+    LEGACY_SYNONYMS,
+    SYNONYM_SCORE,
+    LexicalMatcher,
+    Mention,
+    _find_word_bounded,
+    _mention_sort_key,
+    _overlaps_any,
+)
 
 
-def _entry(normalized: str, curie: str, category: str = "Disease", source: str = "MONDO", name: str | None = None) -> DictionaryEntry:
-    return DictionaryEntry(normalized, curie, name or normalized, category, source, normalized)
-
-
-def _index(*entries: DictionaryEntry) -> DictionaryIndex:
-    return DictionaryIndex.from_entries(list(entries))
+def _matcher(terms: dict[str, str], **kwargs: object) -> LexicalMatcher:
+    return LexicalMatcher(Gazetteer(terms), **kwargs)  # type: ignore[arg-type]
 
 
 # --- _find_word_bounded helper --------------------------------------------------
@@ -27,111 +39,160 @@ def test_find_word_bounded_empty_needle_returns_empty() -> None:
     assert _find_word_bounded("asthma pain", "") == []
 
 
-def test_find_word_bounded_multiple_and_boundary_positions() -> None:
+def test_find_word_bounded_multiple_occurrences() -> None:
     assert _find_word_bounded("pain and pain", "pain") == [0, 9]
-    assert _find_word_bounded("painting", "pain") == []  # not word-bounded
-    assert _find_word_bounded("a pain", "pain") == [2]  # bounded by start-space + end-of-string
 
 
-# --- empty / blank / ignored text -----------------------------------------------
+def test_find_word_bounded_boundary_positions() -> None:
+    assert _find_word_bounded("pain a", "pain") == [0]  # bounded by start-of-string + space
+    assert _find_word_bounded("a pain", "pain") == [2]  # bounded by space + end-of-string
+    assert _find_word_bounded("pain", "pain") == [0]  # whole string is the word
 
 
-def test_match_empty_and_blank_text_yields_nothing() -> None:
-    matcher = LexicalMatcher(_index(_entry("asthma", "MONDO:1")))
+def test_find_word_bounded_rejects_inner_substrings() -> None:
+    assert _find_word_bounded("painting", "pain") == []  # trailing chars -> no boundary after
+    assert _find_word_bounded("repainting", "pain") == []  # leading chars -> no boundary before
+
+
+# --- _overlaps_any helper -------------------------------------------------------
+
+
+def test_overlaps_any_empty_covered_is_false() -> None:
+    assert _overlaps_any(0, 4, []) is False
+
+
+def test_overlaps_any_true_overlap() -> None:
+    assert _overlaps_any(5, 10, [(0, 6)]) is True
+
+
+def test_overlaps_any_new_span_after_covered_is_false() -> None:
+    # start >= cov_end short-circuits the ``and`` (covered span is entirely before).
+    assert _overlaps_any(10, 15, [(0, 6)]) is False
+
+
+def test_overlaps_any_new_span_before_covered_is_false() -> None:
+    # start < cov_end but cov_start >= end (covered span is entirely after).
+    assert _overlaps_any(0, 4, [(9, 20)]) is False
+
+
+# --- _mention_sort_key helper ---------------------------------------------------
+
+
+def test_mention_sort_key_is_start_end_type_text() -> None:
+    mention = Mention(text="asthma", start=3, end=9, type="disease", score=DIRECT_SCORE)
+    assert _mention_sort_key(mention) == (3, 9, "disease", "asthma")
+
+
+# --- Mention dataclass ----------------------------------------------------------
+
+
+def test_mention_default_optional_fields_are_empty() -> None:
+    mention = Mention(text="x", start=0, end=1, type="disease", score=DIRECT_SCORE)
+    assert (mention.normalized, mention.notes, mention.section) == ("", "", "")
+
+
+def test_mention_is_frozen() -> None:
+    mention = Mention(text="asthma", start=0, end=6, type="disease", score=DIRECT_SCORE)
+    with pytest.raises(FrozenInstanceError):
+        mention.text = "changed"  # type: ignore[misc]
+
+
+def test_mention_is_hashable_and_value_equal() -> None:
+    a = Mention(text="asthma", start=0, end=6, type="disease", score=DIRECT_SCORE)
+    b = Mention(text="asthma", start=0, end=6, type="disease", score=DIRECT_SCORE)
+    assert a == b
+    assert hash(a) == hash(b)
+    assert len({a, b}) == 1
+
+
+# --- match: empty/blank/ignored guard -------------------------------------------
+
+
+def test_match_empty_gazetteer_yields_nothing() -> None:
+    assert LexicalMatcher(Gazetteer({})).match("asthma") == []
+
+
+def test_match_empty_and_blank_text_yield_nothing() -> None:
+    matcher = _matcher({"asthma": "disease"})
     assert matcher.match("") == []
     assert matcher.match("   \t\n ") == []
 
 
-def test_match_whole_field_ignore_term_suppresses_record() -> None:
-    matcher = LexicalMatcher(_index(_entry("asthma", "MONDO:1")))
-    # A whole indication string in the legacy ignore set yields no mentions.
-    assert matcher.is_ignored_text("Off label use")
-    assert matcher.match("off label use") == []
-    # A non-ignored field is not suppressed.
+def test_is_ignored_text_true_and_false() -> None:
+    matcher = _matcher({"asthma": "disease"})
+    assert matcher.is_ignored_text("Off label use")  # normalized before lookup
     assert not matcher.is_ignored_text("asthma")
 
 
-def test_match_custom_ignore_terms_override_defaults() -> None:
-    matcher = LexicalMatcher(_index(_entry("asthma", "MONDO:1")), ignore_terms=["asthma"])
-    # Custom ignore list REPLACES the defaults: 'asthma' is now ignored whole-field...
-    assert matcher.match("asthma") == []
-    # ...and a legacy default ignore term is no longer ignored.
+def test_match_whole_field_ignore_suppresses_even_with_inner_term() -> None:
+    matcher = _matcher({"pain": "phenotype"}, ignore_terms=["pain"])
+    # Whole-field ignore wins despite "pain" being a matchable term.
+    assert matcher.match("pain") == []
+
+
+def test_match_empty_custom_ignore_list_ignores_nothing() -> None:
+    matcher = _matcher({"asthma": "disease"}, ignore_terms=[])
+    # An empty custom ignore list replaces the defaults and suppresses nothing.
     assert not matcher.is_ignored_text("off label use")
+    assert [m.text for m in matcher.match("asthma")] == ["asthma"]
 
 
-def test_match_per_mention_ignore_filter() -> None:
-    # 'prophylaxis' is a default ignore term; as an individual mention inside a larger field
-    # it is dropped while a real disease mention survives.
-    matcher = LexicalMatcher(_index(_entry("asthma", "MONDO:1"), _entry("prophylaxis", "MONDO:2")))
+def test_match_per_mention_ignore_returns_none_for_that_span_only() -> None:
+    matcher = _matcher({"prophylaxis": "disease", "asthma": "disease"})
     mentions = matcher.match("asthma and prophylaxis")
     assert [m.normalized for m in mentions] == ["asthma"]
 
 
-# --- synonyms -------------------------------------------------------------------
+# --- match: synonyms ------------------------------------------------------------
 
 
-def test_match_synonym_substitution_keeps_original_offsets_and_lower_score() -> None:
-    index = _index(_entry("heart failure", "MONDO:1", name="heart failure"))
-    matcher = LexicalMatcher(index, synonyms=LEGACY_SYNONYMS)
+def test_match_without_synonyms_skips_synonym_path() -> None:
+    matcher = _matcher({"heart failure": "disease"})  # synonyms=None
+    assert matcher.match("cardiac failure") == []
+
+
+def test_match_identity_synonym_is_not_noted() -> None:
+    # A synonym mapping a token to itself performs no substitution (replacement == token).
+    matcher = _matcher({"asthma": "disease"}, synonyms={"asthma": "asthma"})
+    mentions = matcher.match("asthma")
+    assert mentions[0].score == DIRECT_SCORE
+    assert mentions[0].notes == "exact"
+
+
+def test_match_synonym_keeps_original_offsets_and_lower_score() -> None:
+    matcher = _matcher({"heart failure": "disease"}, synonyms=LEGACY_SYNONYMS)
     text = "cardiac failure"
     mentions = matcher.match(text)
     assert len(mentions) == 1
-    mention = mentions[0]
-    # The reported surface form/offsets stay the ORIGINAL words ('cardiac failure')...
-    assert mention.mention_text == "cardiac failure"
-    assert text[mention.mention_start : mention.mention_end] == mention.mention_text
-    # ...while matching via the synonymized concept ('heart').
-    assert mention.score == SYNONYM_SCORE
-    assert "synonym:cardiac>heart" in mention.notes
+    m = mentions[0]
+    assert m.text == "cardiac failure"
+    assert text[m.start : m.end] == m.text
+    assert m.score == SYNONYM_SCORE
+    assert m.notes == "synonym:cardiac>heart"
+    # A token with no synonym entry ("failure") matches unchanged alongside the substitution.
+    assert m.normalized == "cardiac failure"
 
 
-def test_match_direct_score_and_exact_notes_without_synonyms() -> None:
-    matcher = LexicalMatcher(_index(_entry("asthma", "MONDO:1")))
-    mentions = matcher.match("asthma")
-    assert mentions[0].score == DIRECT_SCORE
-    assert mentions[0].notes == "exact"
+def test_match_multiple_synonyms_join_notes_with_semicolon() -> None:
+    matcher = _matcher({"kidney heart failure": "disease"}, synonyms=LEGACY_SYNONYMS)
+    text = "renal cardiac failure"
+    mentions = matcher.match(text)
+    assert len(mentions) == 1
+    m = mentions[0]
+    assert m.text == "renal cardiac failure"
+    assert text[m.start : m.end] == m.text
+    assert m.score == SYNONYM_SCORE
+    assert m.notes == "synonym:cardiac>heart;synonym:renal>kidney"  # sorted + ';' joined
 
 
-def test_match_synonym_that_is_identity_is_not_noted() -> None:
-    # A synonym mapping a token to itself produces no substitution note (replacement == token).
-    index = _index(_entry("asthma", "MONDO:1"))
-    matcher = LexicalMatcher(index, synonyms={"asthma": "asthma"})
-    mentions = matcher.match("asthma")
-    assert mentions[0].score == DIRECT_SCORE
-    assert mentions[0].notes == "exact"
-
-
-# --- greedy matching / multiple entries / section / determinism -----------------
-
-
-def test_match_greedy_longest_first_prevents_nested_match() -> None:
-    index = _index(_entry("peptic ulcer disease", "MONDO:1"), _entry("ulcer", "MONDO:2"))
-    mentions = LexicalMatcher(index).match("peptic ulcer disease")
-    assert [m.normalized for m in mentions] == ["peptic ulcer disease"]
-
-
-def test_match_returns_one_mention_per_candidate_entry_for_a_span() -> None:
-    # Two CURIEs share the normalized string 'asthma' -> one mention per entry for the span.
-    index = _index(_entry("asthma", "MONDO:1"), _entry("asthma", "HP:9", source="HPO"))
-    mentions = LexicalMatcher(index).match("asthma")
-    assert sorted(m.entry.curie for m in mentions) == ["HP:9", "MONDO:1"]
-    # All share the same span offsets.
-    assert {(m.mention_start, m.mention_end) for m in mentions} == {(0, 6)}
-
-
-def test_match_propagates_section_and_is_deterministic() -> None:
-    matcher = LexicalMatcher(_index(_entry("asthma", "MONDO:1"), _entry("pain", "MONDO:2")))
-    text = "pain and asthma and pain"
-    first = [(m.mention_start, m.mention_end, m.entry.curie, m.section) for m in matcher.match(text, section="indications")]
-    assert all(m.section == "indications" for m in matcher.match(text, section="indications"))
-    for _ in range(5):
-        again = [(m.mention_start, m.mention_end, m.entry.curie, m.section) for m in matcher.match(text, section="indications")]
-        assert again == first
-    # Sorted by (start, end, curie, source).
-    starts = [m.mention_start for m in matcher.match(text)]
-    assert starts == sorted(starts)
+# --- constants ------------------------------------------------------------------
 
 
 def test_default_ignore_terms_are_normalized() -> None:
-    assert "off label use" in DEFAULT_IGNORE_TERMS
+    assert isinstance(DEFAULT_IGNORE_TERMS, frozenset)
+    assert "product used for unknown indication" in DEFAULT_IGNORE_TERMS
     assert all(term == term.strip().lower() for term in DEFAULT_IGNORE_TERMS)
+
+
+def test_legacy_synonyms_mapping() -> None:
+    assert dict(LEGACY_SYNONYMS) == {"cardiac": "heart", "renal": "kidney", "hepatic": "liver"}

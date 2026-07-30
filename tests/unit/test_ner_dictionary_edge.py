@@ -1,160 +1,147 @@
 """Edge-case tests for ``dakp_pipeline.ner.dictionary`` (drive to 100% branch coverage).
 
-Targets the uncovered empty-surface ``continue`` in ``DictionaryIndex.from_frame`` plus
-adversarial normalization (HTML tags, lone ``<``, possessives, unicode), offset-map
-round-trips, source/semantic inference fallbacks, and index dedup/ordering/aliasing.
+Targets every remaining branch: ``normalize_with_map``'s well-formed-tag vs lone-'<' paths,
+possessive dropping, ASCII-alnum vs punctuation folding, whitespace-run collapse and end
+trimming, the ``canonical_type`` alias table and its lowercased fallback, and ``Gazetteer``
+empty-key / empty-row skipping in the constructors and builders.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import polars as pl
 
-from dakp_pipeline.ner.dictionary import DictionaryEntry, DictionaryIndex, infer_source, normalize_text, normalize_with_map, semantic_group_for
+from dakp_pipeline.ner.dictionary import TYPE_DISEASE, TYPE_PHENOTYPE, Gazetteer, canonical_type, normalize_text, normalize_with_map
 
-# --- normalization --------------------------------------------------------------
-
-
-def test_normalize_text_folds_html_possessives_and_punctuation() -> None:
-    assert normalize_text("Peptic Ulcer Disease") == "peptic ulcer disease"
-    assert normalize_text("<b>asthma</b>") == "asthma"
-    assert normalize_text("patient's asthma") == "patient asthma"  # possessive 's dropped
-    assert normalize_text("fever, chills; pain!") == "fever chills pain"
-    assert normalize_text("") == ""
-    assert normalize_text("   ") == ""
-    assert normalize_text("<unclosed") == "unclosed"  # lone '<' treated as a boundary
+# --- normalize_with_map: empty / angle-bracket branches ------------------------
 
 
-def test_normalize_text_drops_non_ascii_alphanumerics() -> None:
-    # Non-ASCII alphanumerics are folded to spaces (only [a-z0-9] survive).
+def test_normalize_with_map_empty_string() -> None:
+    # Empty input never enters the scan or collapse loops and leaves nothing to trim.
+    assert normalize_with_map("") == ("", [])
+
+
+def test_normalize_with_map_lone_angle_bracket_trims_to_empty() -> None:
+    # A lone '<' (no closing '>') emits one boundary space that trims away entirely.
+    normalized, index_map = normalize_with_map("<")
+    assert normalized == ""
+    assert index_map == []
+
+
+def test_normalize_with_map_well_formed_tag_maps_boundary_to_open_bracket() -> None:
+    text = "a <b> c"
+    normalized, index_map = normalize_with_map(text)
+    assert normalized == "a c"
+    # Text after the tag survives and still maps back to its true original offset.
+    assert index_map[normalized.index("c")] == text.index("c")
+
+
+# --- normalize_with_map: possessive branches -----------------------------------
+
+
+def test_normalize_with_map_drops_possessive_apostrophe_s_both_cases() -> None:
+    normalized, index_map = normalize_with_map("cat's dog'S tail")
+    assert normalized == "cat dog tail"
+    assert len(index_map) == len(normalized)
+
+
+def test_normalize_with_map_apostrophe_at_end_is_punctuation() -> None:
+    # Trailing apostrophe has no following char -> falls through to the punctuation rule.
+    normalized, _ = normalize_with_map("patients'")
+    assert normalized == "patients"
+
+
+def test_normalize_with_map_apostrophe_not_followed_by_s_is_punctuation() -> None:
+    normalized, _ = normalize_with_map("o'clock")
+    assert normalized == "o clock"
+
+
+# --- normalization: ascii-alnum vs punctuation / non-ascii ---------------------
+
+
+def test_normalize_text_folds_non_ascii_and_punctuation_to_spaces() -> None:
     assert normalize_text("café pain") == "caf pain"
     assert normalize_text("naïve") == "na ve"
+    assert normalize_text("a&b") == "a b"
 
 
-def test_normalize_with_map_offsets_roundtrip_to_original() -> None:
-    for text in ("Hepatitis B!", "<b>asthma</b> and pain", "patient's liver disease", "  spaced  out  ", "a"):
-        normalized, index_map = normalize_with_map(text)
-        assert normalized == normalize_text(text)
-        assert len(index_map) == len(normalized)
-        # Every normalized character maps back to the identical original character.
-        for norm_char, orig_idx in zip(normalized, index_map, strict=True):
-            assert text[orig_idx].lower() == norm_char or norm_char == " "
+def test_normalize_with_map_collapses_runs_and_trims_both_ends() -> None:
+    normalized, index_map = normalize_with_map("  a   b  ")
+    assert normalized == "a b"
+    # Leading run trimmed; the single interior space maps to the run's FIRST char (index 3).
+    assert index_map == [2, 3, 6]
 
 
-def test_normalize_with_map_handles_empty_and_lone_angle_bracket() -> None:
-    assert normalize_with_map("") == ("", [])
-    normalized, index_map = normalize_with_map("<")
-    assert normalized == ""  # a lone boundary space trims away
-    assert isinstance(index_map, list)
+def test_normalize_with_map_trailing_punctuation_trims() -> None:
+    # Trailing punctuation becomes a boundary space that the trailing-trim step pops.
+    normalized, index_map = normalize_with_map("abc,")
+    assert normalized == "abc"
+    assert index_map == [0, 1, 2]
 
 
-# --- source / semantic-group inference ------------------------------------------
+# --- canonical_type: every alias + fallbacks -----------------------------------
 
 
-def test_infer_source_known_unknown_and_no_prefix() -> None:
-    assert infer_source("MONDO:0004979") == "MONDO"
-    assert infer_source("HP:0002315") == "HPO"
-    assert infer_source("DRUGBANK:DB00001") == "DRUGBANK"
-    assert infer_source("UNKNOWN:123") == "fullmap"  # unknown prefix -> fullmap
-    assert infer_source("nocolon") == "fullmap"  # no ':' -> fullmap
-    assert infer_source("") == "fullmap"
+def test_canonical_type_every_alias_and_fallbacks() -> None:
+    assert canonical_type("disease") == TYPE_DISEASE
+    assert canonical_type("diseases") == TYPE_DISEASE
+    assert canonical_type("phenotype") == TYPE_PHENOTYPE
+    assert canonical_type("phenotypes") == TYPE_PHENOTYPE
+    assert canonical_type("phenotypicfeature") == TYPE_PHENOTYPE
+    assert canonical_type("phenotypic_feature") == TYPE_PHENOTYPE
+    assert canonical_type("CHEMICAL") == "chemical"  # unknown label -> lowercased
+    assert canonical_type("") == ""  # empty -> empty fallback
+    assert canonical_type("   ") == ""  # whitespace-only -> empty fallback
 
 
-def test_semantic_group_for_known_unknown_and_whitespace() -> None:
-    assert semantic_group_for("Disease") == "disease"
-    assert semantic_group_for("PhenotypicFeature") == "phenotype"
-    assert semantic_group_for("ChemicalEntity") == "drug"
-    assert semantic_group_for("  SmallMolecule  ") == "drug"
-    assert semantic_group_for("TotallyUnknown") == "disease"  # conservative fallback
-    assert semantic_group_for("") == "disease"
+# --- Gazetteer: empty-key skip + empty construction ----------------------------
 
 
-# --- DictionaryIndex ------------------------------------------------------------
+def test_gazetteer_skips_surfaces_that_normalize_to_empty() -> None:
+    gaz = Gazetteer({"!!!": "disease", "asthma": "disease"})
+    assert len(gaz) == 1
+    assert gaz.type_for("asthma") == TYPE_DISEASE
+    assert "" not in gaz
 
 
-def _entry(normalized: str, curie: str, category: str = "Disease", source: str = "MONDO", name: str | None = None) -> DictionaryEntry:
-    return DictionaryEntry(normalized, curie, name or normalized, category, source, normalized)
+def test_empty_gazetteer_iteration_and_queries() -> None:
+    gaz = Gazetteer({})
+    assert gaz.normalized_terms() == ()
+    assert list(gaz.items()) == []
+    assert len(gaz) == 0
+    assert gaz.type_for("anything") is None
+    assert "anything" not in gaz
 
 
-def test_index_skips_empty_keys_dedups_and_orders() -> None:
-    entries = [
-        _entry("asthma", "MONDO:2"),
-        _entry("asthma", "MONDO:1"),  # same key, reordered on lookup
-        _entry("asthma", "MONDO:1"),  # duplicate -> dropped
-        _entry("", "MONDO:empty"),  # empty normalized key -> never indexed
-    ]
-    index = DictionaryIndex(entries)
-    assert "" not in index
-    assert len(index) == 1
-    looked_up = index.lookup("asthma")
-    assert [e.curie for e in looked_up] == ["MONDO:1", "MONDO:2"]  # sorted deterministically
-    assert index.lookup("missing") == ()
-    assert index.lookup_text("  ASTHMA  ") == looked_up  # normalized lookup
+# --- from_frame: blank/null surface + type skipping, biolink categories --------
 
 
-def test_index_entries_and_normalized_terms_are_deterministic() -> None:
-    index = DictionaryIndex([_entry("pain", "MONDO:9"), _entry("asthma", "MONDO:1")])
-    assert index.normalized_terms() == ("asthma", "pain")
-    assert [e.normalized for e in index.entries()] == ["asthma", "pain"]
+def test_from_frame_skips_blank_and_null_surface_and_type_rows() -> None:
+    frame = pl.DataFrame({"text": ["asthma", "", "   ", None, "fever", "headache"], "type": ["Disease", "disease", "phenotype", "disease", "", None]})
+    gaz = Gazetteer.from_frame(frame)
+    # Only the row with a non-blank surface AND a non-blank type survives.
+    assert gaz.normalized_terms() == ("asthma",)
+    assert gaz.type_for("asthma") == TYPE_DISEASE
 
 
-def test_index_entry_semantic_group_property() -> None:
-    assert _entry("asthma", "MONDO:1", category="Disease").semantic_group == "disease"
-    assert _entry("headache", "HP:1", category="PhenotypicFeature").semantic_group == "phenotype"
-    assert _entry("aspirin", "DRUGBANK:1", category="Drug").semantic_group == "drug"
+def test_from_frame_accepts_biolink_categories() -> None:
+    frame = pl.DataFrame({"text": ["asthma", "headache"], "type": ["Disease", "PhenotypicFeature"]})
+    gaz = Gazetteer.from_frame(frame)
+    assert gaz.type_for("asthma") == TYPE_DISEASE
+    assert gaz.type_for("headache") == TYPE_PHENOTYPE
 
 
-# --- from_frame: empty-surface skip + aliases + source override -----------------
+def test_from_frame_handles_empty_frame() -> None:
+    frame = pl.DataFrame(schema={"text": pl.String, "type": pl.String})
+    assert len(Gazetteer.from_frame(frame)) == 0
 
 
-def test_from_frame_skips_blank_surface_forms() -> None:
-    frame = pl.DataFrame(
-        {
-            "text": ["asthma", "", "   "],
-            "curie": ["MONDO:1", "MONDO:2", "MONDO:3"],
-            "name": ["asthma", "blank", "spaces"],
-            "category": ["Disease", "Disease", "Disease"],
-        }
-    )
-    index = DictionaryIndex.from_frame(frame)
-    # Only the non-blank surface form is indexed.
-    assert index.normalized_terms() == ("asthma",)
-    assert len(index) == 1
+# --- from_tsv: builder kwargs passthrough --------------------------------------
 
 
-def test_from_frame_indexes_alias_columns_to_same_curie() -> None:
-    frame = pl.DataFrame(
-        {
-            "text": ["myocardial infarction"],
-            "alias_exact": ["heart attack"],
-            "alias_related": [""],  # blank alias skipped
-            "curie": ["MONDO:0005015"],
-            "name": ["myocardial infarction"],
-            "category": ["Disease"],
-        }
-    )
-    index = DictionaryIndex.from_frame(frame, alias_columns=["alias_exact", "alias_related"])
-    assert set(index.normalized_terms()) == {"myocardial infarction", "heart attack"}
-    # Both surface forms resolve to the same CURIE.
-    assert index.lookup_text("heart attack")[0].curie == "MONDO:0005015"
-
-
-def test_from_frame_source_override_and_name_fallback() -> None:
-    frame = pl.DataFrame(
-        {
-            "text": ["aspirin"],
-            "curie": ["UNKNOWN:1"],  # would infer 'fullmap'...
-            "name": [""],  # blank name -> falls back to the surface form
-            "category": ["Drug"],
-            "src": ["DRUGBANK"],
-        }
-    )
-    index = DictionaryIndex.from_frame(frame, source_col="src")
-    entry = index.lookup_text("aspirin")[0]
-    assert entry.source == "DRUGBANK"  # explicit source column wins over inference
-    assert entry.name == "aspirin"  # name fell back to the surface form
-
-
-def test_from_frame_infers_source_from_curie_when_no_source_column() -> None:
-    frame = pl.DataFrame({"text": ["asthma"], "curie": ["MONDO:1"], "name": ["asthma"], "category": ["Disease"]})
-    entry = DictionaryIndex.from_frame(frame).lookup_text("asthma")[0]
-    assert entry.source == "MONDO"
+def test_from_tsv_accepts_builder_kwargs(tmp_path: Path) -> None:
+    path = tmp_path / "custom.tsv"
+    path.write_text("term\tkind\nasthma\tDisease\n")
+    gaz = Gazetteer.from_tsv(path, text_col="term", type_col="kind")
+    assert gaz.type_for("asthma") == TYPE_DISEASE

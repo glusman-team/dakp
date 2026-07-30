@@ -87,13 +87,12 @@ class LexicalMatcher:
     """Deterministic normalized-phrase mention matcher over a :class:`Gazetteer`."""
 
     def __init__(self, gazetteer: Gazetteer, *, ignore_terms: Sequence[str] | None = None, synonyms: Mapping[str, str] | None = None) -> None:
-        self._gazetteer = gazetteer
         # Ignore terms are normalized on ingest so callers may pass raw strings.
         raw_ignore = DEFAULT_IGNORE_TERMS if ignore_terms is None else ignore_terms
         self._ignore = frozenset(normalize_text(term) for term in raw_ignore)
         self._synonyms: dict[str, str] = {normalize_text(k): normalize_text(v) for k, v in (synonyms or {}).items()}
-        # Longest-first (then lexicographic) for deterministic greedy matching.
-        self._terms = sorted(gazetteer.normalized_terms(), key=lambda term: (-len(term), term))
+        # Longest-first (then lexicographic) (term, type) pairs for deterministic greedy matching.
+        self._terms = sorted(gazetteer.items(), key=lambda item: (-len(item[0]), item[0]))
 
     # -- ignore handling -------------------------------------------------------
     def is_ignored_text(self, text: str) -> bool:
@@ -117,10 +116,7 @@ class LexicalMatcher:
 
         mentions: list[Mention] = []
         covered: list[tuple[int, int]] = []  # accepted normalized-space spans
-        for term in self._terms:
-            etype = self._gazetteer.type_for(term)
-            if etype is None:
-                continue  # defensive: terms come from the gazetteer, so this is always set
+        for term, etype in self._terms:
             for start in _find_word_bounded(normalized, term):
                 end = start + len(term)
                 if _overlaps_any(start, end, covered):
