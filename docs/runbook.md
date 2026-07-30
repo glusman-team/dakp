@@ -169,7 +169,7 @@ whole pipeline:
 
 1. Run the pipeline once to populate the store.
 2. In a Python REPL or test, build a `TaskContext` (see
-   [`pipeline._build_context`](../src/dakp_pipeline/pipeline.py)) pointing at the same workdir, then
+   [`runtime.build_context`](../src/dakp_pipeline/runtime.py)) pointing at the same workdir, then
    call the individual stage function directly (e.g. `approved_treats.transform([...refs], ctx)`),
    passing the cached upstream `ArtifactRef`s.
 3. Inspect the produced parquet/TSV/manifest as above.

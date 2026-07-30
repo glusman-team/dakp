@@ -194,6 +194,38 @@ This is the most important architectural rule: **DAKP shapes tables; Tablassert 
 If a needed Biolink slot is not exposed cleanly by Tablassert, the fix is upstreamed into
 Tablassert — DAKP does not grow a parallel KGX postprocessor.
 
+## Deployment topology & shared filesystem
+
+The pipeline is Airflow-native: the `dakp_build` DAG is the sole orchestrator and the three
+`extract_*` tasks run as **native Go SDK bundle workers** (the ExecutableCoordinator forks the packed
+bundle, [`go/cmd/dakp-bundle`](../go/cmd/dakp-bundle), once per task instance).
+
+**Data plane = filesystem, not XCom.** Tasks pass only small `ArtifactRef` manifests (path + BLAKE3
+id + metadata) over XCom; the heavy bytes move through the BLAKE3 content-addressed store on disk.
+Consequently, **every worker that runs any task must see the same workdir / content-addressed
+store**, and **every worker that runs an `extract_*` task must have the packed bundle in its
+`executables_root`**:
+
+- **LocalExecutor (`make run`, single host):** automatic — one machine, one filesystem. The
+  orchestrator builds the bundle into `$AIRFLOW_HOME/executable-bundles` and points the coordinator
+  at it; the workdir is local.
+- **CeleryExecutor / distributed workers:** the workdir + store must live on a **shared/networked
+  filesystem** (e.g. NFS) mounted at the same path on all workers, and the packed bundle must be
+  deployed to `executables_root` on every worker that serves the `golang` queue. Otherwise a Go
+  extract task on worker B cannot read the raw artifacts worker A acquired.
+
+Required Airflow config (set by `scripts/dakp_up.sh` via `AIRFLOW__*` env vars; equivalently
+`airflow.cfg`):
+
+- `[sdk] coordinators` — register `airflow.sdk.coordinators.executable.ExecutableCoordinator` with
+  `executables_root` pointing at the packed-bundle directory.
+- `[sdk] queue_to_coordinator = {"golang": "go"}` — route the `extract_*` stub tasks to the Go
+  coordinator.
+- `[core] execution_api_server_url` — **must** be set to the API server's `/execution/` URL; without
+  it the task supervisor defaults to `localhost:8080`.
+- The `dakp_download` / `dakp_extract` **pools** must exist (the orchestrator provisions them);
+  tasks on a non-existent pool are never scheduled.
+
 ## Related
 
 - [`semantic-equivalence.md`](./semantic-equivalence.md) — preserved-vs-improved semantics vs the old DAKP.

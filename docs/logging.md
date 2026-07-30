@@ -99,7 +99,7 @@ with `SetLimit` for bounded, cancellation-on-first-error shard processing (honou
 ### Build summary (implemented)
 
 Every run writes `<workdir>/data/reports/build_summary.json` (schema `dakp.build_summary.v1`),
-produced by [`pipeline._write_build_summary`](../src/dakp_pipeline/pipeline.py). It records
+produced by [`runtime.write_build_summary`](../src/dakp_pipeline/runtime.py). It records
 the profile, generated-at timestamp, workdir, per-table summary (name/path/rows/`artifact_id`),
 the Tablassert handoff refs, and the **Translator-readiness contract** result
 (`translator_contract.ok`, `problems[]`, per-table `rows` + `missing_columns`):
