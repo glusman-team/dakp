@@ -50,10 +50,7 @@ def test_faers_text_records_skip_blank_indication_and_fallback_id() -> None:
     )
     records = text_records_from_faers_cases(frame)
     # Blank/whitespace indications are skipped; record id falls back to primaryid when absent.
-    assert [(r.text, r.source_record_id) for r in records] == [
-        ("hypercholesterolemia", "b3:one"),
-        ("headache", "p4"),
-    ]
+    assert [(r.text, r.source_record_id) for r in records] == [("hypercholesterolemia", "b3:one"), ("headache", "p4")]
     assert all(r.source_table == "faers_cases" and r.text_field == "indication" for r in records)
 
 
@@ -85,10 +82,7 @@ def test_resolve_mention_candidates_no_matches_yields_empty_frame() -> None:
 
 
 def test_resolve_mention_candidates_counts_occurrences_of_unique_string() -> None:
-    records = [
-        TextRecord("t", "r1", "section_text", "asthma"),
-        TextRecord("t", "r2", "section_text", "asthma and asthma"),
-    ]
+    records = [TextRecord("t", "r1", "section_text", "asthma"), TextRecord("t", "r2", "section_text", "asthma and asthma")]
     frame = resolve_mention_candidates(records, _matcher())
     assert frame.height == 1
     row = frame.row(0, named=True)

@@ -9,14 +9,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from dakp_pipeline.ner.dictionary import (
-    DictionaryEntry,
-    DictionaryIndex,
-    infer_source,
-    normalize_text,
-    normalize_with_map,
-    semantic_group_for,
-)
+from dakp_pipeline.ner.dictionary import DictionaryEntry, DictionaryIndex, infer_source, normalize_text, normalize_with_map, semantic_group_for
 
 # --- normalization --------------------------------------------------------------
 

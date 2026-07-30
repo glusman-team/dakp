@@ -38,13 +38,7 @@ def test_constructor_dedups_and_orders_terms_per_key() -> None:
 
 
 def test_from_frame_skips_rows_without_name_or_text() -> None:
-    frame = pl.DataFrame(
-        {
-            "name": ["asthma", "", "   "],
-            "curie": ["MONDO:1", "MONDO:2", "MONDO:3"],
-            "category": ["Disease", "Disease", "Disease"],
-        }
-    )
+    frame = pl.DataFrame({"name": ["asthma", "", "   "], "curie": ["MONDO:1", "MONDO:2", "MONDO:3"], "category": ["Disease", "Disease", "Disease"]})
     backend = MockFullmapBackend.from_frame(frame)
     assert len(backend) == 1
     assert backend.resolve_many(["asthma"]) != {}

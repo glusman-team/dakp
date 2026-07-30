@@ -9,14 +9,7 @@ candidate entries per span, section propagation, and determinism.
 from __future__ import annotations
 
 from dakp_pipeline.ner.dictionary import DictionaryEntry, DictionaryIndex
-from dakp_pipeline.ner.lexical import (
-    DEFAULT_IGNORE_TERMS,
-    DIRECT_SCORE,
-    LEGACY_SYNONYMS,
-    SYNONYM_SCORE,
-    LexicalMatcher,
-    _find_word_bounded,
-)
+from dakp_pipeline.ner.lexical import DEFAULT_IGNORE_TERMS, DIRECT_SCORE, LEGACY_SYNONYMS, SYNONYM_SCORE, LexicalMatcher, _find_word_bounded
 
 
 def _entry(normalized: str, curie: str, category: str = "Disease", source: str = "MONDO", name: str | None = None) -> DictionaryEntry:

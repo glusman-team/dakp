@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import sys
 import types
+from dataclasses import FrozenInstanceError
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -75,7 +76,8 @@ def test_mock_backend_greedy_longest_first_skips_overlapping_shorter_term() -> N
     text = "peptic ulcer disease"
     spans = backend.extract(text, ["disease"])
     assert [s.text for s in spans] == ["peptic ulcer disease"]
-    assert spans[0].start == 0 and spans[0].end == len(text)
+    assert spans[0].start == 0
+    assert spans[0].end == len(text)
 
 
 def test_mock_backend_non_overlapping_repeat_and_adjacent_terms() -> None:
@@ -86,9 +88,7 @@ def test_mock_backend_non_overlapping_repeat_and_adjacent_terms() -> None:
 
 
 def test_mock_backend_all_entity_types_and_custom_score() -> None:
-    backend = MockNERBackend(
-        {"asthma": TYPE_DISEASE, "rash": TYPE_PHENOTYPE, "aspirin": TYPE_CHEMICAL, "ibuprofen": TYPE_DRUG}, score=0.5
-    )
+    backend = MockNERBackend({"asthma": TYPE_DISEASE, "rash": TYPE_PHENOTYPE, "aspirin": TYPE_CHEMICAL, "ibuprofen": TYPE_DRUG}, score=0.5)
     text = "asthma rash aspirin ibuprofen"
     spans = backend.extract(text, [])
     assert {s.type for s in spans} == {TYPE_DISEASE, TYPE_PHENOTYPE, TYPE_CHEMICAL, TYPE_DRUG}
@@ -160,7 +160,7 @@ class _FakeGLiNERModel:
 
 
 class _FakeGLiNER:
-    loaded_from: list[str] = []
+    loaded_from: ClassVar[list[str]] = []
     model = _FakeGLiNERModel([])
 
     @staticmethod
@@ -308,6 +308,6 @@ def test_canonical_type_unknown_and_whitespace_labels() -> None:
 
 def test_entity_span_is_frozen_and_hashable() -> None:
     span = EntitySpan(text="asthma", start=0, end=6, type=TYPE_DISEASE, score=1.0)
-    with pytest.raises(Exception):  # noqa: B017 - frozen dataclass rejects assignment
+    with pytest.raises(FrozenInstanceError):
         span.score = 0.5  # type: ignore[misc]
     assert isinstance(hash(span), int)
