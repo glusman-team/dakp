@@ -7,9 +7,10 @@
 # AIRFLOW_HOME, AIRFLOW_PORT, QUARTER_LIMIT, RELEASE_LIMIT, LOG_LEVEL, DOWNLOAD_POOL, EXTRACT_POOL.
 # QUARTER_LIMIT/RELEASE_LIMIT empty => profile default (prod default = unbounded full build).
 #
-# Builds + packs the Go bundle, starts Airflow (standalone) with the ExecutableCoordinator
-# configured, sets the dakp_config Variable, triggers the dakp_build DAG, waits for it to finish,
-# and prints the build-summary path. Idempotent: reuses a running Airflow if one is already up.
+# Preflight-verifies the Airflow install (self-heals a corrupt venv), builds + packs the Go
+# bundle, starts Airflow (standalone) with the ExecutableCoordinator configured, sets the
+# dakp_config Variable, triggers the dakp_build DAG, waits for it to finish, and prints the
+# build-summary path. Idempotent: reuses a running Airflow if one is already up.
 #
 # Port 8090 is the default because 8080 is commonly taken (e.g. by the aoe daemon on dev hosts).
 set -uo pipefail
@@ -38,6 +39,23 @@ PIDFILE="$AIRFLOW_HOME/standalone.pid"
 BASE_URL="http://127.0.0.1:$PORT"
 
 mkdir -p "$AIRFLOW_HOME" "$WORKDIR"
+
+# --- 0. preflight: verify the Airflow install is intact (self-heal if corrupt) -
+# A corrupted venv (e.g. bit-rot on a RAID-backed disk or a tainted wheel in the uv cache) makes
+# `import airflow` die inside airflow's own config_templates/config.yml with a cryptic yaml
+# ReaderError ("unacceptable character #x0080"). Detect that and reinstall the owning package
+# instead of crashing with an unreadable traceback. Cheap on the healthy path (~2s).
+#
+# NOTE: that file ships in `apache-airflow-core`, NOT the `apache-airflow` meta-package (Airflow 3
+# splits them) — reinstalling `apache-airflow` alone is a no-op that leaves the corrupt file in place.
+airflow_healthy() { uv run python -c "import airflow" >/dev/null 2>&1; }
+if ! airflow_healthy; then
+  echo ">>> [preflight] Airflow install is broken; reinstalling apache-airflow-core"
+  uv sync --reinstall-package apache-airflow-core
+  # If a corrupt uv cache re-supplies the bad bytes, drop the cached copy and re-fetch it.
+  airflow_healthy || { uv cache clean apache-airflow-core && uv sync --reinstall-package apache-airflow-core; }
+  airflow_healthy || { echo "!!! Airflow still fails to import after reinstall; inspect .venv (try: uv sync --reinstall)"; exit 1; }
+fi
 
 # --- Airflow config (env vars; AIRFLOW__<SECTION>__<KEY>) ---------------------
 export AIRFLOW__CORE__DAGS_FOLDER="$REPO_ROOT/src/dakp_pipeline/dags"
