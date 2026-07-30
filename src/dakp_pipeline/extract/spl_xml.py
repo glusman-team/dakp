@@ -433,11 +433,13 @@ def _collect_sections(section_elems: list[ET.Element], warnings: list[str]) -> l
             candidate = _attr(code, "code")
             if not candidate:
                 continue
-            # Prefer the first code that looks like a LOINC (digit-dash-digit); fall back
-            # to the first code present (the mock fixture carries LOINC on the section).
-            if (not loinc and _looks_loinc(candidate)) or not loinc:
+            # Fall back to the first code present, but prefer a LOINC-shaped code
+            # (digit-dash-digit) if one appears (the mock fixture carries LOINC on the section).
+            if not loinc:
                 loinc = candidate
-            break
+            if _looks_loinc(candidate):
+                loinc = candidate
+                break
         loinc = loinc or _attr(sec, "loinc")  # mock stores LOINC directly on <section>
         name = _attr(sec, "name") or SECTION_CODE_NAMES.get(loinc, loinc)
         title_elem = next(_descendants(sec, "title"), None)
