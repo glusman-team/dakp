@@ -24,13 +24,10 @@ from dakp_pipeline import tablassert as _tablassert
 from dakp_pipeline.assertions import approved_treats, contraindications, observed_uses
 from dakp_pipeline.config import Profile, load_profile
 from dakp_pipeline.extract import drugsfda_products, faers_ascii, spl_xml
-from dakp_pipeline.io import schemas
-from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.io.manifests import OperationBlock, TableBlock
 from dakp_pipeline.logging_setup import bind, configure_logging
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.sources import dailymed, drugsfda, faers, medi
+from dakp_pipeline.sources import dailymed, drugsfda, faers
 from dakp_pipeline.tablassert import configs as _tablassert_configs
 from dakp_pipeline.translator import contract as translator_contract
 
@@ -98,19 +95,19 @@ def run_pipeline(
     dm_raw = dailymed.fetch(ctx)
     faers_raw = faers.fetch(ctx)
     drugsfda_raw = drugsfda.fetch(ctx)
-    medi_raw = medi.fetch(ctx)
-    log.info("sources acquired", dailymed=len(dm_raw), faers=len(faers_raw), drugsfda=len(drugsfda_raw), medi=len(medi_raw))
+    log.info("sources acquired", dailymed=len(dm_raw), faers=len(faers_raw), drugsfda=len(drugsfda_raw))
 
     # 2. Extract raw -> interim parquet tables.
     dm_ext = spl_xml.extract(dm_raw, ctx)
     faers_ext = faers_ascii.extract(faers_raw, ctx)
     drugsfda_ext = drugsfda_products.extract(drugsfda_raw, ctx)
-    medi_ext = _extract_medi(medi_raw, ctx)
 
-    # 3. Shape assertion tables (uncompressed TSV, Tablassert-facing).
+    # 3. Shape assertion tables (uncompressed TSV, Tablassert-facing). Contraindications are
+    #    text-mined from the DailyMed SPL contraindication sections via the configured NER
+    #    backend (resolved in _build_context and passed through ctx.params).
     approved = approved_treats.transform([*dm_ext, *drugsfda_ext], ctx)
     uses = observed_uses.transform([*faers_ext, *dm_ext], ctx)
-    contra = contraindications.transform([*medi_ext, *dm_ext], ctx)
+    contra = contraindications.transform([*dm_ext], ctx)
     assertion_refs = [*approved, *uses, *contra]
 
     # 4. Generate Tablassert Graph + per-table configs.
@@ -144,6 +141,10 @@ def _build_context(profile: Profile, wd: Workdir, fixture_root: Path | str | Non
     }
     if extra:
         params.update(extra)
+    # Configure the NER backend for DailyMed contraindication mining: the offline dictionary
+    # baseline by default, or a real GLiNER/SciSpacy backend when ``ner_backend_name`` selects
+    # one (needs the [ner] extra). Built once here and passed to the shaper via ctx.params.
+    params["ner_backend"] = contraindications.resolve_ner_backend(fixture, params)
     return TaskContext(
         profile=profile.name, workdir=wd.root, fixture_root=fixture, threads=profile.threads, memory_budget_gb=profile.memory_budget_gb, params=params
     )
@@ -166,38 +167,6 @@ def _load_disease_map(fixture_root: Path) -> dict[str, dict[str, str]]:
             "category": str(rec.get("category", "Disease") or "Disease"),
         }
     return mapping
-
-
-def _extract_medi(inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
-    """Normalize the MEDI contraindications TSV into an interim parquet table.
-
-    There is no dedicated ``extract/medi`` module in Milestone 1 (the MEDI fixture is
-    already a clean table); this in-runner normalization gives it a uniform parquet
-    artifact + manifest. Real MEDI extraction (sheet/row provenance, DailyMed support
-    scoring) lands in Milestone 3.
-    """
-    store = ArtifactStore(Workdir(ctx.workdir))
-    refs: list[ArtifactRef] = []
-    for ref in inputs:
-        # Accept the mock fixture (``medi_contraindications.tsv``) and the real release
-        # asset (``contraindicationList-<version>.xlsx``); mirrors extract.medi._looks_like_medi.
-        name = ref.uri.name.lower()
-        if "medi" not in name and "contraindication" not in name:
-            continue
-        frame = schemas.read_table(ref.uri)
-        out = Workdir(ctx.workdir).interim / "medi" / "contraindications.parquet"
-        rows_written = schemas.write_parquet(frame, out)
-        refs.append(
-            store.register(
-                out,
-                media_type=schemas.PARQUET_MEDIA_TYPE,
-                rows=rows_written,
-                inputs=[ref.blake3],
-                operation=OperationBlock(name="extract_medi"),
-                table=TableBlock(rows=rows_written),
-            )
-        )
-    return refs
 
 
 def _write_build_summary(

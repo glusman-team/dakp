@@ -35,12 +35,22 @@ _RUN_MODULE = importlib.import_module("dakp_pipeline.tablassert.run")
 
 TABLES = ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions")
 
-# assertion table -> (config basename, predicate, upstream chain, knowledge_level): the DINGO
-# translator-ingest provenance contract (../DINGO/tests/unit/ingests/dakp/test_dakp.py).
+INFORES_DAKP = "infores:multiomics-drugapprovals"
+AGENT_TYPE = "manual_validation_of_automated_agent"
+
+# assertion table -> (config basename, predicate, upstream chain, knowledge_level, agent_type):
+# the DINGO translator-ingest provenance contract (../DINGO/tests/unit/ingests/dakp/test_dakp.py).
+# Contraindications are text-mined from DailyMed (dailymed upstream, text_mining_agent).
 EXPECTED_PROVENANCE = {
-    "approved_treats_assertions": ("approved_treats", "treats", ["infores:dailymed", "infores:faers"], "knowledge_assertion"),
-    "faers_applied_to_treat_assertions": ("faers_applied_to_treat", "applied_to_treat", ["infores:faers", "infores:dailymed"], "observation"),
-    "contraindication_assertions": ("contraindications", "contraindicated_in", ["infores:medi", "infores:dailymed"], "knowledge_assertion"),
+    "approved_treats_assertions": ("approved_treats", "treats", ["infores:dailymed", "infores:faers"], "knowledge_assertion", AGENT_TYPE),
+    "faers_applied_to_treat_assertions": (
+        "faers_applied_to_treat",
+        "applied_to_treat",
+        ["infores:faers", "infores:dailymed"],
+        "observation",
+        AGENT_TYPE,
+    ),
+    "contraindication_assertions": ("contraindications", "contraindicated_in", ["infores:dailymed"], "knowledge_assertion", "text_mining_agent"),
 }
 
 # assertion table -> {annotation name: assertion column it must encode}. case_count maps to the
@@ -52,11 +62,12 @@ EXPECTED_ANNOTATIONS = {
         "clinical_approval_status": "clinical_approval_status",
     },
     "faers_applied_to_treat_assertions": {"number_of_cases": "case_count", "clinical_approval_status": "clinical_approval_status"},
-    "contraindication_assertions": {"supporting_spl_sets": "supporting_spl_sets", "medi_version": "medi_version", "source_score": "source_score"},
+    "contraindication_assertions": {
+        "supporting_spl_sets": "supporting_spl_sets",
+        "supporting_spl_documents": "supporting_spl_documents",
+        "source_score": "source_score",
+    },
 }
-
-INFORES_DAKP = "infores:multiomics-drugapprovals"
-AGENT_TYPE = "manual_validation_of_automated_agent"
 
 
 # --- helpers ----------------------------------------------------------------------
@@ -126,7 +137,7 @@ def test_column_letter_unknown_column_raises() -> None:
 
 @pytest.mark.parametrize("table", TABLES)
 def test_table_config_structure(table: str) -> None:
-    _basename, predicate, upstream, knowledge_level = EXPECTED_PROVENANCE[table]
+    _basename, predicate, upstream, knowledge_level, agent_type = EXPECTED_PROVENANCE[table]
     config = tablassert_configs.table_config(table)
 
     # text source over the uncompressed assertion TSV (tab delimiter; url required by the model).
@@ -151,7 +162,7 @@ def test_table_config_structure(table: str) -> None:
     assert override["infores"] == INFORES_DAKP
     assert override["upstream_resource_ids"] == upstream
     assert override["knowledge_level"] == knowledge_level
-    assert override["agent_type"] == AGENT_TYPE
+    assert override["agent_type"] == agent_type
     assert "publication" not in config["provenance"]
 
 

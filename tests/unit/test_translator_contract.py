@@ -136,11 +136,11 @@ def test_missing_provenance_presence_isolated() -> None:
     assert [(p.code, p.field) for p in problems] == [(MISSING_PROVENANCE, "primary_knowledge_source/sources")]
 
 
-def test_missing_family_upstream_names_medi() -> None:
+def test_missing_family_upstream_names_dailymed() -> None:
     report = validate_kgx(_load("broken_nodes.jsonl"), _load("broken_edges.jsonl"))
     problems = _by_entity(report, "uuid-broken-e7")
     assert [p.code for p in problems] == [MISSING_PROVENANCE]
-    assert "infores:medi" in problems[0].message
+    assert "infores:dailymed" in problems[0].message
 
 
 def test_missing_required_edge_fields_isolated() -> None:

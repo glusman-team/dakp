@@ -2,7 +2,7 @@
 
 Asserts the generated RIG matches the structure/conventions of
 ``../DINGO/src/translator_ingest/ingests/dakp/dakp_rig.yaml``: required top-level sections,
-the DAKP source infores, DailyMed/FAERS/MEDI supporting sources, the three edge families with
+the DAKP source infores, DailyMed/FAERS supporting sources, the three edge families with
 chemical/drug -> disease/phenotype category compatibility (kept in sync with the KGX contract),
 and node identifier types. YAML serialization is dependency-free; validity is checked via an
 optional ``yaml`` round-trip when the library happens to be present.
@@ -34,9 +34,9 @@ def test_source_info_is_the_dakp_infores() -> None:
     assert source["terms_of_use_info"]["terms_of_use_description"]
 
 
-def test_supporting_data_sources_are_dailymed_faers_medi() -> None:
+def test_supporting_data_sources_are_dailymed_faers() -> None:
     sources = generate_rig()["supporting_data_source_info"]
-    assert [source["infores_id"] for source in sources] == ["infores:dailymed", "infores:faers", "infores:medi"]
+    assert [source["infores_id"] for source in sources] == ["infores:dailymed", "infores:faers"]
     for source in sources:
         assert source["name"]
         assert source["description"]
@@ -86,7 +86,6 @@ def test_rig_yaml_is_deterministic_and_carries_required_markers() -> None:
         "infores:multiomics-drugapprovals",
         "infores:dailymed",
         "infores:faers",
-        "infores:medi",
         "biolink:treats",
         "biolink:applied_to_treat",
         "biolink:contraindicated_in",

@@ -1,101 +1,198 @@
-"""Contraindication assertion aggregation (MEDI + DailyMed support, Milestone 5).
+"""Contraindication assertion aggregation — text-mined from DailyMed SPL.
 
-Builds ``contraindication_assertions.tsv``: drug→condition contraindication assertions.
+Builds ``contraindication_assertions.tsv``: drug→condition contraindication assertions
+**mined directly** from DailyMed SPL "Contraindications" sections (LOINC ``34070-3``) using
+a configurable NER backend (PLAN.md "Phase 4: NER / entity resolution strategy"). This
+replaces the former externally-sourced contraindication list: contraindications are now
+extracted from the label text itself, which yields better coverage and DailyMed-grounded
+provenance.
 
-Aggregation rule (explicit and tested)
----------------------------------------
-Each MEDI contraindication row becomes a ``biolink:contraindicated_in`` assertion. DailyMed
-contraindication-section support is attached **first-scope**: the SPL sets whose active ingredient
-matches the MEDI drug (case-insensitive) and that carry a contraindication section (LOINC
-``34070-3``) are collected into ``supporting_spl_sets``. Rows are deduplicated/aggregated by
-``(subject, object)`` — ``supporting_spl_sets`` unioned, ``source_score`` taking the max.
+Mining rule (explicit and tested)
+---------------------------------
+For every SPL set that carries a contraindication section **and** at least one active
+ingredient, run the NER backend over the section text
+(:func:`~dakp_pipeline.ner.backends.extract_contraindication_diseases`) to extract
+disease/phenotype mentions; pair each mention with each active ingredient of that set to
+form a ``biolink:contraindicated_in`` assertion (ingredient = subject, mention = object).
+Rows are aggregated by ``(subject_text, object_text)``: ``supporting_spl_sets`` and
+``supporting_spl_documents`` are unioned, ``source_score`` takes the max NER span score.
+Object CURIE/name/category are resolved from the lexical disease baseline (``disease_map``)
+where the mined mention is known (text-first; CURIEs populated only where available).
 
-The shaper reads either the canonical MEDI extractor columns (``normalized_drug_id`` …) or the
-legacy fixture/shim columns (``final_normalized_drug_id`` …) via column aliases. Subject/object
-CURIEs are populated only where MEDI already provides ids; the lexical disease baseline fills any
-remaining object gap. ``medi_version`` comes from the row, then context, then a profile default.
+Backend selection (:func:`resolve_ner_backend`)
+-----------------------------------------------
+``params["ner_backend"]`` (an :class:`~dakp_pipeline.ner.backends.NERBackend` instance) wins;
+else ``params["ner_backend_name"]`` selects one via
+:func:`~dakp_pipeline.ner.backends.get_backend` (``mock|dictionary|gliner|scispacy`` — the
+real GLiNER/SciSpacy backends need the ``[ner]`` extra); else the offline default is the
+deterministic :class:`~dakp_pipeline.ner.backends.DictionaryNERBackend` built from the
+ontology fixture (``<fixture_root>/ontology/disease_map.tsv``), falling back to an empty
+:class:`~dakp_pipeline.ner.backends.MockNERBackend`. Constructing any backend is import-free,
+so the base install + test suite run with the ``[ner]`` extra NOT installed.
+
+Provenance: contraindications are text-mined from DailyMed, so
+``primary_knowledge_source = infores:multiomics-drugapprovals``,
+``upstream_resource_ids = infores:dailymed``, ``agent_type = text_mining_agent`` (the DAKP
+RIG lists ``text_mining_agent`` for ``contraindicated_in``), ``knowledge_level =
+knowledge_assertion``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
-import polars as pl
-
-from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_MEDI, KL_ASSERTION, join_pipe, match_diseases, row_for
-from dakp_pipeline.assertions.evidence import DailyMedEvidence, build_dailymed_evidence, find_table, pick, sorted_pipe, write_assertion_table
+from dakp_pipeline.assertions import INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, match_diseases, row_for
+from dakp_pipeline.assertions.evidence import build_dailymed_evidence, find_table, sorted_pipe, write_assertion_table
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
+from dakp_pipeline.ner.backends import (
+    TYPE_PHENOTYPE,
+    DictionaryNERBackend,
+    EntitySpan,
+    MockNERBackend,
+    NERBackend,
+    canonical_type,
+    extract_contraindication_diseases,
+    get_backend,
+)
 
 _TABLE = "contraindication_assertions"
 _PREDICATE = "biolink:contraindicated_in"
-_MEDI_FILE = "contraindications.parquet"
-_MOCK_DEFAULT_VERSION = "MEDI-0.0-mock"
+_INGREDIENTS_FILE = "spl_ingredients.parquet"
+_ONTOLOGY_FIXTURE = Path("ontology") / "disease_map.tsv"
+
+#: Agent type for text-mined contraindications (matches the DAKP RIG ``contraindicated_in``).
+AT_TEXT_MINING = "text_mining_agent"
+
+
+def resolve_ner_backend(fixture_root: Path | str | None, params: Mapping[str, Any]) -> NERBackend:
+    """Resolve the contraindication-mining NER backend (configurable; offline by default).
+
+    Priority: an injected ``params["ner_backend"]`` instance -> ``params["ner_backend_name"]``
+    via :func:`get_backend` (``mock|dictionary|gliner|scispacy``) -> the deterministic
+    dictionary baseline over the ontology fixture -> an empty mock backend. Never imports a
+    heavy ``[ner]`` dep at construction time.
+    """
+    backend = params.get("ner_backend")
+    if backend is not None:
+        return backend  # type: ignore[no-any-return]
+    name = str(params.get("ner_backend_name") or "").strip().lower()
+    if name:
+        return get_backend(name)
+    if fixture_root is not None:
+        ontology = Path(fixture_root) / _ONTOLOGY_FIXTURE
+        if ontology.exists():
+            return DictionaryNERBackend.from_tsv(ontology)
+    return MockNERBackend()
 
 
 class ContraindicationsShaper:
     def transform(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
         disease_map: dict[str, dict[str, str]] = ctx.params.get("disease_map", {})  # type: ignore[assignment]
-        dailymed = build_dailymed_evidence(inputs)
-        medi_frame = find_table(inputs, _MEDI_FILE)
-        default_version = str(ctx.params.get("medi_version") or (_MOCK_DEFAULT_VERSION if ctx.profile == "mock" else "unknown"))
-        rows = build_contraindication_rows(medi_frame, dailymed, disease_map, default_version)
+        backend = resolve_ner_backend(ctx.fixture_root, ctx.params)
+        rows = build_contraindication_rows(inputs, backend, disease_map)
         return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_contraindications")
 
 
 def build_contraindication_rows(
-    medi_frame: pl.DataFrame | None, dailymed: DailyMedEvidence, disease_map: Mapping[str, Mapping[str, str]], default_version: str
+    inputs: Iterable[ArtifactRef], backend: NERBackend, disease_map: Mapping[str, Mapping[str, str]]
 ) -> list[dict[str, str]]:
-    """Aggregate MEDI contraindication rows + DailyMed support into assertion rows (deterministic)."""
-    if medi_frame is None:
-        return []
+    """Mine DailyMed contraindication sections into assertion rows (deterministic).
+
+    For each SPL set with a contraindication section and >=1 active ingredient, extract
+    disease/phenotype mentions from the section text and pair each with each active
+    ingredient. Aggregated by ``(subject_text, object_text)`` and sorted for stable output.
+    """
+    evidence = build_dailymed_evidence(inputs)
+    ingredients_by_set = _active_ingredients_by_set(inputs)
 
     aggregated: dict[tuple[str, str], dict[str, Any]] = {}
-    for rec in medi_frame.iter_rows(named=True):
-        subject_text = pick(rec, "active_ingredient", "normalized_drug_label", "drug_name")
-        object_text = pick(rec, "disease_contraindicated", "contraindicated_condition", "contraindication_text")
-        if not subject_text or not object_text:
+    for set_id in sorted(evidence.contraindication_docs):
+        ingredients = ingredients_by_set.get(set_id, [])
+        if not ingredients:
             continue
-
-        subject_curie = pick(rec, "normalized_drug_id", "final_normalized_drug_id")
-        subject_name = pick(rec, "normalized_drug_label", "final_normalized_drug_label", "drug_name", "active_ingredient") or subject_text
-        object_curie = pick(rec, "normalized_disease_id", "final_normalized_disease_id")
-        object_name = pick(rec, "normalized_disease_label", "final_normalized_disease_label")
-        object_category = "Disease"
-        if not object_curie or not object_name:
-            matches = match_diseases(object_text, disease_map)
-            if matches:
-                object_curie = object_curie or matches[0]["curie"]
-                object_name = object_name or matches[0]["name"]
-                object_category = matches[0]["category"]
-        object_name = object_name or object_text
-
-        key = (subject_text, object_text)
-        agg = aggregated.setdefault(
-            key,
-            {
-                "subject_text": subject_text,
-                "subject_curie": subject_curie,
-                "subject_name": subject_name,
-                "object_text": object_text,
-                "object_curie": object_curie,
-                "object_name": object_name,
-                "object_category": object_category,
-                "sets": [],
-                "scores": [],
-                "medi_version": pick(rec, "medi_version") or default_version,
-            },
-        )
-        agg["sets"].extend(dailymed.contraindication_sets_for_drug(subject_text))
-        score = pick(rec, "source_score")
-        if score:
-            agg["scores"].append(score)
-        if not agg["subject_curie"] and subject_curie:
-            agg["subject_curie"] = subject_curie
-        if not agg["object_curie"] and object_curie:
-            agg["object_curie"] = object_curie
+        for doc_id, text in evidence.contraindication_docs[set_id]:
+            for span in extract_contraindication_diseases(text, backend):
+                object_text = span.text.strip()
+                if not object_text:
+                    continue
+                for ingredient_name, ingredient_unii in ingredients:
+                    _accumulate(aggregated, set_id, doc_id, ingredient_name, ingredient_unii, object_text, span, disease_map)
 
     return [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]
+
+
+def _active_ingredients_by_set(inputs: Iterable[ArtifactRef]) -> dict[str, list[tuple[str, str]]]:
+    """Map ``spl_set_id`` -> sorted ``[(ingredient_name, ingredient_unii)]`` for active ingredients.
+
+    Reads ``spl_ingredients.parquet`` directly (rather than the single-ingredient-per-set
+    evidence index) so a combination product pairs a mention with *every* active moiety.
+    Deterministic: de-duplicated and sorted per set.
+    """
+    ingredients = find_table(list(inputs), _INGREDIENTS_FILE)
+    by_set: dict[str, list[tuple[str, str]]] = {}
+    if ingredients is None:
+        return by_set
+    seen: set[tuple[str, str, str]] = set()
+    for rec in ingredients.iter_rows(named=True):
+        if str(rec.get("role") or "").strip().lower() != "active":
+            continue
+        set_id = str(rec.get("spl_set_id") or "").strip()
+        name = str(rec.get("ingredient_name") or "").strip()
+        unii = str(rec.get("ingredient_unii") or "").strip()
+        if not set_id or not name:
+            continue
+        key = (set_id, name.lower(), unii)
+        if key in seen:
+            continue
+        seen.add(key)
+        by_set.setdefault(set_id, []).append((name, unii))
+    return {set_id: sorted(pairs) for set_id, pairs in by_set.items()}
+
+
+def _accumulate(
+    aggregated: dict[tuple[str, str], dict[str, Any]],
+    set_id: str,
+    doc_id: str,
+    ingredient_name: str,
+    ingredient_unii: str,
+    object_text: str,
+    span: EntitySpan,
+    disease_map: Mapping[str, Mapping[str, str]],
+) -> None:
+    """Add one (ingredient, mention) observation to the ``(subject, object)`` aggregate."""
+    key = (ingredient_name, object_text)
+    agg = aggregated.setdefault(
+        key,
+        {
+            "subject_text": ingredient_name,
+            "subject_curie": ingredient_unii,
+            "subject_name": ingredient_name,
+            "object_text": object_text,
+            "object_curie": "",
+            "object_name": object_text,
+            "object_category": _category_for_type(span.type),
+            "sets": [],
+            "docs": [],
+            "scores": [],
+        },
+    )
+    agg["sets"].append(set_id)
+    agg["docs"].append(doc_id)
+    agg["scores"].append(span.score)
+    # Resolve the mined mention to a canonical disease/phenotype where the baseline knows it.
+    if not agg["object_curie"]:
+        matches = match_diseases(object_text, disease_map)
+        if matches:
+            agg["object_curie"] = matches[0]["curie"]
+            agg["object_name"] = matches[0]["name"] or object_text
+            agg["object_category"] = matches[0]["category"] or agg["object_category"]
+
+
+def _category_for_type(span_type: str) -> str:
+    """Biolink object category for a canonical NER span type (phenotype vs disease)."""
+    return "PhenotypicFeature" if canonical_type(span_type) == TYPE_PHENOTYPE else "Disease"
 
 
 def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
@@ -111,29 +208,22 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         object_name=agg["object_name"],
         object_category=agg["object_category"],
         supporting_spl_sets=sorted_pipe(agg["sets"]),
-        medi_version=agg["medi_version"],
+        supporting_spl_documents=sorted_pipe(agg["docs"]),
         source_score=_max_score(agg["scores"]),
         knowledge_level=KL_ASSERTION,
-        agent_type=AT_MANUAL,
+        agent_type=AT_TEXT_MINING,
         primary_knowledge_source=INFORES_DAKP,
-        upstream_resource_ids=join_pipe(INFORES_MEDI, INFORES_DAILYMED),
+        upstream_resource_ids=INFORES_DAILYMED,
     )
 
 
-def _max_score(scores: list[str]) -> str:
-    """Highest source score, preserving the source's own string formatting ("" if none)."""
+def _max_score(scores: list[float]) -> str:
+    """Highest NER span score as a deterministic string ("" if none)."""
     if not scores:
         return ""
-
-    def numeric(value: str) -> float:
-        try:
-            return float(value)
-        except ValueError:
-            return float("-inf")
-
-    return max(scores, key=numeric)
+    return f"{max(scores):g}"
 
 
 transform = ContraindicationsShaper().transform
 
-__all__ = ["ContraindicationsShaper", "build_contraindication_rows", "transform"]
+__all__ = ["AT_TEXT_MINING", "ContraindicationsShaper", "build_contraindication_rows", "resolve_ner_backend", "transform"]

@@ -11,8 +11,8 @@ Measurements (pure stdlib + the existing pipeline; no new dependencies):
   generation, the Tablassert handoff, and the translator contract) are *temporarily* wrapped
   so each call is timed and counted. The wrappers are installed for the duration of the run
   and restored afterwards; the stage modules themselves are never modified. Time spent in
-  pipeline-internal helpers that are not module-level stage entry points (e.g. the in-runner
-  MEDI normalization) is reported as ``overhead_wall_seconds`` = total - instrumented stages.
+  pipeline-internal helpers that are not module-level stage entry points (e.g. context
+  construction) is reported as ``overhead_wall_seconds`` = total - instrumented stages.
 * **peak memory** — ``resource.getrusage(RUSAGE_SELF).ru_maxrss`` high-water mark, converted
   to MB (KiB on Linux, bytes on macOS).
 * **rows / throughput** — assertion-table rows produced per run and rows-per-second.
@@ -48,7 +48,7 @@ from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.logging_setup import bind
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.pipeline import PipelineResult, run_pipeline
-from dakp_pipeline.sources import dailymed, drugsfda, faers, medi
+from dakp_pipeline.sources import dailymed, drugsfda, faers
 from dakp_pipeline.tablassert import configs as _tablassert_configs
 from dakp_pipeline.translator import contract as _translator_contract
 
@@ -62,7 +62,7 @@ STAGES: tuple[str, ...] = ("acquire", "extract", "shape", "configs", "tablassert
 # wrapped (non-invasively) to record wall-time + call count. ``ArtifactStore.ingest`` is
 # wrapped separately to attribute content-addressed cache hits/misses to the active stage.
 _STAGE_TARGETS: dict[str, tuple[tuple[Any, str], ...]] = {
-    "acquire": ((dailymed, "fetch"), (faers, "fetch"), (drugsfda, "fetch"), (medi, "fetch")),
+    "acquire": ((dailymed, "fetch"), (faers, "fetch"), (drugsfda, "fetch")),
     "extract": ((spl_xml, "extract"), (faers_ascii, "extract"), (drugsfda_products, "extract")),
     "shape": ((approved_treats, "transform"), (observed_uses, "transform"), (contraindications, "transform")),
     "configs": ((_tablassert_configs, "generate"),),

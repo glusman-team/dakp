@@ -18,8 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dakp",
         description=(
-            "Drug Approvals Knowledge Provider pipeline. Builds treatment and "
-            "contraindication assertion tables from DailyMed, Drugs@FDA, FAERS, and MEDI."
+            "Drug Approvals Knowledge Provider pipeline. Builds treatment and contraindication assertion tables from DailyMed, Drugs@FDA, and FAERS."
         ),
     )
     parser.add_argument("--version", action="version", version=f"dakp {__version__}")

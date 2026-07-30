@@ -2,8 +2,8 @@
 
 Produces DAKP RIG content matching the structure and conventions of
 ``../DINGO/src/translator_ingest/ingests/dakp/dakp_rig.yaml``: ``source_info``
-(``infores:multiomics-drugapprovals``), ``supporting_data_source_info`` (DailyMed / FAERS /
-MEDI), and ``target_info`` with ``edge_type_info`` (the three DAKP edge families) and
+(``infores:multiomics-drugapprovals``), ``supporting_data_source_info`` (DailyMed / FAERS),
+and ``target_info`` with ``edge_type_info`` (the three DAKP edge families) and
 ``node_type_info``.
 
 The edge/node category contract is imported from :mod:`dakp_pipeline.translator.contract`
@@ -24,7 +24,6 @@ from dakp_pipeline.translator.contract import (
     INFORES_DAILYMED,
     INFORES_DAKP,
     INFORES_FAERS,
-    INFORES_MEDI,
     PREDICATE_APPLIED_TO_TREAT,
     PREDICATE_CONTRAINDICATED_IN,
     PREDICATE_TREATS,
@@ -86,19 +85,6 @@ def _supporting_data_source_info() -> list[dict[str, Any]]:
                         "fda-adverse-event-reporting-system-faers-quarterly-data-extract-files"
                     ),
                     "description": "Quarterly data files containing adverse event reports",
-                }
-            ],
-        },
-        {
-            "infores_id": INFORES_MEDI,
-            "name": "MEDI",
-            "description": "MEDI contains contraindication information extracted from DailyMed documents",
-            "terms_of_use_info": {"terms_of_use_description": "NA"},
-            "relevant_files": [
-                {
-                    "file_name": "contraindicationList.xlsx",
-                    "location": "https://github.com/everycure-org/matrix-indication-list/releases/",
-                    "description": "Contraindications extracted from DailyMed",
                 }
             ],
         },

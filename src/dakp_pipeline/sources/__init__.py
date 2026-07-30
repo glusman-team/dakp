@@ -16,7 +16,7 @@ from dakp_pipeline.paths import Workdir
 def require_mock(ctx: TaskContext, source_name: str) -> None:
     """Raise ``NotImplementedError`` unless the profile is mock.
 
-    The mock profile loads fixtures; real DailyMed/FAERS/Drugs@FDA/MEDI acquisition is
+    The mock profile loads fixtures; real DailyMed/FAERS/Drugs@FDA acquisition is
     implemented in Milestone 2.
     """
     if ctx.profile != "mock":

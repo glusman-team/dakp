@@ -19,7 +19,7 @@ Two layers of validation:
      Disease/PhenotypicFeature object categories, matching ``../DINGO`` ``dakp_rig.yaml``
      ``edge_type_info``;
   5. **source provenance** — the ``infores:multiomics-drugapprovals`` chain plus the upstream
-     infores required per family (dailymed/faers/medi).
+     infores required per family (dailymed/faers).
 
 Problems are returned both as structured :class:`ContractProblem` records (``kgx_problems``)
 and as rendered strings (``problems``) so the existing build summary keeps working.
@@ -44,7 +44,6 @@ from dakp_pipeline.io.contracts import ArtifactRef
 INFORES_DAKP = "infores:multiomics-drugapprovals"
 INFORES_DAILYMED = "infores:dailymed"
 INFORES_FAERS = "infores:faers"
-INFORES_MEDI = "infores:medi"
 
 BIOLINK_PREFIX = "biolink:"
 
@@ -79,7 +78,7 @@ class EdgeFamily:
 EDGE_FAMILIES: dict[str, EdgeFamily] = {
     PREDICATE_TREATS: EdgeFamily(PREDICATE_TREATS, frozenset({INFORES_DAILYMED, INFORES_FAERS})),
     PREDICATE_APPLIED_TO_TREAT: EdgeFamily(PREDICATE_APPLIED_TO_TREAT, frozenset({INFORES_FAERS, INFORES_DAILYMED})),
-    PREDICATE_CONTRAINDICATED_IN: EdgeFamily(PREDICATE_CONTRAINDICATED_IN, frozenset({INFORES_MEDI, INFORES_DAILYMED})),
+    PREDICATE_CONTRAINDICATED_IN: EdgeFamily(PREDICATE_CONTRAINDICATED_IN, frozenset({INFORES_DAILYMED})),
 }
 
 # --- required KGX fields -----------------------------------------------------------
@@ -361,7 +360,6 @@ __all__ = [
     "INFORES_DAILYMED",
     "INFORES_DAKP",
     "INFORES_FAERS",
-    "INFORES_MEDI",
     "INVALID_NODE_CATEGORY",
     "INVALID_PREDICATE",
     "MISSING_EDGE_FIELD",

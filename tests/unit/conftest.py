@@ -12,7 +12,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from dakp_pipeline.extract import drugsfda_products, faers_ascii, medi, spl_xml
+from dakp_pipeline.extract import drugsfda_products, faers_ascii, spl_xml
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
@@ -71,8 +71,3 @@ def faers_refs(ctx: TaskContext) -> list[ArtifactRef]:
     """FAERS 24Q3 cases *without* the DELETE file, so all three cases (incl. Placebo) survive."""
     names = ("DEMO24Q3.txt", "DRUG24Q3.txt", "INDI24Q3.txt", "REAC24Q3.txt")
     return faers_ascii.extract([_ref(FIXTURE_ROOT / "faers" / name) for name in names], ctx)
-
-
-@pytest.fixture
-def medi_refs(ctx: TaskContext) -> list[ArtifactRef]:
-    return medi.extract([_ref(FIXTURE_ROOT / "medi" / "medi_contraindications.tsv")], ctx)
