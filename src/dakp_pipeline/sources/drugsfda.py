@@ -62,8 +62,7 @@ class DrugsFDAFetcher:
             download_drugsfda_zip(url, dest)
             ref, cache_hit = store.ingest(dest, media_type="application/zip", alias="drugsfda/drugsfda_data_files.zip", source=SourceBlock(url=url))
         finally:
-            if dest.exists():
-                dest.unlink()
+            dest.unlink(missing_ok=True)
 
         log.info("acquired Drugs@FDA zip", artifact_id=ref.blake3, cache_hit=cache_hit)
         return [ref]
