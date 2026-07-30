@@ -1,0 +1,4 @@
+PRIMARYID$DRUG_SEQ$DRUGNAME$ROLE_COD$NDA_NUM$PROD_AI$
+1001$1$Examplestatin$PS$012345$Examplestatin$
+1002$1$Advil$PS$017977$Ibuprofen$
+1003$1$Placebo$C$099999$Placebo$

@@ -1,0 +1,4 @@
+PRIMARYID$PT$
+1001$myalgia$
+1001$rhabdomyolysis$
+1002$nausea$
