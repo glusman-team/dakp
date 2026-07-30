@@ -1,6 +1,6 @@
 # Sources
 
-Per-source notes for the four first-scope sources (DailyMed, Drugs@FDA, FAERS, MEDI) plus
+Per-source notes for the three first-scope sources (DailyMed, Drugs@FDA, FAERS) plus
 the ontology dictionary baseline. For each: where the fixture lives, what the fetcher and
 extractor do today, the schema, and the real-acquisition target. Fetchers live in
 [`sources/`](../src/dakp_pipeline/sources/), extractors in [`extract/`](../src/dakp_pipeline/extract/).
@@ -134,35 +134,32 @@ NDA/BLA/ANDA variants with and without leading zeroes, plus lookup tables for pr
 names, ingredients, application numbers, marketing status, and product NDCs. Source:
 <https://www.accessdata.fda.gov/scripts/cder/daf/>.
 
-## MEDI
+## Contraindications (text-mined from DailyMed, not a fetched source)
 
-The MEDI / matrix-indication contraindication list — the primary source of
-contraindication assertions.
+Contraindication assertions are **mined directly** from DailyMed SPL "Contraindications"
+sections (LOINC `34070-3`) using a pluggable NER backend — there is no separate
+contraindication source to acquire. This replaces the former externally-sourced
+contraindication list.
 
 | | |
 | --- | --- |
-| Fixture | [`tests/fixtures/pipeline/medi/medi_contraindications.tsv`](../tests/fixtures/pipeline/medi/medi_contraindications.tsv) |
-| Fetcher | [`sources/medi.py`](../src/dakp_pipeline/sources/medi.py) `MEDIFetcher` — ingests `medi/medi_contraindications.tsv`, namespace `medi` |
-| Extractor | [`pipeline._extract_medi`](../src/dakp_pipeline/pipeline.py) (inline passthrough; no `extract/medi` module in Milestone 1) |
+| Input | the DailyMed `spl_sections.parquet` contraindication sections + `spl_ingredients.parquet` active ingredients |
+| Miner | [`assertions/contraindications.py`](../src/dakp_pipeline/assertions/contraindications.py) `build_contraindication_rows` |
+| NER backend | [`ner/backends.py`](../src/dakp_pipeline/ner/backends.py) `extract_contraindication_diseases` — `mock`/`dictionary` offline; `gliner`/`scispacy` via the `[ner]` extra |
 
-**Fixture shape:**
+**Mining.** For each SPL set with a contraindication section and ≥1 active ingredient, the
+NER backend extracts disease/phenotype mentions from the section text; each mention is paired
+with the set's active ingredient(s) to form a `biolink:contraindicated_in` assertion. Object
+CURIEs are resolved from the ontology dictionary baseline where the mention is known.
 
 ```text
-drug_name	contraindicated_condition	source_score
-Ibuprofen	asthma	0.9
-Ibuprofen	peptic ulcer disease	0.8
+section: "Contraindicated in patients with asthma or known hypersensitivity to ibuprofen."
+  -> Ibuprofen (UNII:WK2XYI10QM) --contraindicated_in--> asthma (MONDO:0004979)
 ```
 
-**Extraction.** The MEDI fixture is already a clean table, so Milestone 1 normalizes it to
-`data/interim/medi/contraindications.parquet` with a uniform manifest
-(`pipeline._extract_medi`). The [`contraindications`](../src/dakp_pipeline/assertions/contraindications.py)
-shaper reads `contraindicated_condition` (falling back to `contraindicated_disease`),
-preserves `source_score`, and tags `medi_version = "MEDI-0.x-mock"`.
-
-**Target real acquisition (Milestone 2–3).** The MEDI `contraindicationList.xlsx`, with
-sheet/row provenance and DailyMed support-scoring evidence (legacy
-`matrix/bin/studyContraindications.py`). Source:
-<https://github.com/everycure-org/matrix-indication-list/releases/>.
+**Provenance.** `primary_knowledge_source = infores:multiomics-drugapprovals`,
+`upstream_resource_ids = infores:dailymed`, `agent_type = text_mining_agent`,
+`knowledge_level = knowledge_assertion`.
 
 ## Ontology dictionary baseline (not a fetcher source)
 

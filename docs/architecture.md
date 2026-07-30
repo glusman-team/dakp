@@ -58,9 +58,6 @@ The Milestone-1 extractors are faithful-but-tiny:
 - [`drugsfda_products.extract`](../src/dakp_pipeline/extract/drugsfda_products.py) —
   normalizes the products TSV (lowercase columns, digit-only `appl_no`) into parquet.
 
-MEDI has no dedicated extractor in Milestone 1 (the fixture is already a clean table);
-`pipeline._extract_medi` normalizes it to a parquet artifact with a manifest for uniformity.
-
 > **Target vs now.** PLAN.md Phase 3 specifies three extraction output levels
 > (raw-normalized → entity/evidence → assertion-ready) and partitioned parquet by
 > release/quarter. The scaffold writes single parquet files per table; full partitioning,
@@ -86,7 +83,7 @@ provenance constants). The three first-scope families:
 | --- | --- | --- |
 | [`approved_treats`](../src/dakp_pipeline/assertions/approved_treats.py) | `approved_treats_assertions` | DailyMed SPL indications + Drugs@FDA approvals |
 | [`observed_uses`](../src/dakp_pipeline/assertions/observed_uses.py) | `faers_applied_to_treat_assertions` | FAERS case-level (drugname × indication) counts |
-| [`contraindications`](../src/dakp_pipeline/assertions/contraindications.py) | `contraindication_assertions` | MEDI contraindication rows + DailyMed support |
+| [`contraindications`](../src/dakp_pipeline/assertions/contraindications.py) | `contraindication_assertions` | DailyMed SPL contraindication sections (NER-mined) |
 
 Columns are declared in [`schemas.py`](../src/dakp_pipeline/io/schemas.py)
 (`ASSERTION_TABLES`) and enforced by the [`translator/contract.py`](../src/dakp_pipeline/translator/contract.py)

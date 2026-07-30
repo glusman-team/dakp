@@ -1,7 +1,7 @@
 # DAKP — Drug Approvals Knowledge Provider
 
 Reproducible `uv` Python pipeline that builds **treatment**, **observed-use**, and
-**contraindication** assertion tables from DailyMed, Drugs@FDA, FAERS, and MEDI, then
+**contraindication** assertion tables from DailyMed, Drugs@FDA, and FAERS, then
 hands them to [Tablassert](https://github.com/SkyeAv/Tablassert) for Translator KGX
 modeling. The full approved specification lives in [`PLAN.md`](./PLAN.md); this README is
 the operational entry point and links into [`docs/`](./docs).
@@ -42,7 +42,7 @@ Three Translator edge families are first-scope (see [Provenance semantics](#prov
 | --- | --- | --- | --- |
 | `biolink:treats` | drug → disease/phenotype | DailyMed + Drugs@FDA approvals; FAERS support | **primary** knowledge source |
 | `biolink:applied_to_treat` | drug → disease/phenotype | FAERS observed use; DailyMed support | **aggregator** over FAERS |
-| `biolink:contraindicated_in` | drug → disease/phenotype | MEDI; DailyMed support | **aggregator** over MEDI |
+| `biolink:contraindicated_in` | drug → disease/phenotype | DailyMed SPL contraindications (text-mined) | **aggregator**; text-mined from DailyMed |
 
 ## Quickstart (mocked, laptop-safe)
 
@@ -123,13 +123,12 @@ so it passes in CI with no network and no real Tablassert.
 implemented with the Airflow TaskFlow API. It is a thin wrapper around the same stage
 functions the pure-Python runner (`src/dakp_pipeline/pipeline.py`) calls, and is
 **import-safe without Airflow installed** (imports are guarded; no-op decorator
-fallbacks let `uv sync` + tests load the module). The 11-task graph:
+fallbacks let `uv sync` + tests load the module). The task graph:
 
 ```text
 acquire_sources ─┬─▶ extract_dailymed  ─┐
-                 ├─▶ extract_faers      ─┤
-                 ├─▶ extract_drugsfda   ─┼─▶ {shape_treatment_tables,
-                 └─▶ extract_medi       ─┘    shape_faers_use_tables,
+                 ├─▶ extract_faers      ─┼─▶ {shape_treatment_tables,
+                 └─▶ extract_drugsfda   ─┘    shape_faers_use_tables,
                                                  shape_contraindication_tables}
                                                 ─▶ generate_tablassert_configs
                                                 ─▶ run_tablassert
@@ -192,9 +191,11 @@ Tablassert config emits a matching `provenance.override` block
 | --- | --- | --- | --- | --- |
 | `treats` | `infores:multiomics-drugapprovals` | `infores:dailymed\|infores:faers` | `knowledge_assertion` | DAKP = **primary**; DailyMed + FAERS supporting |
 | `applied_to_treat` | `infores:multiomics-drugapprovals` | `infores:faers\|infores:dailymed` | `observation` | DAKP = **aggregator**; FAERS primary, DailyMed supporting |
-| `contraindicated_in` | `infores:multiomics-drugapprovals` | `infores:medi\|infores:dailymed` | `knowledge_assertion` | DAKP = **aggregator**; MEDI primary, DailyMed supporting |
+| `contraindicated_in` | `infores:multiomics-drugapprovals` | `infores:dailymed` | `knowledge_assertion` | DAKP = **aggregator**; text-mined from DailyMed |
 
-All three use `agent_type = manual_validation_of_automated_agent`. `clinical_approval_status`
+The treatment and observed-use families use `agent_type = manual_validation_of_automated_agent`;
+`contraindicated_in` is text-mined from DailyMed SPL and uses `agent_type = text_mining_agent`.
+`clinical_approval_status`
 is `approved_for_condition` for `treats` and `observed_use` for `applied_to_treat` (FAERS
 label/status behavior kept stable for the first rebuild; the exact legacy value is
 confirmed during the Milestone-5 audit). See
@@ -252,8 +253,8 @@ milestone.
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | 1 — Scaffold | project skeleton, BLAKE3 store, full mocked DAG, fixtures | ✅ this branch |
-| 2 — Acquisition | real DailyMed/FAERS/Drugs@FDA/MEDI downloaders w/ manifests | planned |
-| 3 — Extraction | streaming DailyMed/FAERS/Drugs@FDA/MEDI extraction + rejects/warnings | planned |
+| 2 — Acquisition | real DailyMed/FAERS/Drugs@FDA downloaders w/ manifests | planned |
+| 3 — Extraction | streaming DailyMed/FAERS/Drugs@FDA extraction + rejects/warnings | planned |
 | 4 — NER/mapping | dictionary + candidates + fullmap/Tablassert canonical resolution | planned |
 | 5 — Assertions | evidence-rich assertion aggregation rules + tests | planned |
 | 6 — Airflow DAG | TaskFlow wiring, XCom serialization, task reruns | scaffolded |

@@ -29,7 +29,7 @@ The per-table provenance is driven by `_TABLE_PROVENANCE` in `configs.py`:
 | --- | --- | --- | --- |
 | `approved_treats_assertions` | `treats` | `infores:dailymed`, `infores:faers` | `knowledge_assertion` |
 | `faers_applied_to_treat_assertions` | `applied_to_treat` | `infores:faers`, `infores:dailymed` | `observation` |
-| `contraindication_assertions` | `contraindicated_in` | `infores:medi`, `infores:dailymed` | `knowledge_assertion` |
+| `contraindication_assertions` | `contraindicated_in` | `infores:dailymed` | `knowledge_assertion` |
 
 Configs are emitted by **string templating** (no `pyyaml` dependency in the base install).
 Every config is itself content-addressed and manifest-recorded like any other artifact.
@@ -43,8 +43,8 @@ name: dakp
 version: "0.1.0"
 description: >-
   Drug Approvals Knowledge Provider: FDA-approved treatment relationships,
-  FAERS-observed applied-to-treat uses, and contraindications, modeled from
-  DailyMed, Drugs@FDA, FAERS, and MEDI.
+  FAERS-observed applied-to-treat uses, and contraindications text-mined from
+  DailyMed, modeled from DailyMed, Drugs@FDA, and FAERS.
 infores: infores:multiomics-drugapprovals
 fullmap: .fullmap
 tables:
@@ -119,13 +119,13 @@ modeled in the DINGO translator ingest (local sibling repo:
 | --- | --- | --- | --- | --- |
 | `treats` | **primary** knowledge source | — | DailyMed, FAERS | `infores:dailymed`, `infores:faers` |
 | `applied_to_treat` | **aggregator** knowledge source | FAERS (primary) | DailyMed | `infores:faers`, `infores:dailymed` |
-| `contraindicated_in` | **aggregator** knowledge source | MEDI (primary) | DailyMed | `infores:medi`, `infores:dailymed` |
+| `contraindicated_in` | **aggregator** knowledge source | DailyMed (text-mined) | — | `infores:dailymed` |
 
 In the DINGO ingest, the `sources` list becomes `RetrievalSource` objects: DAKP carries the
-`upstream_resource_ids`; FAERS / MEDI take `resource_role = primary_knowledge_source` for
-the observation/assertion families they originate; DailyMed is
-`supporting_data_source`. All three families use
-`agent_type = manual_validation_of_automated_agent`.
+`upstream_resource_ids`; FAERS takes `resource_role = primary_knowledge_source` for the
+observation family it originates; DailyMed is `supporting_data_source`. The treatment and
+observed-use families use `agent_type = manual_validation_of_automated_agent`;
+`contraindicated_in` is text-mined from DailyMed and uses `agent_type = text_mining_agent`.
 
 > **Scaffold coverage.** The assertion tables carry `primary_knowledge_source` and
 > `upstream_resource_ids` today. The full DINGO source chain fields
