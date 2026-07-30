@@ -1062,3 +1062,27 @@ def test_full_pipeline_uses_mocked_sources(monkeypatch, tmp_path):
 
 - Check the latest `../Tablassert` API at implementation time and use it directly; do not block this plan on a future renamed ManualSource/ManualProvenance detail.
 - For this part of the DAG, only write local files, manifests, and reports. Do not design publication/deployment yet.
+
+## Milestone 9: Edge-case testing round (100% coverage)
+
+Added per user direction as the final phase, after Go integration + Airflow download tasks integrate.
+
+Goal: drive the test suite to **100% coverage** (or document genuinely-unreachable lines with `# pragma: no cover`) via a dedicated edge-case testing round.
+
+Approach:
+1. Measure baseline: `uv run pytest --cov=dakp_pipeline --cov-report=term-missing`.
+2. Add a coverage gate to `pyproject.toml` (`[tool.coverage.run]` source=dakp_pipeline, `[tool.coverage.report]` fail_under target).
+3. Add comprehensive edge-case tests across every module (primarily NEW `tests/unit/test_*_edge.py` files; touch source only for genuine bugs):
+   - **io**: artifact_store (cache hit/miss, collisions, tree-hash determinism), content_hash (empty file/dir, unicode, symlink skip), manifests (round-trip, missing/extra fields), contracts.
+   - **sources**: fetcher error paths, HTTP retry/backoff, malformed/missing inputs, mock-vs-real selection.
+   - **extract**: spl_xml malformed/partial XML + namespace variants; faers_ascii delimiter/`$`-trailing/CRLF/legacy `isr`/missing-column/encoding edge cases; drugsfda NDA/BLA/ANDA normalization corner cases (no prefix, all-zero, mixed).
+   - **ner**: backends on empty/short/whitespace text, unknown backend selection error, lazy-import error when `[ner]` extra absent, model_cache idempotency + corrupt cache.
+   - **assertions**: empty inputs, missing/extra columns, multi-NDA dedup, no-support edge cases, determinism.
+   - **tablassert**: config generation edge cases (missing columns, empty tables), runner subprocess failure path.
+   - **translator**: contract validation negative cases (missing node ref, bad category/predicate, missing provenance), RIG generation edge cases, regression guardrail failures.
+   - **benchmarks/release**: empty build output, missing tables, report-shape determinism.
+   - **pipeline/cli/dags**: unknown profile error, CLI arg validation, DAG task wiring without airflow.
+   - **workers/go_runner**: Go-unavailable error, subprocess non-zero exit, stdout/stderr parsing.
+4. Fan out as 2–3 parallel workers by module area (disjoint test files) to avoid collisions; integrate + run the full coverage gate.
+
+Acceptance: `uv run pytest --cov` reports the target coverage with no missing branches (or only explicitly-pragma'd unreachable lines); full gate (ruff/format/pyright + Go) stays green.
