@@ -19,7 +19,7 @@
 //     empty or contains a quote, tab, CR, or LF; embedded quotes are doubled. In
 //     particular an EMPTY field is written as the two literal characters "" (not nothing).
 //
-// Application-number normalization ports the legacy FAERS/bin/drug2indi.pl readNDAproducts
+// Application-number normalization ports the legacy ref/legacy/FAERS/bin/drug2indi.pl readNDAproducts
 // semantics (s/^(NDA|BLA|ANDA)0*(.+)/): the raw APPLICATIONNUMBER is preserved AND both
 // normalized forms are kept — digits with leading zeroes kept (appl_no, e.g. 012345) and
 // leading zeroes stripped (appl_no_stripped, e.g. 12345) — so NDA/BLA/ANDA variants join

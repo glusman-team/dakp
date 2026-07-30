@@ -9,11 +9,11 @@ Design notes:
 * Matching happens in *normalized* space (see :func:`dakp_pipeline.ner.dictionary.normalize_with_map`)
   and match spans are mapped back to **true offsets in the original text**, so
   ``mention_text == text[mention_start:mention_end]`` always holds.
-* The legacy ignore-term concept (``FAERS/bin/drug2indi.pl`` / ``listCases.pl``) is ported
+* The legacy ignore-term concept (``ref/legacy/FAERS/bin/drug2indi.pl`` / ``listCases.pl``) is ported
   as :data:`DEFAULT_IGNORE_TERMS`: a whole indication string in the ignore set suppresses
   the entire record, and an individual mention equal to an ignore term is dropped.
 * Legacy synonym fallbacks (``cardiac`` -> ``heart`` etc., from
-  ``DailyMed/bin/findTermsInIndications.pl``) are available opt-in via ``synonyms=`` and
+  ``ref/legacy/DailyMed/bin/findTermsInIndications.pl``) are available opt-in via ``synonyms=`` and
   keep true offsets (the reported surface form stays the original word).
 * Greedy longest-phrase-first matching keeps a shorter term from matching inside an
   already-matched longer phrase (e.g. ``pain`` inside ``peptic ulcer disease``).
@@ -32,7 +32,7 @@ DIRECT_SCORE = 1.0
 SYNONYM_SCORE = 0.9
 
 # Legacy FAERS indication strings that are not real indications (union of the active,
-# uncommented entries in FAERS/bin/drug2indi.pl and FAERS/bin/listCases.pl). Stored
+# uncommented entries in ref/legacy/FAERS/bin/drug2indi.pl and ref/legacy/FAERS/bin/listCases.pl). Stored
 # normalized; used for whole-field suppression and per-mention filtering.
 _LEGACY_IGNORE_RAW = (
     "product used for unknown indication",
@@ -55,7 +55,7 @@ _LEGACY_IGNORE_RAW = (
 
 DEFAULT_IGNORE_TERMS: frozenset[str] = frozenset(normalize_text(term) for term in _LEGACY_IGNORE_RAW)
 
-# Legacy synonym fallbacks (DailyMed/bin/findTermsInIndications.pl): whole-word
+# Legacy synonym fallbacks (ref/legacy/DailyMed/bin/findTermsInIndications.pl): whole-word
 # substitutions tried so e.g. "cardiac" text resolves a "heart ..." term. Opt-in.
 LEGACY_SYNONYMS: Mapping[str, str] = {"cardiac": "heart", "renal": "kidney", "hepatic": "liver"}
 

@@ -16,7 +16,7 @@ artifact manifest:
   ``getFullRelease.pl`` "extract XMLs into ``xmls/<bin>/...xml.gz``" step. ``release_limit``
   (profile/CLI) bounds how many releases a bounded smoke/sample run processes.
 
-The legacy ``DailyMed/bin/getFullRelease.pl`` is intentionally **not** replicated: it
+The legacy ``ref/legacy/DailyMed/bin/getFullRelease.pl`` is intentionally **not** replicated: it
 destructively stashed whole download directories (``rm -r $ddir.prev``; ``mv $ddir
 $ddir.prev``) before re-fetching. This fetcher never moves or deletes shared state — it
 only ever *adds* immutable, content-addressed artifacts and overwrites human-readable

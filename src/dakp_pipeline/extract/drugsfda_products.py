@@ -6,7 +6,7 @@ into normalized interim parquet tables, lookup tables, and one uncompressed TSV
 source-section table (``data/tabular/drugsfda_products.tsv``) for Tablassert handoff.
 
 Application-number normalization ports the semantics of the legacy
-``FAERS/bin/drug2indi.pl readNDAproducts`` (``s/^(NDA|BLA|ANDA)0*(.+)/``): the raw
+``ref/legacy/FAERS/bin/drug2indi.pl readNDAproducts`` (``s/^(NDA|BLA|ANDA)0*(.+)/``): the raw
 ``APPLICATIONNUMBER`` is preserved *and* both normalized forms are kept — digits with
 leading zeroes preserved (e.g. ``012345``) and leading zeroes stripped (e.g. ``12345``) —
 so NDA/BLA/ANDA variants join robustly with FAERS ``nda`` values regardless of padding.

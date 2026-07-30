@@ -1,7 +1,7 @@
 """Drugs@FDA data-files fetcher (Milestone 2).
 
 Acquires the FDA "Drugs@FDA Data Files" ZIP — the same artifact the legacy
-``DrugsFDA/bin/download.pl`` fetched from ``https://www.fda.gov/media/89850/download`` —
+``ref/legacy/DrugsFDA/bin/download.pl`` fetched from ``https://www.fda.gov/media/89850/download`` —
 content-addresses it with BLAKE3, and returns one :class:`ArtifactRef`.
 
 * ``mock`` profile: ingests tiny Products/Applications/Submissions fixtures so the
@@ -30,7 +30,7 @@ from dakp_pipeline.logging_setup import bind
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.sources import ingest_fixtures
 
-# The FDA "Drugs@FDA Data Files" ZIP (legacy DrugsFDA/bin/download.pl target).
+# The FDA "Drugs@FDA Data Files" ZIP (legacy ref/legacy/DrugsFDA/bin/download.pl target).
 DRUGSFDA_DATA_FILES_URL = "https://www.fda.gov/media/89850/download"
 
 # Fixture refs used by the mock profile; they mirror the real Products/Applications/

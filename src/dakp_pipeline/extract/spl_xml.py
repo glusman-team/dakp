@@ -18,7 +18,7 @@ tables under ``data/interim/dailymed/``:
 Plus an **uncompressed** ``data/tabular/dailymed_spl_sections.tsv`` (the section table in
 Tablassert-readable form).
 
-Field semantics are ported from ``DailyMed/bin/parseXML-xtree.py`` (HL7 v3 SPL) but as
+Field semantics are ported from ``ref/legacy/DailyMed/bin/parseXML-xtree.py`` (HL7 v3 SPL) but as
 clean, typed Python. The extractor handles two shapes:
 
 * **mock** — the namespace-free simplified fixture (direct ``<setId>`` /
@@ -345,7 +345,7 @@ def _parse_mock_document(elem: ET.Element) -> DocumentRecord:
 
 
 # --- HL7 v3 (real DailyMed) document parse -------------------------------------
-# Ports the xpath semantics of DailyMed/bin/parseXML-xtree.py onto ElementTree using
+# Ports the xpath semantics of ref/legacy/DailyMed/bin/parseXML-xtree.py onto ElementTree using
 # local-name traversal. This path is correct-by-construction but is not exercised by the
 # test suite (no real DailyMed XML is shipped with the repo).
 

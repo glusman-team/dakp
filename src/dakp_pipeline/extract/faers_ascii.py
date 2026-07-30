@@ -10,7 +10,7 @@ case-level join (:data:`_CASE_COLUMNS`) honoring:
   multiple quarters, only the most-recent quarter's rows survive; older rows move to the
   dedup audit table (ported from ``listCases.pl`` ``%prevSeenCase``).
 
-Join semantics are ported from ``ref/legacy FAERS/bin/listCases.pl`` (case rows are driven by
+Join semantics are ported from ``ref/legacy/FAERS/bin/listCases.pl`` (case rows are driven by
 ``INDI`` joined to ``DRUG`` on ``(primaryid, drug_seq == indi_drug_seq)``, with ``DEMO``
 reporter metadata, ``RPSR`` source, and ``REAC`` reactions ``$``-joined per case).
 

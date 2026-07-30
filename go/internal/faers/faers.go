@@ -7,7 +7,7 @@
 // the normalized-table column layout, the per-row source_record_id derivation, the
 // case-join semantics, the dedup/DELETE audits, and the uncompressed public TSV contract
 // (schemas.FAERS_CASES_COLUMNS) all match the Python reference. The join semantics are
-// themselves ported from ref/legacy FAERS/bin/listCases.pl (case rows are driven by INDI
+// themselves ported from ref/legacy/FAERS/bin/listCases.pl (case rows are driven by INDI
 // joined to DRUG on (primaryid, drug_seq == indi_drug_seq), with DEMO reporter metadata,
 // RPSR source, and REAC reactions `$`-joined per case).
 //

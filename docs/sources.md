@@ -57,7 +57,7 @@ Whitespace in section text is collapsed. Recognized LOINC section codes
 `section_name`, `section_text`, `active_ingredient_name`, `active_ingredient_unii`.
 
 **Target real acquisition (Milestone 2–3).** DailyMed full-release ZIPs (legacy
-`DailyMed/bin/getFullRelease.pl`), idempotent download with manifest/checksums and no
+`ref/legacy/DailyMed/bin/getFullRelease.pl`), idempotent download with manifest/checksums and no
 destructive stashing. Sharded by release ZIP → inner ZIP/XML bin. Streaming extraction into
 document/set/approval/ingredient/section/LOINC/evidence tables, partitioned by release/bin,
 retaining XML provenance and parse warnings. Source: <https://dailymed.nlm.nih.gov/dailymed/>.
@@ -98,7 +98,7 @@ digit-normalized so they join consistently with Drugs@FDA `ApplNo`. Output:
 `ingredient`, `nda`, `indication`, `effects`).
 
 **Target real acquisition (Milestone 2–3).** Quarterly FAERS ASCII ZIPs (legacy
-`FAERS/bin/getLatest.pl`), quarter discovery with a `quarter_limit` dev mode. Per-quarter
+`ref/legacy/FAERS/bin/getLatest.pl`), quarter discovery with a `quarter_limit` dev mode. Per-quarter
 `DEMO`/`DRUG`/`INDI`/`REAC`/`RPSR`/`DELETE` parquet tables plus case-level joins and
 dedup/delete audit tables; aggregate across quarters only after per-quarter artifacts are
 complete. Source: <https://fis.fda.gov/content/Exports/> (FAERS quarterly data files).
@@ -129,7 +129,7 @@ digit-normalizes `appl_no` for consistent joins with FAERS `nda`. Output:
 `drug_name`, `active_ingredient`, `marketing_status_name`.
 
 **Target real acquisition (Milestone 2–3).** Drugs@FDA download (legacy
-`DrugsFDA/bin/download.pl`), normalized product/application/submission tables preserving
+`ref/legacy/DrugsFDA/bin/download.pl`), normalized product/application/submission tables preserving
 NDA/BLA/ANDA variants with and without leading zeroes, plus lookup tables for proprietary
 names, ingredients, application numbers, marketing status, and product NDCs. Source:
 <https://www.accessdata.fda.gov/scripts/cder/daf/>.
