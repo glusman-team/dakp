@@ -43,8 +43,8 @@ subprocess is faked).
 ### Network / download errors on a non-mock profile
 
 `sample` and `prod` run the real stdlib-HTTP downloaders (DailyMed full releases, FAERS
-quarterly zips, Drugs@FDA data files, the MEDI release asset), so they need network access to
-the FDA/DailyMed/GitHub endpoints. A fetch failure raises loudly (no silent fixture fallback).
+quarterly zips, Drugs@FDA data files), so they need network access to the FDA/DailyMed
+endpoints. A fetch failure raises loudly (no silent fixture fallback).
 **Fix:** check connectivity/proxy, or validate the real path offline with the bounded smoke
 test above. Bound scope with `--quarter-limit` / `--release-limit` to keep a real run small.
 

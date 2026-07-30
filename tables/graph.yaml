@@ -3,7 +3,8 @@ version: "0.1.0"
 description: >-
   Drug Approvals Knowledge Provider: FDA-approved treatment
   relationships, FAERS-observed applied-to-treat uses, and
-  contraindications, modeled from DailyMed, Drugs@FDA, FAERS, and MEDI.
+  contraindications text-mined from DailyMed, modeled from
+  DailyMed, Drugs@FDA, and FAERS.
 infores: "infores:multiomics-drugapprovals"
 fullmap: ".fullmap"
 tables:

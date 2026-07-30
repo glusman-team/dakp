@@ -17,11 +17,9 @@ _EXPECTED_TASK_IDS = {
     "acquire_dailymed",
     "acquire_faers",
     "acquire_drugsfda",
-    "acquire_medi",
     "extract_dailymed",
     "extract_faers",
     "extract_drugsfda",
-    "extract_medi",
     "shape_treatment_tables",
     "shape_faers_use_tables",
     "shape_contraindication_tables",
@@ -49,7 +47,7 @@ def test_stage_callable_mapping_matches_run_pipeline() -> None:
     from dakp_pipeline import pipeline, tablassert
     from dakp_pipeline.assertions import approved_treats, contraindications, observed_uses
     from dakp_pipeline.extract import drugsfda_products, faers_ascii, spl_xml
-    from dakp_pipeline.sources import dailymed, drugsfda, faers, medi
+    from dakp_pipeline.sources import dailymed, drugsfda, faers
     from dakp_pipeline.tablassert import configs as tablassert_configs
     from dakp_pipeline.translator import contract as translator_contract
 
@@ -57,11 +55,9 @@ def test_stage_callable_mapping_matches_run_pipeline() -> None:
         "acquire_dailymed": dailymed.fetch,
         "acquire_faers": faers.fetch,
         "acquire_drugsfda": drugsfda.fetch,
-        "acquire_medi": medi.fetch,
         "extract_dailymed": spl_xml.extract,
         "extract_faers": faers_ascii.extract,
         "extract_drugsfda": drugsfda_products.extract,
-        "extract_medi": pipeline._extract_medi,
         "shape_treatment_tables": approved_treats.transform,
         "shape_faers_use_tables": observed_uses.transform,
         "shape_contraindication_tables": contraindications.transform,
@@ -103,13 +99,12 @@ def test_dag_task_graph() -> None:
     assert upstream("extract_dailymed") == {"acquire_dailymed"}
     assert upstream("extract_faers") == {"acquire_faers"}
     assert upstream("extract_drugsfda") == {"acquire_drugsfda"}
-    assert upstream("extract_medi") == {"acquire_medi"}
 
     # Shapers join the extracts run_pipeline joins (treatment: dm+drugsfda; uses: faers+dm;
-    # contraindication: medi+dm).
+    # contraindication: text-mined from dm only).
     assert upstream("shape_treatment_tables") == {"extract_dailymed", "extract_drugsfda"}
     assert upstream("shape_faers_use_tables") == {"extract_faers", "extract_dailymed"}
-    assert upstream("shape_contraindication_tables") == {"extract_medi", "extract_dailymed"}
+    assert upstream("shape_contraindication_tables") == {"extract_dailymed"}
 
     shapes = {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"}
     assert upstream("generate_tablassert_configs") == shapes

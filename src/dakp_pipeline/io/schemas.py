@@ -78,7 +78,7 @@ CONTRAINDICATION_COLUMNS = [
     "object_name",
     "object_category",
     "supporting_spl_sets",
-    "medi_version",
+    "supporting_spl_documents",
     "source_score",
     "knowledge_level",
     "agent_type",

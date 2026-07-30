@@ -15,7 +15,7 @@ Pure, testable building blocks used by every assertion shaper:
   ``inputs`` and register the uncompressed assertion TSV.
 
 Text-first by design: these helpers surface source text and only populate CURIEs where a
-source already provides an id (DailyMed UNII, MEDI normalized ids). Canonical CURIE
+source already provides an id (DailyMed UNII). Canonical CURIE
 mapping is a later milestone.
 """
 

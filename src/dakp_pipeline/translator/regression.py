@@ -10,8 +10,8 @@ family/provenance/label contracts the legacy DAKP established and the rebuild lo
 * ``biolink:applied_to_treat`` — FAERS-observed use without approval: keeps the current FAERS
   label/status (``observed_use`` / ``statistical_association``) with FAERS as the primary
   upstream source.
-* ``biolink:contraindicated_in`` — MEDI/DailyMed contraindication assertions with MEDI **and**
-  DailyMed upstream.
+* ``biolink:contraindicated_in`` — contraindication assertions text-mined from DailyMed SPL
+  contraindication sections, with DailyMed upstream.
 
 Every family aggregates under the DAKP knowledge provider (``infores:multiomics-drugapprovals``)
 as ``primary_knowledge_source``. A family being *absent* is a coverage concern, not a regression
@@ -29,7 +29,6 @@ from dakp_pipeline.translator.contract import (
     INFORES_DAILYMED,
     INFORES_DAKP,
     INFORES_FAERS,
-    INFORES_MEDI,
     PREDICATE_APPLIED_TO_TREAT,
     PREDICATE_CONTRAINDICATED_IN,
     PREDICATE_TREATS,
@@ -52,9 +51,7 @@ FAMILY_INVARIANTS: dict[str, FamilyInvariant] = {
         PREDICATE_TREATS, frozenset({INFORES_DAILYMED, INFORES_FAERS}), "approved_for_condition", "knowledge_assertion"
     ),
     PREDICATE_APPLIED_TO_TREAT: FamilyInvariant(PREDICATE_APPLIED_TO_TREAT, frozenset({INFORES_FAERS}), "observed_use", "statistical_association"),
-    PREDICATE_CONTRAINDICATED_IN: FamilyInvariant(
-        PREDICATE_CONTRAINDICATED_IN, frozenset({INFORES_MEDI, INFORES_DAILYMED}), None, "knowledge_assertion"
-    ),
+    PREDICATE_CONTRAINDICATED_IN: FamilyInvariant(PREDICATE_CONTRAINDICATED_IN, frozenset({INFORES_DAILYMED}), None, "knowledge_assertion"),
 }
 
 EXPECTED_FAMILIES: tuple[str, ...] = tuple(FAMILY_INVARIANTS)

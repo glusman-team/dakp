@@ -75,27 +75,28 @@ biolink:applied_to_treat`, `knowledge_level = observation` (scaffold value
 
 ### `data/tabular/contraindication_assertions.tsv`
 
-Contraindication assertions from MEDI, with DailyMed support. `predicate =
-biolink:contraindicated_in`, `knowledge_level = knowledge_assertion`.
+Contraindication assertions text-mined from DailyMed SPL contraindication sections (LOINC
+`34070-3`) via a configurable NER backend. `predicate = biolink:contraindicated_in`,
+`knowledge_level = knowledge_assertion`, `agent_type = text_mining_agent`.
 
 | Column | Example |
 | --- | --- |
 | `subject_text` | `Ibuprofen` |
-| `subject_curie` | `""` |
-| `subject_name` | `""` |
+| `subject_curie` | `UNII:WK2XYI10QM` |
+| `subject_name` | `Ibuprofen` |
 | `subject_category` | `ChemicalEntity` |
 | `predicate` | `biolink:contraindicated_in` |
 | `object_text` | `asthma` |
 | `object_curie` | `MONDO:0004979` |
 | `object_name` | `asthma` |
 | `object_category` | `Disease` |
-| `supporting_spl_sets` | `""` *(DailyMed support linked in Milestone 5)* |
-| `medi_version` | `MEDI-0.x-mock` |
-| `source_score` | `0.9` |
+| `supporting_spl_sets` | `SETID-IBUPROFEN-002` |
+| `supporting_spl_documents` | `SETID-IBUPROFEN-002#34070-3` |
+| `source_score` | `1` *(max NER span score)* |
 | `knowledge_level` | `knowledge_assertion` |
-| `agent_type` | `manual_validation_of_automated_agent` |
+| `agent_type` | `text_mining_agent` |
 | `primary_knowledge_source` | `infores:multiomics-drugapprovals` |
-| `upstream_resource_ids` | `infores:medi\|infores:dailymed` |
+| `upstream_resource_ids` | `infores:dailymed` |
 
 ## Interim tables (parquet)
 
@@ -119,11 +120,6 @@ to its case demographics + indications. See [`sources.md`](./sources.md#faers).
 Columns: `appl_no`, `appl_type`, `product_no`, `drug_name`, `active_ingredient`,
 `marketing_status_name`. `appl_no` digit-normalized for FAERS joins. See
 [`sources.md`](./sources.md#drugsfda).
-
-### `data/interim/medi/contraindications.parquet`
-
-Passthrough of the MEDI fixture (`drug_name`, `contraindicated_condition`, `source_score`).
-Real MEDI extraction (sheet/row provenance, DailyMed support scoring) is Milestone 3.
 
 ## Planned contracts (not yet emitted)
 

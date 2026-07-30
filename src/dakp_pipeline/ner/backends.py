@@ -2,9 +2,8 @@
 
 This is the NER backend layer that lets DAKP mine contraindications **directly** from
 DailyMed SPL "Contraindications" sections (LOINC ``34070-3``) using state-of-the-art
-biomedical NER (PLAN.md "Phase 4: NER / entity resolution strategy", re-scoped to drop
-MEDI/Matrix). A later worker feeds :func:`extract_contraindication_diseases` output into the
-contraindication assertion builder.
+biomedical NER (PLAN.md "Phase 4: NER / entity resolution strategy"). A later worker feeds
+:func:`extract_contraindication_diseases` output into the contraindication assertion builder.
 
 Backends
 --------

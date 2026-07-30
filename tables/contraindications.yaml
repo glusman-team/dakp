@@ -23,15 +23,14 @@ template:
     override:
       infores: "infores:multiomics-drugapprovals"
       upstream_resource_ids:
-        - "infores:medi"
         - "infores:dailymed"
       knowledge_level: knowledge_assertion
-      agent_type: manual_validation_of_automated_agent
+      agent_type: text_mining_agent
   annotations:
     - annotation: supporting_spl_sets
       method: column
       encoding: J
-    - annotation: medi_version
+    - annotation: supporting_spl_documents
       method: column
       encoding: K
     - annotation: source_score

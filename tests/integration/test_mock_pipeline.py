@@ -15,7 +15,7 @@ from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.pipeline import run_pipeline
-from dakp_pipeline.sources import dailymed, drugsfda, faers, medi
+from dakp_pipeline.sources import dailymed, drugsfda, faers
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -36,7 +36,6 @@ def test_full_pipeline_uses_mocked_sources(monkeypatch, tmp_path: Path) -> None:
         faers, "fetch", lambda ctx: [ctx.fixture("faers/DEMO24Q3.txt"), ctx.fixture("faers/DRUG24Q3.txt"), ctx.fixture("faers/INDI24Q3.txt")]
     )
     monkeypatch.setattr(drugsfda, "fetch", lambda ctx: [ctx.fixture("drugsfda/drugsfda_products.tsv")])
-    monkeypatch.setattr(medi, "fetch", lambda ctx: [ctx.fixture("medi/medi_contraindications.tsv")])
     # No real Tablassert on the dev laptop.
     monkeypatch.setattr("dakp_pipeline.tablassert.run", _fake_tablassert_run)
 

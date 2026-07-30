@@ -15,11 +15,10 @@ Design notes
 * **Single source of truth.** Every task body calls through :data:`STAGE_CALLABLES`, a
   flat ``stage name -> leaf callable`` manifest mirroring ``run_pipeline``'s stages.
   ``tests/unit/test_dag.py`` asserts the manifest is complete and matches the runner.
-* **Delegation, not duplication.** MEDI extraction, context construction, and the build
-  summary reuse ``run_pipeline``'s own helpers (``pipeline._build_context``,
-  ``pipeline._extract_medi``, ``pipeline._write_build_summary``) so results are identical.
-  They are reached via attribute access on the ``pipeline`` module (not ``from … import
-  _private``) and ``pipeline.py`` is intentionally left unedited.
+* **Delegation, not duplication.** Context construction and the build summary reuse
+  ``run_pipeline``'s own helpers (``pipeline._build_context``,
+  ``pipeline._write_build_summary``) so results are identical. They are reached via
+  attribute access on the ``pipeline`` module (not ``from … import _private``).
 * **Pools (conceptual).** Acquisition tasks run on the ``dakp_download`` pool and
   extraction tasks on the ``dakp_extract`` pool so a deployment can bound concurrent
   network downloads and CPU-heavy parses independently (create the pools via the Airflow
@@ -39,7 +38,7 @@ from dakp_pipeline.extract import drugsfda_products, faers_ascii, spl_xml
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import configure_logging
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.sources import dailymed, drugsfda, faers, medi
+from dakp_pipeline.sources import dailymed, drugsfda, faers
 from dakp_pipeline.tablassert import configs as tablassert_configs
 from dakp_pipeline.translator import contract as translator_contract
 
@@ -100,12 +99,10 @@ STAGE_CALLABLES: dict[str, Callable[..., Any]] = {
     "acquire_dailymed": dailymed.fetch,
     "acquire_faers": faers.fetch,
     "acquire_drugsfda": drugsfda.fetch,
-    "acquire_medi": medi.fetch,
-    # extraction (extract/; MEDI uses run_pipeline's in-runner normalization)
+    # extraction (extract/)
     "extract_dailymed": spl_xml.extract,
     "extract_faers": faers_ascii.extract,
     "extract_drugsfda": drugsfda_products.extract,
-    "extract_medi": pipeline._extract_medi,
     # assertion shaping (assertions/)
     "shape_treatment_tables": approved_treats.transform,
     "shape_faers_use_tables": observed_uses.transform,
@@ -157,10 +154,6 @@ def dakp_build() -> None:
     def acquire_drugsfda(**context: Any) -> list[ArtifactRef]:
         return STAGE_CALLABLES["acquire_drugsfda"](_ctx_from_params(context.get("params")))
 
-    @task(pool=DOWNLOAD_POOL)
-    def acquire_medi(**context: Any) -> list[ArtifactRef]:
-        return STAGE_CALLABLES["acquire_medi"](_ctx_from_params(context.get("params")))
-
     # -- extraction (extract pool) ---------------------------------------------
     @task(pool=EXTRACT_POOL)
     def extract_dailymed(raw: list[ArtifactRef], **context: Any) -> list[ArtifactRef]:
@@ -174,10 +167,6 @@ def dakp_build() -> None:
     def extract_drugsfda(raw: list[ArtifactRef], **context: Any) -> list[ArtifactRef]:
         return STAGE_CALLABLES["extract_drugsfda"](raw, _ctx_from_params(context.get("params")))
 
-    @task(pool=EXTRACT_POOL)
-    def extract_medi(raw: list[ArtifactRef], **context: Any) -> list[ArtifactRef]:
-        return STAGE_CALLABLES["extract_medi"](raw, _ctx_from_params(context.get("params")))
-
     # -- assertion shaping -----------------------------------------------------
     @task
     def shape_treatment_tables(dm_ext: list[ArtifactRef], drugsfda_ext: list[ArtifactRef], **context: Any) -> list[ArtifactRef]:
@@ -188,8 +177,10 @@ def dakp_build() -> None:
         return STAGE_CALLABLES["shape_faers_use_tables"]([*faers_ext, *dm_ext], _ctx_from_params(context.get("params")))
 
     @task
-    def shape_contraindication_tables(medi_ext: list[ArtifactRef], dm_ext: list[ArtifactRef], **context: Any) -> list[ArtifactRef]:
-        return STAGE_CALLABLES["shape_contraindication_tables"]([*medi_ext, *dm_ext], _ctx_from_params(context.get("params")))
+    def shape_contraindication_tables(dm_ext: list[ArtifactRef], **context: Any) -> list[ArtifactRef]:
+        # Contraindications are text-mined from the DailyMed SPL contraindication sections
+        # (NER backend resolved in pipeline._build_context); no separate source extract.
+        return STAGE_CALLABLES["shape_contraindication_tables"]([*dm_ext], _ctx_from_params(context.get("params")))
 
     # -- tablassert handoff ----------------------------------------------------
     @task
@@ -218,16 +209,14 @@ def dakp_build() -> None:
     dm_raw = acquire_dailymed()
     faers_raw = acquire_faers()
     drugsfda_raw = acquire_drugsfda()
-    medi_raw = acquire_medi()
 
     dm_ext = extract_dailymed(dm_raw)
     faers_ext = extract_faers(faers_raw)
     drugsfda_ext = extract_drugsfda(drugsfda_raw)
-    medi_ext = extract_medi(medi_raw)
 
     approved = shape_treatment_tables(dm_ext, drugsfda_ext)
     uses = shape_faers_use_tables(faers_ext, dm_ext)
-    contra = shape_contraindication_tables(medi_ext, dm_ext)
+    contra = shape_contraindication_tables(dm_ext)
 
     configs = generate_tablassert_configs(approved, uses, contra)
     kgx = run_tablassert(approved, uses, contra, configs)

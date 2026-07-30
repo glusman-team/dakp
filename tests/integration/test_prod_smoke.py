@@ -2,8 +2,9 @@
 
 Runs :func:`dakp_pipeline.pipeline.run_pipeline` with a ``prod``-like profile
 (``mock_sources=False``) so **every fetcher takes its real (download) branch**, but
-monkeypatches the stdlib HTTP seam (``urllib.request.urlopen``) — plus the MEDI downloader
-seam (``medi.http_download``) — to serve the tiny pipeline fixtures *as if downloaded*.
+monkeypatches the stdlib HTTP seam (``urllib.request.urlopen``) to serve the tiny pipeline
+fixtures *as if downloaded*. Contraindications are text-mined from the downloaded DailyMed
+SPL contraindication sections (offline dictionary NER backend over the ontology fixture).
 This validates the real fetcher → extractor → aggregation → Tablassert-handoff path
 end-to-end with no network and without the multi-TB full build: ``quarter_limit`` /
 ``release_limit`` bound FAERS and DailyMed to a single quarter / release.
@@ -30,7 +31,6 @@ from pathlib import Path
 import pytest
 
 from dakp_pipeline.pipeline import run_pipeline
-from dakp_pipeline.sources import medi
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -127,15 +127,6 @@ def _install_fake_http(monkeypatch: pytest.MonkeyPatch, requested: list[str]) ->
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
 
-    # MEDI downloads through its own seam (io.downloads.http_download); serve the fixture TSV.
-    def fake_medi_download(url: str, dest: Path, **dl_kwargs: object) -> Path:
-        requested.append(url)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(_read_fixture("medi/medi_contraindications.tsv"))
-        return dest
-
-    monkeypatch.setattr(medi, "http_download", fake_medi_download)
-
 
 def _fake_tablassert_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     """The real TablassertRunner runs; only the ``../Tablassert`` process is faked (offline)."""
@@ -167,7 +158,7 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
         fixture_root=_FIXTURE_ROOT,  # only loads the disease map; fetchers DOWNLOAD (mock_sources=False)
         workdir=workdir,
         run_airflow=False,
-        params={"quarter_limit": 1, "release_limit": 1, "medi_version": "smoke-1"},
+        params={"quarter_limit": 1, "release_limit": 1},
     )
 
     # A real (non-mock) profile drove the run.
@@ -187,7 +178,7 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
     assert "Examplestatin" in uses  # FAERS quarter ZIP parsed
     assert "hypercholesterolemia" in uses
     contra = result.table("contraindication_assertions").path.read_text(encoding="utf-8")
-    assert "Ibuprofen" in contra  # MEDI download normalized
+    assert "Ibuprofen" in contra  # NER-mined from the DailyMed contraindication section
     assert "asthma" in contra
 
     # Build summary + REAL Tablassert handoff (mode "real", not the mock deferred report).

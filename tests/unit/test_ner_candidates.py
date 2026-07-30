@@ -198,8 +198,9 @@ def test_transformer_end_to_end_over_fixtures(tmp_path: Path) -> None:
 
     frame = pl.read_csv(out_path, separator="\t")
     assert frame.columns == MENTION_CANDIDATES_COLUMNS
-    # Fixture mentions: hypercholesterolemia, headache, pain (from DailyMed + FAERS).
-    assert sorted(frame.get_column("candidate_curie").to_list()) == ["HP:0002315", "MONDO:0005154", "MONDO:0020528"]
+    # Fixture mentions: hypercholesterolemia, headache, pain (DailyMed indications + FAERS)
+    # plus asthma (DailyMed contraindication section).
+    assert sorted(frame.get_column("candidate_curie").to_list()) == ["HP:0002315", "MONDO:0004979", "MONDO:0005154", "MONDO:0020528"]
     # hypercholesterolemia occurs in both DailyMed and FAERS -> occurrences >= 2.
     chol = frame.filter(pl.col("candidate_curie") == "MONDO:0005154").row(0, named=True)
     assert "occurrences=" in chol["normalization_notes"]

@@ -48,22 +48,29 @@ FULLMAP_DEFAULT = ".fullmap"
 SOURCE_URL_BASE = "https://example.invalid/dakp/generated"
 GRAPH_DESCRIPTION = (
     "Drug Approvals Knowledge Provider: FDA-approved treatment relationships, "
-    "FAERS-observed applied-to-treat uses, and contraindications, modeled from "
-    "DailyMed, Drugs@FDA, FAERS, and MEDI."
+    "FAERS-observed applied-to-treat uses, and contraindications text-mined from "
+    "DailyMed, modeled from DailyMed, Drugs@FDA, and FAERS."
 )
 
 # Canonical emission order for the three assertion tables.
 _TABLE_ORDER = ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions")
 
-# assertion table -> (config file basename, predicate, upstream infores chain, knowledge_level).
-# Upstream order + knowledge_level match the DINGO translator-ingest provenance contract
-# (../DINGO/tests/unit/ingests/dakp/test_dakp.py): treats = knowledge_assertion over
+# assertion table -> (config basename, predicate, upstream infores chain, knowledge_level,
+# agent_type). Upstream order + knowledge_level match the DINGO translator-ingest provenance
+# contract (../DINGO/tests/unit/ingests/dakp/test_dakp.py): treats = knowledge_assertion over
 # dailymed|faers; applied_to_treat = observation over faers|dailymed (current FAERS
-# label/status behavior); contraindicated_in = knowledge_assertion over medi|dailymed.
-_TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str]] = {
-    "approved_treats_assertions": ("approved_treats", "treats", ("infores:dailymed", "infores:faers"), "knowledge_assertion"),
-    "faers_applied_to_treat_assertions": ("faers_applied_to_treat", "applied_to_treat", ("infores:faers", "infores:dailymed"), "observation"),
-    "contraindication_assertions": ("contraindications", "contraindicated_in", ("infores:medi", "infores:dailymed"), "knowledge_assertion"),
+# label/status behavior); contraindicated_in = knowledge_assertion text-mined from DailyMed
+# (dailymed upstream, text_mining_agent — matches the DAKP RIG).
+_TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
+    "approved_treats_assertions": ("approved_treats", "treats", ("infores:dailymed", "infores:faers"), "knowledge_assertion", AGENT_TYPE),
+    "faers_applied_to_treat_assertions": (
+        "faers_applied_to_treat",
+        "applied_to_treat",
+        ("infores:faers", "infores:dailymed"),
+        "observation",
+        AGENT_TYPE,
+    ),
+    "contraindication_assertions": ("contraindications", "contraindicated_in", ("infores:dailymed",), "knowledge_assertion", "text_mining_agent"),
 }
 
 # assertion column -> annotation name, per table. Names equal the assertion column except
@@ -79,7 +86,7 @@ _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "faers_applied_to_treat_assertions": (("case_count", "number_of_cases"), ("clinical_approval_status", "clinical_approval_status")),
     "contraindication_assertions": (
         ("supporting_spl_sets", "supporting_spl_sets"),
-        ("medi_version", "medi_version"),
+        ("supporting_spl_documents", "supporting_spl_documents"),
         ("source_score", "source_score"),
     ),
 }
@@ -131,7 +138,7 @@ def table_config(table: str) -> dict[str, Any]:
     (column-encoded subject/predicate/object), ``provenance.override`` (ManualProvenance),
     and column-encoded ``annotations`` for the table's evidence columns.
     """
-    _basename, predicate, upstream, knowledge_level = _TABLE_SPECS[table]  # KeyError for unknown tables
+    _basename, predicate, upstream, knowledge_level, agent_type = _TABLE_SPECS[table]  # KeyError for unknown tables
     annotations = [
         {"annotation": annotation, "method": "column", "encoding": column_letter(table, column)} for column, annotation in _TABLE_ANNOTATIONS[table]
     ]
@@ -147,7 +154,7 @@ def table_config(table: str) -> dict[str, Any]:
                 "infores": INFORES_DAKP,
                 "upstream_resource_ids": list(upstream),
                 "knowledge_level": knowledge_level,
-                "agent_type": AGENT_TYPE,
+                "agent_type": agent_type,
             }
         },
         "annotations": annotations,

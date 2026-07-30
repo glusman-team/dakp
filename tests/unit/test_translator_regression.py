@@ -35,7 +35,7 @@ def _valid_rows() -> list[dict[str, str]]:
     return [
         _row("biolink:treats", status="approved_for_condition", upstream="infores:dailymed|infores:faers"),
         _row("biolink:applied_to_treat", status="observed_use", knowledge_level="statistical_association", upstream="infores:faers|infores:dailymed"),
-        _row("biolink:contraindicated_in", upstream="infores:medi|infores:dailymed"),
+        _row("biolink:contraindicated_in", upstream="infores:dailymed"),
     ]
 
 
@@ -55,11 +55,11 @@ def test_valid_rows_pass_all_invariants() -> None:
 
 
 def test_real_assertion_tables_preserve_invariants(
-    dailymed_refs: list[ArtifactRef], drugsfda_refs: list[ArtifactRef], faers_refs: list[ArtifactRef], medi_refs: list[ArtifactRef], ctx: TaskContext
+    dailymed_refs: list[ArtifactRef], drugsfda_refs: list[ArtifactRef], faers_refs: list[ArtifactRef], ctx: TaskContext
 ) -> None:
     approved = approved_treats.transform([*dailymed_refs, *drugsfda_refs], ctx)
     uses = observed_uses.transform([*faers_refs, *dailymed_refs], ctx)
-    contra = contraindications.transform([*medi_refs, *dailymed_refs], ctx)
+    contra = contraindications.transform([*dailymed_refs], ctx)
 
     report = check_assertion_tables([*approved, *uses, *contra])
     assert report.violations == []
@@ -101,10 +101,10 @@ def test_wrong_primary_source_reported() -> None:
     assert _violations(report) == {("biolink:applied_to_treat", "primary_knowledge_source")}
 
 
-def test_contra_missing_medi_reported() -> None:
-    report = check_rows([_row("biolink:contraindicated_in", upstream="infores:dailymed")])
+def test_contra_missing_dailymed_reported() -> None:
+    report = check_rows([_row("biolink:contraindicated_in", upstream="")])
     assert _violations(report) == {("biolink:contraindicated_in", "upstream_provenance")}
-    assert "infores:medi" in report.violations[0].message
+    assert "infores:dailymed" in report.violations[0].message
 
 
 def test_wrong_knowledge_level_reported() -> None:

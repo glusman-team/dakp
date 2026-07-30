@@ -2,7 +2,7 @@
 
 Pluggable biomedical NER for disease/phenotype mention extraction. This layer lets DAKP mine
 contraindications **directly** from DailyMed SPL "Contraindications" sections (LOINC
-`34070-3`) using state-of-the-art NER (PLAN.md "Phase 4", re-scoped to drop MEDI/Matrix). A
+`34070-3`) using state-of-the-art NER (PLAN.md "Phase 4"). A
 later worker feeds `extract_contraindication_diseases()` output into the contraindication
 assertion builder.
 
