@@ -4,11 +4,10 @@ How DAKP logs, what it records, and how to read a failed run. Airflow is the pri
 surface; everything else feeds into it (PLAN.md "Logging and observability"). All logging
 code lives in [`src/dakp_pipeline/logging_setup.py`](../src/dakp_pipeline/logging_setup.py).
 
-> **Milestone-1 status.** The loguru + stdlib bridge and the file/stderr sinks are
-**implemented**. The Go-worker JSON logging, per-task `task_report.json`, and failure
-bundles are **design targets** (below) not yet emitted by the scaffold — today a run
-produces structured `logs/dakp.log`, `build_summary.json`, `tablassert_handoff.json`, and
-per-artifact manifests.
+> **Status.** The loguru + stdlib bridge, the file/stderr sinks, and the Go-worker JSON log
+relay are **implemented** — a run produces structured `logs/dakp.log`, `build_summary.json`,
+`tablassert_handoff.json`, per-artifact manifests, and (when Go workers run) relayed `log/slog`
+records. The per-task `task_report.json` and failure **bundles** remain design targets (below).
 
 ## Design: three sinks, one record
 
@@ -19,7 +18,7 @@ per-artifact manifests.
                     │                                 │
                     └── (Airflow only) loguru ──► airflow.task stdlib logger ──► Airflow task files
 
-  Go workers (future) ── JSON lines ──► streamed into the task logger line-by-line
+  Go workers ── log/slog JSON lines ──► relayed into the loguru logger line-by-line
 ```
 
 ### loguru is primary; stdlib is bridged in
@@ -77,22 +76,25 @@ The shared field schema (Python and the future Go workers use the same names):
 | `cache_hit` | whether the artifact was reused from the store |
 | `warning_count` | lossy-decision / parse-warning count |
 
-> The scaffold currently binds `task_id`, `profile`, and `workdir` at the
-> `run_pipeline` level ([`pipeline.py`](../src/dakp_pipeline/pipeline.py)); the full
-> shard/`artifact_id` binding is wired as stages become real.
+> `run_pipeline` binds `task_id`, `profile`, and `workdir` at the top level
+> ([`pipeline.py`](../src/dakp_pipeline/pipeline.py)); each stage and shaper binds its own
+> `task_id` plus `artifact_id` / `rows` context as it produces artifacts.
 
-## Go-worker JSON logging (design, not yet built)
+## Go-worker JSON logging (implemented)
 
-Heavy parsing/extraction workers are intended to be native Go CLIs (`dakp-worker`), with
-Airflow tasks remaining thin Python orchestrators that stream the worker's stdout/stderr
-**line-by-line** into the task logger (not dumped at the end), so interleaved shard logs
-appear in order. Go workers emit JSON lines (`log/slog` or `zerolog`) using the same field
-schema above; Python parses/relays them so Airflow shows a uniform record format. They use
-`golang.org/x/sync/errgroup` with `SetLimit` for bounded, cancellation-on-first-error
-shard processing.
+The heavy parsing/extraction workers are native Go CLIs (`dakp-worker`, [`../go/`](../go/)), with
+Python tasks as thin orchestrators that stream the worker's stderr **line-by-line** into the loguru
+logger (not dumped at the end), so interleaved shard logs appear in order. Go workers emit
+`log/slog` JSON using the same field schema above; [`workers/go_runner.py`](../src/dakp_pipeline/workers/go_runner.py)
+parses each line (`_relay_slog`) and re-emits it at the mapped loguru level with the structured
+fields bound, so Go and Python logs appear uniformly (and show up in Airflow task files via the
+bridge above). Non-JSON lines are logged verbatim. The workers use `golang.org/x/sync/errgroup`
+with `SetLimit` for bounded, cancellation-on-first-error shard processing.
 
-> [`workers/go_runner.py`](../src/dakp_pipeline/workers/go_runner.py) is a Milestone-1
-> stub: `run_worker(...)` raises `NotImplementedError`. The `go/` tree lands later.
+> The extractors delegate to the Go worker only when `use_go_workers` is on **and** a binary is
+> available (`go_runner.should_use_go`), falling back to the pure-Python extractors otherwise —
+> output is byte-for-byte identical either way (golden-file parity in `go test ./...`). See
+> [`wenceslaus-runbook.md`](./wenceslaus-runbook.md) for engaging the Go workers in prod.
 
 ## Reports
 
@@ -128,8 +130,9 @@ manifests with timings, row counts, cache hit/miss status, warning summaries, an
 paths, plus **failure bundles**: when a shard fails, write the exact input manifest,
 command args, stderr/stdout path, and first N parse warnings, and log the bundle path.
 The `data/reports/` directory ([`paths.py`](../src/dakp_pipeline/paths.py)) is reserved for
-these. They are **not yet emitted** in the scaffold — track via
-[PLAN.md](../PLAN.md) "Reports and failure handling" and Milestones 6–8.
+these; they are not yet emitted (today the per-artifact manifests + `build_summary.json` carry
+the row counts, schema fingerprints, and contract results). Track via
+[PLAN.md](../PLAN.md) "Reports and failure handling".
 
 ## How to read a failed run
 
