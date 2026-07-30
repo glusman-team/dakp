@@ -18,6 +18,23 @@ from pydantic import BaseModel, Field
 PROFILES: frozenset[str] = frozenset({"mock", "sample", "prod"})
 
 
+class DownloadConfig(BaseModel):
+    """Acquisition/download tuning: concurrency bound + source overrides.
+
+    Download-only knobs owned by the acquisition layer (:mod:`dakp_pipeline.acquire` and the
+    Airflow acquisition tasks). Kept as one nested field on :class:`Profile` so it is fully
+    isolated from unrelated profile concerns (e.g. the Go-worker integration field). Empty /
+    ``None`` values mean "use the acquisition layer's documented defaults" — the mock profile
+    never touches the network regardless of these values.
+    """
+
+    concurrency: int = Field(default=4, ge=1, description="Max concurrent source downloads (sizes the Airflow download pool / acquire_all workers).")
+    ner_model_ids: tuple[str, ...] = Field(default_factory=tuple, description="NER model ids to cache; empty = backend default (mock acquires none).")
+    fullmap_source: str | None = Field(default=None, description="fullmap redb source URL/path for Tablassert resolution; None = acquire-layer stub.")
+    ontology_sources: dict[str, str] = Field(default_factory=dict, description="Extra ontology term-list sources as name -> URL/path.")
+    drugsfda_url: str | None = Field(default=None, description="Override the Drugs@FDA data-files ZIP URL (forwarded to the fetcher).")
+
+
 class Profile(BaseModel):
     """Execution profile: concurrency budgets and source-acquisition behavior."""
 
@@ -40,6 +57,7 @@ class Profile(BaseModel):
             "(see workers/go_runner.go_available)."
         ),
     )
+    download: DownloadConfig = Field(default_factory=DownloadConfig, description="Acquisition/download tuning (concurrency + source overrides).")
 
 
 # use_go_workers stays False for every shipped profile so the Python extractors remain the
@@ -77,4 +95,4 @@ def load_profile(name: str, **overrides: object) -> Profile:
     return Profile(**data)
 
 
-__all__ = ["PROFILES", "Profile", "load_profile"]
+__all__ = ["PROFILES", "DownloadConfig", "Profile", "load_profile"]

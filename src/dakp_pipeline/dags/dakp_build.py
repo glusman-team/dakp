@@ -19,10 +19,15 @@ Design notes
   ``run_pipeline``'s own helpers (``pipeline._build_context``,
   ``pipeline._write_build_summary``) so results are identical. They are reached via
   attribute access on the ``pipeline`` module (not ``from … import _private``).
-* **Pools (conceptual).** Acquisition tasks run on the ``dakp_download`` pool and
-  extraction tasks on the ``dakp_extract`` pool so a deployment can bound concurrent
-  network downloads and CPU-heavy parses independently (create the pools via the Airflow
-  CLI/UI; the names are referenced here, not provisioned at import time).
+* **Pools (conceptual).** Every acquisition task (DailyMed / Drugs@FDA / FAERS source
+  downloads, NER model caching, and ontology/fullmap acquisition) runs on the
+  ``dakp_download`` pool and extraction tasks on the ``dakp_extract`` pool so a deployment
+  can bound concurrent network downloads and CPU-heavy parses independently (create the
+  pools via the Airflow CLI/UI; the names are referenced here, not provisioned at import
+  time). ``Profile.download.concurrency`` documents the intended download-pool slot count.
+* **Acquisition is delegated** to :mod:`dakp_pipeline.acquire`, the shared download-to-store
+  layer (fetchers + NER model cache + ontology/fullmap). Acquisition tasks return
+  :class:`ArtifactRef` manifests (paths + BLAKE3 ids), never dataframes, and are idempotent.
 """
 
 from __future__ import annotations
@@ -31,7 +36,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from dakp_pipeline import pipeline, tablassert
+from dakp_pipeline import acquire, pipeline, tablassert
 from dakp_pipeline.assertions import approved_treats, contraindications, observed_uses
 from dakp_pipeline.config import load_profile
 from dakp_pipeline.extract import drugsfda_products, faers_ascii, spl_xml
@@ -134,7 +139,11 @@ def _ctx_from_params(params: Mapping[str, Any] | None = None) -> TaskContext:
     if p.get("force") is not None:
         overrides["force"] = bool(p["force"])
     profile = load_profile(str(p.get("profile", "mock")), **overrides)
-    return pipeline._build_context(profile, wd, p.get("fixture_root"), None)
+    # Forward download-layer source overrides (config.DownloadConfig) to the fetchers via params.
+    extra: dict[str, object] = {}
+    if profile.download.drugsfda_url:
+        extra["drugsfda_url"] = profile.download.drugsfda_url
+    return pipeline._build_context(profile, wd, p.get("fixture_root"), extra or None)
 
 
 @dag(dag_id=DAG_ID, start_date=datetime(2026, 1, 1), schedule=None, catchup=False, tags=["dakp", "drug-approvals"], params=DAG_PARAMS)
@@ -142,17 +151,27 @@ def dakp_build() -> None:
     """Full DAKP build DAG: acquire -> extract -> shape -> Tablassert handoff -> summary."""
 
     # -- acquisition (download pool) -------------------------------------------
+    # Each task delegates to the shared dakp_pipeline.acquire layer, which invokes the real
+    # source fetchers / NER model cache / ontology downloader and returns ArtifactRef manifests.
     @task(pool=DOWNLOAD_POOL)
     def acquire_dailymed(**context: Any) -> list[ArtifactRef]:
-        return STAGE_CALLABLES["acquire_dailymed"](_ctx_from_params(context.get("params")))
+        return acquire.acquire_dailymed(_ctx_from_params(context.get("params")))
 
     @task(pool=DOWNLOAD_POOL)
     def acquire_faers(**context: Any) -> list[ArtifactRef]:
-        return STAGE_CALLABLES["acquire_faers"](_ctx_from_params(context.get("params")))
+        return acquire.acquire_faers(_ctx_from_params(context.get("params")))
 
     @task(pool=DOWNLOAD_POOL)
     def acquire_drugsfda(**context: Any) -> list[ArtifactRef]:
-        return STAGE_CALLABLES["acquire_drugsfda"](_ctx_from_params(context.get("params")))
+        return acquire.acquire_drugsfda(_ctx_from_params(context.get("params")))
+
+    @task(pool=DOWNLOAD_POOL)
+    def acquire_ner_models(**context: Any) -> list[ArtifactRef]:
+        return acquire.acquire_ner_models(_ctx_from_params(context.get("params")))
+
+    @task(pool=DOWNLOAD_POOL)
+    def acquire_ontologies(**context: Any) -> list[ArtifactRef]:
+        return acquire.acquire_ontologies(_ctx_from_params(context.get("params")))
 
     # -- extraction (extract pool) ---------------------------------------------
     @task(pool=EXTRACT_POOL)
@@ -177,9 +196,13 @@ def dakp_build() -> None:
         return STAGE_CALLABLES["shape_faers_use_tables"]([*faers_ext, *dm_ext], _ctx_from_params(context.get("params")))
 
     @task
-    def shape_contraindication_tables(dm_ext: list[ArtifactRef], **context: Any) -> list[ArtifactRef]:
+    def shape_contraindication_tables(dm_ext: list[ArtifactRef], ner_models: list[ArtifactRef], **context: Any) -> list[ArtifactRef]:
         # Contraindications are text-mined from the DailyMed SPL contraindication sections
         # (NER backend resolved in pipeline._build_context); no separate source extract.
+        # ``ner_models`` is an ordering dependency only: the NER backend lazily loads weights
+        # cached by acquire_ner_models, so mining must run after acquisition — the model refs
+        # are not transform inputs.
+        del ner_models
         return STAGE_CALLABLES["shape_contraindication_tables"]([*dm_ext], _ctx_from_params(context.get("params")))
 
     # -- tablassert handoff ----------------------------------------------------
@@ -191,8 +214,18 @@ def dakp_build() -> None:
 
     @task
     def run_tablassert(
-        approved: list[ArtifactRef], uses: list[ArtifactRef], contra: list[ArtifactRef], configs: list[ArtifactRef], **context: Any
+        approved: list[ArtifactRef],
+        uses: list[ArtifactRef],
+        contra: list[ArtifactRef],
+        configs: list[ArtifactRef],
+        ontologies: list[ArtifactRef],
+        **context: Any,
     ) -> list[ArtifactRef]:
+        # ``ontologies`` (fullmap redb / term lists) is an ordering dependency: Tablassert
+        # resolves canonical entities against the fullmap acquired by acquire_ontologies, so
+        # the handoff must run after acquisition. Tablassert reads the fullmap itself; the refs
+        # are not passed to the handoff callable.
+        del ontologies
         return STAGE_CALLABLES["run_tablassert"]([*approved, *uses, *contra], configs, _ctx_from_params(context.get("params")))
 
     # -- translator contract + build summary -----------------------------------
@@ -209,6 +242,8 @@ def dakp_build() -> None:
     dm_raw = acquire_dailymed()
     faers_raw = acquire_faers()
     drugsfda_raw = acquire_drugsfda()
+    ner_models = acquire_ner_models()
+    ontologies = acquire_ontologies()
 
     dm_ext = extract_dailymed(dm_raw)
     faers_ext = extract_faers(faers_raw)
@@ -216,10 +251,10 @@ def dakp_build() -> None:
 
     approved = shape_treatment_tables(dm_ext, drugsfda_ext)
     uses = shape_faers_use_tables(faers_ext, dm_ext)
-    contra = shape_contraindication_tables(dm_ext)
+    contra = shape_contraindication_tables(dm_ext, ner_models)
 
     configs = generate_tablassert_configs(approved, uses, contra)
-    kgx = run_tablassert(approved, uses, contra, configs)
+    kgx = run_tablassert(approved, uses, contra, configs, ontologies)
     write_build_summary(approved, uses, contra, kgx)
 
 
