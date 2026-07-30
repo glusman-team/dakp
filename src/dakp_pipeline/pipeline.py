@@ -142,10 +142,9 @@ def _build_context(profile: Profile, wd: Workdir, fixture_root: Path | str | Non
     }
     if extra:
         params.update(extra)
-    # Configure the NER backend for DailyMed contraindication mining: the offline dictionary
-    # baseline by default, or a real GLiNER/SciSpacy backend when ``ner_backend_name`` selects
-    # one (needs the [ner] extra). Built once here and passed to the shaper via ctx.params.
-    params["ner_backend"] = contraindications.resolve_ner_backend(fixture, params)
+    # The contraindication shaper builds its own deterministic offline NER backend from
+    # ctx.fixture_root (single composite backend; no backend-name selector). A real production
+    # DiseaseNER (offline=False, needs the [ner] extra) may be injected via params["ner"].
     return TaskContext(
         profile=profile.name, workdir=wd.root, fixture_root=fixture, threads=profile.threads, memory_budget_gb=profile.memory_budget_gb, params=params
     )

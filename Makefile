@@ -14,7 +14,7 @@ help: ## Show this help
 setup install: ## Install base + dev dependencies (uv sync)
 	uv sync
 
-install-ner: ## Install the heavy biomedical NER backends (GLiNER + SciSpacy/spacy)
+install-ner: ## Install the heavy biomedical NER backend (GLiNER zero-shot; pulls torch)
 	uv sync --extra ner
 
 install-airflow: ## Install the optional Airflow orchestration extra

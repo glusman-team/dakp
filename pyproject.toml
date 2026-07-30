@@ -38,14 +38,13 @@ airflow = [
     "apache-airflow>=2.10,<3",
     "pendulum>=3",
 ]
-# Biomedical NER backends (GLiNER zero-shot + SciSpacy BC5CDR) are optional and HEAVY
-# (pull torch/transformers/spacy): `uv sync --extra ner`. The base install and the whole
-# test suite run WITHOUT this extra — `dakp_pipeline.ner.backends` imports these lazily and
-# raises NERDependencyError("install the [ner] extra") only when a real backend is used.
+# Biomedical NER backend (GLiNER zero-shot — the production half of the single composite
+# DiseaseNER) is optional and HEAVY (pulls torch/transformers): `uv sync --extra ner`. The base
+# install and the whole test suite run WITHOUT this extra: the offline gazetteer mode is
+# deterministic and dep-free, and `dakp_pipeline.ner.ner` imports gliner lazily, raising
+# NERDependencyError("install the [ner] extra") only when production mode runs without it.
 ner = [
     "gliner>=0.1.15",
-    "scispacy>=0.5.4",
-    "spacy>=3.7,<4",
     "huggingface_hub>=0.24",
 ]
 # Tablassert KG build is optional: `uv sync --extra kg`. The base install and the whole test

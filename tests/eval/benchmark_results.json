@@ -1,0 +1,25 @@
+{
+  "schema_version": "dakp.ner.benchmark.v1",
+  "cases": 27,
+  "gold_mentions": 35,
+  "results": {
+    "gazetteer": {
+      "precision": 1.0,
+      "recall": 0.9142857142857143,
+      "f1": 0.955223880597015,
+      "lenient_f1": 0.955223880597015
+    },
+    "gliner": {
+      "precision": 0.8636363636363636,
+      "recall": 0.5428571428571428,
+      "f1": 0.6666666666666666,
+      "lenient_f1": 0.6666666666666666
+    },
+    "composite": {
+      "precision": 0.9722222222222222,
+      "recall": 1.0,
+      "f1": 0.9859154929577464,
+      "lenient_f1": 0.9859154929577464
+    }
+  }
+}

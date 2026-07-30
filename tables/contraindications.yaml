@@ -13,6 +13,9 @@ template:
         - SmallMolecule
         - ChemicalEntity
     predicate: contraindicated_in
+    # Object = the mined disease MENTION TEXT (object_text, encoding F). DAKP does NOT resolve
+    # ontology CURIEs: object_curie/name/category (G/H/I) are intentionally empty, and
+    # Tablassert/fullmap resolves the mention text to a CURIE + category at `tablassert build-kg`.
     object:
       method: column
       encoding: F
