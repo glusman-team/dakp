@@ -11,6 +11,10 @@ artifact manifest:
   ``urllib`` only** (no ``requests``), streaming each release into the content-addressed
   store. Re-ingesting an identical release is a cache hit; conditional GET
   (``If-None-Match`` / ``If-Modified-Since``) skips bytes the server confirms unchanged.
+  Each release ZIP's SPL XML members are extracted and ingested individually (the SPL
+  extractor reads ``.xml``/``.xml.gz``, not ZIPs), mirroring the legacy
+  ``getFullRelease.pl`` "extract XMLs into ``xmls/<bin>/...xml.gz``" step. ``release_limit``
+  (profile/CLI) bounds how many releases a bounded smoke/sample run processes.
 
 The legacy ``DailyMed/bin/getFullRelease.pl`` is intentionally **not** replicated: it
 destructively stashed whole download directories (``rm -r $ddir.prev``; ``mv $ddir
@@ -30,6 +34,7 @@ import re
 import shutil
 import urllib.error
 import urllib.request
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -106,7 +111,7 @@ def _download_full_release(ctx: TaskContext) -> list[ArtifactRef]:
     log = bind(task_id="fetch_dailymed", profile=ctx.profile)
 
     index_html = _fetch_index(ctx, staging, store)
-    release_urls = _parse_release_zips(index_html)
+    release_urls = _apply_release_limit(_parse_release_zips(index_html), ctx)
     log.info("discovered dailyMed full releases", count=len(release_urls))
     if not release_urls:
         msg = "no DailyMed full-release ZIPs found in index (the listing page layout may have changed)"
@@ -114,9 +119,7 @@ def _download_full_release(ctx: TaskContext) -> list[ArtifactRef]:
 
     refs: list[ArtifactRef] = []
     for url in release_urls:
-        ref = _download_one(url, staging, store)
-        if ref is not None:  # always set; None only if a cached ref could not be resolved
-            refs.append(ref)
+        refs.extend(_download_one(url, staging, store))
     return refs
 
 
@@ -159,11 +162,14 @@ def _parse_release_zips(index_html: str) -> list[str]:
     return urls
 
 
-def _download_one(url: str, staging: Path, store: ArtifactStore) -> ArtifactRef | None:
-    """Download one release ZIP into the store.
+def _download_one(url: str, staging: Path, store: ArtifactStore) -> list[ArtifactRef]:
+    """Download one release ZIP and ingest its SPL XML members.
 
-    On HTTP 304 the previously cached artifact is returned unchanged (idempotent re-run).
-    Returns ``None`` only if no cached artifact can be resolved for the alias.
+    The release ZIP is recorded under its ``dailymed/<name>`` alias (provenance anchor +
+    conditional-GET source for future runs), then its SPL XML members are extracted and
+    ingested individually — those ``.xml``/``.xml.gz`` refs are what the SPL extractor
+    consumes. On HTTP 304 the previously cached release ref is returned unchanged
+    (idempotent re-run); returns ``[]`` only if a 304 occurs with no cached copy resolvable.
     """
     name = url.rsplit("/", 1)[-1]
     alias = f"dailymed/{name}"
@@ -172,10 +178,62 @@ def _download_one(url: str, staging: Path, store: ArtifactStore) -> ArtifactRef 
     etag, last_modified = _conditional_download(url, dest, source)
     if not dest.exists():
         # 304 Not Modified: the cached artifact is still current — return it, do not drop it.
-        return _cached_ref(store, alias=alias)
-    ref, _ = store.ingest(dest, alias=alias, source=SourceBlock(url=url, etag=etag, last_modified=last_modified, retrieved_at=_now_iso()))
-    dest.unlink(missing_ok=True)  # staged copy no longer needed once content-addressed
-    return ref
+        cached = _cached_ref(store, alias=alias)
+        return [cached] if cached is not None else []
+    src_block = SourceBlock(url=url, etag=etag, last_modified=last_modified, retrieved_at=_now_iso())
+    store.ingest(dest, alias=alias, source=src_block)
+    refs = _expand_release_zip(dest, store, src_block, release_name=name)
+    dest.unlink(missing_ok=True)  # staged zip no longer needed once its XMLs are content-addressed
+    return refs
+
+
+def _apply_release_limit(urls: list[str], ctx: TaskContext) -> list[str]:
+    """Slice to the first N full releases when ``release_limit`` is set (<=0 / None = all).
+
+    Bounds a ``prod``/``sample`` smoke run to a tiny real DailyMed scope (e.g.
+    ``dakp run --profile prod --release-limit 1``), mirroring FAERS ``quarter_limit``.
+    """
+    limit = ctx.params.get("release_limit")
+    if not isinstance(limit, int) or limit <= 0:
+        return urls
+    return urls[:limit]
+
+
+def _expand_release_zip(zip_path: Path, store: ArtifactStore, source: SourceBlock, *, release_name: str) -> list[ArtifactRef]:
+    """Ingest the SPL XML members of a DailyMed release ZIP as individual artifacts.
+
+    The SPL extractor reads ``.xml``/``.xml.gz`` (not ZIPs), so each SPL member is extracted
+    to staging and content-addressed under ``dailymed/<release>/<member>`` with the release's
+    source provenance. Non-SPL members (and nested archives) are skipped; a release with no
+    SPL members yields ``[]`` (logged) rather than failing the whole acquisition.
+    """
+    log = bind(task_id="fetch_dailymed", release=release_name)
+    out_dir = zip_path.parent / f"{zip_path.stem}-xml"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    refs: list[ArtifactRef] = []
+    with zipfile.ZipFile(zip_path) as archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            member = Path(info.filename).name
+            if not _looks_like_spl_name(member):
+                continue
+            target = out_dir / member
+            with archive.open(info) as src, target.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+            # Flat ``::<member>`` alias (not nested under the release) so it never collides
+            # with the release ZIP's own ``dailymed/<release>`` alias file.
+            ref, _ = store.ingest(target, alias=f"dailymed/{release_name}::{member}", source=source)
+            refs.append(ref)
+            target.unlink(missing_ok=True)
+    if not refs:
+        log.warning("release ZIP contained no SPL XML members", release=release_name)
+    return refs
+
+
+def _looks_like_spl_name(name: str) -> bool:
+    """Whether a release member is an SPL document the extractor can read."""
+    return name.lower().endswith((".xml.gz", ".xml"))
 
 
 def _conditional_download(url: str, dest: Path, source: SourceBlock | None) -> tuple[str | None, str | None]:

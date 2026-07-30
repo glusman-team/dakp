@@ -43,7 +43,7 @@ class TaskContext:
     keeping the context itself lightweight and serializable.
     """
 
-    profile: str  # mock | sample | wenceslaus_full
+    profile: str  # mock | sample | prod
     workdir: Path
     fixture_root: Path | None
     threads: int

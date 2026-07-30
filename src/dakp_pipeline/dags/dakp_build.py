@@ -82,7 +82,7 @@ DOWNLOAD_POOL = "dakp_download"
 EXTRACT_POOL = "dakp_extract"
 
 #: DAG-level params (PLAN.md "Phase 2": dev/full build knobs). ``profile`` selects
-#: mock | sample | wenceslaus_full; the rest override profile defaults or steer I/O.
+#: mock | sample | prod; the rest override profile defaults or steer I/O.
 DAG_PARAMS: dict[str, Any] = {
     "profile": "mock",
     "quarter_limit": 1,

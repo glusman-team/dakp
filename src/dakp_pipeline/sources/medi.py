@@ -7,7 +7,7 @@ GitHub releases) behind the :class:`~dakp_pipeline.io.contracts.Fetcher` protoco
 * ``mock`` profile: ingests a tiny TSV fixture under ``fixture_root``. The fixture carries
   the real MEDI column shape so downstream parsing is faithful even though the on-disk
   format is TSV (see :mod:`dakp_pipeline.extract.medi` for the dual TSV/xlsx reader).
-* real profiles (``sample`` / ``wenceslaus_full``): download the versioned ``.xlsx``
+* real profiles (``sample`` / ``prod``): download the versioned ``.xlsx``
   release asset via :func:`http_download` — a single monkeypatchable seam — then
   content-address it (BLAKE3).
 

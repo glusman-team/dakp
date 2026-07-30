@@ -1,7 +1,7 @@
 """Performance benchmark harness for the three execution profiles (Milestone 8).
 
 Times :func:`dakp_pipeline.pipeline.run_pipeline` for ``mock`` / ``sample`` /
-``wenceslaus_full`` and writes a deterministic-shape report to
+``prod`` and writes a deterministic-shape report to
 ``<workdir>/data/reports/benchmark_<profile>.json``.
 
 Measurements (pure stdlib + the existing pipeline; no new dependencies):
@@ -20,7 +20,7 @@ Measurements (pure stdlib + the existing pipeline; no new dependencies):
   the active stage. A cold run is all misses; re-running over the same workdir (``iterations``
   > 1) turns the fixture ingests into hits, which the tests assert.
 
-``mock`` / ``sample`` actually run; ``wenceslaus_full`` is runnable but guarded behind an
+``mock`` / ``sample`` actually run; ``prod`` is runnable but guarded behind an
 explicit ``allow_full=True`` opt-in so a benchmark invoked on mock fixtures in tests can never
 accidentally kick off the full build (it is expected to run on the ``wenceslaus`` host).
 """
@@ -210,12 +210,12 @@ def run_benchmark(
     """Benchmark ``run_pipeline`` for ``profile`` and write the report JSON.
 
     Args:
-        profile: One of ``mock`` / ``sample`` / ``wenceslaus_full``.
+        profile: One of ``mock`` / ``sample`` / ``prod``.
         fixture_root: Mock fixture directory (forwarded to ``run_pipeline``; required for mock).
         workdir: Pipeline workdir root; the report lands at ``<workdir>/data/reports/``.
         iterations: Number of full pipeline runs to time (>= 1). Running more than once over
             the same workdir exercises the content-addressed cache (warm pass = cache hits).
-        allow_full: Explicit opt-in required to actually run ``wenceslaus_full`` (guard so a
+        allow_full: Explicit opt-in required to actually run ``prod`` (guard so a
             benchmark invoked on mock fixtures in tests never starts the full build).
         params: Extra pipeline params (forwarded to ``run_pipeline``).
 
@@ -229,9 +229,9 @@ def run_benchmark(
     if iterations < 1:
         msg = f"iterations must be >= 1, got {iterations}"
         raise ValueError(msg)
-    if profile == "wenceslaus_full" and not allow_full:
+    if profile == "prod" and not allow_full:
         msg = (
-            "profile 'wenceslaus_full' runs the full real build and requires explicit opt-in "
+            "profile 'prod' runs the full real build and requires explicit opt-in "
             "(pass allow_full=True); it is intended for the wenceslaus host, not tests."
         )
         raise RuntimeError(msg)

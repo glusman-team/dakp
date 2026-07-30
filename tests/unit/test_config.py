@@ -17,7 +17,7 @@ def test_load_mock_profile_has_expected_defaults() -> None:
 
 
 def test_load_full_profile_is_conservatively_bounded() -> None:
-    profile = load_profile("wenceslaus_full")
+    profile = load_profile("prod")
     assert profile.mock_sources is False
     assert profile.run_tablassert is True
     # PLAN.md calls for bounded (not unbounded 80-thread) parallelism.
@@ -39,7 +39,7 @@ def test_profile_overrides_apply() -> None:
 
 
 def test_all_documented_profiles_exist() -> None:
-    assert frozenset({"mock", "sample", "wenceslaus_full"}) == PROFILES
+    assert frozenset({"mock", "sample", "prod"}) == PROFILES
     # No absolute paths leak into a profile.
     for name in PROFILES:
         assert isinstance(load_profile(name), Profile)
