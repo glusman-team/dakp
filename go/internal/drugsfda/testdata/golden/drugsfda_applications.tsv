@@ -1,0 +1,5 @@
+source_record_id	source_file	appl_no_raw	appl_type	appl_no	appl_no_stripped	sponsor_name	common_or_original_name	submission_classification	orphan_status
+drugsfda:application:NDA12345	drugsfda_applications.tsv	NDA012345	NDA	012345	12345	Example Pharma Inc	Examplestatin	Type 1 - New Molecular Entity	No
+drugsfda:application:NDA207500	drugsfda_applications.tsv	NDA207500	NDA	207500	207500	Another Pharma Inc	Realdrug	Type 5 - New Formulation or New Manufacturer	No
+drugsfda:application:BLA125557	drugsfda_applications.tsv	BLA125557	BLA	125557	125557	Merck Sharp & Dohme	Pembrolizumab	Type 1 - New Molecular Entity	No
+drugsfda:application:ANDA75123	drugsfda_applications.tsv	ANDA075123	ANDA	075123	75123	Generic Co	Ezetimibe and Simvastatin	Generic	No

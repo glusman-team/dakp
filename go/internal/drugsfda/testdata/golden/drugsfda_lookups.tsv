@@ -1,0 +1,26 @@
+lookup_type	term	appl_no	appl_no_stripped	appl_type
+proprietary_name	Examplestatin	012345	12345	NDA
+nonproprietary_name	EXAMPLESTATIN	012345	12345	NDA
+ingredient	EXAMPLESTATIN	012345	12345	NDA
+marketing_status	Prescription	012345	12345	NDA
+proprietary_name	Ibuprofen	017977	17977	NDA
+nonproprietary_name	IBUPROFEN	017977	17977	NDA
+ingredient	IBUPROFEN	017977	17977	NDA
+marketing_status	Prescription	017977	17977	NDA
+proprietary_name	Realdrug	207500	207500	NDA
+nonproprietary_name	REALDRUG	207500	207500	NDA
+ingredient	REALDRUG	207500	207500	NDA
+marketing_status	Prescription	207500	207500	NDA
+proprietary_name	Keytruda	125557	125557	BLA
+nonproprietary_name	PEMBROLIZUMAB	125557	125557	BLA
+ingredient	PEMBROLIZUMAB	125557	125557	BLA
+marketing_status	Prescription	125557	125557	BLA
+proprietary_name	Ezetimibe and Simvastatin	075123	75123	ANDA
+nonproprietary_name	EZETIMIBE; SIMVASTATIN	075123	75123	ANDA
+ingredient	EZETIMIBE	075123	75123	ANDA
+ingredient	SIMVASTATIN	075123	75123	ANDA
+marketing_status	Prescription	075123	75123	ANDA
+proprietary_name	Genericgen	090123	90123	ANDA
+nonproprietary_name	GENERICGEN	090123	90123	ANDA
+ingredient	GENERICGEN	090123	90123	ANDA
+marketing_status	Over-the-counter	090123	90123	ANDA

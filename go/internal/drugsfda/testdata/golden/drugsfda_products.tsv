@@ -1,0 +1,7 @@
+source_record_id	source_file	appl_no_raw	appl_type	appl_no	appl_no_stripped	product_no	drug_name	active_ingredient	form	route	strength	reference_drug	reference_standard	product_ndc	marketing_status_name
+drugsfda:product:NDA12345:001	drugsfda_products.tsv	NDA012345	NDA	012345	12345	001	Examplestatin	EXAMPLESTATIN	""	""	""	""	""	""	Prescription
+drugsfda:product:NDA17977:001	drugsfda_products.tsv	NDA017977	NDA	017977	17977	001	Ibuprofen	IBUPROFEN	""	""	""	""	""	""	Prescription
+drugsfda:product:NDA207500:001	drugsfda_products.tsv	NDA207500	NDA	207500	207500	001	Realdrug	REALDRUG	""	""	""	""	""	""	Prescription
+drugsfda:product:BLA125557:001	drugsfda_products.tsv	BLA125557	BLA	125557	125557	001	Keytruda	PEMBROLIZUMAB	""	""	""	""	""	""	Prescription
+drugsfda:product:ANDA75123:001	drugsfda_products.tsv	ANDA075123	ANDA	075123	75123	001	Ezetimibe and Simvastatin	EZETIMIBE; SIMVASTATIN	""	""	""	""	""	""	Prescription
+drugsfda:product:ANDA90123:001	drugsfda_products.tsv	ANDA090123	ANDA	090123	90123	001	Genericgen	GENERICGEN	""	""	""	""	""	""	Over-the-counter

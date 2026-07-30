@@ -1,0 +1,6 @@
+source_record_id	source_file	appl_no_raw	appl_type	appl_no	appl_no_stripped	submission_type	submission_no	submission_status	submission_status_date	submission_notes
+drugsfda:submission:NDA12345:1	drugsfda_submissions.tsv	NDA012345	NDA	012345	12345	ORIG	1	APPROVED	1990-01-01	""
+drugsfda:submission:NDA207500:1	drugsfda_submissions.tsv	NDA207500	NDA	207500	207500	ORIG	1	APPROVED	2001-05-15	""
+drugsfda:submission:BLA125557:1	drugsfda_submissions.tsv	BLA125557	BLA	125557	125557	ORIG	1	APPROVED	2014-09-04	Accelerated approval
+drugsfda:submission:ANDA75123:1	drugsfda_submissions.tsv	ANDA075123	ANDA	075123	75123	ORIG	1	APPROVED	2017-01-10	""
+drugsfda:submission:ANDA90123:1	drugsfda_submissions.tsv	ANDA090123	ANDA	090123	90123	ORIG	1	APPROVED	2003-11-20	""
