@@ -2,7 +2,7 @@
 # All Python runs through uv; Go runs through the go/ module. `make help` lists targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup install install-ner install-airflow install-all test cov coverage \
+.PHONY: help setup install install-ner install-airflow install-kg install-kg-qc install-all test cov coverage \
 	lint lint-fix fmt fmt-check typecheck check pre-commit \
 	build-go test-go vet-go fmt-go-check check-go check-all run-mock clean
 
@@ -20,7 +20,13 @@ install-ner: ## Install the heavy biomedical NER backends (GLiNER + SciSpacy/spa
 install-airflow: ## Install the optional Airflow orchestration extra
 	uv sync --extra airflow
 
-install-all: ## Install every optional extra (ner + airflow)
+install-kg: ## Install the Tablassert KG-build extra (PyPI tablassert; laptop-safe)
+	uv sync --extra kg
+
+install-kg-qc: ## Install the heavy Tablassert QC-audit extra (adds torch/sentence-transformers)
+	uv sync --extra kg-qc
+
+install-all: ## Install every optional extra (ner + airflow + kg + kg-qc)
 	uv sync --all-extras
 
 # ---- Python quality gate ---------------------------------------------------

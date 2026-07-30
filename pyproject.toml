@@ -48,6 +48,19 @@ ner = [
     "spacy>=3.7,<4",
     "huggingface_hub>=0.24",
 ]
+# Tablassert KG build is optional: `uv sync --extra kg`. The base install and the whole test
+# suite run WITHOUT it (the mock profile + MockTablassertRunner never touch Tablassert, exactly
+# like airflow/ner). `dakp_pipeline.tablassert.run` shells out to the INSTALLED `tablassert`
+# CLI and raises "install the [kg] extra" only when a real (non-mock) handoff runs without it.
+kg = [
+    "tablassert>=8.0.0",
+]
+# Adds the embedding-based `tablassert build-kg --qc` audit (scikit-learn + sentence-transformers;
+# pulls torch — HEAVY, for beefy hosts like wenceslaus): `uv sync --extra kg-qc`. Laptop builds
+# use plain [kg]; the runner appends `--qc` only when this runtime is importable.
+kg-qc = [
+    "tablassert[qc]>=8.0.0",
+]
 
 [dependency-groups]
 dev = [
