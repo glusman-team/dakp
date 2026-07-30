@@ -91,10 +91,11 @@ Those were the main reasons *not* to do this; the user has chosen to drop them.
 - **A. Deployment mode: Coordinator.** The Airflow worker's Python supervisor forks the Go bundle
   once per task instance; inherits remote logs (S3/GCS), full task states, and alternate XCom
   backends. No separate Go worker process to run. (Edge Worker rejected: missing those features.)
-- **B. Runner/CLI: keep `dakp run` as a thin DAG-run trigger.** `run_pipeline` is deleted; the DAG
-  is the only orchestrator. `dakp run` becomes a thin client that triggers an Airflow DAG run via
-  the Airflow REST API (v2) and reports the resulting build-summary path. It requires a running
-  Airflow (API endpoint + auth) — the UX is preserved while the design stays fully Airflow-dependent.
+- **B. Runner/CLI: delete the CLI entirely (user: "remove CLI if airflow does the same things").**
+  `run_pipeline`, `PipelineResult`/`TableResult`, and `cli.py` (the `[project.scripts] dakp`
+  entrypoint) are all removed — no separate Python CLI/dev tool to maintain. Airflow is the only
+  way to run the pipeline; the one-command entrypoint is `make run` (the orchestrator script),
+  which triggers via `airflow dags trigger` directly.
 - **C. Scope: 3 extractors → Go bundle; Python extractors stay.** Only `extract_dailymed`,
   `extract_faers`, `extract_drugsfda` become native Go SDK tasks (`hash` stays a dev/utility CLI
   subcommand, not a DAG task). Acquisition / shaping / Tablassert / contract / regression / summary
@@ -107,6 +108,16 @@ Those were the main reasons *not* to do this; the user has chosen to drop them.
   The Python shaping stage is unchanged (it keeps reading `spl_*.parquet` / `cases.parquet` / etc.).
 - **Framing accepted:** the Go SDK is experimental (moving wire protocols) and Airflow 3 becomes a
   hard dependency; even the mock smoke test requires a running local Airflow + a packed bundle.
+- **E. One-command install + one-command run (user requirement).**
+  - *Install:* a single `uv sync --all-extras` installs everything needed to run the FULL pipeline
+    (Airflow 3 + task-sdk, the NER backend, Tablassert). Airflow moves from an optional extra into
+    the required `dependencies`; the heavy `ner`/`kg` extras stay optional but a documented
+    `make install` (= `uv sync --all-extras`) brings them in one shot. No juggling multiple extras.
+  - *Run:* a single `make run` (backed by `scripts/dakp_up.sh`, using `airflow dags trigger`) does the
+    whole thing with no manual steps: build+pack the Go bundle into `executables_root` -> start
+    Airflow (`airflow standalone`, or docker-compose) with the `[sdk]` coordinator config -> wait
+    for health -> set the `dakp_config` Variable (workdir/profile/fixtures) -> trigger `dakp_build`
+    -> wait for the run to finish -> print the build-summary path. `make down` tears it down.
 
 ## Approach (phased)
 
@@ -157,7 +168,7 @@ Those were the main reasons *not* to do this; the user has chosen to drop them.
 - [ ] XCom contract: acquisition tasks push `list[ArtifactRef]`; extract stubs consume/produce
       `list[ArtifactRef]`; shaping consumes refs. Manifests serialize cleanly to JSON XCom.
 
-### Phase 3 — Delete the subprocess layer + collapse the runner (decision B = trigger)
+### Phase 3 — Delete the subprocess layer + the CLI (decision B = delete CLI)
 - [ ] Delete `workers/go_runner.py` (`GoRunner`, `MockGoRunner`, `should_use_go`, `stage_inputs`,
       `read_go_tsv`, `go_rows`, `go_warnings`, build-cache, `ENV_BINARY`/`ENV_CACHE_DIR`).
 - [ ] Delete `_extract_via_go` from `extract/{spl_xml,faers_ascii,drugsfda_products}.py` and the
@@ -166,19 +177,27 @@ Those were the main reasons *not* to do this; the user has chosen to drop them.
 - [ ] Extract the shared helpers the DAG reuses — `_build_context`, `_write_build_summary`,
       `_load_disease_map` — out of `pipeline.py` into a new `runtime.py`; delete `run_pipeline` and
       `PipelineResult`/`TableResult`. The DAG imports these helpers from `runtime.py`.
-- [ ] Rework `cli.py`'s `run` command into a thin **DAG-run trigger**: POST to the Airflow REST API
-      (v2) `dagRuns` endpoint (API base + auth from env/config), optionally poll the run to
-      completion, and print the build-summary path. Drop the `--run-airflow` flag (always Airflow now).
+- [ ] Delete the CLI entirely: remove `cli.py` + the `[project.scripts] dakp` entrypoint, and delete
+      `run_pipeline` / `PipelineResult` / `TableResult` (the shared `_build_context` /
+      `_write_build_summary` / `_load_disease_map` helpers move to `runtime.py`, imported by the DAG).
+      Airflow is the only entrypoint; `make run` triggers via `airflow dags trigger`.
 - [ ] Delete/rewrite the tests that exercised the removed seams (`test_go_runner*.py`, the
       `test_dag*.py` mirror assertion, `run_pipeline`-based integration tests → DAG-trigger +
       Airflow integration tests).
 
-### Phase 4 — Coordinator config + bundle packaging/deployment
+### Phase 4 — One-command install + one-command end-to-end run (decision E)
+- [ ] `pyproject.toml`: Airflow 3 in required `dependencies`; keep `ner`/`kg` as extras; document
+      `uv sync --all-extras` as the single full install. `make install` wraps it.
 - [ ] `airflow.cfg` / `AIRFLOW__SDK__*`: register the `go` coordinator
       (`airflow.sdk.coordinators.executable.ExecutableCoordinator`, `executables_root`) and
-      `queue_to_coordinator = {"golang": "go"}`.
-- [ ] Makefile target: `go tool airflow-go-pack --output <executables_root>/dakp-bundle ./go/cmd/dakp-bundle`
-      (with `--goos/--goarch` cross-build for the deployment target). Wire it into `make` bring-up.
+      `queue_to_coordinator = {"golang": "go"}`. Pin the task-sdk schema to the bundle's
+      `supervisor_schema_version` (2026-06-16).
+- [ ] `scripts/dakp_up.sh` (the one-command orchestrator): build+pack the bundle -> start Airflow
+      standalone (background, logs to workdir) -> poll the API server until healthy -> create the
+      `dakp_config` Variable -> `dakp run` (trigger + wait) -> print build-summary path. Idempotent
+      (reuses a running Airflow if already up).
+- [ ] Makefile targets: `install`, `bundle` (`go tool airflow-go-pack --output <executables_root>/dakp-bundle ./go/cmd/dakp-bundle`,
+      with `--goos/--goarch` cross-build), `up`/`run` (the orchestrator), `down`.
 - [ ] Document the shared-volume requirement (worker + bundle must see the same content-addressed
       store / workdir for the filesystem data plane to work).
 
@@ -210,14 +229,15 @@ Those were the main reasons *not* to do this; the user has chosen to drop them.
 - `pyproject.toml` (Airflow → hard dep; drop the extra), `uv.lock`.
 - `dags/dakp_build.py` (Airflow 3 imports; extract tasks → `@task.stub`; DAG = source of truth).
 - `extract/{spl_xml,faers_ascii,drugsfda_products}.py` (delete `_extract_via_go` + gates).
-- `config.py` (drop `use_go_workers`), `cli.py` (`run` → Airflow REST-API DAG-run trigger; drop
-  `--run-airflow`), `dags/dakp_build.py` (import shared helpers from `runtime.py`).
+- `config.py` (drop `use_go_workers`), `dags/dakp_build.py` (Airflow 3 imports; extract tasks →
+  `@task.stub`; import shared helpers from `runtime.py`; DAG = source of truth).
 - `go/go.mod` / `go/go.sum` (add go-sdk + the `airflow-go-pack` tool directive + `parquet-go`).
 - `Makefile` (bundle pack target; Airflow bring-up).
 - Docs: `README.md`, `docs/architecture.md`, `go/README.md`, `docs/runbook.md`.
 
 **Delete:**
 - `workers/go_runner.py` (+ `test_go_runner.py`, `test_go_runner_edge.py`).
+- `cli.py` (+ `test_cli.py`, `test_cli_edge.py`) and the `[project.scripts] dakp` entrypoint.
 - `pipeline.py` once its helpers have moved to `runtime.py` (`run_pipeline`, `PipelineResult`,
   `TableResult` removed) — plus `test_pipeline_edge.py` / `test_mock_pipeline.py` as rewritten.
 - Tests coupled to the removed seams (per Phase 3/5).
@@ -241,10 +261,10 @@ Those were the main reasons *not* to do this; the user has chosen to drop them.
 - [ ] `go tool airflow-go-pack --output <executables_root>/dakp-bundle ./go/cmd/dakp-bundle`
       produces a bundle whose `--airflow-metadata` lists `dag_id: dakp_build` + the 3 task ids.
 - [ ] Local Airflow brings up (standalone/docker-compose); the coordinator discovers the bundle.
-- [ ] `dakp run --profile mock --fixture-root tests/fixtures/pipeline` (now a DAG-run trigger) and/or
-      `airflow dags trigger dakp_build` runs end-to-end: extract tasks execute in the Go bundle (no
-      Python subprocess), and the assertion tables + `build_summary.json` match the old `run_pipeline`
-      mock output byte-for-byte.
+- [ ] **One command runs the whole pipeline:** `make install && make run` (mock profile) brings up
+      Airflow, packs the bundle, triggers `dakp_build`, and completes with no other manual steps;
+      extract tasks execute in the Go bundle (no Python subprocess), and the assertion tables +
+      `build_summary.json` match the old `run_pipeline` mock output byte-for-byte. `make down` cleans up.
 - [ ] `uv run ruff check`, `ruff format --check`, `pyright` clean; `uv run pytest` green with the
       re-established coverage gate.
 - [ ] `grep -rn "subprocess\|should_use_go\|use_go_workers\|MockGoRunner" src/` → no matches.
