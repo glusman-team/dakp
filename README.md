@@ -9,10 +9,10 @@ operational entry point and links into [`docs/`](./docs).
 > **Status — final architecture.** The pipeline is **Airflow-native**: the `dakp_build` DAG is the
 > only orchestrator, and the heavy DailyMed/FAERS/Drugs@FDA extraction runs as **native Airflow Go
 > SDK bundle workers** (no subprocess/OS commands). One command runs the whole pipeline end to end:
-> `make install` then `make run` (see the [Quickstart](#quickstart-mocked-laptop-safe)). Real
+> `make install` then `make up-mock` (see the [Quickstart](#quickstart-mocked-laptop-safe)). Real
 > stdlib-HTTP source downloaders, a single benchmarked NER backend, evidence-rich assertion
 > aggregation, and a delegated Tablassert KGX handoff. The mock profile runs the whole DAG on tiny
-> fixtures with **no network and no Tablassert** (Airflow runs locally via `make run`); the full
+> fixtures with **no network and no Tablassert** (Airflow runs locally via `make up-mock`); the full
 > production build runs on the `wenceslaus` host (see
 > [`docs/wenceslaus-runbook.md`](./docs/wenceslaus-runbook.md)). What changed relative to the legacy
 > build — and why it is equivalent-or-better — is documented in
@@ -99,14 +99,18 @@ native worker bundle).
 ```bash
 make install        # uv sync — ONE command installs ALL runtime + dev deps (Airflow 3, GLiNER, tablassert[qc])
 uv run pytest -q    # unit + mocked integration (no network; the tests need no running Airflow)
-make run            # ONE command: build+pack the Go bundle, start Airflow, run dakp_build, wait
+direnv allow        # load the run config from .envrc (one-time; or `source .envrc`)
+make up-mock        # build+pack the Go bundle, start Airflow, run dakp_build, wait
 make down           # stop the local Airflow
 ```
 
-`make run` builds + packs the native Go bundle, starts a local Airflow (standalone, port 8090) with
-the Go coordinator configured, provisions the task pools, sets the per-run `dakp_config` Variable,
-triggers the `dakp_build` DAG, waits for it to finish, and prints the build summary. Override with
-`PROFILE=`, `WORKDIR=`, `FIXTURE_ROOT=`, `AIRFLOW_PORT=` env vars (e.g. `PROFILE=sample make run`).
+`make up-mock` (and `up-sample` / `up-prod`) build + pack the native Go bundle, start a local
+Airflow (standalone, port 8090) with the Go coordinator configured, provision the task pools, set
+the per-run `dakp_config` Variable, trigger the `dakp_build` DAG, wait for it to finish, and print
+the build summary. All run configuration — `WORKDIR`, `AIRFLOW_PORT`, `QUARTER_LIMIT`,
+`RELEASE_LIMIT`, `LOG_LEVEL`, etc. — lives in [`.envrc`](./.envrc) (direnv), documented there with
+its options. The `up-*` targets pin the profile; override any var inline (e.g.
+`AIRFLOW_PORT=8091 make up-mock`).
 
 The mock run needs no network and no real Tablassert. It writes three uncompressed TSV assertion
 tables, generated Tablassert configs, a build summary, and a deferred-handoff manifest (see
@@ -131,26 +135,32 @@ The heavy extraction always runs as **native Go workers** (the Airflow Go SDK bu
 only sizes concurrency/memory and selects sources + the Tablassert handoff mode.
 
 The real fetchers use stdlib HTTP (no `requests`) and are content-addressed and idempotent.
-`prod` defaults to the full scope (`quarter_limit` / `release_limit` unset = all quarters/releases)
-and runs the real Tablassert handoff; bound it with `--quarter-limit` / `--release-limit` for a
-tiny real smoke run (below).
+`prod` defaults to the full scope (`QUARTER_LIMIT` / `RELEASE_LIMIT` empty in `.envrc` = all
+quarters/releases) and runs the real Tablassert handoff; bound it with `QUARTER_LIMIT` /
+`RELEASE_LIMIT` for a tiny real smoke run (below).
 
 ## Makefile targets
 
-All Python runs through `uv`; Go runs through the [`go/`](./go/) module. `make help` lists everything.
+The Makefile is deliberately minimal — just the run controls. All run configuration lives in
+[`.envrc`](./.envrc) (direnv); each variable is documented there with its options. `make help` lists
+the targets.
 
 | Target | What it does |
 | --- | --- |
-| `make setup` / `make install` | `uv sync` — ONE command installs every runtime + dev dep (Airflow 3, GLiNER NER, `tablassert[qc]`) |
-| `make test` / `make cov` | pytest / pytest with branch coverage (`fail_under = 100`) |
-| `make lint` / `make fmt` / `make fmt-check` / `make typecheck` | ruff check / ruff format / format check / pyright |
-| `make check` | lint + fmt-check + typecheck + test |
-| `make build-go` / `make test-go` / `make check-go` | Go build / test (incl. Python-parity goldens) / full Go gate |
-| `make check-all` | `make check` + `make check-go` (the full Python + Go gate) |
-| `make bundle` | build + pack the native Go bundle into the coordinator's `executables_root` |
-| `make run` | ONE-COMMAND end-to-end run via Airflow (bundle + Airflow + trigger + wait); `PROFILE`/`WORKDIR`/`FIXTURE_ROOT`/`AIRFLOW_PORT` env override |
-| `make down` | stop the local Airflow started by `make run` |
+| `make install` | `uv sync` — ONE command installs every runtime + dev dep (Airflow 3, GLiNER NER, `tablassert[qc]`) |
+| `make up-mock` | end-to-end run on the `mock` profile (fixtures; no network) via Airflow |
+| `make up-sample` | end-to-end run on the `sample` profile (real sources, bounded scope) |
+| `make up-prod` | end-to-end run on the `prod` profile (real build; scope from `.envrc`) |
+| `make down` | stop the local Airflow started by the `up-*` targets |
 | `make clean` | remove caches, coverage data, the Go binary, and `tmp/` |
+
+Quality gates have no make wrapper — run them directly:
+
+```bash
+uv run pytest -q                    # tests (branch coverage: uv run pytest --cov, fail_under = 100)
+uv run pre-commit run --all-files   # ruff lint + format + pyright + pytest
+cd go && go test ./...              # Go parity tests (also: go vet ./... && gofmt -l .)
+```
 
 ## Running the full build on `wenceslaus`
 
@@ -166,12 +176,12 @@ the multi-TB full build, bound the scope so only one FAERS quarter and one Daily
 processed:
 
 ```bash
-PROFILE=prod WORKDIR=/tmp/dakp-prod-smoke make run
+QUARTER_LIMIT=1 RELEASE_LIMIT=1 WORKDIR=/tmp/dakp-prod-smoke make up-prod
 ```
 
-The `dakp_config` Variable that `make run` sets carries the profile + scope. The orchestrator
-(`scripts/dakp_up.sh`) currently pins `quarter_limit` / `release_limit` to 1 (a bounded smoke run);
-for a full-scope prod build, unset them there (or pass full scope via the Variable). The offline
+The `dakp_config` Variable that `make up-prod` sets carries the profile + scope. `QUARTER_LIMIT` /
+`RELEASE_LIMIT` empty (the [`.envrc`](./.envrc) default) mean "profile default" — for `prod` that is
+**all** quarters/releases (the full-scope build); set them to a number to bound a smoke run. The offline
 integration test [`tests/integration/test_prod_smoke.py`](./tests/integration/test_prod_smoke.py)
 exercises the exact same real stage code path (via the `run_pipeline` harness) with the HTTP layer
 mocked, so it passes in CI with no network.
@@ -298,7 +308,8 @@ bundle, parity-locked to the pure-Python reference extractors.
 ## Verification
 
 ```bash
-make check-all        # Python (lint + format + pyright + tests @ 100% coverage) + Go (build + vet + parity tests + gofmt)
+uv run pre-commit run --all-files   # ruff lint + format + pyright + pytest (tests @ 100% branch coverage)
+cd go && go build ./... && go vet ./... && go test ./... && test -z "$(gofmt -l .)"   # Go gate
 ```
 
 The semantic-preservation suite

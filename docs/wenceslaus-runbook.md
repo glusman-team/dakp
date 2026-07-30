@@ -12,10 +12,10 @@ Mock/sample runs and NER are laptop-safe.
 
 | Step | Laptop (30 GiB, RTX 5070 Ti) | `wenceslaus` (187 GiB RAM) |
 | --- | --- | --- |
-| `uv sync` / tests / lint (`make check-all`) | ✅ | ✅ |
+| `uv sync` / tests / lint (`uv run pre-commit run --all-files`) | ✅ | ✅ |
 | `mock` / `sample` pipeline runs | ✅ | ✅ |
 | NER (offline gazetteer; production GLiNER on the RTX 5070 Ti) | ✅ | ✅ (P100 optional) |
-| bounded `prod` smoke run (`--quarter-limit 1 --release-limit 1`) | ✅ (with network) | ✅ |
+| bounded `prod` smoke run (`QUARTER_LIMIT=1 RELEASE_LIMIT=1`) | ✅ (with network) | ✅ |
 | **fullmap build** (`tablassert build-fullmap`, ~120 GiB RAM, ~2 h) | ❌ | ✅ **wenceslaus-only** |
 | **full `prod` build** (all DailyMed releases + FAERS quarters) | ❌ | ✅ **wenceslaus-only** |
 | **full KGX compilation** (`tablassert build-kg` over the full graph) | ❌ | ✅ **wenceslaus-only** |
@@ -31,10 +31,10 @@ tables, the fullmap, KGX) on `/local_raid1`, never on the boot volume.
 ```bash
 cd <dakp-checkout>
 uv sync                       # ONE command: full runtime (Airflow 3, GLiNER NER, tablassert[qc]) + dev deps
-make build-go                 # build the Go dakp-worker (byte-parity extractors) for prod speed
+cd go && go build -o dakp-worker ./cmd/dakp-worker   # build the Go dakp-worker (byte-parity extractors) for prod speed
 ```
 
-`make build-go` produces `go/dakp-worker`. Point the runner at it with
+This produces `go/dakp-worker`. Point the runner at it with
 `export DAKP_WORKER_BIN=$PWD/go/dakp-worker` (or just keep `go` on `PATH` and the runner builds +
 caches one under `<repo>/tmp/dakp-go/`, keyed by a hash of the Go sources).
 
@@ -60,15 +60,15 @@ Tablassert configs into the workdir, and (because `prod` sets `run_tablassert=Tr
 live Tablassert handoff.
 
 ```bash
-PROFILE=prod WORKDIR=/local_raid1/dakp/work make run
+WORKDIR=/local_raid1/dakp/work make up-prod      # or set WORKDIR in .envrc
 ```
 
 The heavy DailyMed/FAERS/Drugs@FDA extraction always runs as **native Go workers** (the Airflow Go
-SDK bundle); `make run` builds + packs the bundle, starts Airflow with the Go coordinator, and
+SDK bundle); `make up-prod` builds + packs the bundle, starts Airflow with the Go coordinator, and
 triggers `dakp_build`. The Go extractors are parity-locked to the pure-Python reference extractors
-(golden-file parity in `go test ./...`). For an unbounded full-scope run, unset the
-`quarter_limit`/`release_limit` pins in [`scripts/dakp_up.sh`](../scripts/dakp_up.sh) (the
-orchestrator defaults them to 1 for a bounded smoke run).
+(golden-file parity in `go test ./...`). For an unbounded full-scope run, leave
+`QUARTER_LIMIT`/`RELEASE_LIMIT` empty in [`../.envrc`](../.envrc) (the default) — for `prod` that
+means all quarters/releases.
 
 After this step the workdir holds:
 
@@ -100,7 +100,8 @@ compiler — this step is the delegation boundary in action.
 ## Step 4 — verify
 
 ```bash
-make check-all        # Python (lint + format + pyright + tests @ 100% coverage) + Go (build + vet + parity + gofmt)
+uv run pre-commit run --all-files   # Python (lint + format + pyright + tests @ 100% coverage)
+cd go && go build ./... && go vet ./... && go test ./... && test -z "$(gofmt -l .)"   # Go gate (build + vet + parity + gofmt)
 ```
 
 Then sanity-check the build summary and KGX:
@@ -115,9 +116,9 @@ uv run pytest tests/integration/test_semantic_equivalence.py -q   # preserved-se
 Everything except Steps 1 and 3 (and the unbounded Step 2) runs on the laptop:
 
 ```bash
-make check-all                                                       # full quality gate
-make run                                                             # mocked end-to-end pipeline via Airflow (native Go workers)
-PROFILE=prod make run                                                # real, bounded (orchestrator pins quarter/release limit to 1)
+uv run pre-commit run --all-files                                    # full Python quality gate (+ cd go && go test ./...)
+make up-mock                                                         # mocked end-to-end pipeline via Airflow (native Go workers)
+QUARTER_LIMIT=1 RELEASE_LIMIT=1 make up-prod                         # real, bounded smoke run
 uv run pytest tests/eval -q                                           # NER benchmark (GLiNER on the RTX 5070 Ti)
 ```
 
@@ -128,10 +129,10 @@ uv run pytest tests/eval -q                                           # NER benc
 - **`RuntimeError: tablassert is not available`** in Step 2/3 — `uv sync` (or set
   `DAKP_TABLASERT_DIR` for a local editable checkout). See [`runbook.md`](./runbook.md).
 - **Go workers not engaging** — the extract tasks are native Go SDK bundle workers; confirm the
-  bundle was packed into the coordinator's `executables_root` (`make run` does this) and that a Go
+  bundle was packed into the coordinator's `executables_root` (`make up-prod` does this) and that a Go
   toolchain ≥ 1.24 is available to build it. Check the `extract_*` task logs in Airflow.
 - **Download failures** — check connectivity to the FDA/DailyMed endpoints; bound scope with
-  `--quarter-limit` / `--release-limit` to isolate a bad source. See [`runbook.md`](./runbook.md).
+  `QUARTER_LIMIT` / `RELEASE_LIMIT` (in [`../.envrc`](../.envrc)) to isolate a bad source. See [`runbook.md`](./runbook.md).
 
 ## Related
 

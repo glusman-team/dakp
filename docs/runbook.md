@@ -18,17 +18,19 @@ runs offline: NER defaults to the deterministic gazetteer and the mock profile d
 ## Running the mock pipeline
 
 ```bash
-make run        # one command: build+pack the Go bundle, start Airflow, run dakp_build, wait
+make up-mock    # build+pack the Go bundle, start Airflow, run dakp_build, wait
 make down       # stop the local Airflow when done
 ```
 
-`make run` builds + packs the native Go bundle, starts a local Airflow (standalone, port 8090) with
-the Go coordinator + pools configured, sets the `dakp_config` Variable (mock profile, fixtures under
-`tests/fixtures/pipeline`), triggers `dakp_build`, and waits. Override with `PROFILE=`, `WORKDIR=`,
-`FIXTURE_ROOT=`, `AIRFLOW_PORT=` env vars. Outputs land under the workdir (default
-`tmp/airflow-run/data/`; see [`../README.md`](../README.md#where-things-land)). A successful run
-prints `SUCCESS` and the `build_summary.json` path. It needs no network and no real Tablassert (the
-mock profile defers the handoff).
+`make up-mock` builds + packs the native Go bundle, starts a local Airflow (standalone, port 8090)
+with the Go coordinator + pools configured, sets the `dakp_config` Variable (mock profile, fixtures
+under `tests/fixtures/pipeline`), triggers `dakp_build`, and waits. All run configuration (`WORKDIR`,
+`AIRFLOW_PORT`, `QUARTER_LIMIT`, `RELEASE_LIMIT`, `LOG_LEVEL`, ...) lives in
+[`../.envrc`](../.envrc) (direnv); the `up-sample` / `up-prod` targets select other profiles.
+Outputs land under the workdir (default `tmp/airflow-run/data/`; see
+[`../README.md`](../README.md#where-things-land)). A successful run prints `SUCCESS` and the
+`build_summary.json` path. It needs no network and no real Tablassert (the mock profile defers the
+handoff).
 
 ## Running a bounded `prod` smoke run
 
@@ -36,11 +38,12 @@ The `prod` profile runs the **real** fetchers/extractors/NER/aggregation. Bound 
 run stays tiny (one FAERS quarter, one DailyMed release):
 
 ```bash
-PROFILE=prod WORKDIR=/tmp/dakp-prod-smoke make run
+QUARTER_LIMIT=1 RELEASE_LIMIT=1 WORKDIR=/tmp/dakp-prod-smoke make up-prod
 ```
 
-(The orchestrator [`scripts/dakp_up.sh`](../scripts/dakp_up.sh) pins `quarter_limit`/`release_limit`
-to 1 for a bounded smoke run; adjust it for full scope.)
+(`QUARTER_LIMIT`/`RELEASE_LIMIT` empty — the [`../.envrc`](../.envrc) default — mean "profile
+default"; for `prod` that is all quarters/releases. Set them to a number, as above, to bound a smoke
+run; no script edits needed.)
 
 This hits the real FDA/DailyMed network endpoints. For an **offline** exercise of the same real code
 path (HTTP layer mocked, fixtures served "as if downloaded"), run
@@ -55,8 +58,8 @@ installed, but the smoke run stays offline).
 `sample` and `prod` run the real stdlib-HTTP downloaders (DailyMed full releases, FAERS quarterly
 zips, Drugs@FDA data files), so they need network access to the FDA/DailyMed endpoints. A fetch
 failure raises loudly (no silent fixture fallback). **Fix:** check connectivity/proxy, or validate
-the real path offline with the bounded smoke test above. Bound scope with `--quarter-limit` /
-`--release-limit` to keep a real run small.
+the real path offline with the bounded smoke test above. Bound scope with `QUARTER_LIMIT` /
+`RELEASE_LIMIT` (in [`../.envrc`](../.envrc)) to keep a real run small.
 
 ### `--fixture-root is required for the mock profile`
 
@@ -100,11 +103,11 @@ per-table `missing_columns` list, then check the corresponding shaper in
 
 ### The DAG did not register / Airflow does not see `dakp_build`
 
-Airflow 3 is a hard dependency, so the DAG always constructs; `make run` points
+Airflow 3 is a hard dependency, so the DAG always constructs; `make up-mock` points
 `AIRFLOW__CORE__DAGS_FOLDER` at `src/dakp_pipeline/dags`. **Fix:** check the DAG parsed without
 import errors (`airflow dags list-import-errors`) and that the dag-processor has refreshed
-(`make run` waits for registration). If a task is stuck `scheduled`, ensure the `dakp_download` /
-`dakp_extract` pools exist (`make run` provisions them; `airflow pools list` to verify).
+(`make up-mock` waits for registration). If a task is stuck `scheduled`, ensure the `dakp_download` /
+`dakp_extract` pools exist (`make up-mock` provisions them; `airflow pools list` to verify).
 
 ## Reruns
 
@@ -181,7 +184,8 @@ uv run pytest -q                                          # all tests
 uv run pytest tests/unit -q                               # store, hashing, config, CLI, NER, assertions, tablassert
 uv run pytest tests/integration -q                        # mocked end-to-end + semantic-equivalence + prod smoke
 uv run pytest tests/integration/test_semantic_equivalence.py -q   # preserved-semantics guardrail
-make check-all                                            # Python gate + Go parity gate
+uv run pre-commit run --all-files                          # ruff + format + pyright + pytest (Python gate)
+cd go && go test ./...                                     # Go parity gate
 ```
 
 The integration tests are the canonical examples of substituting every external boundary (fetchers →

@@ -11,7 +11,7 @@ Tasks pass ``list[ArtifactRef]`` manifests over XCom (serialized to JSON dicts v
 :mod:`dakp_pipeline.io.xcom` so the native Go workers read/write the same manifests); heavy bytes
 move through the BLAKE3 content-addressed filesystem store. Run config (workdir / profile /
 fixtures) comes from the ``dakp_config`` Airflow Variable, set by the one-command orchestrator
-(``make run``) and shared by the Python tasks and the Go bundle.
+(``make up-mock``) and shared by the Python tasks and the Go bundle.
 """
 
 from __future__ import annotations

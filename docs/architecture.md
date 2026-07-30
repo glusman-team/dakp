@@ -207,7 +207,7 @@ Consequently, **every worker that runs any task must see the same workdir / cont
 store**, and **every worker that runs an `extract_*` task must have the packed bundle in its
 `executables_root`**:
 
-- **LocalExecutor (`make run`, single host):** automatic — one machine, one filesystem. The
+- **LocalExecutor (`make up-mock`, single host):** automatic — one machine, one filesystem. The
   orchestrator builds the bundle into `$AIRFLOW_HOME/executable-bundles` and points the coordinator
   at it; the workdir is local.
 - **CeleryExecutor / distributed workers:** the workdir + store must live on a **shared/networked

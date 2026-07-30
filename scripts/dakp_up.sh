@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # One-command DAKP pipeline run via Airflow with native Go SDK workers.
 #
-#   make run [PROFILE=mock] [WORKDIR=<dir>] [FIXTURE_ROOT=<dir>] [AIRFLOW_PORT=8090]
+#   make up-mock | make up-sample | make up-prod      (or: PROFILE=<p> bash scripts/dakp_up.sh)
+#
+# All configuration comes from the environment (see `.envrc`): PROFILE, WORKDIR, FIXTURE_ROOT,
+# AIRFLOW_HOME, AIRFLOW_PORT, QUARTER_LIMIT, RELEASE_LIMIT, LOG_LEVEL, DOWNLOAD_POOL, EXTRACT_POOL.
+# QUARTER_LIMIT/RELEASE_LIMIT empty => profile default (prod default = unbounded full build).
 #
 # Builds + packs the Go bundle, starts Airflow (standalone) with the ExecutableCoordinator
 # configured, sets the dakp_config Variable, triggers the dakp_build DAG, waits for it to finish,
@@ -21,6 +25,14 @@ PORT="${AIRFLOW_PORT:-8090}"
 BUNDLE_DIR="$AIRFLOW_HOME/executable-bundles"
 DOWNLOAD_POOL="${DOWNLOAD_POOL:-dakp_download}"
 EXTRACT_POOL="${EXTRACT_POOL:-dakp_extract}"
+LOG_LEVEL="${LOG_LEVEL:-INFO}"
+# Run-scope limits from .envrc: empty => JSON null => profile default (prod = unbounded full build).
+for _v in "${QUARTER_LIMIT:-}" "${RELEASE_LIMIT:-}"; do
+  [[ -z "$_v" || "$_v" =~ ^[0-9]+$ ]] || { echo "!!! QUARTER_LIMIT/RELEASE_LIMIT must be empty or a positive integer (got '$_v')"; exit 1; }
+done
+json_limit() { [[ -n "${1:-}" ]] && printf '%s' "$1" || printf 'null'; }
+QUARTER_JSON="$(json_limit "${QUARTER_LIMIT:-}")"
+RELEASE_JSON="$(json_limit "${RELEASE_LIMIT:-}")"
 LOG="$AIRFLOW_HOME/standalone.log"
 PIDFILE="$AIRFLOW_HOME/standalone.pid"
 BASE_URL="http://127.0.0.1:$PORT"
@@ -78,9 +90,9 @@ uv run airflow pools set "$DOWNLOAD_POOL" 4 "Concurrent source downloads (networ
 uv run airflow pools set "$EXTRACT_POOL" 4 "Concurrent raw->interim extracts (Go bundle)" >/dev/null 2>&1
 
 # --- 4. set the per-run config Variable (shared by Python tasks + Go bundle) --
-echo ">>> [4/6] setting dakp_config Variable (profile=$PROFILE workdir=$WORKDIR)"
+echo ">>> [4/6] setting dakp_config Variable (profile=$PROFILE workdir=$WORKDIR quarter=$QUARTER_JSON release=$RELEASE_JSON)"
 uv run airflow variables set dakp_config \
-  "{\"workdir\": \"$WORKDIR\", \"profile\": \"$PROFILE\", \"fixture_root\": \"$FIXTURE_ROOT\", \"quarter_limit\": 1, \"release_limit\": 1, \"log_level\": \"INFO\"}" \
+  "{\"workdir\": \"$WORKDIR\", \"profile\": \"$PROFILE\", \"fixture_root\": \"$FIXTURE_ROOT\", \"quarter_limit\": $QUARTER_JSON, \"release_limit\": $RELEASE_JSON, \"log_level\": \"$LOG_LEVEL\"}" \
   >/dev/null 2>&1
 
 # --- 5. trigger the DAG run ---------------------------------------------------

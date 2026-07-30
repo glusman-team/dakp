@@ -4,7 +4,7 @@ Runs the full pipeline (the pure-Python ``run_pipeline`` test harness) with NO n
 Tablassert. Fetchers are monkeypatched to load fixtures via ``ctx.fixture()``, and
 ``dakp_pipeline.tablassert.run`` is replaced with a fake — proving every external boundary is
 substitutable. The default (unpatched) mock path is also exercised. (The native Go extract path is
-validated by ``make run`` + the Go parity tests; the Airflow DAG wiring by ``test_dag.py``.)
+validated by ``make up-mock`` + the Go parity tests; the Airflow DAG wiring by ``test_dag.py``.)
 """
 
 from __future__ import annotations

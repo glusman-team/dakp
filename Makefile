@@ -1,90 +1,28 @@
-# DAKP pipeline rebuild — routine command shortcuts (mirrors the Tablassert Makefile).
-# All Python runs through uv; Go runs through the go/ module. `make help` lists targets.
+# DAKP pipeline — minimal run controls.
+#
+# All run configuration lives in `.envrc` (direnv) — edit that file, not these targets.
+# Quality gates run via pre-commit / `uv run` directly (no make wrappers). `make help` lists targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup install install-ner install-kg install-kg-qc install-all test cov coverage \
-	lint lint-fix fmt fmt-check typecheck check pre-commit \
-	build-go test-go vet-go fmt-go-check check-go check-all bundle run down clean
+.PHONY: help install up-mock up-sample up-prod down clean
 
 help: ## Show this help
-	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  %-18s %s\n",$$1,$$2}' $(MAKEFILE_LIST) | sort
+	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  %-12s %s\n",$$1,$$2}' $(MAKEFILE_LIST)
 
-# ---- Environment / install -------------------------------------------------
-
-setup install: ## Install runtime + dev deps (uv sync; Airflow 3 is now a hard dependency)
+install: ## Install everything (uv sync — runtime + dev; there are no extras)
 	uv sync
 
-install-ner: ## Install the heavy biomedical NER backend (GLiNER zero-shot; pulls torch)
-	uv sync --extra ner
+up-mock: ## Run the pipeline end-to-end on the mock profile (fixtures; no network)
+	PROFILE=mock bash scripts/dakp_up.sh
 
-install-kg: ## Install the Tablassert KG-build extra (PyPI tablassert; laptop-safe)
-	uv sync --extra kg
+up-sample: ## Run on the sample profile (real sources, bounded scope)
+	PROFILE=sample bash scripts/dakp_up.sh
 
-install-kg-qc: ## Install the heavy Tablassert QC-audit extra (adds torch/sentence-transformers)
-	uv sync --extra kg-qc
+up-prod: ## Run on the prod profile (real build; scope set in .envrc)
+	PROFILE=prod bash scripts/dakp_up.sh
 
-install-all: ## ONE-COMMAND full install: every extra (ner + kg + kg-qc) for a complete production run
-	uv sync --all-extras
-
-# ---- Python quality gate ---------------------------------------------------
-
-test: ## Run the Python test suite
-	uv run pytest
-
-cov coverage: ## Run tests with branch coverage (fail_under=100 configured)
-	uv run pytest --cov --cov-report=term-missing
-
-lint: ## Ruff check (Tablassert-style broad select)
-	uv run ruff check src tests
-
-lint-fix: ## Ruff check --fix
-	uv run ruff check --fix src tests
-
-fmt: ## Ruff format
-	uv run ruff format src tests
-
-fmt-check: ## Ruff format --check
-	uv run ruff format --check src tests
-
-typecheck: ## Pyright (reportUnusedImport/Variable on)
-	uv run pyright
-
-check: lint fmt-check typecheck test ## Full Python gate (lint + format + typecheck + tests)
-
-pre-commit: ## Run all pre-commit hooks
-	uv run pre-commit run --all-files
-
-# ---- Go quality gate -------------------------------------------------------
-
-build-go: ## Build the dakp-worker Go binary
-	cd go && go build -o dakp-worker ./cmd/dakp-worker
-
-test-go: ## Run Go tests (includes Python-parity golden tests)
-	cd go && go test ./...
-
-vet-go: ## Go vet
-	cd go && go vet ./...
-
-fmt-go-check: ## Assert gofmt-clean
-	cd go && test -z "$$(gofmt -l .)" || (gofmt -l . && exit 1)
-
-check-go: build-go vet-go test-go fmt-go-check ## Full Go gate (build + vet + test + gofmt)
-
-check-all: check check-go ## Full gate: Python + Go
-
-# ---- Run (Airflow-native; native Go SDK workers) ---------------------------
-
-bundle: ## Build + pack the native Go bundle into the coordinator's executables_root
-	mkdir -p tmp/airflow-home/executable-bundles
-	cd go && go tool airflow-go-pack --output ../tmp/airflow-home/executable-bundles/dakp-bundle ./cmd/dakp-bundle
-
-run: ## ONE-COMMAND end-to-end run via Airflow (bundle + Airflow + trigger + wait). PROFILE/WORKDIR/FIXTURE_ROOT env override
-	bash scripts/dakp_up.sh
-
-down: ## Stop the Airflow standalone started by `make run`
+down: ## Stop the local Airflow started by the up-* targets
 	bash scripts/dakp_down.sh
-
-# ---- Hygiene ---------------------------------------------------------------
 
 clean: ## Remove caches, coverage data, the Go binary, and tmp/
 	rm -rf .pytest_cache .ruff_cache .coverage htmlcov tmp/

@@ -15,7 +15,7 @@ Two output tiers (see [`architecture.md`](./architecture.md)):
   with a header row (written by [`schemas.write_tsv`](../src/dakp_pipeline/io/schemas.py)).
 
 > Example rows below are real output from a verified mock run
-> (the one-command `make run` mock pipeline).
+> (the one-command `make up-mock` mock pipeline).
 > Empty string cells render as `""` (polars quotes empties). `|`-joined cells are
 > Translator list-encoding conventions.
 

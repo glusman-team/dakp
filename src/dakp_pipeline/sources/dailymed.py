@@ -191,7 +191,7 @@ def _apply_release_limit(urls: list[str], ctx: TaskContext) -> list[str]:
     """Slice to the first N full releases when ``release_limit`` is set (<=0 / None = all).
 
     Bounds a ``prod``/``sample`` smoke run to a tiny real DailyMed scope (e.g.
-    ``dakp run --profile prod --release-limit 1``), mirroring FAERS ``quarter_limit``.
+    ``RELEASE_LIMIT=1 make up-prod``), mirroring FAERS ``quarter_limit``.
     """
     limit = ctx.params.get("release_limit")
     if not isinstance(limit, int) or limit <= 0:

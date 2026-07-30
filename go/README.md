@@ -15,7 +15,7 @@ shim). Layout:
 - [`internal/{dailymed,faers,drugsfda}`](./internal/) — the parsing libraries (parity-locked to the
   pure-Python reference extractors via golden-file tests).
 - [`cmd/dakp-worker`](./cmd/dakp-worker) — a standalone CLI over the same parsing libraries, kept
-  as a **dev/parity tool** (`make build-go` / `make check-go`); it is not on the production path.
+  as a **dev/parity tool** (`cd go && go build ./...` / `go test ./...`); it is not on the production path.
 - [`internal/{blake3store,pipeline,registry}`](./internal/) — the shared foundation: content
   addressing, the artifact manifest, shared pipeline types, and the CLI dispatcher.
 
@@ -107,7 +107,7 @@ That's it. `dakp-worker faers ...` now works, and `dakp-worker help` lists it. R
 ## How Airflow runs the bundle (native workers)
 
 The production path is the Airflow Go SDK bundle. Build + pack it into the coordinator's
-`executables_root` (the one-command `make run` does this automatically):
+`executables_root` (the one-command `make up-mock` does this automatically):
 
 ```bash
 go tool airflow-go-pack --output <executables_root>/dakp-bundle ./cmd/dakp-bundle
