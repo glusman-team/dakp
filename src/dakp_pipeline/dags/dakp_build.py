@@ -49,9 +49,9 @@ from dakp_pipeline.translator import contract as translator_contract
 
 try:
     from airflow.decorators import dag, task  # type: ignore[import-not-found]
-    from pendulum import datetime  # type: ignore[import-not-found]
+    from pendulum import datetime  # type: ignore[import-not-found]  # pragma: no cover - airflow-only
 
-    _AIRFLOW_AVAILABLE = True
+    _AIRFLOW_AVAILABLE = True  # pragma: no cover - airflow-only
 except ImportError:  # pragma: no cover - exercised only without the airflow extra
     _AIRFLOW_AVAILABLE = False
 
@@ -146,8 +146,12 @@ def _ctx_from_params(params: Mapping[str, Any] | None = None) -> TaskContext:
     return pipeline._build_context(profile, wd, p.get("fixture_root"), extra or None)
 
 
+# The task graph below only executes inside an Airflow runtime (the optional extra, not
+# installed in CI). Each @task body is a thin wrapper around a STAGE_CALLABLES entry plus
+# _ctx_from_params; those wrapped callables and the context helper are tested directly, so the
+# Airflow-only wiring is excluded from coverage rather than dead code.
 @dag(dag_id=DAG_ID, start_date=datetime(2026, 1, 1), schedule=None, catchup=False, tags=["dakp", "drug-approvals"], params=DAG_PARAMS)
-def dakp_build() -> None:
+def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies run only under an Airflow runtime
     """Full DAKP build DAG: acquire -> extract -> shape -> Tablassert handoff -> summary."""
 
     # -- acquisition (download pool) -------------------------------------------
@@ -260,7 +264,7 @@ def dakp_build() -> None:
 
 # Register the DAG when Airflow is present (Airflow scans dags/ for module-level DAGs).
 dag_obj: Any = None
-if _AIRFLOW_AVAILABLE:
+if _AIRFLOW_AVAILABLE:  # pragma: no cover - DAG registration needs the airflow extra
     dag_obj = dakp_build()
 
 __all__ = ["DAG_ID", "DAG_PARAMS", "DOWNLOAD_POOL", "EXTRACT_POOL", "STAGE_CALLABLES", "dag_obj", "dakp_build"]
