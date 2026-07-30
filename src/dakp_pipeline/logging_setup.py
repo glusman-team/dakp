@@ -43,9 +43,11 @@ class InterceptHandler(logging.Handler):
         except ValueError:
             level = record.levelno
 
-        # Find the caller that originated the record, not this handler.
-        frame, depth = logging.currentframe(), 2
-        while frame and frame.f_code.co_filename == logging.__file__:
+        # Find the caller that originated the record, not this handler: walk up through the
+        # stdlib logging frames. The first frame is always this handler (in this module, not
+        # ``logging``), so ``depth == 0`` forces the first step before the filename test applies.
+        frame, depth = logging.currentframe(), 0
+        while frame and (depth == 0 or frame.f_code.co_filename == logging.__file__):
             frame = frame.f_back
             depth += 1
 
