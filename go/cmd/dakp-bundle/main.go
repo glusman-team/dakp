@@ -1,35 +1,40 @@
 // Command dakp-bundle is DAKP's native Airflow Go SDK bundle.
 //
 // It replaces the old subprocess model (Python shelling out to the dakp-worker CLI via
-// workers/go_runner.py) with native Airflow Go Task SDK workers: the heavy parsing/extraction
-// for DailyMed / FAERS / Drugs@FDA runs *inside* this bundle, which the Airflow worker's
+// workers/go_runner.py) with native Airflow Go Task SDK workers: the heavy parsing/extraction for
+// DailyMed / FAERS / Drugs@FDA runs *inside* this bundle, which the Airflow worker's
 // ExecutableCoordinator forks once per task instance (coordinator deployment mode). The bundle
 // speaks the supervisor wire protocol directly (msgpack-over-IPC) and has native access to the
-// Airflow model (XCom / Variables / Connections) through sdk.Client.
+// Airflow model (XCom / Variables) through sdk.Client.
 //
 // The DAG structure and task dependencies still live in Python (dags/dakp_build.py) as
-// @task.stub(queue="golang") declarations — a documented Go SDK limitation (the Execution API
-// does not yet carry DAG structure for non-Python languages). This bundle registers the Go
-// implementations of those stub tasks; the dag_id ("dakp_build") and each task_id MUST match
-// the Python stub DAG. Task ids are set explicitly via AddTaskWithName so the Go functions can
-// keep idiomatic camelCase names.
+// @task.stub(queue="golang") declarations — a documented Go SDK limitation (the Execution API does
+// not yet carry DAG structure for non-Python languages). This bundle registers the Go
+// implementations of those stub tasks; the dag_id ("dakp_build") and each task_id MUST match the
+// Python stub DAG. Task ids are set explicitly via AddTaskWithName so the Go functions keep
+// idiomatic camelCase names.
+//
+// Each extract task: reads the run Config from the `dakp_config` Variable, reads its upstream
+// acquisition task's list[ArtifactRef] from XCom, runs the parity-verified extractor in
+// internal/airflow (parse -> interim parquet + TSV handoff -> BLAKE3 store + manifests), and
+// returns the produced list[ArtifactRef] as its return_value XCom for the shaping stage.
 //
 // Build + pack with the Go SDK packer (see go/README.md and the Makefile):
 //
 //	go tool airflow-go-pack --output <executables_root>/dakp-bundle ./go/cmd/dakp-bundle
-//
-// The packed bundle is a single self-contained executable: binary + embedded DAG source + a
-// metadata footer (the dag_id/task_id manifest) that the coordinator reads without executing it.
-// Run with --airflow-metadata to print that manifest (the packer does this internally).
 package main
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"log/slog"
 
 	v1 "github.com/apache/airflow/go-sdk/bundle/bundlev1"
 	"github.com/apache/airflow/go-sdk/bundle/bundlev1/bundlev1server"
 	"github.com/apache/airflow/go-sdk/sdk"
+
+	"github.com/glusman-team/dakp/go/internal/airflow"
 )
 
 // dagID must match the Python stub DAG's dag_id (dags/dakp_build.py: DAG_ID).
@@ -41,6 +46,12 @@ const (
 	taskExtractFAERS    = "extract_faers"
 	taskExtractDrugsFDA = "extract_drugsfda"
 )
+
+// configVariable is the Airflow Variable (JSON) holding the per-run Config (workdir/profile/...).
+const configVariable = "dakp_config"
+
+// returnKey is the XCom key a task's return value is stored under.
+const returnKey = "return_value"
 
 // Set by `-ldflags` at build time (the packer forwards go build flags after `--`).
 var (
@@ -73,43 +84,65 @@ func main() {
 	}
 }
 
+// extractFn is the pure, unit-tested extractor signature (internal/airflow).
+type extractFn func(context.Context, airflow.Config, []airflow.ArtifactRef) ([]airflow.ArtifactRef, error)
+
 // extractDailymed is the native Go implementation of the DAG's extract_dailymed stub task.
-//
-// Contract (mirrors the Python TaskFlow stage it replaces): consume the upstream acquisition
-// task's list[ArtifactRef] (raw SPL .xml/.xml.gz shards) from XCom, parse them with
-// internal/dailymed, finalize the five normalized interim parquet tables into the BLAKE3
-// content-addressed store (with manifests), and push the resulting list[ArtifactRef] as this
-// task's return_value XCom for the shaping stage.
-//
-// NOTE(skeleton): this is the SDK-wiring stub. The real D1 body (XCom in -> stage -> parse ->
-// parquet + store + manifest -> XCom out) lands in the next step; for now it logs the task
-// runtime context and returns a placeholder so the bundle builds, packs, and registers.
 func extractDailymed(ctx sdk.TIRunContext, client sdk.Client, log *slog.Logger) (any, error) {
-	return runExtractStub(ctx, log, taskExtractDailyMed)
+	return runExtract(ctx, client, log, taskExtractDailyMed, "acquire_dailymed", airflow.ExtractDailyMed)
 }
 
-// extractFAERS is the native Go implementation of extract_faers (FAERS ASCII quarters ->
-// faers_cases interim table). See extractDailymed for the shared contract.
+// extractFAERS is the native Go implementation of extract_faers.
 func extractFAERS(ctx sdk.TIRunContext, client sdk.Client, log *slog.Logger) (any, error) {
-	return runExtractStub(ctx, log, taskExtractFAERS)
+	return runExtract(ctx, client, log, taskExtractFAERS, "acquire_faers", airflow.ExtractFAERS)
 }
 
-// extractDrugsFDA is the native Go implementation of extract_drugsfda (Drugs@FDA tab-delimited
-// tables -> products/applications/submissions/lookups interim tables). See extractDailymed.
+// extractDrugsFDA is the native Go implementation of extract_drugsfda.
 func extractDrugsFDA(ctx sdk.TIRunContext, client sdk.Client, log *slog.Logger) (any, error) {
-	return runExtractStub(ctx, log, taskExtractDrugsFDA)
+	return runExtract(ctx, client, log, taskExtractDrugsFDA, "acquire_drugsfda", airflow.ExtractDrugsFDA)
 }
 
-// runExtractStub logs the task runtime context (proving the sdk.TIRunContext injection works)
-// and returns a placeholder result. Replaced by the real D1 extraction body per task.
-func runExtractStub(ctx sdk.TIRunContext, log *slog.Logger, taskID string) (any, error) {
-	ti, dagRun := ctx.TaskInstance(), ctx.DagRun()
-	log.InfoContext(ctx, "dakp extract task invoked",
-		"task_id", taskID,
-		"dag_id", ti.DagID,
-		"run_id", ti.RunID,
-		"try_number", ti.TryNumber,
-		"logical_date", dagRun.LogicalDate,
-	)
-	return map[string]any{"task_id": taskID, "status": "skeleton"}, nil
+// runExtract is the shared SDK adapter: read the run Config (Variable) + the upstream acquisition
+// task's ArtifactRefs (XCom), run the pure extractor, and return the produced ArtifactRefs (pushed
+// as this task's return_value XCom). Honors ctx cancellation via the extractor's context.
+func runExtract(ctx sdk.TIRunContext, client sdk.Client, log *slog.Logger, taskID, upstream string, fn extractFn) (any, error) {
+	cfg, err := readConfig(ctx, client)
+	if err != nil {
+		return nil, err
+	}
+	inputs, err := readUpstreamRefs(ctx, client, upstream)
+	if err != nil {
+		return nil, err
+	}
+	log.InfoContext(ctx, "extract start", "task_id", taskID, "workdir", cfg.Workdir, "profile", cfg.Profile, "inputs", len(inputs))
+	refs, err := fn(ctx, cfg, inputs)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", taskID, err)
+	}
+	log.InfoContext(ctx, "extract done", "task_id", taskID, "refs", len(refs))
+	return airflow.EncodeArtifactRefs(refs), nil
+}
+
+// readConfig reads the per-run Config from the `dakp_config` Variable (JSON). GetVariable falls
+// back to AIRFLOW_VAR_DAKP_CONFIG, which makes local dev/tests easy.
+func readConfig(ctx sdk.TIRunContext, client sdk.Client) (airflow.Config, error) {
+	var cfg airflow.Config
+	if err := client.UnmarshalJSONVariable(ctx, configVariable, &cfg); err != nil {
+		return cfg, fmt.Errorf("read %q variable: %w", configVariable, err)
+	}
+	if cfg.Workdir == "" {
+		return cfg, fmt.Errorf("%q variable missing workdir", configVariable)
+	}
+	return cfg, nil
+}
+
+// readUpstreamRefs reads an upstream task's return_value XCom (a list of ArtifactRef manifests) and
+// decodes it. The dag/run ids come from the executing task instance; the upstream task_id is static.
+func readUpstreamRefs(ctx sdk.TIRunContext, client sdk.Client, upstream string) ([]airflow.ArtifactRef, error) {
+	ti := ctx.TaskInstance()
+	v, err := client.GetXCom(ctx, ti.DagID, ti.RunID, upstream, ti.MapIndex, returnKey, nil)
+	if err != nil {
+		return nil, fmt.Errorf("read upstream %q xcom: %w", upstream, err)
+	}
+	return airflow.DecodeArtifactRefs(v)
 }
