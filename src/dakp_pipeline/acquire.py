@@ -32,7 +32,8 @@ from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import SourceBlock
 from dakp_pipeline.logging_setup import bind
-from dakp_pipeline.ner import backends, model_cache
+from dakp_pipeline.ner import model_cache
+from dakp_pipeline.ner.ner import DEFAULT_MODEL
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.sources import dailymed, drugsfda, faers, ingest_fixtures
 
@@ -87,7 +88,7 @@ def default_ner_models(ctx: TaskContext) -> list[str]:
     if ctx.profile == "mock":
         return []
     configured = list(load_profile(ctx.profile).download.ner_model_ids)
-    return configured or [backends.DEFAULT_GLINER_MODEL]
+    return configured or [DEFAULT_MODEL]
 
 
 def model_ref_to_artifact(ref: model_cache.ModelRef) -> ArtifactRef:

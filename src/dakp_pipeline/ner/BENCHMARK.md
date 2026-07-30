@@ -12,11 +12,18 @@ that a gazetteer alone cannot provide. Annotation policy is documented in the fi
 
 ## Results (strict span-level micro P/R/F1; a TP needs exact `(start, end, type)`)
 
-| candidate | precision | recall | F1    | TP | FP | FN | notes                                   |
+| approach  | precision | recall | F1    | TP | FP | FN | notes                                   |
 | --------- | --------- | ------ | ----- | -- | -- | -- | --------------------------------------- |
-| gazetteer | **1.000** | 0.914  | **0.955** | 32 | 0  | 3  | deterministic; no heavy deps; FN = the 3 OOV |
-| gliner    | 0.864     | 0.543  | 0.667 | 19 | 3  | 16 | zero-shot; catches **all 3 OOV** exactly |
+| gazetteer | **1.000** | 0.914  | 0.955 | 32 | 0  | 3  | deterministic; no heavy deps; FN = the 3 OOV |
+| gliner    | 0.864     | 0.543  | 0.667 | 19 | 3  | 16 | zero-shot alone; catches **all 3 OOV** exactly |
+| **composite** | 0.972 | **1.000** | **0.986** | 35 | 1 | 0 | **settled backend** (gazetteer + GLiNER merge) |
 | scispacy  | 0.571     | 0.457  | 0.508 | 16 | 12 | 19 | BC5CDR: no phenotype label, coarse spans |
+
+The **composite** (the shipped `DiseaseNER` in production mode) is the clear winner: perfect
+recall — it catches every gold span including all three rare out-of-gazetteer diseases — at
+near-perfect precision (one false positive). The gazetteer anchors high-precision spans; GLiNER
+fills the coverage gaps without inheriting the model's standalone boundary/type noise because
+gazetteer spans win on overlap.
 
 GLiNER standalone F1 is dragged down by boundary/type disagreement on common multiword
 terms, but it extracts every rare OOV disease with the correct span and type — exactly the

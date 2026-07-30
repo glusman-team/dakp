@@ -1,25 +1,26 @@
-"""NER benchmark harness — precision/recall/F1 of candidate disease/phenotype extractors.
+"""NER benchmark harness — precision/recall/F1 of disease/phenotype mention extraction.
 
-Evaluates candidate mention-extraction approaches against the hand-labeled gold fixture
+Evaluates mention-extraction approaches against the hand-labeled gold fixture
 (``ner_gold.json``: DailyMed contraindication sections (LOINC 34070-3) + FAERS indication
-strings with gold disease/phenotype spans). This is the evidence base for settling on ONE
-composite NER backend (see ``ner/README.md``).
+strings with gold disease/phenotype spans). This is the evidence base for the settled single
+composite NER backend (see ``ner/BENCHMARK.md``).
 
-Candidates benchmarked:
-  * ``gazetteer``  — the deterministic curated-gazetteer + lexical matcher (offline baseline).
-  * ``gliner``     — GLiNER zero-shot biomedical NER (``urchade/gliner_small-v2.1``).
-  * ``scispacy``   — SciSpacy BC5CDR (``en_ner_bc5cdr_md``) — skipped if the model is absent.
+Approaches benchmarked (all via the ONE ``DiseaseNER`` backend in different modes):
+  * ``gazetteer``  — offline mode: curated gazetteer + lexical matcher (deterministic).
+  * ``gliner``     — production mode with an EMPTY gazetteer: GLiNER zero-shot only.
+  * ``composite``  — production mode with the curated gazetteer: the settled backend
+                     (gazetteer anchors high-precision spans; GLiNER fills OOV recall).
 
 Scoring is span-level, micro-averaged: a prediction is a true positive only if its
 ``(start, end, type)`` exactly matches a gold span. Run with::
 
-    uv run python tests/eval/benchmark_ner.py            # all runnable candidates
+    uv run python tests/eval/benchmark_ner.py            # all runnable approaches
     uv run python tests/eval/benchmark_ner.py --json out.json
 
 This script is an evaluation artifact: it is NOT collected by pytest (filename is not
-``test_*.py``) and is not part of the coverage-gated package. It imports ``ner.backends``
-(which lazy-loads heavy deps) and never imports ``gliner``/``spacy`` directly, so it
-type-checks with or without the ``[ner]`` extra installed.
+``test_*.py``) and is not part of the coverage-gated package. It imports ``ner.ner`` (which
+lazy-loads ``gliner``) and never imports ``gliner`` directly, so it type-checks with or without
+the ``[ner]`` extra installed (the model approaches simply skip when it is absent).
 """
 
 from __future__ import annotations
@@ -34,10 +35,10 @@ HERE = Path(__file__).resolve().parent
 GOLD_PATH = HERE / "ner_gold.json"
 
 # --- the curated disease/phenotype gazetteer (the offline baseline under test) -----
-# term -> canonical type. This is the high-precision anchor of the settled composite
-# backend; it is intentionally NOT exhaustive — the three out-of-gazetteer gold cases
-# (porphyria / myasthenia gravis / pheochromocytoma) measure model generalization that a
-# gazetteer alone cannot provide.
+# term -> canonical type. This is the high-precision anchor of the settled composite backend
+# (mirrors dakp_pipeline.ner.ner.EMBEDDED_GAZETTEER); it is intentionally NOT exhaustive — the
+# three out-of-gazetteer gold cases (porphyria / myasthenia gravis / pheochromocytoma) measure
+# model generalization that a gazetteer alone cannot provide.
 GAZETTEER: dict[str, str] = {
     # disease (named disorders / syndromes)
     "asthma": "disease",
@@ -139,49 +140,31 @@ def load_cases(path: Path = GOLD_PATH) -> list[Case]:
     return cases
 
 
-# --- candidate predictors (wrap ner.backends; heavy deps load lazily) ----------
+# --- candidate predictors (all via the single DiseaseNER backend) --------------
 
 
 def gazetteer_predictor() -> Predictor:
-    """Deterministic curated-gazetteer + lexical matcher (the offline baseline)."""
-    from dakp_pipeline.ner.backends import CONTRAINDICATION_DISEASE_TYPES, DictionaryNERBackend
-    from dakp_pipeline.ner.dictionary import DictionaryEntry, DictionaryIndex, normalize_text
+    """Offline mode: curated gazetteer + lexical matcher (deterministic, no heavy deps)."""
+    from dakp_pipeline.ner.ner import DiseaseNER
 
-    category = {"disease": "Disease", "phenotype": "PhenotypicFeature"}
-    entries = [
-        DictionaryEntry(normalized=normalize_text(term), curie="", name=term, category=category[etype], source="gazetteer", original=term)
-        for term, etype in GAZETTEER.items()
-    ]
-    backend = DictionaryNERBackend(DictionaryIndex(entries))
-
-    def predict(text: str) -> list[Pred]:
-        return [Pred(s.start, s.end, s.type, s.text) for s in backend.extract(text, CONTRAINDICATION_DISEASE_TYPES)]
-
-    return predict
+    ner = DiseaseNER(offline=True, gazetteer=GAZETTEER)
+    return lambda text: [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text)]
 
 
 def gliner_predictor(threshold: float = 0.5) -> Predictor:
-    """GLiNER zero-shot biomedical NER."""
-    from dakp_pipeline.ner.backends import CONTRAINDICATION_DISEASE_TYPES, GLiNERBackend
+    """Production mode with an EMPTY gazetteer: GLiNER zero-shot only (isolates the model)."""
+    from dakp_pipeline.ner.ner import DiseaseNER
 
-    backend = GLiNERBackend(threshold=threshold)
-
-    def predict(text: str) -> list[Pred]:
-        return [Pred(s.start, s.end, s.type, s.text) for s in backend.extract(text, CONTRAINDICATION_DISEASE_TYPES)]
-
-    return predict
+    ner = DiseaseNER(offline=False, gazetteer={}, threshold=threshold)
+    return lambda text: [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text)]
 
 
-def scispacy_predictor() -> Predictor:
-    """SciSpacy BC5CDR biomedical NER (DISEASE/CHEMICAL only — no phenotype label)."""
-    from dakp_pipeline.ner.backends import CONTRAINDICATION_DISEASE_TYPES, SciSpacyBackend
+def composite_predictor(threshold: float = 0.5) -> Predictor:
+    """Production mode with the curated gazetteer: the settled backend (gazetteer + GLiNER)."""
+    from dakp_pipeline.ner.ner import DiseaseNER
 
-    backend = SciSpacyBackend()
-
-    def predict(text: str) -> list[Pred]:
-        return [Pred(s.start, s.end, s.type, s.text) for s in backend.extract(text, CONTRAINDICATION_DISEASE_TYPES)]
-
-    return predict
+    ner = DiseaseNER(offline=False, gazetteer=GAZETTEER, threshold=threshold)
+    return lambda text: [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text)]
 
 
 # --- scoring -------------------------------------------------------------------
@@ -221,30 +204,25 @@ def score(predict: Predictor, cases: Sequence[Case], *, type_aware: bool = True)
 
 
 def _candidates() -> dict[str, Predictor]:
-    """Runnable candidate predictors; a backend that cannot load is skipped with a note."""
+    """Runnable predictors; a model approach that cannot load is skipped with a note."""
     candidates: dict[str, Predictor] = {"gazetteer": gazetteer_predictor()}
     try:
         candidates["gliner"] = gliner_predictor()
-    except Exception as exc:
-        print(f"[skip] gliner: {exc}")
-    try:
-        candidates["scispacy"] = scispacy_predictor()
-    except Exception as exc:
-        print(f"[skip] scispacy: {exc}")
+        candidates["composite"] = composite_predictor()
+    except Exception as exc:  # report any model/load failure and continue with the gazetteer
+        print(f"[skip] gliner/composite (model unavailable): {exc}")
     return candidates
 
 
 def run(json_out: Path | None = None) -> dict[str, dict[str, float]]:
     cases = load_cases()
     total_gold = sum(len(case.gold) for case in cases)
-    print(
-        f"NER benchmark: {len(cases)} cases, {total_gold} gold mentions "
-        f"({sum(1 for c in cases if c.source == 'dailymed')} DailyMed, "
-        f"{sum(1 for c in cases if c.source == 'faers')} FAERS)\n"
-    )
+    dailymed = sum(1 for c in cases if c.source == "dailymed")
+    faers = sum(1 for c in cases if c.source == "faers")
+    print(f"NER benchmark: {len(cases)} cases, {total_gold} gold mentions ({dailymed} DailyMed, {faers} FAERS)\n")
 
     results: dict[str, dict[str, float]] = {}
-    header = f"{'candidate':<12} {'P':>7} {'R':>7} {'F1':>7} {'TP':>5} {'FP':>5} {'FN':>5}"
+    header = f"{'approach':<12} {'P':>7} {'R':>7} {'F1':>7} {'TP':>5} {'FP':>5} {'FN':>5}"
     print(header)
     print("-" * len(header))
     for name, predict in _candidates().items():
@@ -255,17 +233,14 @@ def run(json_out: Path | None = None) -> dict[str, dict[str, float]]:
     print("\n(strict = exact (start,end,type) match; lenient_f1 = offset match ignoring type)")
 
     if json_out is not None:
-        json_out.write_text(
-            json.dumps({"schema_version": "dakp.ner.benchmark.v1", "cases": len(cases), "gold_mentions": total_gold, "results": results}, indent=2)
-            + "\n",
-            encoding="utf-8",
-        )
+        payload = {"schema_version": "dakp.ner.benchmark.v1", "cases": len(cases), "gold_mentions": total_gold, "results": results}
+        json_out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         print(f"\nwrote {json_out}")
     return results
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark candidate NER backends on the gold fixture.")
+    parser = argparse.ArgumentParser(description="Benchmark disease/phenotype NER approaches on the gold fixture.")
     parser.add_argument("--json", type=Path, default=None, help="Optional path to write the results JSON.")
     args = parser.parse_args()
     run(json_out=args.json)

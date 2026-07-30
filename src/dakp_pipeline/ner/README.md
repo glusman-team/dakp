@@ -1,102 +1,76 @@
-# NER backend layer
+# NER layer — one composite backend, mentions only
 
-Pluggable biomedical NER for disease/phenotype mention extraction. This layer lets DAKP mine
-contraindications **directly** from DailyMed SPL "Contraindications" sections (LOINC
-`34070-3`) using state-of-the-art NER (PLAN.md "Phase 4"). A
-later worker feeds `extract_contraindication_diseases()` output into the contraindication
-assertion builder.
+DAKP extracts disease/phenotype **mentions** (text spans + entity type) from DailyMed SPL
+"Contraindications" sections (LOINC `34070-3`) and FAERS indication strings. There is **one**
+NER backend (`ner.py`, `DiseaseNER`) with **one** entry point — no pluggable backend selector.
+DAKP never resolves terms to ontology CURIEs; ontology mapping is exclusively Tablassert's job
+(fullmap/BABEL at `tablassert build-kg`). Assertion tables carry mention **text**; Tablassert
+resolves the CURIEs.
+
+## The settled composite (see `BENCHMARK.md`)
+
+Benchmarked on a hand-labeled fixture (27 cases / 35 gold spans, `tests/eval/`):
+
+| approach  | precision | recall | F1    | notes                                   |
+| --------- | --------- | ------ | ----- | --------------------------------------- |
+| gazetteer | **1.000** | 0.914  | **0.955** | deterministic; no heavy deps; FN = 3 rare OOV |
+| gliner    | 0.864     | 0.543  | 0.667 | zero-shot; catches all 3 OOV exactly     |
+| scispacy  | 0.571     | 0.457  | 0.508 | dropped: no phenotype label, coarse spans |
+
+* **Offline mode (default):** curated gazetteer + deterministic lexical matcher. Precision
+  1.000 / F1 0.955, zero heavy deps, fully deterministic. Used by tests + the mock pipeline.
+* **Production mode (`offline=False`):** the same gazetteer anchors high-precision spans and
+  GLiNER zero-shot (`urchade/gliner_small-v2.1`) fills out-of-gazetteer gaps (gazetteer wins on
+  overlap) → near-perfect recall at gazetteer precision. Needs the `[ner]` extra.
 
 ## Modules
 
-- `backends.py` — `EntitySpan`, the `NERBackend` protocol, four backends, the `get_backend`
-  factory, and the `extract_contraindication_diseases` helper.
-- `model_cache.py` — idempotent model download + cache with a BLAKE3 provenance manifest.
-- `dictionary.py` / `lexical.py` / `candidates.py` / `mapping.py` — the deterministic
-  dictionary baseline + mention-candidate emission (Milestone 4).
+- `ner.py` — the single `DiseaseNER` backend + `extract_disease_mentions` /
+  `extract_contraindication_diseases` + the curated `EMBEDDED_GAZETTEER`.
+- `dictionary.py` — normalization (`normalize_text` / `normalize_with_map`) + the
+  span-detection `Gazetteer` (term → type; **no** CURIE/name/category).
+- `lexical.py` — the deterministic `LexicalMatcher` + `Mention` (text span + type only).
+- `candidates.py` — unique mention-string inventory emission (`mention_candidates.tsv`).
+- `model_cache.py` — idempotent model download/cache (production mode weights).
 
-## Backends
-
-Every backend satisfies:
-
-```python
-class NERBackend(Protocol):
-    def extract(self, text: str, types: Sequence[str]) -> list[EntitySpan]: ...
-```
-
-`EntitySpan` has `text` / `start` / `end` / `type` / `score`; offsets are half-open so
-`span.text == text[span.start:span.end]`. `types` are canonical labels
-(`disease` / `phenotype` / `chemical` / `drug`; see `canonical_type`); a backend returns only
-requested types (empty `types` = no filter for the filtering backends).
-
-| Backend              | Config string  | Heavy deps | Notes                                                        |
-| -------------------- | -------------- | ---------- | ------------------------------------------------------------ |
-| `MockNERBackend`     | `"mock"`       | none       | Deterministic, fixture-driven vocabulary. For tests.         |
-| `DictionaryNERBackend` | `"dictionary"` | none     | Wraps the MONDO/HPO `LexicalMatcher` baseline. Deterministic.|
-| `GLiNERBackend`      | `"gliner"`     | `gliner`   | Zero-shot SOTA; small model; **lazy import**.                |
-| `SciSpacyBackend`    | `"scispacy"`   | `spacy`/`scispacy` | BC5CDR biomedical (`DISEASE`/`CHEMICAL`); **lazy import**. |
-
-Select via config string:
+## Usage
 
 ```python
-from dakp_pipeline.ner.backends import get_backend, extract_contraindication_diseases
+from dakp_pipeline.ner.ner import DiseaseNER, extract_contraindication_diseases
 
-backend = get_backend("dictionary", dictionary=my_index)  # or "mock" | "gliner" | "scispacy"
-spans = extract_contraindication_diseases(section_text, backend)
+ner = DiseaseNER()  # offline: deterministic embedded gazetteer
+ner = DiseaseNER(offline=False)  # production: gazetteer + GLiNER (needs [ner])
+mentions = extract_contraindication_diseases(section_text, ner)
+# Mention.text / .start / .end / .type / .score  — text span + type ONLY, no CURIE
 ```
 
-## Lazy imports & the `[ner]` extra (important)
+`Mention` offsets are half-open: `mention.text == text[mention.start:mention.end]`. Output is
+sorted by `(start, end, type, text)`.
+
+## The `[ner]` extra & lazy imports
 
 The base install and the **entire test suite run WITHOUT any NER deps.** `import
-dakp_pipeline.ner.backends` never imports `gliner` / `spacy` / `scispacy` / `huggingface_hub`.
-Those are imported only on a real backend's first `extract()` (via `_load`). If a dep is
-missing, the backend raises `NERDependencyError` (an `ImportError`) with:
+dakp_pipeline.ner.ner` never imports `gliner` / `huggingface_hub`; those load only on a
+production-mode `DiseaseNER`'s first `extract()`. If a dep is missing, it raises
+`NERDependencyError` (an `ImportError`):
 
-> NER backend 'gliner' requires the optional [ner] extra (missing module: gliner). Install it with: uv sync --extra ner
+> NER production mode requires the optional [ner] extra (missing module: gliner). Install it with: uv sync --extra ner
 
-Install the optional extra to use the real backends:
-
-```bash
-uv sync --extra ner
-```
-
-The extra is intentionally heavy (pulls torch/transformers/spacy). It is declared in
-`pyproject.toml` under `[project.optional-dependencies] ner`; NER deps are **never** in the
-base `dependencies`.
-
-### SciSpacy model
-
-`scispacy` needs a spaCy model package installed separately (not on PyPI as a normal dep):
+Install the optional extra to use production mode:
 
 ```bash
-uv run pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_ner_bc5cdr_md-0.5.4.tar.gz
+uv sync --extra ner    # or: make install-ner
 ```
 
-BC5CDR labels `DISEASE` and `CHEMICAL` only (no phenotype) — use GLiNER or the dictionary
-backend for phenotype coverage.
-
-### GLiNER model
-
-Default model: `urchade/gliner_small-v2.1` (small, laptop-safe, CPU-feasible). Override with
-`GLiNERBackend(model_id=...)` for a larger/biomedical-tuned checkpoint. Weights are fetched
-once and cached by `model_cache.ensure_model`.
-
-## Model cache (`model_cache.py`)
-
-`ensure_model(model_id, *, cache_dir=None, workdir=None, downloader=None, force=False)` is
-idempotent: it downloads a model exactly once and reuses it **by BLAKE3 tree hash**.
-
-- Cache dir: `<workdir>/models` when a workdir is given, else `$XDG_CACHE_HOME/dakp/models`
-  (`~/.cache/dakp/models`). No absolute paths in code.
-- Layout: `<cache>/<source>/<model_id with '/' -> '--'>/{manifest.json, content/}`.
-- `manifest.json` records `schema_version`, `model_id`, `source`, `b3` (BLAKE3 tree hash of
-  `content/`), and `retrieved_at`.
-- The downloader is dependency-injected; the default uses `huggingface_hub` (lazy import).
-  Tests pass a fake downloader to exercise idempotency/manifests/drift with no network.
-- `verify=True` (default) re-hashes `content/` on a would-be hit and re-downloads if it
-  drifted; `force=True` re-downloads unconditionally.
+The extra is intentionally heavy (pulls torch/transformers). It is declared in `pyproject.toml`
+under `[project.optional-dependencies] ner`; NER deps are **never** in the base `dependencies`.
+GLiNER weights are fetched once and cached by `model_cache.ensure_model` (BLAKE3-keyed,
+idempotent; `<workdir>/models` or `$XDG_CACHE_HOME/dakp/models`).
 
 ## Conventions
 
 - Minimal base deps; NER deps only in the optional `[ner]` extra.
-- Lazy imports for heavy models; laptop-safe (small models, cached, bounded).
-- `loguru` for logging; deterministic mock/dictionary backends; no absolute paths.
+- One backend / one entry point; offline (deterministic) vs production (model) is a mode toggle.
+- Lazy imports for the model; laptop-safe (small model, cached).
+- `loguru` for logging; deterministic offline mode; no absolute paths.
+- Mentions are text + type only; ontology CURIE resolution is Tablassert-only.

@@ -2,60 +2,53 @@
 
 Builds ``contraindication_assertions.tsv``: drug→condition contraindication assertions
 **mined directly** from DailyMed SPL "Contraindications" sections (LOINC ``34070-3``) using
-a configurable NER backend (PLAN.md "Phase 4: NER / entity resolution strategy"). This
-replaces the former externally-sourced contraindication list: contraindications are now
+DAKP's single composite NER backend (:mod:`dakp_pipeline.ner.ner`). Contraindications are
 extracted from the label text itself, which yields better coverage and DailyMed-grounded
-provenance.
+provenance than an externally-sourced list.
 
 Mining rule (explicit and tested)
 ---------------------------------
 For every SPL set that carries a contraindication section **and** at least one active
 ingredient, run the NER backend over the section text
-(:func:`~dakp_pipeline.ner.backends.extract_contraindication_diseases`) to extract
-disease/phenotype mentions; pair each mention with each active ingredient of that set to
-form a ``biolink:contraindicated_in`` assertion (ingredient = subject, mention = object).
-Rows are aggregated by ``(subject_text, object_text)``: ``supporting_spl_sets`` and
+(:func:`~dakp_pipeline.ner.ner.extract_contraindication_diseases`) to extract disease/phenotype
+mentions; pair each mention with each active ingredient of that set to form a
+``biolink:contraindicated_in`` assertion (ingredient = subject, mention = object). Rows are
+aggregated by ``(subject_text, object_text)``: ``supporting_spl_sets`` and
 ``supporting_spl_documents`` are unioned, ``source_score`` takes the max NER span score.
-Object CURIE/name/category are resolved from the lexical disease baseline (``disease_map``)
-where the mined mention is known (text-first; CURIEs populated only where available).
 
-Backend selection (:func:`resolve_ner_backend`)
------------------------------------------------
-``params["ner_backend"]`` (an :class:`~dakp_pipeline.ner.backends.NERBackend` instance) wins;
-else ``params["ner_backend_name"]`` selects one via
-:func:`~dakp_pipeline.ner.backends.get_backend` (``mock|dictionary|gliner|scispacy`` — the
-real GLiNER/SciSpacy backends need the ``[ner]`` extra); else the offline default is the
-deterministic :class:`~dakp_pipeline.ner.backends.DictionaryNERBackend` built from the
-ontology fixture (``<fixture_root>/ontology/disease_map.tsv``), falling back to an empty
-:class:`~dakp_pipeline.ner.backends.MockNERBackend`. Constructing any backend is import-free,
-so the base install + test suite run with the ``[ner]`` extra NOT installed.
+Ontology mapping is Tablassert-only
+-----------------------------------
+The **object** is the mined disease MENTION TEXT (``object_text``); ``object_curie`` /
+``object_name`` / ``object_category`` are left empty for Tablassert/fullmap to resolve at
+``tablassert build-kg`` — DAKP does **not** resolve mentions to ontology CURIEs. The
+**subject** (active ingredient) carries its text + UNII straight from the SPL source
+(source-provided, not DAKP-mapped).
+
+The NER backend
+---------------
+The shaper uses an injected ``params["ner"]`` :class:`~dakp_pipeline.ner.ner.DiseaseNER` when
+present (tests / production wiring), else builds the deterministic **offline** backend from the
+ontology fixture gazetteer (``<fixture_root>/ontology/disease_map.tsv``, read as term→type only
+— CURIE columns ignored), falling back to the embedded gazetteer. There is no backend-name
+selector. Constructing the backend is import-free, so the base install + test suite run with
+the ``[ner]`` extra NOT installed.
 
 Provenance: contraindications are text-mined from DailyMed, so
 ``primary_knowledge_source = infores:multiomics-drugapprovals``,
-``upstream_resource_ids = infores:dailymed``, ``agent_type = text_mining_agent`` (the DAKP
-RIG lists ``text_mining_agent`` for ``contraindicated_in``), ``knowledge_level =
-knowledge_assertion``.
+``upstream_resource_ids = infores:dailymed``, ``agent_type = text_mining_agent`` (the DAKP RIG
+lists ``text_mining_agent`` for ``contraindicated_in``), ``knowledge_level = knowledge_assertion``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from dakp_pipeline.assertions import INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, match_diseases, row_for
+from dakp_pipeline.assertions import INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, row_for
 from dakp_pipeline.assertions.evidence import build_dailymed_evidence, find_table, sorted_pipe, write_assertion_table
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.ner.backends import (
-    TYPE_PHENOTYPE,
-    DictionaryNERBackend,
-    EntitySpan,
-    MockNERBackend,
-    NERBackend,
-    canonical_type,
-    extract_contraindication_diseases,
-    get_backend,
-)
+from dakp_pipeline.ner.ner import DiseaseNER, Mention, extract_contraindication_diseases
 
 _TABLE = "contraindication_assertions"
 _PREDICATE = "biolink:contraindicated_in"
@@ -66,43 +59,35 @@ _ONTOLOGY_FIXTURE = Path("ontology") / "disease_map.tsv"
 AT_TEXT_MINING = "text_mining_agent"
 
 
-def resolve_ner_backend(fixture_root: Path | str | None, params: Mapping[str, Any]) -> NERBackend:
-    """Resolve the contraindication-mining NER backend (configurable; offline by default).
+def default_ner(fixture_root: Path | str | None) -> DiseaseNER:
+    """The deterministic offline NER backend: gazetteer from the ontology fixture, else embedded.
 
-    Priority: an injected ``params["ner_backend"]`` instance -> ``params["ner_backend_name"]``
-    via :func:`get_backend` (``mock|dictionary|gliner|scispacy``) -> the deterministic
-    dictionary baseline over the ontology fixture -> an empty mock backend. Never imports a
-    heavy ``[ner]`` dep at construction time.
+    Reads the ontology fixture as a term→type gazetteer ONLY (``text`` + ``category`` columns;
+    CURIE/name columns are ignored — DAKP does not map terms to ontology concepts). No heavy
+    ``[ner]`` dep is imported.
     """
-    backend = params.get("ner_backend")
-    if backend is not None:
-        return backend  # type: ignore[no-any-return]
-    name = str(params.get("ner_backend_name") or "").strip().lower()
-    if name:
-        return get_backend(name)
     if fixture_root is not None:
         ontology = Path(fixture_root) / _ONTOLOGY_FIXTURE
         if ontology.exists():
-            return DictionaryNERBackend.from_tsv(ontology)
-    return MockNERBackend()
+            return DiseaseNER.from_tsv(ontology, text_col="text", type_col="category")
+    return DiseaseNER()
 
 
 class ContraindicationsShaper:
     def transform(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
-        disease_map: dict[str, dict[str, str]] = ctx.params.get("disease_map", {})  # type: ignore[assignment]
-        backend = resolve_ner_backend(ctx.fixture_root, ctx.params)
-        rows = build_contraindication_rows(inputs, backend, disease_map)
+        ner_param = ctx.params.get("ner")
+        ner = ner_param if isinstance(ner_param, DiseaseNER) else default_ner(ctx.fixture_root)
+        rows = build_contraindication_rows(inputs, ner)
         return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_contraindications")
 
 
-def build_contraindication_rows(
-    inputs: Iterable[ArtifactRef], backend: NERBackend, disease_map: Mapping[str, Mapping[str, str]]
-) -> list[dict[str, str]]:
+def build_contraindication_rows(inputs: Iterable[ArtifactRef], ner: DiseaseNER) -> list[dict[str, str]]:
     """Mine DailyMed contraindication sections into assertion rows (deterministic).
 
     For each SPL set with a contraindication section and >=1 active ingredient, extract
-    disease/phenotype mentions from the section text and pair each with each active
-    ingredient. Aggregated by ``(subject_text, object_text)`` and sorted for stable output.
+    disease/phenotype mentions from the section text and pair each with each active ingredient.
+    Aggregated by ``(subject_text, object_text)`` and sorted for stable output. The object is
+    the mined mention TEXT; object CURIE/name/category are left empty for Tablassert.
     """
     evidence = build_dailymed_evidence(inputs)
     ingredients_by_set = _active_ingredients_by_set(inputs)
@@ -113,12 +98,12 @@ def build_contraindication_rows(
         if not ingredients:
             continue
         for doc_id, text in evidence.contraindication_docs[set_id]:
-            for span in extract_contraindication_diseases(text, backend):
-                object_text = span.text.strip()
+            for mention in extract_contraindication_diseases(text, ner):
+                object_text = mention.text.strip()
                 if not object_text:
                     continue
                 for ingredient_name, ingredient_unii in ingredients:
-                    _accumulate(aggregated, set_id, doc_id, ingredient_name, ingredient_unii, object_text, span, disease_map)
+                    _accumulate(aggregated, set_id, doc_id, ingredient_name, ingredient_unii, object_text, mention)
 
     return [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]
 
@@ -158,10 +143,13 @@ def _accumulate(
     ingredient_name: str,
     ingredient_unii: str,
     object_text: str,
-    span: EntitySpan,
-    disease_map: Mapping[str, Mapping[str, str]],
+    mention: Mention,
 ) -> None:
-    """Add one (ingredient, mention) observation to the ``(subject, object)`` aggregate."""
+    """Add one (ingredient, mention) observation to the ``(subject, object)`` aggregate.
+
+    The subject carries the SPL-provided ingredient text + UNII; the object is the mined mention
+    text with CURIE/name/category left empty for Tablassert/fullmap to resolve.
+    """
     key = (ingredient_name, object_text)
     agg = aggregated.setdefault(
         key,
@@ -171,8 +159,8 @@ def _accumulate(
             "subject_name": ingredient_name,
             "object_text": object_text,
             "object_curie": "",
-            "object_name": object_text,
-            "object_category": _category_for_type(span.type),
+            "object_name": "",
+            "object_category": "",
             "sets": [],
             "docs": [],
             "scores": [],
@@ -180,19 +168,7 @@ def _accumulate(
     )
     agg["sets"].append(set_id)
     agg["docs"].append(doc_id)
-    agg["scores"].append(span.score)
-    # Resolve the mined mention to a canonical disease/phenotype where the baseline knows it.
-    if not agg["object_curie"]:
-        matches = match_diseases(object_text, disease_map)
-        if matches:
-            agg["object_curie"] = matches[0]["curie"]
-            agg["object_name"] = matches[0]["name"] or object_text
-            agg["object_category"] = matches[0]["category"] or agg["object_category"]
-
-
-def _category_for_type(span_type: str) -> str:
-    """Biolink object category for a canonical NER span type (phenotype vs disease)."""
-    return "PhenotypicFeature" if canonical_type(span_type) == TYPE_PHENOTYPE else "Disease"
+    agg["scores"].append(mention.score)
 
 
 def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
@@ -226,4 +202,4 @@ def _max_score(scores: list[float]) -> str:
 
 transform = ContraindicationsShaper().transform
 
-__all__ = ["AT_TEXT_MINING", "ContraindicationsShaper", "build_contraindication_rows", "resolve_ner_backend", "transform"]
+__all__ = ["AT_TEXT_MINING", "ContraindicationsShaper", "build_contraindication_rows", "default_ner", "transform"]
