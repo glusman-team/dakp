@@ -95,8 +95,8 @@ def build_approved_treats_rows(
         agg["docs"].extend(docs)
         if not agg["subject_curie"] and subject_curie:
             agg["subject_curie"] = subject_curie
-        if not agg["object_curie"] and cand["object_curie"]:
-            agg["object_curie"] = cand["object_curie"]
+        # object_curie needs no back-fill: it is a deterministic function of object_text (the
+        # aggregation key), so every candidate for a key carries the same value already set above.
 
     return [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]
 
