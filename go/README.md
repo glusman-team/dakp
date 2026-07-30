@@ -183,3 +183,45 @@ added here. When an extractor needs parquet, add
 [`github.com/parquet-go/parquet-go`](https://github.com/parquet-go/parquet-go) with a
 single `go get github.com/parquet-go/parquet-go` (a one-line `go.mod` change) and write TSV
 for the Tablassert handoff regardless.
+
+## FAERS extractor subcommand (`faers`)
+
+The first per-source extractor, ported from `src/dakp_pipeline/extract/faers_ascii.py`
+(Milestone 3). It lives in `internal/faers/` (parser + case-join library) and
+`cmd/dakp-worker/faers.go` (self-registered `faers` subcommand — a NEW file; `main.go` and
+the registry are untouched).
+
+```bash
+# Parse a directory of FAERS ASCII .txt files (one or more quarters, derived from each
+# filename like DEMO24Q3.txt) and write the uncompressed source-section TSVs:
+go run ./cmd/dakp-worker faers <quarter-dir> <out-dir>
+go run ./cmd/dakp-worker faers -jobs 8 tests/fixtures/pipeline/faers /tmp/faers-out
+```
+
+Behavior (faithful Go port of the Python, including the `listCases.pl` join semantics):
+
+- Parses `$`-delimited ASCII per family (DEMO, DRUG, INDI, REAC, RPSR, DELETE) with
+  bufio streaming line reads, handling the trailing `$`, CRLF, UPPERCASE→lowercase
+  headers, and the legacy `isr`→`primaryid` column. Files parse concurrently via
+  `errgroup` with `SetLimit` (`-jobs`; `<=0` = unbounded).
+- Normalized tables carry `quarter`, `source_file`, `source_record_id` provenance first;
+  `source_record_id` is `<first-12-hex-of-file-b3>:<primaryid>[:<drug_seq|indi_drug_seq:indi_pt|pt>]`.
+- Builds the INDI-driven per-quarter case join (INDI×DRUG on `primaryid|drug_seq`),
+  left-joining DEMO reporter metadata, RPSR source, and REAC reactions (sorted-unique,
+  `$`-joined), honoring DELETEd primaryids and intra-quarter exact-row dedup.
+- Reduces across quarters with caseid dedup (most-recent-wins; `caseid` key, falling back
+  to `primaryid`). `nda` is digits-only with leading zeroes stripped (`nda_raw` keeps them).
+
+Outputs (uncompressed TSV; parquet is deferred — see Dependencies above):
+
+- `<out-dir>/faers_cases.tsv` — the public Tablassert source-section contract, columns
+  `schemas.FAERS_CASES_COLUMNS`:
+  `quarter, primaryid, caseid, source, occp_cod, reporter_country, drugname, ingredient, nda, indication, effects`.
+- `<out-dir>/delete_audit.tsv` — `quarter, primaryid, caseid, source_file, source_record_id`.
+- `<out-dir>/dedup_audit.tsv` — `quarter, primaryid, caseid, dedup_key, winning_quarter, source_file`.
+
+Contract: **stdout** is the single `b3:<hex>` content id of `faers_cases.tsv`; **stderr**
+is a structured JSON `log/slog` summary (`quarters`, `cases`, `deleted`, `deduped`,
+`warnings`, `artifact_id`, `elapsed_ms`). `internal/faers/faers_test.go` asserts
+byte-for-byte parity of `faers_cases.tsv` against the Python extractor using the
+byte-identical fixtures in `internal/faers/testdata/`.
