@@ -12,7 +12,7 @@ Idempotent and non-destructive: raw downloads land in the BLAKE3 content-address
 (re-used by tree hash). Nothing is renamed or deleted except per-run staging files.
 
 The mock profile never touches the network: the source fetchers ingest fixtures, the NER
-model acquisition is a no-op (the deterministic dictionary/mock backends need no weights),
+model acquisition is a no-op (the deterministic offline NER backend needs no weights),
 and ontology acquisition ingests the bundled ontology fixture. Real profiles download; the
 fullmap redb source is config-driven (:attr:`DownloadConfig.fullmap_source`) and defaults to
 a stub URL until a canonical source is published.
@@ -81,9 +81,9 @@ def acquire_drugsfda(ctx: TaskContext) -> list[ArtifactRef]:
 def default_ner_models(ctx: TaskContext) -> list[str]:
     """NER model ids to cache for ``ctx`` (mock = none; else config override or backend default).
 
-    The mock profile uses deterministic dictionary/mock backends that need no weights, so it
+    The mock profile uses the deterministic offline NER backend, which needs no weights, so it
     acquires nothing. Other profiles use :attr:`DownloadConfig.ner_model_ids` when set, else
-    the default GLiNER checkpoint the real NER backend loads.
+    the default GLiNER checkpoint the production NER backend loads.
     """
     if ctx.profile == "mock":
         return []

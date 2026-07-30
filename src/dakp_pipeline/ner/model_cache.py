@@ -1,9 +1,10 @@
 """Idempotent NER model download + cache (laptop-safe, offline-testable).
 
-The real NER backends in :mod:`dakp_pipeline.ner.backends` need large model weights. This
-module gives them one idempotent place to fetch and cache those weights under a configurable
-directory, with a small provenance manifest (model id, source, BLAKE3 tree hash) so a cached
-model is reused **by hash** — never re-downloaded on a cache hit, and verifiable on demand.
+The production mode of the NER backend (:mod:`dakp_pipeline.ner.ner`) needs large model
+weights. This module gives it one idempotent place to fetch and cache those weights under a
+configurable directory, with a small provenance manifest (model id, source, BLAKE3 tree hash)
+so a cached model is reused **by hash** — never re-downloaded on a cache hit, and verifiable
+on demand.
 
 Design constraints (mirrors the rest of DAKP):
 
