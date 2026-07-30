@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"golang.org/x/sync/errgroup"
 
@@ -153,7 +154,7 @@ type kid struct {
 
 // attr returns the whitespace-trimmed value of the attribute with the given local name
 // ("" if absent), mirroring spl_xml._attr.
-func (n *node) attr(key string) string { return strings.TrimSpace(n.attrs[key]) }
+func (n *node) attr(key string) string { return strings.TrimFunc(n.attrs[key], pySpace) }
 
 // elemText returns the element's leading text (the text before its first child element),
 // mirroring ElementTree's Element.text used by findtext() in the mock set-id path.
@@ -191,7 +192,7 @@ func (n *node) text() string { return collapseWS(n.concatText()) }
 
 // allText returns the descendant text with only leading/trailing whitespace stripped,
 // preserving internal whitespace (mirrors spl_xml._all_text).
-func (n *node) allText() string { return strings.TrimSpace(n.concatText()) }
+func (n *node) allText() string { return strings.TrimFunc(n.concatText(), pySpace) }
 
 // iter returns n and all its descendants whose local name matches name, in pre-order
 // document order — exactly ElementTree's Element.iter() filtering semantics.
@@ -352,7 +353,7 @@ func ParseFile(path string) ([]DocumentRecord, error) {
 func parseMockDocument(n *node) DocumentRecord {
 	rec := DocumentRecord{}
 	if ids := n.directChildren("setId"); len(ids) > 0 {
-		rec.SetID = strings.TrimSpace(ids[0].elemText())
+		rec.SetID = strings.TrimFunc(ids[0].elemText(), pySpace)
 	}
 	if rec.SetID == "" {
 		rec.Warnings = append(rec.Warnings, "document missing setId")
@@ -840,10 +841,17 @@ func ListSPLFiles(dir string) ([]string, error) {
 
 // --- low-level helpers ---------------------------------------------------------
 
+// pySpace reports whether r is whitespace per Python's str.split()/str.strip()
+// (Py_UNICODE_ISSPACE): Go's unicode.IsSpace plus the four ASCII control separators
+// U+001C..U+001F that unicode.IsSpace omits but Python treats as whitespace. Using this
+// everywhere Python uses .split()/.strip() keeps raw_text/clean_text/title/name
+// byte-identical to the Python extractor.
+func pySpace(r rune) bool { return unicode.IsSpace(r) || (r >= 0x1c && r <= 0x1f) }
+
 // collapseWS collapses runs of whitespace to single spaces (mirrors the legacy Python
-// " ".join(text.split()): strings.Fields splits on unicode whitespace runs, dropping
-// empties, exactly like str.split()).
-func collapseWS(s string) string { return strings.Join(strings.Fields(s), " ") }
+// " ".join(text.split()): FieldsFunc splits on runs of pySpace, dropping empties, exactly
+// like str.split()).
+func collapseWS(s string) string { return strings.Join(strings.FieldsFunc(s, pySpace), " ") }
 
 // unii normalizes a UNII code to the "UNII:<code>" form ("" if absent), mirroring
 // spl_xml._unii.

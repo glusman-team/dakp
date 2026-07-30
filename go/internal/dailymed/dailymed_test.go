@@ -382,6 +382,128 @@ func TestExtractErrorsOnMissingFile(t *testing.T) {
 	}
 }
 
+// --- whitespace parity (Python str.split/strip vs Go unicode.IsSpace) ----------
+
+// TestWhitespaceMatchesPython locks collapseWS to Python's str.split() whitespace class,
+// which (unlike Go's unicode.IsSpace) treats U+001C..U+001F as whitespace. The golden
+// fixture has none of these, so this pins the parity explicitly.
+func TestWhitespaceMatchesPython(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"a\x1cb", "a b"},
+		{"\x1c\x1d hello \x1e\x1f", "hello"},
+		{"a\u0085b\u00a0c", "a b c"},
+		{"plain text", "plain text"},
+		{"  spaced  ", "spaced"},
+	}
+	for _, c := range cases {
+		if got := collapseWS(c.in); got != c.want {
+			t.Errorf("collapseWS(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// Note: U+001C..U+001F are illegal characters in XML 1.0, so they cannot reach the parser
+// via well-formed SPL; the parity above is asserted at the helper level (not through an
+// XML fixture) because encoding/xml rightly rejects them.
+
+// --- HL7 v3 branch coverage (not exercised by the mock byte-golden) -------------
+
+// parseHL7v3String parses an inline HL7 v3 fragment (wrapped in a namespaced <SPL> root)
+// through the streaming parser, for surgical branch tests.
+func parseHL7v3String(t *testing.T, body string) []DocumentRecord {
+	t.Helper()
+	doc := `<?xml version="1.0" encoding="UTF-8"?>` + "\n" + `<SPL xmlns="urn:hl7-org:v3">` + body + `</SPL>`
+	docs, err := parseDocuments(strings.NewReader(doc), true)
+	if err != nil {
+		t.Fatalf("parseDocuments: %v", err)
+	}
+	if len(docs) != 1 {
+		t.Fatalf("got %d documents, want 1", len(docs))
+	}
+	return docs
+}
+
+func TestHL7v3Branches(t *testing.T) {
+	const nda = `root="2.16.840.1.113883.3.150"`
+	const appl = `codeSystem="2.16.840.1.113883.3.26.1.1"`
+
+	t.Run("duplicate approval last type wins", func(t *testing.T) {
+		docs := parseHL7v3String(t, `<document><setId root="S"/>`+
+			`<subjectOf><approval><id `+nda+` extension="NDA1"/><code code="NDA" `+appl+`/></approval></subjectOf>`+
+			`<subjectOf><approval><id `+nda+` extension="NDA1"/><code code="ANDA" `+appl+`/></approval></subjectOf>`+
+			`</document>`)
+		ap := docs[0].Approvals
+		if len(ap) != 1 || ap[0].ID != "NDA1" || ap[0].Type != "ANDA" {
+			t.Errorf("approvals = %+v, want one NDA1 with last-wins type ANDA", ap)
+		}
+	})
+
+	t.Run("duplicate approval empty type overwrites", func(t *testing.T) {
+		// Legacy quirk: type_by_id is overwritten unconditionally, so a later approval with
+		// the same NDA id but no application-type code resets the returned type to "".
+		docs := parseHL7v3String(t, `<document><setId root="S"/>`+
+			`<subjectOf><approval><id `+nda+` extension="NDA1"/><code code="NDA" `+appl+`/></approval></subjectOf>`+
+			`<subjectOf><approval><id `+nda+` extension="NDA1"/></approval></subjectOf>`+
+			`</document>`)
+		ap := docs[0].Approvals
+		if len(ap) != 1 || ap[0].Type != "" {
+			t.Errorf("approvals = %+v, want one NDA1 with type overwritten to empty", ap)
+		}
+	})
+
+	t.Run("inactive via ingredient classCode IACT", func(t *testing.T) {
+		docs := parseHL7v3String(t, `<document><setId root="S"/>`+
+			`<ingredient classCode="IACT"><ingredientSubstance>`+
+			`<name>Water</name><code code="059QF0KO0R"/>`+
+			`</ingredientSubstance></ingredient></document>`)
+		want := []Ingredient{{Name: "Water", UNII: "UNII:059QF0KO0R", Role: "inactive"}}
+		if !reflect.DeepEqual(docs[0].Ingredients, want) {
+			t.Errorf("ingredients = %+v, want %+v", docs[0].Ingredients, want)
+		}
+	})
+
+	t.Run("active via activeIngredientSubstance", func(t *testing.T) {
+		docs := parseHL7v3String(t, `<document><setId root="S"/>`+
+			`<activeMoiety><activeIngredientSubstance>`+
+			`<name>Foo</name><code code="FOO1"/>`+
+			`</activeIngredientSubstance></activeMoiety></document>`)
+		want := []Ingredient{{Name: "Foo", UNII: "UNII:FOO1", Role: "active"}}
+		if !reflect.DeepEqual(docs[0].Ingredients, want) {
+			t.Errorf("ingredients = %+v, want %+v", docs[0].Ingredients, want)
+		}
+	})
+
+	t.Run("ingredient dedup by role+unii+lower name", func(t *testing.T) {
+		docs := parseHL7v3String(t, `<document><setId root="S"/>`+
+			`<inactiveIngredientSubstance><name>Dup</name><code code="D1"/></inactiveIngredientSubstance>`+
+			`<inactiveIngredientSubstance><name>dup</name><code code="D1"/></inactiveIngredientSubstance>`+
+			`</document>`)
+		if len(docs[0].Ingredients) != 1 {
+			t.Errorf("ingredients = %+v, want dedup to 1 (case-insensitive name)", docs[0].Ingredients)
+		}
+	})
+
+	t.Run("nested sections both emit and parent includes child text", func(t *testing.T) {
+		docs := parseHL7v3String(t, `<document><setId root="S"/>`+
+			`<component><section> `+
+			`<code code="34067-9"/> <title>PARENT</title> <text>Parent text.</text> `+
+			`<component><section> `+
+			`<code code="34070-3"/> <title>CHILD</title> <text>Child text.</text> `+
+			`</section></component> `+
+			`</section></component></document>`)
+		secs := docs[0].Sections
+		if len(secs) != 2 {
+			t.Fatalf("sections = %d, want 2 (parent + nested child)", len(secs))
+		}
+		if secs[0].LOINC != "34067-9" || !strings.Contains(secs[0].CleanText, "Parent text.") || !strings.Contains(secs[0].CleanText, "Child text.") {
+			t.Errorf("parent section = %+v; clean_text must include nested child text", secs[0])
+		}
+		if secs[1].LOINC != "34070-3" || secs[1].CleanText != "CHILD Child text." {
+			t.Errorf("child section = %+v", secs[1])
+		}
+	})
+}
+
 // regenerateGoldens (documentation only): the testdata/golden/*.tsv files were produced by
 // running the Python reference extractor on the identical fixture and rendering each
 // interim parquet through polars write_csv(separator="\t"):
