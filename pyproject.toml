@@ -54,6 +54,7 @@ dev = [
     "pre-commit>=4.5.1",
     "pyright>=1.1.411",
     "pytest>=9.0.0",
+    "pytest-cov>=7.1.0",
     "ruff>=0.15.6",
 ]
 
@@ -68,6 +69,27 @@ packages = ["src/dakp_pipeline"]
 testpaths = ["tests"]
 addopts = "-q"
 markers = ["network: tests that require internet access"]
+
+[tool.coverage.run]
+source = ["src/dakp_pipeline"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 100
+precision = 1
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if typing.TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "raise AssertionError",
+    "\\.\\.\\.",
+    "@overload",
+    # Airflow @task bodies only execute inside an Airflow runtime (optional dep, not
+    # installed in CI); the underlying stage callables are tested directly instead.
+    "def _airflow_only",
+]
 
 [tool.ruff]
 line-length = 150
