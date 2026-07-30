@@ -2,7 +2,7 @@
 
 The model cache is unchanged by the single-backend refactor; these tests cover its main paths
 (default cache-dir resolution, idempotent download, manifest provenance, force/verify behavior,
-model-id path sanitization) using an injected fake downloader — no network, no ``[ner]`` extra.
+model-id path sanitization) using an injected fake downloader — no network, no heavy deps imported.
 Edge cases live in ``test_ner_model_cache_edge.py``.
 """
 

@@ -9,7 +9,7 @@ operational entry point and links into [`docs/`](./docs).
 > **Status — final architecture.** The pipeline is **Airflow-native**: the `dakp_build` DAG is the
 > only orchestrator, and the heavy DailyMed/FAERS/Drugs@FDA extraction runs as **native Airflow Go
 > SDK bundle workers** (no subprocess/OS commands). One command runs the whole pipeline end to end:
-> `make install-all` then `make run` (see the [Quickstart](#quickstart-mocked-laptop-safe)). Real
+> `make install` then `make run` (see the [Quickstart](#quickstart-mocked-laptop-safe)). Real
 > stdlib-HTTP source downloaders, a single benchmarked NER backend, evidence-rich assertion
 > aggregation, and a delegated Tablassert KGX handoff. The mock profile runs the whole DAG on tiny
 > fixtures with **no network and no Tablassert** (Airflow runs locally via `make run`); the full
@@ -50,7 +50,7 @@ acquire ─▶ extract ─▶ NER ─▶ aggregate ─▶ Tablassert KGX
   mentions into three uncompressed TSV assertion tables.
 - **Tablassert KGX** — [`tablassert/`](./src/dakp_pipeline/tablassert/) generates a Graph config
   + one table config per assertion table, then delegates canonical resolution + KGX compilation
-  to the **installed `tablassert` CLI** (`[kg]` extra). DAKP ships no local KGX compiler.
+  to the **installed `tablassert` CLI** (a core dependency, installed by `uv sync`). DAKP ships no local KGX compiler.
 
 ## Why a rebuild
 
@@ -97,7 +97,7 @@ Requires Python ≥ 3.12, [uv](https://docs.astral.sh/uv/), and a Go toolchain �
 native worker bundle).
 
 ```bash
-make install        # uv sync — runtime + dev deps (Airflow 3 is a hard dependency)
+make install        # uv sync — ONE command installs ALL runtime + dev deps (Airflow 3, GLiNER, tablassert[qc])
 uv run pytest -q    # unit + mocked integration (no network; the tests need no running Airflow)
 make run            # ONE command: build+pack the Go bundle, start Airflow, run dakp_build, wait
 make down           # stop the local Airflow
@@ -110,10 +110,10 @@ triggers the `dakp_build` DAG, waits for it to finish, and prints the build summ
 
 The mock run needs no network and no real Tablassert. It writes three uncompressed TSV assertion
 tables, generated Tablassert configs, a build summary, and a deferred-handoff manifest (see
-[Where things land](#where-things-land)). The **test suite runs without the `[ner]` or `[kg]`
-extras** — NER defaults to a deterministic offline gazetteer and the mock profile defers the
-Tablassert handoff; `make install-all` (`uv sync --all-extras`) brings in everything for a full
-production run.
+[Where things land](#where-things-land)). The **test suite runs offline** — NER defaults to a
+deterministic gazetteer and the mock profile defers the Tablassert handoff — but a single
+`make install` (`uv sync`) installs the entire production runtime in one command (there are no
+optional extras).
 
 ## Profiles
 
@@ -125,7 +125,7 @@ rather than silently defaulting.
 | --- | --- | --- | --- | --- |
 | `mock` | 1 | 1 GiB | fixtures only | deferred (writes handoff manifest) |
 | `sample` | 4 | 8 GiB | real, bounded sample | deferred |
-| `prod` | 64 | 128 GiB | real full build | installed `tablassert` CLI (`[kg]`) |
+| `prod` | 64 | 128 GiB | real full build | installed `tablassert[qc]` CLI |
 
 The heavy extraction always runs as **native Go workers** (the Airflow Go SDK bundle); the profile
 only sizes concurrency/memory and selects sources + the Tablassert handoff mode.
@@ -141,11 +141,7 @@ All Python runs through `uv`; Go runs through the [`go/`](./go/) module. `make h
 
 | Target | What it does |
 | --- | --- |
-| `make setup` / `make install` | `uv sync` — runtime + dev deps (Airflow 3 included) |
-| `make install-ner` | `uv sync --extra ner` — GLiNER production NER (pulls torch) |
-| `make install-kg` | `uv sync --extra kg` — PyPI `tablassert` (KG build; laptop-safe) |
-| `make install-kg-qc` | `uv sync --extra kg-qc` — `tablassert[qc]` audit (pulls torch; beefy hosts) |
-| `make install-all` | `uv sync --all-extras` — ONE-COMMAND full install for a production run |
+| `make setup` / `make install` | `uv sync` — ONE command installs every runtime + dev dep (Airflow 3, GLiNER NER, `tablassert[qc]`) |
 | `make test` / `make cov` | pytest / pytest with branch coverage (`fail_under = 100`) |
 | `make lint` / `make fmt` / `make fmt-check` / `make typecheck` | ruff check / ruff format / format check / pyright |
 | `make check` | lint + fmt-check + typecheck + test |
@@ -246,8 +242,8 @@ won (precision 0.972 / recall 1.000 / F1 0.986 on 27 cases / 35 gold spans); Sci
 - **Offline mode (default):** curated gazetteer + deterministic lexical matcher. Precision 1.000 /
   F1 0.955, zero heavy deps, fully deterministic. Used by tests + the mock pipeline.
 - **Production mode (`offline=False`):** the same gazetteer anchors spans and GLiNER zero-shot
-  (`urchade/gliner_small-v2.1`) fills out-of-gazetteer gaps. Needs the `[ner]` extra (lazy-imported;
-  the base install never loads torch).
+  (`urchade/gliner_small-v2.1`) fills out-of-gazetteer gaps. GLiNER is a core dependency but
+  lazy-imported (module load never touches torch).
 
 DAKP extracts **mentions only** (text span + type); ontology CURIE resolution is exclusively
 Tablassert/fullmap's job at `tablassert build-kg`. See [`ner/README.md`](./src/dakp_pipeline/ner/README.md).
@@ -258,7 +254,8 @@ DAKP does everything *up to* the shape Tablassert consumes: acquire → extract 
 into assertion tables, then generate a Tablassert **Graph config** plus one **table config** per
 assertion table. Canonical entity resolution (CURIE/name/category), category assignment, node
 normalization, KGX NDJSON writing, deduplication, deterministic UUIDs, and RIG generation are
-delegated to the **installed `tablassert` package** (PyPI `8.0.0`, the `[kg]` extra). DAKP
+delegated to the **installed `tablassert` package** (PyPI `8.0.0`, the `tablassert[qc]` core
+dependency). DAKP
 deliberately ships **no** parallel KGX compiler — if a Biolink slot is missing, it is upstreamed
 into Tablassert rather than reimplemented here.
 
@@ -290,11 +287,12 @@ The fetcher/extractor/shaper pattern is uniform and monkeypatchable. To add sour
 
 ## Dependency philosophy
 
-Lean runtime, stdlib-first where practical. Core runtime deps: **apache-airflow (3.x — a hard
-dependency; the pipeline is Airflow-native), polars, loguru, blake3, pydantic, pendulum**. The heavy
-backends are optional extras: `[ner]` (GLiNER, pulls torch), `[kg]` (PyPI `tablassert`), `[kg-qc]`
-(`tablassert[qc]` audit, pulls torch); `make install-all` installs everything for a full production
-run. The hot extraction paths run as **native Go workers** ([`go/`](./go/)) in an Airflow Go SDK
+Lean runtime, stdlib-first where practical. There are **no optional extras** — one `uv sync`
+(`make install`) installs the entire production runtime: **apache-airflow (3.x — the pipeline is
+Airflow-native), polars, loguru, blake3, pydantic, pendulum**, the biomedical NER backend
+(**gliner** zero-shot, pulls torch), and **`tablassert[qc]`** (the KG build plus its embedding-based
+`--qc` audit). GLiNER is still lazy-imported (module load never touches torch) and the mock profile
++ tests stay offline. The hot extraction paths run as **native Go workers** ([`go/`](./go/)) in an Airflow Go SDK
 bundle, parity-locked to the pure-Python reference extractors.
 
 ## Verification

@@ -30,8 +30,8 @@ The shaper uses an injected ``params["ner"]`` :class:`~dakp_pipeline.ner.ner.Dis
 present (tests / production wiring), else builds the deterministic **offline** backend from the
 ontology fixture gazetteer (``<fixture_root>/ontology/disease_map.tsv``, read as term→type only
 — CURIE columns ignored), falling back to the embedded gazetteer. There is no backend-name
-selector. Constructing the backend is import-free, so the base install + test suite run with
-the ``[ner]`` extra NOT installed.
+selector. Constructing the backend is import-free, so module import + the test suite run with
+no heavy NER deps imported.
 
 Provenance: contraindications are text-mined from DailyMed, so
 ``primary_knowledge_source = infores:multiomics-drugapprovals``,
@@ -63,7 +63,7 @@ def default_ner(fixture_root: Path | str | None) -> DiseaseNER:
 
     Reads the ontology fixture as a term→type gazetteer ONLY (``text`` + ``category`` columns;
     CURIE/name columns are ignored — DAKP does not map terms to ontology concepts). No heavy
-    ``[ner]`` dep is imported.
+    NER dep is imported.
     """
     if fixture_root is not None:
         ontology = Path(fixture_root) / _ONTOLOGY_FIXTURE

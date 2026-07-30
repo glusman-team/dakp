@@ -1,6 +1,6 @@
 """Edge-case tests for ``dakp_pipeline.ner.ner`` (drive to 100% branch coverage).
 
-Targets the production (GLiNER) path without the ``[ner]`` extra or network: a fake ``gliner``
+Targets the production (GLiNER) path without network: a fake ``gliner``
 module is injected into ``sys.modules`` and ``ensure_model`` is stubbed, so ``_load_model``'s
 successful-import branch and ``_merge_model_spans`` (gazetteer-wins-on-overlap, type filtering,
 GLiNER recall) are fully exercised. The missing-dep branch skips when ``gliner`` is installed.
@@ -26,7 +26,7 @@ from dakp_pipeline.ner.ner import DEFAULT_MODEL, DiseaseNER, Mention, _install_m
 def test_install_message_names_module_and_command() -> None:
     message = _install_message("gliner")
     assert "gliner" in message
-    assert "uv sync --extra ner" in message
+    assert "uv sync" in message
 
 
 def test_sort_key_and_overlaps_helpers() -> None:
@@ -49,10 +49,10 @@ def test_mention_is_frozen() -> None:
 
 def test_load_model_raises_clear_error_without_extra(monkeypatch: pytest.MonkeyPatch) -> None:
     # Block the gliner import (None in sys.modules raises ImportError) so the missing-dep
-    # branch is exercised deterministically whether or not the [ner] extra is installed.
+    # branch is exercised deterministically whether or not gliner is installed.
     monkeypatch.setitem(sys.modules, "gliner", None)
     backend = DiseaseNER(offline=False)
-    with pytest.raises(ner_module.NERDependencyError, match=r"uv sync --extra ner"):
+    with pytest.raises(ner_module.NERDependencyError, match=r"uv sync"):
         backend.extract("contraindicated in severe hepatic impairment")
 
 

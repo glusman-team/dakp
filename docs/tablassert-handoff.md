@@ -11,9 +11,9 @@ KGX compilation, dedup, deterministic IDs, or RIG generation.
 
 ## Tablassert is the installed PyPI package
 
-KGX compilation uses the **installed `tablassert` CLI** (PyPI `8.0.0`, the `[kg]` extra) — not a
-local checkout. Install with `uv sync --extra kg` (or `make install-kg`). The runner shells out to
-the venv `tablassert` binary (falling back to `uv run --extra kg tablassert`) and captures
+KGX compilation uses the **installed `tablassert` CLI** (PyPI `8.0.0`, a core dependency) — not a
+local checkout. Install with `uv sync` (or `make install`). The runner shells out to the venv
+`tablassert` binary (falling back to `uv run tablassert`) and captures
 stdout / exit code into the handoff report. An optional editable-checkout override (the
 `tablassert_dir` ctx param, the `DAKP_TABLASERT_DIR` env var, or `TablassertRunner.tablassert_dir`)
 switches to `uv run --with-editable <dir> tablassert` for dev against a local `../Tablassert`.
@@ -22,14 +22,14 @@ The two subcommands the production build uses (verified against `tablassert 8.0.
 
 ```bash
 # 1. build the fullmap redb (canonical-resolution database) — wenceslaus-only (~120 GiB RAM):
-uv run --extra kg tablassert build-fullmap --output <fullmap.redb> --threads 64
+uv run tablassert build-fullmap --output <fullmap.redb> --threads 64
 
 # 2. build the KGX graph from the generated Graph config:
-uv run --extra kg tablassert build-kg tables/graph.yaml --fullmap <fullmap.redb> [--qc] [--release]
+uv run tablassert build-kg tables/graph.yaml --fullmap <fullmap.redb> [--qc] [--release]
 ```
 
-`--qc` (the embedding-based audit) is appended only when requested **and** the heavy `[kg-qc]`
-runtime (sentence-transformers) is importable; `--release` is a boolean flag. See
+`--qc` (the embedding-based audit) is appended only when requested **and** the QC audit runtime
+(sentence-transformers, part of the required `tablassert[qc]` install) is importable; `--release` is a boolean flag. See
 [`wenceslaus-runbook.md`](./wenceslaus-runbook.md) for the full production sequence.
 
 ## What is generated
@@ -177,12 +177,12 @@ runner = TablassertRunner() if run_real else MockTablassertRunner()
 from the workdir root, and records `status` / `command` / `exit_code` / `stdout` / `stderr` in the
 handoff report. A non-zero exit is captured as `status: failed` (logged loudly), not raised. It
 raises `RuntimeError` when `tablassert` is unavailable and no editable override is configured
-(install via `uv sync --extra kg`).
+(reinstall with `uv sync`).
 
 **Mock mode** writes `<workdir>/data/reports/tablassert_handoff.json` recording the assertion inputs
 (table / `artifact_id` / rows) and the generated config paths, with `status: deferred`. It never
 touches the network or Tablassert, and there is **no local fallback KGX compiler** — a full run that
-reaches this point without the `[kg]` extra fails loudly.
+reaches this point without `tablassert` installed fails loudly.
 
 The integration test [`tests/integration/test_mock_pipeline.py`](../tests/integration/test_mock_pipeline.py)
 monkeypatches `dakp_pipeline.tablassert.run` with a stand-in, proving the boundary is substitutable

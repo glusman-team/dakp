@@ -30,9 +30,7 @@ tables, the fullmap, KGX) on `/local_raid1`, never on the boot volume.
 
 ```bash
 cd <dakp-checkout>
-uv sync --all-extras          # base + ner + airflow + kg + kg-qc
-# or, minimally for the KG build:
-uv sync --extra kg --extra ner
+uv sync                       # ONE command: full runtime (Airflow 3, GLiNER NER, tablassert[qc]) + dev deps
 make build-go                 # build the Go dakp-worker (byte-parity extractors) for prod speed
 ```
 
@@ -46,7 +44,7 @@ The fullmap redb is Tablassert's canonical-resolution database (BABEL-backed). I
 RAM and ~2 h. Build it once into `/local_raid1`; reuse it across DAKP rebuilds.
 
 ```bash
-uv run --extra kg tablassert build-fullmap \
+uv run tablassert build-fullmap \
   --output /local_raid1/sgoetz/DBSTORE/FULLMAP/fullmap.redb \
   --threads 64
 ```
@@ -88,11 +86,12 @@ Run Tablassert from the **workdir root** so the config's workdir-relative refere
 
 ```bash
 cd /local_raid1/dakp/work
-uv run --extra kg tablassert build-kg tables/graph.yaml \
+uv run tablassert build-kg tables/graph.yaml \
   --fullmap /local_raid1/sgoetz/DBSTORE/FULLMAP/fullmap.redb
 ```
 
-Add `--qc` for the embedding-based audit (needs the `[kg-qc]` extra: `uv sync --extra kg-qc`) and
+Add `--qc` for the embedding-based audit (the QC runtime ships with the required `tablassert[qc]`
+install) and
 `--release` for a release build. Tablassert resolves the mention text / UNII subjects to ontology
 CURIEs (fullmap), assigns categories, mints deterministic edge ids, dedups, and writes KGX NDJSON
 (`drug_approvals_kg_nodes.jsonl.gz` / `drug_approvals_kg_edges.jsonl.gz`). DAKP ships no local KGX
@@ -119,14 +118,14 @@ Everything except Steps 1 and 3 (and the unbounded Step 2) runs on the laptop:
 make check-all                                                       # full quality gate
 make run                                                             # mocked end-to-end pipeline via Airflow (native Go workers)
 PROFILE=prod make run                                                # real, bounded (orchestrator pins quarter/release limit to 1)
-uv sync --extra ner && uv run pytest tests/eval -q                   # NER benchmark (GLiNER on the RTX 5070 Ti)
+uv run pytest tests/eval -q                                           # NER benchmark (GLiNER on the RTX 5070 Ti)
 ```
 
 ## Troubleshooting
 
 - **`build-fullmap` OOM** — it needs ~120 GiB; run only on wenceslaus, close other consumers, and
   keep `--cache` on `/local_raid1`.
-- **`RuntimeError: tablassert is not available`** in Step 2/3 — `uv sync --extra kg` (or set
+- **`RuntimeError: tablassert is not available`** in Step 2/3 — `uv sync` (or set
   `DAKP_TABLASERT_DIR` for a local editable checkout). See [`runbook.md`](./runbook.md).
 - **Go workers not engaging** — the extract tasks are native Go SDK bundle workers; confirm the
   bundle was packed into the coordinator's `executables_root` (`make run` does this) and that a Go

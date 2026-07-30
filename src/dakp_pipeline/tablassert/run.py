@@ -1,19 +1,19 @@
 """Tablassert runner — invoke the INSTALLED ``tablassert`` CLI.
 
-DAKP ships NO local KGX compiler and keeps ``tablassert`` an OPTIONAL dependency (PLAN.md
-"Tablassert modeling layer" / "Dependency philosophy"). The real runner
-(:class:`TablassertRunner`) shells out to the installed ``tablassert`` CLI (the PyPI
-``[kg]`` extra: ``uv sync --extra kg``) and captures stdout / exit code into a handoff
-report; the mock runner (:class:`MockTablassertRunner`) writes a deferred-handoff report
-without ever touching Tablassert (default in the ``mock`` profile and in tests).
+DAKP ships NO local KGX compiler; ``tablassert`` is a CORE dependency installed by the single
+``uv sync`` (PLAN.md "Tablassert modeling layer" / "Dependency philosophy"). The real runner
+(:class:`TablassertRunner`) shells out to the installed ``tablassert`` CLI and captures stdout /
+exit code into a handoff report; the mock runner (:class:`MockTablassertRunner`) writes a
+deferred-handoff report without ever touching Tablassert (default in the ``mock`` profile and in
+tests).
 
-The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it
-is on ``PATH``, otherwise ``uv run --extra kg tablassert``. An OPTIONAL editable-checkout
-override (the ``tablassert_dir`` ctx param, the ``DAKP_TABLASERT_DIR`` env var, or the
-``TablassertRunner.tablassert_dir`` field; conventionally ``DEFAULT_TABLASERT_DIR``) switches
-to ``uv run --with-editable <dir> tablassert`` for dev against a local ``../Tablassert``
-checkout. ``--qc`` is appended only when requested AND the heavy ``[kg-qc]`` audit runtime
-(sentence-transformers) is importable; ``--release`` is a boolean flag.
+The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it is on
+``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout override (the
+``tablassert_dir`` ctx param, the ``DAKP_TABLASERT_DIR`` env var, or the
+``TablassertRunner.tablassert_dir`` field; conventionally ``DEFAULT_TABLASERT_DIR``) switches to
+``uv run --with-editable <dir> tablassert`` for dev against a local ``../Tablassert`` checkout.
+``--qc`` is appended only when requested AND the QC audit runtime (sentence-transformers, part of
+the required ``tablassert[qc]`` install) is importable; ``--release`` is a boolean flag.
 
 The module-level :func:`run` is the package entry point used by ``pipeline.py`` and
 ``dags.dakp_build`` (``from dakp_pipeline.tablassert import run``); it dispatches to the real
@@ -61,12 +61,12 @@ def run_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.Co
 
 
 def tablassert_available() -> bool:
-    """True when the ``tablassert`` package (the ``[kg]`` extra) is importable in this interpreter."""
+    """True when the ``tablassert`` package (a core DAKP dependency) is importable here."""
     return importlib.util.find_spec("tablassert") is not None
 
 
 def qc_runtime_available() -> bool:
-    """True when the heavy ``[kg-qc]`` audit runtime (sentence-transformers) is importable."""
+    """True when the QC audit runtime (sentence-transformers, via ``tablassert[qc]``) is importable."""
     return importlib.util.find_spec("sentence_transformers") is not None
 
 
@@ -75,16 +75,16 @@ def _command_prefix(tablassert_dir: str | None) -> list[str]:
 
     Editable override (dev against a local checkout): ``uv run --with-editable <dir> tablassert``;
     installed package: the venv ``tablassert`` binary when it is on ``PATH``, otherwise
-    ``uv run --extra kg tablassert`` (uv materializes the ``[kg]`` console script for the rare
-    importable-but-no-PATH-binary case; the availability guard in ``TablassertRunner.run`` has
-    already confirmed ``tablassert`` is importable before this fallback is reachable).
+    ``uv run tablassert`` (uv materializes the console script for the rare importable-but-no-PATH
+    case; the availability guard in ``TablassertRunner.run`` has already confirmed ``tablassert``
+    is importable before this fallback is reachable).
     """
     if tablassert_dir:
         return ["uv", "run", "--with-editable", tablassert_dir, "tablassert"]
     binary = shutil.which("tablassert")
     if binary is not None:
         return [binary]
-    return ["uv", "run", "--extra", "kg", "tablassert"]
+    return ["uv", "run", "tablassert"]
 
 
 def _resolve_tablassert_dir(runner_dir: str | None, params_dir: str | None) -> str | None:
@@ -127,13 +127,13 @@ def _find_graph(config_refs: list[ArtifactRef], ctx: TaskContext) -> Path:
 
 @dataclass(frozen=True)
 class TablassertRunner:
-    """Run the INSTALLED ``tablassert`` CLI (PyPI ``[kg]`` extra) as a subprocess.
+    """Run the INSTALLED ``tablassert`` CLI (a core DAKP dependency) as a subprocess.
 
     Builds ``tablassert build-kg <graph.yaml> --fullmap <path> [--qc] [--release]`` and records
     stdout / stderr / exit code in the handoff report. A non-zero exit is captured as
     ``status: failed`` (logged loudly), not raised — the report is the artifact the pipeline
     surfaces. Raises ``RuntimeError`` when ``tablassert`` is unavailable and no editable-checkout
-    override is configured (install via ``uv sync --extra kg``).
+    override is configured (reinstall with ``uv sync``).
     """
 
     tablassert_dir: str | None = None
@@ -155,7 +155,7 @@ class TablassertRunner:
         tablassert_dir = _resolve_tablassert_dir(self.tablassert_dir, ctx.params.get("tablassert_dir"))
         if tablassert_dir is None and not tablassert_available():
             msg = (
-                "tablassert is not available: install the [kg] extra (`uv sync --extra kg`), or point at a "
+                "tablassert is not available: it is a core DAKP dependency, so reinstall with `uv sync`, or point at a "
                 f"local editable checkout via the tablassert_dir param / {TABLASERT_DIR_ENV} env var"
             )
             raise RuntimeError(msg)
@@ -163,7 +163,7 @@ class TablassertRunner:
         qc_requested = bool(ctx.params.get("qc"))
         qc = qc_requested and qc_runtime_available()
         if qc_requested and not qc:
-            logger.warning("tablassert --qc requested but the [kg-qc] runtime (sentence-transformers) is not importable; running without --qc")
+            logger.warning("tablassert --qc requested but the QC audit runtime (sentence-transformers) is not importable; running without --qc")
         release = bool(ctx.params.get("release"))
 
         command = self.build_command(graph_yaml, fullmap, tablassert_dir=tablassert_dir, qc=qc, release=release)

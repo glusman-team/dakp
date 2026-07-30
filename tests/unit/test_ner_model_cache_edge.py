@@ -3,7 +3,7 @@
 Targets the uncovered lines: ``read_manifest`` absent/corrupt/non-dict paths, the
 ``default_downloader`` missing-dep AND successful (fake ``huggingface_hub``) paths, and the
 ``ensure_model`` re-download branches (corrupt manifest, mismatched provenance, deleted /
-drifted content, ``verify=False``, ``workdir`` cache resolution). All offline / no ``[ner]`` extra.
+drifted content, ``verify=False``, ``workdir`` cache resolution). All offline / no heavy deps imported.
 """
 
 from __future__ import annotations
@@ -78,10 +78,11 @@ def test_write_then_read_manifest_roundtrip(tmp_path: Path) -> None:
 # --- default_downloader: missing dep + successful fake --------------------------
 
 
-def test_default_downloader_raises_clear_error_without_extra(tmp_path: Path) -> None:
-    # huggingface_hub is not installed (no [ner] extra) -> NERDependencyError with install cmd.
-    assert "huggingface_hub" not in sys.modules
-    with pytest.raises(NERDependencyError, match=r"uv sync --extra ner"):
+def test_default_downloader_raises_clear_error_without_huggingface_hub(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Block the huggingface_hub import (None in sys.modules raises ImportError) so the missing-dep
+    # branch is exercised deterministically whether or not huggingface_hub is installed.
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+    with pytest.raises(NERDependencyError, match=r"uv sync"):
         default_downloader("acme/tiny-ner", tmp_path)
 
 

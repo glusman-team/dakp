@@ -83,7 +83,8 @@ from DailyMed SPL "Contraindications" sections (LOINC `34070-3`) and FAERS indic
 The settled backend is a **gazetteer + GLiNER composite**, chosen by a labeled benchmark
 ([`ner/BENCHMARK.md`](../src/dakp_pipeline/ner/BENCHMARK.md): composite precision 0.972 / recall
 1.000 / F1 0.986; SciSpacy dropped). Offline mode (default) is the deterministic, dep-free
-gazetteer; production mode (`offline=False`, `[ner]` extra) adds GLiNER zero-shot recall. DAKP
+gazetteer; production mode (`offline=False`) adds GLiNER zero-shot recall (GLiNER is a core,
+lazy-imported dependency). DAKP
 **never resolves terms to ontology CURIEs** — mentions are text + type only; canonical resolution
 is exclusively Tablassert/fullmap's job at `build-kg`. See [`ner/README.md`](../src/dakp_pipeline/ner/README.md).
 
@@ -109,7 +110,7 @@ gate. See [`tabular-contracts.md`](./tabular-contracts.md).
 DAKP generates a Tablassert **Graph config** plus one **table config** per assertion table
 ([`tablassert/configs.py`](../src/dakp_pipeline/tablassert/configs.py)), then hands off
 ([`tablassert/run.py`](../src/dakp_pipeline/tablassert/run.py)) to the **installed `tablassert`
-CLI** (PyPI `8.0.0`, the `[kg]` extra): `tablassert build-kg tables/graph.yaml --fullmap <path>
+CLI** (PyPI `8.0.0`, the `tablassert[qc]` core dependency): `tablassert build-kg tables/graph.yaml --fullmap <path>
 [--qc] [--release]`. DAKP does **not** implement fullmap resolution, subgraph compilation, node
 normalization, the KGX writer, dedup, UUID machinery, or the RIG compiler — those belong to
 Tablassert. See [`tablassert-handoff.md`](./tablassert-handoff.md).

@@ -43,8 +43,8 @@ underperformed; it is dropped from the shipped extra.
   deterministic — the best single laptop-safe option. Used by tests and the mock pipeline.
 * **Production mode:** the same gazetteer anchors high-precision spans, and GLiNER zero-shot
   fills out-of-gazetteer gaps (gazetteer spans win on overlap; non-overlapping GLiNER spans
-  add recall) → near-perfect recall at gazetteer precision. Needs the `[ner]` extra.
-* **SciSpacy dropped:** strictly worse, no phenotype coverage, heavy. Removed from `[ner]`.
+  add recall) → near-perfect recall at gazetteer precision. GLiNER is a core, lazy-imported dep.
+* **SciSpacy dropped:** strictly worse, no phenotype coverage, heavy. Removed from the NER backend.
 
 This is one unified backend (`ner/ner.py`, `DiseaseNER`) with one entry point
 (`extract_disease_mentions` / `extract_contraindication_diseases`) and an offline/production

@@ -21,7 +21,7 @@ Benchmarked on a hand-labeled fixture (27 cases / 35 gold spans, `tests/eval/`):
   1.000 / F1 0.955, zero heavy deps, fully deterministic. Used by tests + the mock pipeline.
 * **Production mode (`offline=False`):** the same gazetteer anchors high-precision spans and
   GLiNER zero-shot (`urchade/gliner_small-v2.1`) fills out-of-gazetteer gaps (gazetteer wins on
-  overlap) → near-perfect recall at gazetteer precision. Needs the `[ner]` extra.
+  overlap) → near-perfect recall at gazetteer precision. GLiNER is a core, lazy-imported dependency.
 
 ## Modules
 
@@ -39,7 +39,7 @@ Benchmarked on a hand-labeled fixture (27 cases / 35 gold spans, `tests/eval/`):
 from dakp_pipeline.ner.ner import DiseaseNER, extract_contraindication_diseases
 
 ner = DiseaseNER()  # offline: deterministic embedded gazetteer
-ner = DiseaseNER(offline=False)  # production: gazetteer + GLiNER (needs [ner])
+ner = DiseaseNER(offline=False)  # production: gazetteer + GLiNER (lazy-imported)
 mentions = extract_contraindication_diseases(section_text, ner)
 # Mention.text / .start / .end / .type / .score  — text span + type ONLY, no CURIE
 ```
@@ -47,29 +47,31 @@ mentions = extract_contraindication_diseases(section_text, ner)
 `Mention` offsets are half-open: `mention.text == text[mention.start:mention.end]`. Output is
 sorted by `(start, end, type, text)`.
 
-## The `[ner]` extra & lazy imports
+## Core deps & lazy imports
 
-The base install and the **entire test suite run WITHOUT any NER deps.** `import
+The NER dependencies (`gliner`, `huggingface_hub`) are **core DAKP dependencies** installed by the
+single `uv sync` — there is no `[ner]` extra. They are still **lazy-imported**: `import
 dakp_pipeline.ner.ner` never imports `gliner` / `huggingface_hub`; those load only on a
-production-mode `DiseaseNER`'s first `extract()`. If a dep is missing, it raises
+production-mode `DiseaseNER`'s first `extract()`, so module import stays light (no torch at import
+time) and the whole test suite runs offline. If a dep is somehow not importable, it raises
 `NERDependencyError` (an `ImportError`):
 
-> NER production mode requires the optional [ner] extra (missing module: gliner). Install it with: uv sync --extra ner
+> NER production mode requires the 'gliner' package (a core DAKP dependency) but it is not importable. Install all dependencies with: uv sync
 
-Install the optional extra to use production mode:
+Reinstall the full runtime to use production mode:
 
 ```bash
-uv sync --extra ner    # or: make install-ner
+uv sync    # or: make install
 ```
 
-The extra is intentionally heavy (pulls torch/transformers). It is declared in `pyproject.toml`
-under `[project.optional-dependencies] ner`; NER deps are **never** in the base `dependencies`.
-GLiNER weights are fetched once and cached by `model_cache.ensure_model` (BLAKE3-keyed,
-idempotent; `<workdir>/models` or `$XDG_CACHE_HOME/dakp/models`).
+The NER deps are intentionally heavy (pull torch/transformers) but are part of the one required
+`dependencies` set in `pyproject.toml`. GLiNER weights are fetched once and cached by
+`model_cache.ensure_model` (BLAKE3-keyed, idempotent; `<workdir>/models` or
+`$XDG_CACHE_HOME/dakp/models`).
 
 ## Conventions
 
-- Minimal base deps; NER deps only in the optional `[ner]` extra.
+- NER deps are core (installed by `uv sync`) but lazy-imported (no torch at module load).
 - One backend / one entry point; offline (deterministic) vs production (model) is a mode toggle.
 - Lazy imports for the model; laptop-safe (small model, cached).
 - `loguru` for logging; deterministic offline mode; no absolute paths.

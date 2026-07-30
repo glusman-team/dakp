@@ -4,7 +4,7 @@ Targets: ``default_ner`` fallback when the fixture lacks an ontology (and when f
 None); a contraindication set with no active ingredient; a blank mined span; ingredient rows with
 missing fields / duplicates in the shared evidence cache; a second observation of the same
 (subject, object) pair unioning support; the empty-scores ``_max_score`` guard; and the shaper honoring / ignoring an injected
-``params["ner"]``. Inputs are tiny parquet tables built in tmp so no ``[ner]`` extra is needed.
+``params["ner"]``. Inputs are tiny parquet tables built in tmp so no heavy NER deps are needed.
 """
 
 from __future__ import annotations

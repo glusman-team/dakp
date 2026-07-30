@@ -13,9 +13,10 @@ Composite design (gazetteer-first, GLiNER-augmented)
   and the mock pipeline.
 * **Production mode (``offline=False``):** the same gazetteer anchors high-precision spans and
   GLiNER zero-shot (``urchade/gliner_small-v2.1``, laptop-safe) fills out-of-gazetteer gaps.
-  Gazetteer spans win on overlap; non-overlapping GLiNER spans add recall. Needs the ``[ner]``
-  extra; ``gliner`` is imported lazily on first use, raising
-  :class:`~dakp_pipeline.ner.model_cache.NERDependencyError` ("install the [ner] extra") if absent.
+  Gazetteer spans win on overlap; non-overlapping GLiNER spans add recall. ``gliner`` is a core
+  DAKP dependency but is imported lazily on first use (no torch at module load), raising
+  :class:`~dakp_pipeline.ner.model_cache.NERDependencyError` ("reinstall with `uv sync`") if it is
+  somehow not importable.
 
 The offline/production toggle is a mode on this ONE backend, not a backend-name enum.
 
@@ -95,7 +96,7 @@ EMBEDDED_GAZETTEER: dict[str, str] = {
 
 
 def _install_message(module: str) -> str:
-    return f"NER production mode requires the optional [ner] extra (missing module: {module}). Install it with: uv sync --extra ner"
+    return f"NER production mode requires the '{module}' package (a core DAKP dependency) but it is not importable. Install all dependencies with: uv sync"
 
 
 def _sort_key(mention: Mention) -> tuple[int, int, str, str]:
@@ -110,12 +111,13 @@ class DiseaseNER:
     """The single composite disease/phenotype mention extractor.
 
     Constructing a ``DiseaseNER`` never imports heavy deps — even in production mode ``gliner``
-    is imported only on the first :meth:`extract`. So ``import dakp_pipeline.ner.ner`` (and the
-    whole base install + test suite) works with the ``[ner]`` extra NOT installed.
+    is imported only on the first :meth:`extract` (no torch at module load). ``gliner`` is a core
+    DAKP dependency (installed by ``uv sync``); the lazy import keeps ``import dakp_pipeline.ner.ner``
+    — and the whole test suite — fast and light.
 
     Args:
         offline: ``True`` (default) = deterministic gazetteer only; ``False`` = gazetteer +
-            GLiNER zero-shot recall (needs the ``[ner]`` extra).
+            GLiNER zero-shot recall.
         gazetteer: a :class:`Gazetteer`, a ``{surface: type}`` mapping, or ``None`` to use the
             curated :data:`EMBEDDED_GAZETTEER`.
         model_id: GLiNER checkpoint (production mode).
@@ -172,7 +174,7 @@ class DiseaseNER:
     def _load_model(self) -> Any:
         if self._model is None:
             try:
-                from gliner import GLiNER  # lazy: only when the [ner] extra is installed  # type: ignore[import-not-found]
+                from gliner import GLiNER  # lazy: no torch at module load  # type: ignore[import-not-found]
             except ImportError as exc:
                 raise NERDependencyError(_install_message("gliner")) from exc
             ref = ensure_model(self._model_id, cache_dir=self._cache_dir, workdir=self._workdir)

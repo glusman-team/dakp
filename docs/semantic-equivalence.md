@@ -97,7 +97,7 @@ coverage, provenance, or maintainability.
   `DiseaseNER` — a curated gazetteer anchoring high-precision spans plus GLiNER zero-shot filling
   out-of-gazetteer gaps — settled by a labeled benchmark (27 cases / 35 gold spans: composite
   precision 0.972 / recall 1.000 / F1 0.986). One backend, one entry point, an offline
-  (deterministic, dep-free) vs production (`[ner]` extra) mode toggle — not a pluggable backend
+  (deterministic) vs production (GLiNER-augmented) mode toggle — not a pluggable backend
   enum. See [`ner/README.md`](../src/dakp_pipeline/ner/README.md) and [`ner/BENCHMARK.md`](../src/dakp_pipeline/ner/BENCHMARK.md).
 - **Ontology mapping delegated entirely to Tablassert/fullmap.** The legacy build resolved terms
   to CURIEs inline via a hardcoded BABEL.db (`/ssd2/sqlite/BABEL.db`). The rebuild emits mention
@@ -116,8 +116,8 @@ coverage, provenance, or maintainability.
   The rebuild has an import-safe TaskFlow DAG (`dags/dakp_build.py`) over the same pure-Python
   stage functions, with real stdlib-HTTP downloaders (content-addressed, idempotent) for
   DailyMed/Drugs@FDA/FAERS and a bounded `prod` smoke path exercised offline in CI.
-- **Tablassert 8.0.0 from PyPI.** KGX compilation uses the published `tablassert` package (the
-  `[kg]` / `[kg-qc]` extras) rather than a local editable checkout, so the build is reproducible
+- **Tablassert 8.0.0 from PyPI.** KGX compilation uses the published `tablassert[qc]` package (a
+  core dependency) rather than a local editable checkout, so the build is reproducible
   from a pinned version. See [`tablassert-handoff.md`](./tablassert-handoff.md).
 
 ## Deliberate refinements

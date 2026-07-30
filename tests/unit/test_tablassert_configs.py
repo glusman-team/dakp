@@ -323,16 +323,16 @@ def test_build_command_prefers_installed_binary(monkeypatch: pytest.MonkeyPatch)
     assert command == ["/venv/bin/tablassert", "build-kg", "tables/graph.yaml", "--fullmap", ".fullmap"]
 
 
-def test_build_command_falls_back_to_uv_extra_kg(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_command_falls_back_to_uv_run_tablassert(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)
     command = TablassertRunner().build_command(Path("tables/graph.yaml"), ".fullmap")
-    assert command == ["uv", "run", "--extra", "kg", "tablassert", "build-kg", "tables/graph.yaml", "--fullmap", ".fullmap"]
+    assert command == ["uv", "run", "tablassert", "build-kg", "tables/graph.yaml", "--fullmap", ".fullmap"]
 
 
 def test_build_command_appends_qc_and_release_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)
     command = TablassertRunner().build_command(Path("graph.yaml"), ".fullmap", qc=True, release=True)
-    assert command == ["uv", "run", "--extra", "kg", "tablassert", "build-kg", "graph.yaml", "--fullmap", ".fullmap", "--qc", "--release"]
+    assert command == ["uv", "run", "tablassert", "build-kg", "graph.yaml", "--fullmap", ".fullmap", "--qc", "--release"]
 
 
 def test_resolve_tablassert_dir_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -356,7 +356,7 @@ def _patch_installed(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force the runner's DEFAULT installed-package path deterministically (no editable dir)."""
     monkeypatch.delenv(TABLASERT_DIR_ENV, raising=False)  # ignore any real dev override in the env
     monkeypatch.setattr(_RUN_MODULE, "tablassert_available", lambda: True)
-    monkeypatch.setattr(shutil, "which", lambda name: None)  # -> the `uv run --extra kg` prefix
+    monkeypatch.setattr(shutil, "which", lambda name: None)  # -> the `uv run tablassert` prefix
 
 
 def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -381,9 +381,9 @@ def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert len(calls) == 1
     command, cwd = calls[0]
     assert cwd == workdir.root
-    assert command[:6] == ["uv", "run", "--extra", "kg", "tablassert", "build-kg"]
+    assert command[:4] == ["uv", "run", "tablassert", "build-kg"]
     assert command[-2:] == ["--fullmap", ".fullmap"]
-    assert command[6] == str(workdir.root / "tables" / "graph.yaml")
+    assert command[4] == str(workdir.root / "tables" / "graph.yaml")
 
     report = _read_report(workdir)
     assert report["mode"] == "real"
@@ -447,7 +447,7 @@ def test_real_runner_raises_when_tablassert_missing(monkeypatch: pytest.MonkeyPa
     monkeypatch.delenv(TABLASERT_DIR_ENV, raising=False)
     monkeypatch.setattr(_RUN_MODULE, "tablassert_available", lambda: False)
 
-    with pytest.raises(RuntimeError, match="uv sync --extra kg"):
+    with pytest.raises(RuntimeError, match="uv sync"):
         TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir))
 
 

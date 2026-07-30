@@ -1,4 +1,4 @@
-"""End-to-end DAKP -> Tablassert -> KGX integration test (requires the ``[kg]`` extra).
+"""End-to-end DAKP -> Tablassert -> KGX integration test (requires ``tablassert``).
 
 Proves the FULL path works on a TINY, hermetic fullmap (no network):
 
@@ -7,16 +7,16 @@ Proves the FULL path works on a TINY, hermetic fullmap (no network):
 2. build a tiny ``fullmap.redb`` (:mod:`tiny_fullmap`) mapping the assertion-table mention text
    (Ibuprofen/Advil, Examplestatin, hypercholesterolemia, headache, pain, asthma, ...) to CURIEs;
 3. invoke a REAL ``tablassert build-kg`` through the DAKP :class:`TablassertRunner` (the installed
-   ``[kg]`` CLI, real subprocess);
+   ``tablassert`` CLI, real subprocess);
 4. load the produced KGX ``dakp_0.1.0.{nodes,edges}.ndjson`` and assert: nodes carry
    ``id``/``name``/``category``; edges carry ``subject``/``predicate``/``object`` + DAKP provenance
    (``infores:multiomics-drugapprovals`` primary + the per-family upstream infores); all three edge
    families (``treats`` / ``applied_to_treat`` / ``contraindicated_in``) are present; and
    :func:`dakp_pipeline.translator.contract.validate_kgx` passes.
 
-The whole module SKIPS when ``tablassert`` is not importable (base env, no ``[kg]`` extra) — it only
-runs under ``uv sync --extra kg``. ``tests/`` is outside the coverage ``source``, so the skip does not
-affect the 100% ``src/`` coverage gate.
+The whole module SKIPS when ``tablassert`` is not importable (dependencies not yet installed) — it
+runs once ``uv sync`` has materialized the runtime. ``tests/`` is outside the coverage ``source``,
+so the skip does not affect the 100% ``src/`` coverage gate.
 
 Known gap (NOTE, not fixed here — ``src/`` is owned elsewhere): Tablassert 8.0.0 emits edge provenance
 as a LIST ``primary_knowledge_source`` (``["infores:multiomics-drugapprovals"]``) plus a top-level
@@ -43,9 +43,9 @@ from dakp_pipeline.pipeline import run_pipeline
 from dakp_pipeline.tablassert.run import TablassertRunner
 from dakp_pipeline.translator.contract import EDGE_FAMILIES, INFORES_DAKP, read_kgx_jsonl, validate_kgx
 
-# Skip the WHOLE module in the base env (no [kg] extra). tiny_fullmap imports tablassert only inside
-# its child build process, so importing it above is safe even when tablassert is absent.
-pytest.importorskip("tablassert", reason="tablassert ([kg] extra) not installed; run `uv sync --extra kg`")
+# Skip the WHOLE module when tablassert is not importable (deps not installed). tiny_fullmap imports
+# tablassert only inside its child build process, so importing it above is safe even when absent.
+pytest.importorskip("tablassert", reason="tablassert not installed; run `uv sync`")
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -119,7 +119,7 @@ def kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
     #     below can acquire redb's exclusive flock (see tiny_fullmap docstring).
     tiny_fullmap.build_tiny_fullmap(work / ".fullmap" / "fullmap.redb")
 
-    # (3) REAL build-kg via the DAKP TablassertRunner (installed [kg] CLI, real subprocess).
+    # (3) REAL build-kg via the DAKP TablassertRunner (installed tablassert CLI, real subprocess).
     tabular = work / "data" / "tabular"
     assertion_refs = [_ref(path, "text/tab-separated-values") for path in sorted(tabular.glob("*_assertions.tsv"))]
     tables_dir = work / "tables"

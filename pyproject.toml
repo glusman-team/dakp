@@ -19,41 +19,24 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
-# Runtime dependencies (see plans/airflow-native-go-workers.md). Airflow 3 is now a HARD
-# dependency: the pipeline is Airflow-native (the DAG is the only orchestrator and the Go
-# extractors run as native Airflow Go SDK bundle workers). `uv sync` installs the core runtime;
-# `uv sync --all-extras` (or `make install`) adds the heavy NER + Tablassert backends needed for
-# a full production run in one go.
+# Runtime dependencies (see plans/airflow-native-go-workers.md). Everything the pipeline needs
+# is a HARD dependency installed by ONE command (`uv sync`, or `make install`) — there are no
+# optional extras. Airflow 3 is the only orchestrator (the DAG drives the pipeline and the Go
+# extractors run as native Airflow Go SDK bundle workers); the biomedical NER backend (GLiNER
+# zero-shot) and the Tablassert KG build are required for a full production run. `gliner` is
+# still imported lazily (no torch at module load) and the mock profile + tests never touch the
+# network or Tablassert, but a single `uv sync` now materializes the whole production runtime.
+# Tablassert is pinned to the `[qc]` variant because the KG build needs the embedding-based
+# `tablassert build-kg --qc` audit (sentence-transformers).
 dependencies = [
     "apache-airflow>=3,<4",
     "blake3>=1.0.0",
+    "gliner>=0.1.15",
+    "huggingface_hub>=0.24",
     "loguru>=0.7.3",
     "pendulum>=3",
     "polars>=1.30.0",
     "pydantic>=2.12.0",
-]
-
-[project.optional-dependencies]
-# Biomedical NER backend (GLiNER zero-shot — the production half of the single composite
-# DiseaseNER) is optional and HEAVY (pulls torch/transformers): `uv sync --extra ner`. The base
-# install and the whole test suite run WITHOUT this extra: the offline gazetteer mode is
-# deterministic and dep-free, and `dakp_pipeline.ner.ner` imports gliner lazily, raising
-# NERDependencyError("install the [ner] extra") only when production mode runs without it.
-ner = [
-    "gliner>=0.1.15",
-    "huggingface_hub>=0.24",
-]
-# Tablassert KG build is optional: `uv sync --extra kg`. The base install and the whole test
-# suite run WITHOUT it (the mock profile + MockTablassertRunner never touch Tablassert, exactly
-# like airflow/ner). `dakp_pipeline.tablassert.run` shells out to the INSTALLED `tablassert`
-# CLI and raises "install the [kg] extra" only when a real (non-mock) handoff runs without it.
-kg = [
-    "tablassert>=8.0.0",
-]
-# Adds the embedding-based `tablassert build-kg --qc` audit (scikit-learn + sentence-transformers;
-# pulls torch — HEAVY, for beefy hosts like wenceslaus): `uv sync --extra kg-qc`. Laptop builds
-# use plain [kg]; the runner appends `--qc` only when this runtime is importable.
-kg-qc = [
     "tablassert[qc]>=8.0.0",
 ]
 

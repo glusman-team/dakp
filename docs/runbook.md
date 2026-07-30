@@ -7,18 +7,13 @@ Common failures, reruns, BLAKE3 cache invalidation, and debugging for the DAKP p
 ## Prerequisites
 
 ```bash
-uv sync                       # base install (polars, loguru, blake3, pydantic); no Airflow/NER/Tablassert
+uv sync                       # ONE command: full runtime (Airflow 3, polars, loguru, blake3, pydantic, GLiNER NER, tablassert[qc]) + dev deps
 uv run pytest -q              # unit + integration tests, no network
 ```
 
-Optional extras (never required for the base install or the test suite):
-
-```bash
-make install-ner       # [ner] GLiNER production NER (pulls torch)
-make install-kg        # [kg] PyPI tablassert (KG build; laptop-safe)
-make install-kg-qc     # [kg-qc] tablassert[qc] audit (pulls torch; beefy hosts)
-make install-all       # one-command full install (all extras) for a production run
-```
+There are **no optional extras** — `uv sync` (above) installs the entire production runtime in one
+command, including the heavy GLiNER NER backend (torch) and `tablassert[qc]`. The test suite still
+runs offline: NER defaults to the deterministic gazetteer and the mock profile defers Tablassert.
 
 ## Running the mock pipeline
 
@@ -50,8 +45,8 @@ to 1 for a bounded smoke run; adjust it for full scope.)
 This hits the real FDA/DailyMed network endpoints. For an **offline** exercise of the same real code
 path (HTTP layer mocked, fixtures served "as if downloaded"), run
 `uv run pytest -q tests/integration/test_prod_smoke.py` — it passes in CI with no network. The
-Tablassert *handoff* runs its real runner; only the `tablassert` subprocess is faked unless the
-`[kg]` extra is installed.
+Tablassert *handoff* runs its real runner; only the `tablassert` subprocess is faked (tablassert is
+installed, but the smoke run stays offline).
 
 ## Common failures
 
@@ -74,19 +69,19 @@ A fetcher's fixture tuple names a file that is not under `--fixture-root`. **Fix
 path in the relevant [`sources/<x>.py`](../src/dakp_pipeline/sources/) module against
 `tests/fixtures/pipeline/`.
 
-### `RuntimeError: tablassert is not available: install the [kg] extra …`
+### `RuntimeError: tablassert is not available …`
 
 A full (non-mock) run reached `run_tablassert` with `run_tablassert=True` but `tablassert` is not
 importable and no editable-checkout override is set. There is deliberately **no local KGX
-fallback**. **Fix:** `uv sync --extra kg` (or `make install-kg`), or point at a local checkout via
+fallback**. **Fix:** `uv sync` (or `make install`), or point at a local checkout via
 `DAKP_TABLASERT_DIR` / the `tablassert_dir` param. The mock profile defers the handoff and never
 needs Tablassert.
 
-### `NERDependencyError: … install the [ner] extra`
+### `NERDependencyError: … reinstall with uv sync`
 
-A production-mode `DiseaseNER(offline=False)` ran without the `[ner]` extra (gliner missing).
-**Fix:** `uv sync --extra ner` (or `make install-ner`). Offline mode (the default, used by tests and
-the mock pipeline) needs no NER deps.
+A production-mode `DiseaseNER(offline=False)` ran but `gliner` is somehow not importable.
+**Fix:** `uv sync` (or `make install`). Offline mode (the default, used by tests and
+the mock pipeline) never imports the heavy NER deps.
 
 ### `subject_curie` / `object_curie` empty in the output TSVs
 

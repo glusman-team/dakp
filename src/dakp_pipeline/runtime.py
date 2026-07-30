@@ -69,7 +69,7 @@ def build_context(profile: Profile, wd: Workdir, fixture_root: Path | str | None
         params.update(extra)
     # The contraindication shaper builds its own deterministic offline NER backend from
     # ctx.fixture_root (single composite backend). A real production DiseaseNER (offline=False,
-    # needs the [ner] extra) may be injected via params["ner"].
+    # needs the NER dependencies) may be injected via params["ner"].
     return TaskContext(
         profile=profile.name, workdir=wd.root, fixture_root=fixture, threads=profile.threads, memory_budget_gb=profile.memory_budget_gb, params=params
     )

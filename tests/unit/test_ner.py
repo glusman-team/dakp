@@ -1,6 +1,6 @@
 """Unit tests for the single composite NER backend (``dakp_pipeline.ner.ner``).
 
-ALL of these pass with the ``[ner]`` extra NOT installed: the offline gazetteer mode is
+ALL of these pass without importing the heavy NER deps: the offline gazetteer mode is
 deterministic and dep-free; the production (GLiNER) mode is asserted to be *lazy* (importing
 ``ner.ner`` imports no heavy deps) and is exercised with a fake ``gliner`` module + a stubbed
 ``ensure_model`` (no network). The missing-dep error path skips when ``gliner`` is present.

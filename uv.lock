@@ -998,22 +998,13 @@ source = { editable = "." }
 dependencies = [
     { name = "apache-airflow" },
     { name = "blake3" },
+    { name = "gliner" },
+    { name = "huggingface-hub" },
     { name = "loguru" },
     { name = "pendulum" },
     { name = "polars" },
     { name = "pydantic" },
-]
-
-[package.optional-dependencies]
-kg = [
-    { name = "tablassert" },
-]
-kg-qc = [
     { name = "tablassert", extra = ["qc"] },
-]
-ner = [
-    { name = "gliner" },
-    { name = "huggingface-hub" },
 ]
 
 [package.dev-dependencies]
@@ -1029,16 +1020,14 @@ dev = [
 requires-dist = [
     { name = "apache-airflow", specifier = ">=3,<4" },
     { name = "blake3", specifier = ">=1.0.0" },
-    { name = "gliner", marker = "extra == 'ner'", specifier = ">=0.1.15" },
-    { name = "huggingface-hub", marker = "extra == 'ner'", specifier = ">=0.24" },
+    { name = "gliner", specifier = ">=0.1.15" },
+    { name = "huggingface-hub", specifier = ">=0.24" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "pendulum", specifier = ">=3" },
     { name = "polars", specifier = ">=1.30.0" },
     { name = "pydantic", specifier = ">=2.12.0" },
-    { name = "tablassert", marker = "extra == 'kg'", specifier = ">=8.0.0" },
-    { name = "tablassert", extras = ["qc"], marker = "extra == 'kg-qc'", specifier = ">=8.0.0" },
+    { name = "tablassert", extras = ["qc"], specifier = ">=8.0.0" },
 ]
-provides-extras = ["ner", "kg", "kg-qc"]
 
 [package.metadata.requires-dev]
 dev = [

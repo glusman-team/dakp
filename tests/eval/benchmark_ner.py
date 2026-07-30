@@ -20,7 +20,7 @@ Scoring is span-level, micro-averaged: a prediction is a true positive only if i
 This script is an evaluation artifact: it is NOT collected by pytest (filename is not
 ``test_*.py``) and is not part of the coverage-gated package. It imports ``ner.ner`` (which
 lazy-loads ``gliner``) and never imports ``gliner`` directly, so it type-checks with or without
-the ``[ner]`` extra installed (the model approaches simply skip when it is absent).
+the NER dependencies installed (the model approaches simply skip when it is absent).
 """
 
 from __future__ import annotations

@@ -104,8 +104,8 @@ def acquire_ner_models(
     Idempotent: a cached model whose content tree hash still matches is a hit (no download).
     ``force`` (from ``ctx.params``) re-downloads unconditionally. ``models`` overrides the
     profile-derived default (:func:`default_ner_models`); ``downloader`` is injectable for
-    offline tests (defaults to the Hugging Face Hub downloader, which needs the ``[ner]``
-    extra). The mock profile with no explicit ``models`` acquires nothing.
+    offline tests (defaults to the Hugging Face Hub downloader, which needs the NER
+    dependencies). The mock profile with no explicit ``models`` acquires nothing.
     """
     log = bind(task_id="acquire_ner_models", profile=ctx.profile)
     model_ids = list(models) if models is not None else default_ner_models(ctx)

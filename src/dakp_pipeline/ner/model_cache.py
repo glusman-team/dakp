@@ -10,7 +10,7 @@ Design constraints (mirrors the rest of DAKP):
 
 * **No heavy imports at module load.** ``huggingface_hub`` is imported lazily, inside the
   default downloader only. The cache logic itself is stdlib + ``blake3`` (a base dep), so
-  ``import dakp_pipeline.ner.model_cache`` succeeds with the ``[ner]`` extra NOT installed.
+  ``import dakp_pipeline.ner.model_cache`` stays light (no torch / transformers at import time).
 * **Dependency-injected downloader.** :func:`ensure_model` accepts an optional ``downloader``
   callable; tests pass a fake that writes bytes locally, so idempotency, manifests, and
   drift detection are all tested with **no network and no ``huggingface_hub``**.
@@ -49,10 +49,10 @@ Downloader = Callable[[str, Path], None]
 
 
 class NERDependencyError(ImportError):
-    """An optional NER backend's heavy dependency (the ``[ner]`` extra) is not installed.
+    """A NER backend's heavy dependency (a core DAKP dep) is unexpectedly not importable.
 
     Subclasses :class:`ImportError` so callers may catch either. The message always names the
-    missing module and the exact install command (``uv sync --extra ner``).
+    missing module and the install command (``uv sync``).
     """
 
 
@@ -128,14 +128,15 @@ def write_manifest(path: Path, data: Mapping[str, Any]) -> None:
 def default_downloader(model_id: str, dest: Path) -> None:
     """Download ``model_id`` from the Hugging Face Hub into ``dest`` (lazy import).
 
-    ``huggingface_hub`` ships with the ``[ner]`` extra (transitively via ``gliner``); if it
-    is missing, raises :class:`NERDependencyError` with the install command.
+    ``huggingface_hub`` is a core DAKP dependency (transitively via ``gliner``); if it is
+    somehow not importable, raises :class:`NERDependencyError` with the install command.
     """
     try:
         from huggingface_hub import snapshot_download  # type: ignore[import-not-found]
     except ImportError as exc:
         msg = (
-            "downloading NER model weights requires the optional [ner] extra (missing module: huggingface_hub). Install it with: uv sync --extra ner"
+            "downloading NER model weights requires 'huggingface_hub' (a core DAKP dependency) but it is not importable. "
+            "Install all dependencies with: uv sync"
         )
         raise NERDependencyError(msg) from exc
     snapshot_download(repo_id=model_id, local_dir=dest)
