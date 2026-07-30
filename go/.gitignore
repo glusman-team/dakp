@@ -1,0 +1,6 @@
+# Compiled dakp-worker binary (from `go build ./cmd/dakp-worker`).
+/dakp-worker
+# Any other compiled binaries / build artifacts produced inside go/.
+*.exe
+*.test
+*.out

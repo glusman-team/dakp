@@ -1,0 +1,185 @@
+# DAKP Go workers
+
+Native Go worker foundation for the DAKP pipeline rebuild (see `PLAN.md`, "Go worker
+plan"). Heavy parsing/extraction runs here as subcommands of a single `dakp-worker` CLI;
+Airflow tasks stay thin Python orchestrators that invoke this binary and stream its
+output. This module is the **shared foundation** — content addressing, the artifact
+manifest, shared pipeline types, and the CLI dispatcher — that the per-source extractors
+(FAERS, DailyMed, Drugs@FDA, MEDI — a later milestone) plug into.
+
+Module path: `github.com/glusman-team/dakp/go`. All commands below run from this `go/`
+directory.
+
+## Layout
+
+```text
+go/
+  go.mod / go.sum
+  cmd/dakp-worker/
+    main.go        # STABLE entrypoint: calls registry.Main(os.Args). Never edit per-extractor.
+    hash.go        # "hash" subcommand — self-registered via init(). The pattern to copy.
+    hash_test.go
+  internal/
+    registry/      # self-registration command dispatcher (Register/Dispatch/Run/Main)
+    blake3store/   # BLAKE3 file + tree hashing, SHA-256 SRI, artifact manifests
+    pipeline/      # ArtifactRef/TaskContext, SourceRecordID, InferMediaType
+```
+
+## Build, test, acceptance
+
+```bash
+go build ./...        # compiles everything
+go vet ./...          # static checks
+go test ./...         # all tests (includes Python-parity fixtures)
+gofmt -l .            # must print nothing
+
+# Run the worker directly:
+go run ./cmd/dakp-worker hash <path>        # file -> content hash; dir -> tree hash
+go run ./cmd/dakp-worker hash -mode=tree <dir>
+go run ./cmd/dakp-worker help               # list registered subcommands
+
+# Build a binary for full runs:
+go build -o dakp-worker ./cmd/dakp-worker   # ignored by go/.gitignore
+```
+
+## The self-registration pattern (how to add a new extractor subcommand)
+
+Subcommands register themselves from `init()` in their **own file** under
+`cmd/dakp-worker/` (all `package main`). Because every file in a package contributes its
+`init()`, a new subcommand needs **no edits to `main.go`, the registry, or any existing
+file** — so multiple extractor workers can land in parallel and merge cleanly.
+
+To add an extractor (e.g. `faers`), create exactly one new file
+`cmd/dakp-worker/faers.go`:
+
+```go
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+
+	"github.com/glusman-team/dakp/go/internal/registry"
+	// ... pipeline / blake3store as needed
+)
+
+func init() {
+	registry.Register("faers", func(ctx context.Context, args []string) error {
+		return runFAERS(ctx, args, os.Stdout)
+	})
+}
+
+func runFAERS(ctx context.Context, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("faers", flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // keep stdout clean for machine-readable output
+	// ... parse flags, do the work, write the artifact id / manifest ...
+	return nil
+}
+```
+
+That's it. `dakp-worker faers ...` now works, and `dakp-worker help` lists it. Rules:
+
+- **One file per subcommand**, `package main`, with an `init()` calling
+  `registry.Register(name, fn)`.
+- The command func receives `args` **after** the subcommand name (flags/positionals only).
+- Keep **stdout** machine-readable (the artifact `b3:<hex>` id and/or the JSON manifest);
+  send logs to **stderr** as structured JSON via `log/slog`.
+- Return an error on failure; the registry maps it to a non-zero exit code.
+- Duplicate names panic at startup (a programming error that should fail loudly).
+
+`main.go` is deliberately frozen — it only calls `registry.Main(os.Args)`.
+
+## How Python invokes the worker
+
+Airflow tasks (and the Python `workers/go_runner.py` wrapper) shell out to the worker and
+stream its output line-by-line into the Airflow task logger:
+
+```bash
+# development:
+go run ./cmd/dakp-worker hash data/raw/by-hash/<hex>/faers_ascii_2024q3.zip
+# full runs (prebuilt binary):
+/path/to/dakp-worker faers --quarter 2024q3 --in <manifest.json> --out data/interim/faers
+```
+
+Contract:
+
+- **stdout** — machine-readable results: the `b3:<hex>` artifact id and/or the artifact
+  manifest JSON. Python captures this.
+- **stderr** — structured JSON log lines (`log/slog`) with the shared schema fields
+  (`task_id`, `shard_id`, `artifact_id`, `input_hash`, `output_hash`, `rows`,
+  `elapsed_ms`, `cache_hit`, ...). Python relays these so Airflow shows Go and Python logs
+  uniformly.
+- **exit code** — `0` success, `1` command error, `2` usage error (no/unknown command).
+
+## Content addressing (BLAKE3)
+
+BLAKE3 is DAKP's primary content hash (`PLAN.md`, "Nix-store-inspired artifact and
+cryptography model"). Canonical artifact ids are `b3:<hex>` with a **32-byte / 64-hex**
+digest.
+
+- **Library:** [`github.com/zeebo/blake3`](https://pkg.go.dev/github.com/zeebo/blake3)
+  v0.2.4 — pure Go + SIMD, no cgo. `blake3.New()` defaults to a 32-byte output, matching
+  the Python `blake3` package's default `hexdigest()`, so Python and Go agree.
+- **File hash** (`blake3store.HashFile`): streaming BLAKE3 of the file bytes (1 MiB
+  window).
+- **Tree hash** (`blake3store.HashTree`): deterministic, Nix-NAR-like, **byte-for-byte
+  identical to Python's `content_hash.hash_tree`**. The exact algorithm (mirror this if
+  reimplementing):
+  1. Collect every regular file under the root (recursive); skip symlinks/non-regular
+     files and empty directories.
+  2. Sort by **relative POSIX path** (forward slashes, lexicographic by byte value — equal
+     to Unicode code-point order for valid UTF-8, the same order Python's `sorted()` uses).
+  3. Feed **one** BLAKE3 hasher; for each file in order write:
+     `relPath(utf-8) | 0x00 | size(decimal ASCII) | 0x00 | fileBytes | 0x00`.
+  4. Emit `b3:` + hex of the final 32-byte digest.
+
+  Directory mtimes, traversal order, and empty dirs do not affect the result; an empty
+  directory hashes to BLAKE3 of the empty input.
+- **SHA-256 SRI** (`blake3store.SHA256SRI`): optional `sha256-<base64>` interoperability
+  metadata only — never the primary key.
+- **Bounded parallel hashing** (`blake3store.HashFiles`): hash many files concurrently via
+  `golang.org/x/sync/errgroup` with `SetLimit`, cancelling on first error — use this to
+  respect Airflow task concurrency / memory budgets.
+
+### Cross-language parity (tested)
+
+`internal/blake3store/testdata/` holds golden fixtures computed with the **Python**
+reference (`blake3` 1.0.9, `pydantic` 2.13.4); the Go tests assert byte-for-byte equality:
+
+- `testdata/tree/` — a small nested directory; Go `HashTree` must equal Python
+  `hash_tree` → `b3:3efcf1d2ac7f501dda31fb970875d3a8a2d59852d09f55cf562af3ba3d029fb6`.
+- `testdata/manifest_full.json`, `testdata/manifest_minimal.json` — Python-written
+  manifests; Go reads them and re-marshals to **identical bytes** (2-space indent, no HTML
+  escaping, no trailing newline, `inputs: []`, nullable fields as `null`, matching field
+  order).
+- `internal/pipeline` `SourceRecordID` vectors match `spl_xml._source_record_id`
+  (`b3:` + BLAKE3 of the `\x1f`-joined `[source_id, kind, *local_keys]`).
+
+The integration milestone's parity tests can rely on: **zeebo/blake3 v0.2.4, 32-byte
+output, and the tree-hash algorithm above.**
+
+## Artifact manifests
+
+`blake3store.ArtifactManifest` mirrors `src/dakp_pipeline/io/manifests.py`
+(`schema_version: dakp.artifact.v1`): `artifact_id`, `path`, `media_type`, `hash`
+(`algorithm`/`file`/`tree`/`sha256_sri`), `inputs`, `operation`, `source`, `environment`,
+`table`. `ReadManifest` / `WriteManifest` round-trip Python- and Go-written files; the
+marshal is byte-compatible with pydantic's `model_dump_json(indent=2)`.
+
+## Dependencies
+
+Direct (both genuinely used by the foundation):
+
+- `github.com/zeebo/blake3` — BLAKE3 hashing.
+- `golang.org/x/sync` — `errgroup` for bounded concurrency (`HashFiles`).
+
+**Parquet — deferred (TODO).** The per-source extractors will emit partitioned interim
+tables; the Tablassert-facing tables are uncompressed TSV. The foundation writes no tables
+yet, and `go mod tidy` strips unused deps, so the parquet writer is intentionally **not**
+added here. When an extractor needs parquet, add
+[`github.com/parquet-go/parquet-go`](https://github.com/parquet-go/parquet-go) with a
+single `go get github.com/parquet-go/parquet-go` (a one-line `go.mod` change) and write TSV
+for the Tablassert handoff regardless.

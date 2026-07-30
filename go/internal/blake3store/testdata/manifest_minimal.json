@@ -1,0 +1,32 @@
+{
+  "schema_version": "dakp.artifact.v1",
+  "artifact_id": "b3:9999999999999999999999999999999999999999999999999999999999999999",
+  "path": "data/tabular/approved_treats_assertions.tsv",
+  "media_type": "text/tab-separated-values",
+  "hash": {
+    "algorithm": "BLAKE3",
+    "file": "b3:9999999999999999999999999999999999999999999999999999999999999999",
+    "tree": null,
+    "sha256_sri": null
+  },
+  "inputs": [],
+  "operation": null,
+  "source": {
+    "url": null,
+    "etag": null,
+    "last_modified": null,
+    "retrieved_at": null
+  },
+  "environment": {
+    "git_commit": null,
+    "uv_lock_hash": null,
+    "tablassert_commit": null,
+    "fullmap_hash": null
+  },
+  "table": {
+    "rows": null,
+    "partitions": null,
+    "schema_fingerprint": null,
+    "warnings": null
+  }
+}
