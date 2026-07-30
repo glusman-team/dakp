@@ -1,0 +1,39 @@
+{
+  "schema_version": "dakp.artifact.v1",
+  "artifact_id": "b3:4f8c000000000000000000000000000000000000000000000000000000000000",
+  "path": "data/interim/faers/quarter=24Q3/drug.parquet",
+  "media_type": "application/vnd.apache.parquet",
+  "hash": {
+    "algorithm": "BLAKE3",
+    "file": "b3:abababababababababababababababababababababababababababababababab",
+    "tree": "b3:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    "sha256_sri": "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+  },
+  "inputs": [
+    "b3:1111111111111111111111111111111111111111111111111111111111111111",
+    "b3:2222222222222222222222222222222222222222222222222222222222222222"
+  ],
+  "operation": {
+    "name": "extract_faers_drug",
+    "version": "v1",
+    "config_hash": "b3:3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "source": {
+    "url": "https://fis.fda.gov/content/Exports/faers_ascii_2024q3.zip",
+    "etag": "abc123",
+    "last_modified": "Mon, 01 Jul 2024 00:00:00 GMT",
+    "retrieved_at": "2026-01-02T03:04:05Z"
+  },
+  "environment": {
+    "git_commit": "0000000000000000000000000000000000000000",
+    "uv_lock_hash": "b3:4444444444444444444444444444444444444444444444444444444444444444",
+    "tablassert_commit": null,
+    "fullmap_hash": "b3:5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "table": {
+    "rows": 123456,
+    "partitions": 8,
+    "schema_fingerprint": "b3:6666666666666666666666666666666666666666666666666666666666666666",
+    "warnings": 12
+  }
+}
