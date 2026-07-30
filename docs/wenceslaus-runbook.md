@@ -62,21 +62,15 @@ Tablassert configs into the workdir, and (because `prod` sets `run_tablassert=Tr
 live Tablassert handoff.
 
 ```bash
-uv run dakp run --profile prod --workdir /local_raid1/dakp/work
+PROFILE=prod WORKDIR=/local_raid1/dakp/work make run
 ```
 
-**To engage the byte-parity Go extractors** (recommended on wenceslaus for the hot DailyMed/FAERS
-parsers): the CLI has no `--use-go-workers` flag, so enable it through the `use_go_workers` param.
-With `DAKP_WORKER_BIN` exported (Step prerequisites) and the binary present, run:
-
-```bash
-uv run python -c "from dakp_pipeline.pipeline import run_pipeline; \
-  run_pipeline(profile='prod', workdir='/local_raid1/dakp/work', params={'use_go_workers': True})"
-```
-
-The extractors delegate to the Go `dakp-worker` when `use_go_workers` is on **and** a binary is
-available, and fall back to the pure-Python extractors automatically otherwise — output is
-byte-for-byte identical either way (golden-file parity in `go test ./...`).
+The heavy DailyMed/FAERS/Drugs@FDA extraction always runs as **native Go workers** (the Airflow Go
+SDK bundle); `make run` builds + packs the bundle, starts Airflow with the Go coordinator, and
+triggers `dakp_build`. The Go extractors are parity-locked to the pure-Python reference extractors
+(golden-file parity in `go test ./...`). For an unbounded full-scope run, unset the
+`quarter_limit`/`release_limit` pins in [`scripts/dakp_up.sh`](../scripts/dakp_up.sh) (the
+orchestrator defaults them to 1 for a bounded smoke run).
 
 After this step the workdir holds:
 
@@ -123,8 +117,8 @@ Everything except Steps 1 and 3 (and the unbounded Step 2) runs on the laptop:
 
 ```bash
 make check-all                                                       # full quality gate
-uv run dakp run --profile mock --fixture-root tests/fixtures/pipeline --workdir tmp/mock-run
-uv run dakp run --profile prod --quarter-limit 1 --release-limit 1 --workdir /tmp/dakp-prod-smoke  # real, bounded
+make run                                                             # mocked end-to-end pipeline via Airflow (native Go workers)
+PROFILE=prod make run                                                # real, bounded (orchestrator pins quarter/release limit to 1)
 uv sync --extra ner && uv run pytest tests/eval -q                   # NER benchmark (GLiNER on the RTX 5070 Ti)
 ```
 
@@ -134,8 +128,9 @@ uv sync --extra ner && uv run pytest tests/eval -q                   # NER bench
   keep `--cache` on `/local_raid1`.
 - **`RuntimeError: tablassert is not available`** in Step 2/3 — `uv sync --extra kg` (or set
   `DAKP_TABLASERT_DIR` for a local editable checkout). See [`runbook.md`](./runbook.md).
-- **Go workers not engaging** — confirm `echo $DAKP_WORKER_BIN` points at a real binary (or `go` is
-  on `PATH`) and that `use_go_workers` is set; otherwise the Python extractors run (same bytes).
+- **Go workers not engaging** — the extract tasks are native Go SDK bundle workers; confirm the
+  bundle was packed into the coordinator's `executables_root` (`make run` does this) and that a Go
+  toolchain ≥ 1.24 is available to build it. Check the `extract_*` task logs in Airflow.
 - **Download failures** — check connectivity to the FDA/DailyMed endpoints; bound scope with
   `--quarter-limit` / `--release-limit` to isolate a bad source. See [`runbook.md`](./runbook.md).
 

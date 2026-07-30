@@ -9,14 +9,18 @@ rationale; this document describes the **implemented final architecture**.
 DAKP is a staged, content-addressed pipeline: **acquire → extract → NER → aggregate →
 Tablassert KGX**. Every stage reads and writes
 [`ArtifactRef`](../src/dakp_pipeline/io/contracts.py) handles (a path + a BLAKE3 id + optional
-manifest/schema metadata) — never large in-memory dataframes. Two runners drive the same stage
-functions:
+manifest/schema metadata) — never large in-memory dataframes. The **Airflow DAG is the sole
+orchestrator** (Airflow 3 is a hard dependency); a pure-Python harness exercises the same stage
+functions in tests:
 
-- **Pure-Python runner** — [`src/dakp_pipeline/pipeline.py`](../src/dakp_pipeline/pipeline.py)
-  `run_pipeline(...)`. This is the source of truth and what the CLI and tests exercise.
 - **Airflow DAG** — [`src/dakp_pipeline/dags/dakp_build.py`](../src/dakp_pipeline/dags/dakp_build.py)
-  `dakp_build`, a thin TaskFlow wrapper around those same functions. Import-safe without Airflow
-  (guarded imports + no-op decorator fallbacks).
+  `dakp_build`. The three `extract_*` tasks are **native Go SDK workers**
+  (`@task.stub(queue="golang")`, forked by the ExecutableCoordinator); acquisition, shaping,
+  Tablassert handoff, and the summary are Python TaskFlow tasks. Run config comes from the
+  `dakp_config` Variable; tasks pass `ArtifactRef` manifests over XCom.
+- **Pure-Python harness** — [`src/dakp_pipeline/pipeline.py`](../src/dakp_pipeline/pipeline.py)
+  `run_pipeline(...)`, an Airflow-free test/dev harness that runs the stage functions with the
+  pure-Python reference extractors (what the unit/integration tests exercise).
 
 ```text
               acquire → extract → NER → aggregate → generate configs → Tablassert handoff → summary
@@ -58,13 +62,16 @@ Extractors ([`extract/`](../src/dakp_pipeline/extract/)) parse raw artifacts int
 - [`drugsfda_products.extract`](../src/dakp_pipeline/extract/drugsfda_products.py) — normalizes the
   Drugs@FDA products/applications/submissions tables into parquet.
 
-**Go parity.** Each hot extractor has a Go port under [`go/internal/`](../go/) (`dailymed`,
-`faers`, `drugsfda`) that is **byte-for-byte identical** to the Python output — golden-file parity
-tests in `go test ./...` assert it (see [`../go/README.md`](../go/README.md)). The
-[`workers/go_runner.py`](../src/dakp_pipeline/workers/go_runner.py) wrapper shells out to the
-compiled `dakp-worker` binary when `use_go_workers` is enabled and one is available, falling back
-to Python automatically otherwise. Default profiles keep `use_go_workers=False` so the test suite
-never shells out to Go.
+**Native Go workers.** The hot extractors run as **native Airflow Go SDK bundle workers**: the
+parsing libraries live under [`go/internal/`](../go/) (`dailymed`, `faers`, `drugsfda`) and the
+bundle entrypoint [`go/cmd/dakp-bundle`](../go/cmd/dakp-bundle) registers them as the DAG's
+`extract_*` tasks. Each is **parity-locked** to the pure-Python reference extractor — golden-file
+parity tests in `go test ./...` assert byte-for-byte TSV equality (see
+[`../go/README.md`](../go/README.md)). The Airflow worker's ExecutableCoordinator forks the packed
+bundle per task instance (no subprocess/OS-command shim); the bundle reads its upstream
+`ArtifactRef` manifests from XCom, writes the interim parquet + TSV handoff into the BLAKE3 store,
+and pushes the output manifests back as XCom. The pure-Python extractors are retained as the
+reference/test oracle.
 
 ### 3. NER layer — one composite backend, mentions only
 

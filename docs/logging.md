@@ -82,19 +82,17 @@ The shared field schema (Python and the future Go workers use the same names):
 
 ## Go-worker JSON logging (implemented)
 
-The heavy parsing/extraction workers are native Go CLIs (`dakp-worker`, [`../go/`](../go/)), with
-Python tasks as thin orchestrators that stream the worker's stderr **line-by-line** into the loguru
-logger (not dumped at the end), so interleaved shard logs appear in order. Go workers emit
-`log/slog` JSON using the same field schema above; [`workers/go_runner.py`](../src/dakp_pipeline/workers/go_runner.py)
-parses each line (`_relay_slog`) and re-emits it at the mapped loguru level with the structured
-fields bound, so Go and Python logs appear uniformly (and show up in Airflow task files via the
-bridge above). Non-JSON lines are logged verbatim. The workers use `golang.org/x/sync/errgroup`
-with `SetLimit` for bounded, cancellation-on-first-error shard processing.
+The heavy parsing/extraction runs as **native Go workers** in an Airflow Go SDK bundle
+([`../go/cmd/dakp-bundle`](../go/cmd/dakp-bundle)). Each Go task is handed a `*slog.Logger` by the
+SDK whose output is routed **directly into the Airflow task log** (no Python relay shim): the Go
+worker emits `log/slog` JSON using the same field schema above, and the supervisor surfaces it in
+the per-task log file alongside the Python tasks' logs. The workers use `golang.org/x/sync/errgroup`
+with `SetLimit` for bounded, cancellation-on-first-error shard processing (honouring the task's
+`sdk.TIRunContext` cancellation).
 
-> The extractors delegate to the Go worker only when `use_go_workers` is on **and** a binary is
-> available (`go_runner.should_use_go`), falling back to the pure-Python extractors otherwise —
-> output is byte-for-byte identical either way (golden-file parity in `go test ./...`). See
-> [`wenceslaus-runbook.md`](./wenceslaus-runbook.md) for engaging the Go workers in prod.
+> The Go extractors are parity-locked to the pure-Python reference extractors (golden-file parity in
+> `go test ./...`); the pure-Python extractors are retained as the reference/test oracle and run in
+> the Airflow-free test harness ([`../src/dakp_pipeline/pipeline.py`](../src/dakp_pipeline/pipeline.py)).
 
 ## Reports
 

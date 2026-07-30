@@ -1,11 +1,23 @@
 # DAKP Go workers
 
-Native Go worker foundation for the DAKP pipeline rebuild (see `PLAN.md`, "Go worker
-plan"). Heavy parsing/extraction runs here as subcommands of a single `dakp-worker` CLI;
-Airflow tasks stay thin Python orchestrators that invoke this binary and stream its
-output. This module is the **shared foundation** — content addressing, the artifact
-manifest, shared pipeline types, and the CLI dispatcher — that the per-source extractors
-(FAERS, DailyMed, Drugs@FDA, MEDI — a later milestone) plug into.
+Native Go workers for the Airflow-native DAKP pipeline (see
+[`../plans/airflow-native-go-workers.md`](../plans/airflow-native-go-workers.md)). The heavy
+parsing/extraction (DailyMed, FAERS, Drugs@FDA) runs **inside an Airflow Go SDK bundle**
+([`cmd/dakp-bundle`](./cmd/dakp-bundle)) — the DAG's `extract_*` tasks are `@task.stub(queue=
+"golang")` declarations the ExecutableCoordinator forks per task instance (no subprocess/OS-command
+shim). Layout:
+
+- [`cmd/dakp-bundle`](./cmd/dakp-bundle) — the **production** native worker: an Airflow Go SDK
+  `BundleProvider` registering `dag_id=dakp_build` + the three extract tasks.
+- [`internal/airflow`](./internal/airflow) — the worker support layer: `ArtifactRef`<->XCom codec,
+  input staging, BLAKE3 store registration (mirrors Python `io/artifact_store`), a generic
+  all-string parquet writer, and `ExtractDailyMed`/`ExtractFAERS`/`ExtractDrugsFDA`.
+- [`internal/{dailymed,faers,drugsfda}`](./internal/) — the parsing libraries (parity-locked to the
+  pure-Python reference extractors via golden-file tests).
+- [`cmd/dakp-worker`](./cmd/dakp-worker) — a standalone CLI over the same parsing libraries, kept
+  as a **dev/parity tool** (`make build-go` / `make check-go`); it is not on the production path.
+- [`internal/{blake3store,pipeline,registry}`](./internal/) — the shared foundation: content
+  addressing, the artifact manifest, shared pipeline types, and the CLI dispatcher.
 
 Module path: `github.com/glusman-team/dakp/go`. All commands below run from this `go/`
 directory.
@@ -92,27 +104,48 @@ That's it. `dakp-worker faers ...` now works, and `dakp-worker help` lists it. R
 
 `main.go` is deliberately frozen — it only calls `registry.Main(os.Args)`.
 
-## How Python invokes the worker
+## How Airflow runs the bundle (native workers)
 
-Airflow tasks (and the Python `workers/go_runner.py` wrapper) shell out to the worker and
-stream its output line-by-line into the Airflow task logger:
+The production path is the Airflow Go SDK bundle. Build + pack it into the coordinator's
+`executables_root` (the one-command `make run` does this automatically):
 
 ```bash
-# development:
-go run ./cmd/dakp-worker hash data/raw/by-hash/<hex>/faers_ascii_2024q3.zip
-# full runs (prebuilt binary):
-/path/to/dakp-worker faers --quarter 2024q3 --in <manifest.json> --out data/interim/faers
+go tool airflow-go-pack --output <executables_root>/dakp-bundle ./cmd/dakp-bundle
+# inspect the packed bundle's dag/task manifest:
+<executables_root>/dakp-bundle --airflow-metadata
 ```
 
-Contract:
+Each extract task (registered via `AddTaskWithName` in [`cmd/dakp-bundle`](./cmd/dakp-bundle)):
 
-- **stdout** — machine-readable results: the `b3:<hex>` artifact id and/or the artifact
-  manifest JSON. Python captures this.
-- **stderr** — structured JSON log lines (`log/slog`) with the shared schema fields
-  (`task_id`, `shard_id`, `artifact_id`, `input_hash`, `output_hash`, `rows`,
-  `elapsed_ms`, `cache_hit`, ...). Python relays these so Airflow shows Go and Python logs
-  uniformly.
-- **exit code** — `0` success, `1` command error, `2` usage error (no/unknown command).
+1. reads the run `Config` from the `dakp_config` Airflow Variable,
+2. reads its upstream `acquire_*` task's `list[ArtifactRef]` from `return_value` XCom
+   (`internal/airflow.DecodeArtifactRefs`),
+3. stages the input files and runs the parity-locked parser (`internal/{dailymed,faers,drugsfda}`),
+4. writes the interim parquet + TSV handoff into the BLAKE3 store and registers manifests
+   (`internal/airflow.Store.Register`), and
+5. returns the produced `list[ArtifactRef]` (`internal/airflow.EncodeArtifactRefs`) as its
+   `return_value` XCom for the Python shaping stage.
+
+The bundle speaks the supervisor wire protocol directly (msgpack-over-IPC); its `*slog.Logger` is
+routed to the Airflow task log. Requires Airflow 3.x (the coordinator) and a schema-compatible
+`github.com/apache/airflow/go-sdk` (this repo pins `v1.0.0-beta3`, supervisor schema
+`2026-06-16`).
+
+## The `dakp-worker` CLI (dev/parity tool)
+
+The standalone CLI runs the same parsing libraries directly, for development and byte-parity
+checking against the Python reference extractors (it is **not** on the production path):
+
+```bash
+go run ./cmd/dakp-worker hash data/raw/by-hash/<hex>/faers_ascii_2024q3.zip
+go run ./cmd/dakp-worker dailymed <input-dir> <output-dir>
+go run ./cmd/dakp-worker faers <quarter-dir> <out-dir>
+go run ./cmd/dakp-worker drugsfda <input-dir> <out-dir>
+```
+
+Contract: **stdout** is machine-readable (the `b3:<hex>` artifact id and/or a JSON summary);
+**stderr** is structured `log/slog` JSON; **exit code** `0` success, `1` command error, `2` usage
+error.
 
 ## Content addressing (BLAKE3)
 

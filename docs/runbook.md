@@ -17,21 +17,23 @@ Optional extras (never required for the base install or the test suite):
 make install-ner       # [ner] GLiNER production NER (pulls torch)
 make install-kg        # [kg] PyPI tablassert (KG build; laptop-safe)
 make install-kg-qc     # [kg-qc] tablassert[qc] audit (pulls torch; beefy hosts)
-make install-airflow   # [airflow] orchestration
+make install-all       # one-command full install (all extras) for a production run
 ```
 
 ## Running the mock pipeline
 
 ```bash
-uv run dakp run --profile mock \
-  --fixture-root tests/fixtures/pipeline \
-  --workdir /tmp/dakp-mock
-# or: make run-mock
+make run        # one command: build+pack the Go bundle, start Airflow, run dakp_build, wait
+make down       # stop the local Airflow when done
 ```
 
-Outputs land under `/tmp/dakp-mock/` (see [`../README.md`](../README.md#where-things-land)). A
-successful run prints `Pipeline complete` and the `build_summary.json` path. It needs no network and
-no real Tablassert (the mock profile defers the handoff).
+`make run` builds + packs the native Go bundle, starts a local Airflow (standalone, port 8090) with
+the Go coordinator + pools configured, sets the `dakp_config` Variable (mock profile, fixtures under
+`tests/fixtures/pipeline`), triggers `dakp_build`, and waits. Override with `PROFILE=`, `WORKDIR=`,
+`FIXTURE_ROOT=`, `AIRFLOW_PORT=` env vars. Outputs land under the workdir (default
+`tmp/airflow-run/data/`; see [`../README.md`](../README.md#where-things-land)). A successful run
+prints `SUCCESS` and the `build_summary.json` path. It needs no network and no real Tablassert (the
+mock profile defers the handoff).
 
 ## Running a bounded `prod` smoke run
 
@@ -39,10 +41,11 @@ The `prod` profile runs the **real** fetchers/extractors/NER/aggregation. Bound 
 run stays tiny (one FAERS quarter, one DailyMed release):
 
 ```bash
-uv run dakp run --profile prod \
-  --quarter-limit 1 --release-limit 1 \
-  --workdir /tmp/dakp-prod-smoke
+PROFILE=prod WORKDIR=/tmp/dakp-prod-smoke make run
 ```
+
+(The orchestrator [`scripts/dakp_up.sh`](../scripts/dakp_up.sh) pins `quarter_limit`/`release_limit`
+to 1 for a bounded smoke run; adjust it for full scope.)
 
 This hits the real FDA/DailyMed network endpoints. For an **offline** exercise of the same real code
 path (HTTP layer mocked, fixtures served "as if downloaded"), run
@@ -70,10 +73,6 @@ The CLI enforces this ([`cli.py`](../src/dakp_pipeline/cli.py)). **Fix:** pass
 A fetcher's fixture tuple names a file that is not under `--fixture-root`. **Fix:** check the fixture
 path in the relevant [`sources/<x>.py`](../src/dakp_pipeline/sources/) module against
 `tests/fixtures/pipeline/`.
-
-### `RuntimeError: run_airflow=True requires the airflow extra`
-
-You passed `--run-airflow` without Airflow installed. **Fix:** `uv sync --extra airflow`.
 
 ### `RuntimeError: tablassert is not available: install the [kg] extra …`
 
@@ -106,9 +105,11 @@ per-table `missing_columns` list, then check the corresponding shaper in
 
 ### The DAG did not register / Airflow does not see `dakp_build`
 
-The DAG module is **import-safe without Airflow** (guarded imports + no-op fallbacks), so it loads
-under `uv sync`, but it only registers a real DAG when Airflow is present. **Fix:**
-`uv sync --extra airflow`, then ensure `src/dakp_pipeline/dags` is on Airflow's DAG folder path.
+Airflow 3 is a hard dependency, so the DAG always constructs; `make run` points
+`AIRFLOW__CORE__DAGS_FOLDER` at `src/dakp_pipeline/dags`. **Fix:** check the DAG parsed without
+import errors (`airflow dags list-import-errors`) and that the dag-processor has refreshed
+(`make run` waits for registration). If a task is stuck `scheduled`, ensure the `dakp_download` /
+`dakp_extract` pools exist (`make run` provisions them; `airflow pools list` to verify).
 
 ## Reruns
 

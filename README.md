@@ -6,13 +6,16 @@ to [Tablassert](https://pypi.org/project/tablassert/) (PyPI, `8.0.0`) for Transl
 modeling. The full approved specification lives in [`PLAN.md`](./PLAN.md); this README is the
 operational entry point and links into [`docs/`](./docs).
 
-> **Status — final architecture.** The pipeline runs end-to-end: real stdlib-HTTP source
-> downloaders, Python extractors with **byte-for-byte Go parity** workers, a single
-> benchmarked NER backend, evidence-rich assertion aggregation, Airflow orchestration, and a
-> delegated Tablassert KGX handoff. The mock profile runs the whole DAG on tiny fixtures with
-> **no network and no Tablassert/Airflow installed**; the full production build runs on the
-> `wenceslaus` host (see [`docs/wenceslaus-runbook.md`](./docs/wenceslaus-runbook.md)). What
-> changed relative to the legacy build — and why it is equivalent-or-better — is documented in
+> **Status — final architecture.** The pipeline is **Airflow-native**: the `dakp_build` DAG is the
+> only orchestrator, and the heavy DailyMed/FAERS/Drugs@FDA extraction runs as **native Airflow Go
+> SDK bundle workers** (no subprocess/OS commands). One command runs the whole pipeline end to end:
+> `make install-all` then `make run` (see the [Quickstart](#quickstart-mocked-laptop-safe)). Real
+> stdlib-HTTP source downloaders, a single benchmarked NER backend, evidence-rich assertion
+> aggregation, and a delegated Tablassert KGX handoff. The mock profile runs the whole DAG on tiny
+> fixtures with **no network and no Tablassert** (Airflow runs locally via `make run`); the full
+> production build runs on the `wenceslaus` host (see
+> [`docs/wenceslaus-runbook.md`](./docs/wenceslaus-runbook.md)). What changed relative to the legacy
+> build — and why it is equivalent-or-better — is documented in
 > [`docs/semantic-equivalence.md`](./docs/semantic-equivalence.md).
 
 ## The pipeline
@@ -26,16 +29,20 @@ acquire ─▶ extract ─▶ NER ─▶ aggregate ─▶ Tablassert KGX
   │          │         └─ single composite DiseaseNER (gazetteer + GLiNER): disease/phenotype
   │          │            MENTIONS (text + type only) from DailyMed contraindication sections
   │          └─ interim parquet (spl_documents/sets/approvals/ingredients/sections, faers cases,
-  │             drugsfda products) — Python extractors, or byte-identical Go workers in prod
+  │             drugsfda products) — native Go workers (Airflow Go SDK bundle), parity-locked to the
+  │             pure-Python reference extractors
   └─ content-addressed raw downloads (BLAKE3 store); mock profile ingests fixtures instead
 ```
 
 - **acquire** — real stdlib-HTTP downloaders ([`sources/`](./src/dakp_pipeline/sources/),
   [`acquire.py`](./src/dakp_pipeline/acquire.py)) for DailyMed full releases, Drugs@FDA, and
   FAERS quarterly extracts; content-addressed, idempotent, manifest-recorded.
-- **extract** — [`extract/`](./src/dakp_pipeline/extract/) parses raw artifacts into interim
-  parquet. The heavy parsers have **Go ports** ([`go/`](./go/)) that are byte-for-byte identical
-  to the Python output (golden-file parity tests); prod opts into them with `use_go_workers`.
+- **extract** — the heavy parsers run as **native Go workers** in an Airflow Go SDK bundle
+  ([`go/cmd/dakp-bundle`](./go/cmd/dakp-bundle), parsing libraries in [`go/internal/`](./go/)); the
+  DAG's `extract_*` tasks are `@task.stub(queue="golang")` declarations the ExecutableCoordinator
+  forks per task instance. They are parity-locked to the pure-Python reference extractors
+  ([`extract/`](./src/dakp_pipeline/extract/), kept as the reference/test oracle) via golden-file
+  parity tests.
 - **NER** — one composite backend ([`ner/`](./src/dakp_pipeline/ner/), `DiseaseNER`): a curated
   gazetteer anchoring high-precision spans plus GLiNER zero-shot filling the gaps. Emits
   **mentions only** (text span + entity type) — never ontology CURIEs.
@@ -55,8 +62,10 @@ Perl libraries, shell side effects, and no tests. The rebuild replaces it with:
 - A reproducible `uv` project with pinned dependencies and `uv.lock`.
 - A typed, monkeypatchable pipeline where every stage communicates through **BLAKE3
   content-addressed `ArtifactRef` handles** — restartable, cacheable by hash, trivially fakeable.
-- An **Apache Airflow DAG** (`dakp_build`) as the orchestration surface, with a pure-Python
-  runner as the source of truth that tests exercise directly.
+- An **Apache Airflow DAG** (`dakp_build`) as the sole orchestration surface (Airflow 3 is a hard
+  dependency); the heavy extraction runs as native Go SDK bundle workers, the other stages as
+  Python TaskFlow tasks. A pure-Python `run_pipeline` harness ([`pipeline.py`](./src/dakp_pipeline/pipeline.py))
+  exercises the stage functions + reference extractors in tests without Airflow.
 - A clear **delegation boundary**: DAKP acquires, extracts, NER-mines, and shapes tables;
   canonical entity resolution, KGX compilation, dedup, deterministic IDs, and RIG generation are
   delegated to Tablassert/fullmap. DAKP ships **no local fallback KGX compiler**.
@@ -84,23 +93,27 @@ are Disease/PhenotypicFeature — matching the DINGO reference ingest
 
 ## Quickstart (mocked, laptop-safe)
 
-Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
+Requires Python ≥ 3.12, [uv](https://docs.astral.sh/uv/), and a Go toolchain ≥ 1.24 (to build the
+native worker bundle).
 
 ```bash
-uv sync                       # base install; Airflow / NER / Tablassert NOT required
-uv run pytest -q              # unit + mocked integration (no network)
-uv run dakp run --profile mock \
-  --fixture-root tests/fixtures/pipeline \
-  --workdir /tmp/dakp-mock
+make install        # uv sync — runtime + dev deps (Airflow 3 is a hard dependency)
+uv run pytest -q    # unit + mocked integration (no network; the tests need no running Airflow)
+make run            # ONE command: build+pack the Go bundle, start Airflow, run dakp_build, wait
+make down           # stop the local Airflow
 ```
+
+`make run` builds + packs the native Go bundle, starts a local Airflow (standalone, port 8090) with
+the Go coordinator configured, provisions the task pools, sets the per-run `dakp_config` Variable,
+triggers the `dakp_build` DAG, waits for it to finish, and prints the build summary. Override with
+`PROFILE=`, `WORKDIR=`, `FIXTURE_ROOT=`, `AIRFLOW_PORT=` env vars (e.g. `PROFILE=sample make run`).
 
 The mock run needs no network and no real Tablassert. It writes three uncompressed TSV assertion
 tables, generated Tablassert configs, a build summary, and a deferred-handoff manifest (see
-[Where things land](#where-things-land)). All fetchers are monkeypatchable;
-[`tests/integration/test_mock_pipeline.py`](./tests/integration/test_mock_pipeline.py) shows the
-boundary. The base install and the **entire test suite run without the `[ner]`, `[kg]`, or
-`[airflow]` extras** — NER defaults to a deterministic offline gazetteer, and the mock profile
-defers the Tablassert handoff.
+[Where things land](#where-things-land)). The **test suite runs without the `[ner]` or `[kg]`
+extras** — NER defaults to a deterministic offline gazetteer and the mock profile defers the
+Tablassert handoff; `make install-all` (`uv sync --all-extras`) brings in everything for a full
+production run.
 
 ## Profiles
 
@@ -108,11 +121,14 @@ Profiles are defined in Python at [`src/dakp_pipeline/config.py`](./src/dakp_pip
 (`load_profile`) — the base install needs no `pyyaml`. An unknown profile name raises at startup
 rather than silently defaulting.
 
-| Profile | Threads | Memory | Sources | Tablassert | Go workers |
-| --- | --- | --- | --- | --- | --- |
-| `mock` | 1 | 1 GiB | fixtures only | deferred (writes handoff manifest) | off |
-| `sample` | 4 | 8 GiB | real, bounded sample | deferred | off |
-| `prod` | 64 | 128 GiB | real full build | installed `tablassert` CLI (`[kg]`) | opt-in (`use_go_workers`) |
+| Profile | Threads | Memory | Sources | Tablassert |
+| --- | --- | --- | --- | --- |
+| `mock` | 1 | 1 GiB | fixtures only | deferred (writes handoff manifest) |
+| `sample` | 4 | 8 GiB | real, bounded sample | deferred |
+| `prod` | 64 | 128 GiB | real full build | installed `tablassert` CLI (`[kg]`) |
+
+The heavy extraction always runs as **native Go workers** (the Airflow Go SDK bundle); the profile
+only sizes concurrency/memory and selects sources + the Tablassert handoff mode.
 
 The real fetchers use stdlib HTTP (no `requests`) and are content-addressed and idempotent.
 `prod` defaults to the full scope (`quarter_limit` / `release_limit` unset = all quarters/releases)
@@ -125,18 +141,19 @@ All Python runs through `uv`; Go runs through the [`go/`](./go/) module. `make h
 
 | Target | What it does |
 | --- | --- |
-| `make setup` / `make install` | `uv sync` — base + dev deps |
+| `make setup` / `make install` | `uv sync` — runtime + dev deps (Airflow 3 included) |
 | `make install-ner` | `uv sync --extra ner` — GLiNER production NER (pulls torch) |
-| `make install-airflow` | `uv sync --extra airflow` — orchestration extra |
 | `make install-kg` | `uv sync --extra kg` — PyPI `tablassert` (KG build; laptop-safe) |
 | `make install-kg-qc` | `uv sync --extra kg-qc` — `tablassert[qc]` audit (pulls torch; beefy hosts) |
-| `make install-all` | `uv sync --all-extras` |
+| `make install-all` | `uv sync --all-extras` — ONE-COMMAND full install for a production run |
 | `make test` / `make cov` | pytest / pytest with branch coverage (`fail_under = 100`) |
 | `make lint` / `make fmt` / `make fmt-check` / `make typecheck` | ruff check / ruff format / format check / pyright |
 | `make check` | lint + fmt-check + typecheck + test |
 | `make build-go` / `make test-go` / `make check-go` | Go build / test (incl. Python-parity goldens) / full Go gate |
 | `make check-all` | `make check` + `make check-go` (the full Python + Go gate) |
-| `make run-mock` | the mocked end-to-end pipeline (no network, no real Tablassert) |
+| `make bundle` | build + pack the native Go bundle into the coordinator's `executables_root` |
+| `make run` | ONE-COMMAND end-to-end run via Airflow (bundle + Airflow + trigger + wait); `PROFILE`/`WORKDIR`/`FIXTURE_ROOT`/`AIRFLOW_PORT` env override |
+| `make down` | stop the local Airflow started by `make run` |
 | `make clean` | remove caches, coverage data, the Go binary, and `tmp/` |
 
 ## Running the full build on `wenceslaus`
@@ -153,40 +170,42 @@ the multi-TB full build, bound the scope so only one FAERS quarter and one Daily
 processed:
 
 ```bash
-uv run dakp run --profile prod \
-  --quarter-limit 1 --release-limit 1 \
-  --workdir /tmp/dakp-prod-smoke
+PROFILE=prod WORKDIR=/tmp/dakp-prod-smoke make run
 ```
 
-`--quarter-limit` caps FAERS quarters (most-recent first) and `--release-limit` caps DailyMed full
-releases; both default to the profile value (`prod` = all). `--force` reruns every stage ignoring
-the BLAKE3 cache. The offline integration test
-[`tests/integration/test_prod_smoke.py`](./tests/integration/test_prod_smoke.py) exercises the exact
-same real code path with the HTTP layer mocked, so it passes in CI with no network.
+The `dakp_config` Variable that `make run` sets carries the profile + scope. The orchestrator
+(`scripts/dakp_up.sh`) currently pins `quarter_limit` / `release_limit` to 1 (a bounded smoke run);
+for a full-scope prod build, unset them there (or pass full scope via the Variable). The offline
+integration test [`tests/integration/test_prod_smoke.py`](./tests/integration/test_prod_smoke.py)
+exercises the exact same real stage code path (via the `run_pipeline` harness) with the HTTP layer
+mocked, so it passes in CI with no network.
 
 ## The DAG
 
 `dakp_build` ([`src/dakp_pipeline/dags/dakp_build.py`](./src/dakp_pipeline/dags/dakp_build.py)) is
-the orchestration DAG, implemented with the Airflow TaskFlow API. It is a thin wrapper around the
-same stage functions the pure-Python runner ([`pipeline.py`](./src/dakp_pipeline/pipeline.py)) calls,
-and is **import-safe without Airflow installed** (guarded imports + no-op decorator fallbacks).
+the orchestration DAG (Airflow 3 TaskFlow API) and the **sole** way to run the pipeline. The three
+`extract_*` tasks are **native Go SDK workers** — `@task.stub(queue="golang")` declarations whose Go
+implementations ([`go/cmd/dakp-bundle`](./go/cmd/dakp-bundle)) the ExecutableCoordinator forks per
+task instance; acquisition, shaping, Tablassert handoff, and the build summary are Python TaskFlow
+tasks. Tasks pass `ArtifactRef` manifests over XCom (JSON dicts; see
+[`io/xcom.py`](./src/dakp_pipeline/io/xcom.py)); run config comes from the `dakp_config` Variable.
 
 ```text
-acquire_sources ─┬─▶ extract_dailymed  ─┐
-                 ├─▶ extract_faers      ─┼─▶ {shape_treatment_tables,
-                 └─▶ extract_drugsfda   ─┘    shape_faers_use_tables,
-                                                 shape_contraindication_tables}
-                                                ─▶ generate_tablassert_configs
-                                                ─▶ run_tablassert
-                                                ─▶ write_build_summary
+acquire_dailymed ─▶ extract_dailymed ─┐  (extract_* are native Go SDK
+acquire_faers    ─▶ extract_faers    ─┼─▶  bundle workers, queue=golang)
+acquire_drugsfda ─▶ extract_drugsfda ─┘
+        ─▶ {shape_treatment_tables, shape_faers_use_tables, shape_contraindication_tables}
+acquire_ner_models ─▶ shape_contraindication_tables
+        ─▶ generate_tablassert_configs
+acquire_ontologies ─▶ run_tablassert ─▶ write_build_summary
 ```
 
 | Task | Produces | Output location |
 | --- | --- | --- |
-| `acquire_sources` | content-addressed raw fixtures/downloads | `data/raw/by-hash/<hex>/`, `data/raw/aliases/` |
-| `extract_dailymed` | `spl_documents/sets/approvals/ingredients/sections` parquet | `data/interim/dailymed/` |
-| `extract_faers` | joined `cases` parquet | `data/interim/faers/` |
-| `extract_drugsfda` | normalized `products` parquet | `data/interim/drugsfda/` |
+| `acquire_*` (dailymed/faers/drugsfda/ner_models/ontologies) | content-addressed raw fixtures/downloads | `data/raw/by-hash/<hex>/`, `data/raw/aliases/` |
+| `extract_dailymed` *(native Go)* | `spl_documents/sets/approvals/ingredients/sections` parquet | `data/interim/dailymed/` |
+| `extract_faers` *(native Go)* | joined `cases` parquet + audits | `data/interim/faers/` |
+| `extract_drugsfda` *(native Go)* | normalized `products/applications/submissions/lookups` parquet | `data/interim/drugsfda/` |
 | `shape_*_tables` | uncompressed TSV assertion tables (contraindications NER-mined) | `data/tabular/` |
 | `generate_tablassert_configs` | `graph.yaml` + per-table configs | `tables/` (workdir-relative) |
 | `run_tablassert` | KGX NDJSON (full) / deferred handoff manifest (mock) | `data/kgx/` or `data/reports/` |
@@ -259,8 +278,10 @@ The fetcher/extractor/shaper pattern is uniform and monkeypatchable. To add sour
 3. **Add an extractor** at `src/dakp_pipeline/extract/<x>.py` if parsing is needed (return parquet
    interim refs; register them with `ArtifactStore.register`). Add a byte-parity Go port under
    [`go/internal/<x>/`](./go/) if the parser is hot.
-4. **Wire it into the runner** in [`pipeline.py`](./src/dakp_pipeline/pipeline.py) and into the DAG
-   if it should be an Airflow task.
+4. **Wire it into the DAG** ([`dags/dakp_build.py`](./src/dakp_pipeline/dags/dakp_build.py)) as a
+   TaskFlow task (and into the [`pipeline.py`](./src/dakp_pipeline/pipeline.py) test harness if it
+   should run in the Airflow-free tests). A hot parser becomes a native Go worker in
+   [`go/cmd/dakp-bundle`](./go/cmd/dakp-bundle) exposed as a `@task.stub(queue="golang")` task.
 5. **If it defines a new edge family**, add the column contract + entry to `ASSERTION_TABLES` in
    [`schemas.py`](./src/dakp_pipeline/io/schemas.py), add a shaper under
    [`assertions/`](./src/dakp_pipeline/assertions/), add its provenance tuple to `_TABLE_SPECS` in
@@ -269,10 +290,12 @@ The fetcher/extractor/shaper pattern is uniform and monkeypatchable. To add sour
 
 ## Dependency philosophy
 
-Stdlib first (per `PLAN.md` → "Dependency philosophy"). Approved runtime deps only: **polars,
-loguru, blake3, pydantic**. Everything heavy is an optional extra: `[airflow]` (orchestration),
-`[ner]` (GLiNER, pulls torch), `[kg]` (PyPI `tablassert`), `[kg-qc]` (`tablassert[qc]` audit, pulls
-torch). Go workers ([`go/`](./go/)) cover the hot extraction paths with byte-for-byte parity.
+Lean runtime, stdlib-first where practical. Core runtime deps: **apache-airflow (3.x — a hard
+dependency; the pipeline is Airflow-native), polars, loguru, blake3, pydantic, pendulum**. The heavy
+backends are optional extras: `[ner]` (GLiNER, pulls torch), `[kg]` (PyPI `tablassert`), `[kg-qc]`
+(`tablassert[qc]` audit, pulls torch); `make install-all` installs everything for a full production
+run. The hot extraction paths run as **native Go workers** ([`go/`](./go/)) in an Airflow Go SDK
+bundle, parity-locked to the pure-Python reference extractors.
 
 ## Verification
 
