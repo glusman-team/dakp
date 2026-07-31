@@ -36,10 +36,10 @@ from typing import Any
 
 import pytest
 import tiny_fullmap
+from harness import run_stages
 
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.pipeline import run_pipeline
 from dakp_pipeline.tablassert.run import TablassertRunner
 from dakp_pipeline.translator.contract import EDGE_FAMILIES, INFORES_DAKP, read_kgx_jsonl, validate_kgx
 
@@ -112,7 +112,7 @@ def kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
     work = tmp_path_factory.mktemp("dakp-kgx-e2e") / "work"
 
     # (1) Hermetic mock pipeline -> assertion TSVs (data/tabular/) + generated tables/*.yaml configs.
-    run_pipeline(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=work)
+    run_stages(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=work)
 
     # (2) Tiny fullmap at <work>/.fullmap/fullmap.redb (graph.yaml's `fullmap: ".fullmap"` resolves
     #     relative to the build cwd = <work>). Built in a child process so the build-kg subprocess

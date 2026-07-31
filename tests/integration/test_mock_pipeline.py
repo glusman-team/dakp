@@ -1,10 +1,16 @@
 """End-to-end mocked pipeline test (PLAN.md "Monkeypatch-first full-pipeline test sketch").
 
-Runs the full pipeline (the pure-Python ``run_pipeline`` test harness) with NO network and NO real
-Tablassert. Fetchers are monkeypatched to load fixtures via ``ctx.fixture()``, and
-``dakp_pipeline.tablassert.run`` is replaced with a fake — proving every external boundary is
-substitutable. The default (unpatched) mock path is also exercised. (The native Go extract path is
-validated by ``uv run dakp up`` + the Go parity tests; the Airflow DAG wiring by ``test_dag.py``.)
+Runs the full pipeline via the shared ``run_stages`` stage harness (tests/integration/harness.py —
+the same Python wiring the Airflow DAG drives, Airflow-free) with NO network and NO real Tablassert.
+Fetchers are monkeypatched to load fixtures via ``ctx.fixture()``, and ``dakp_pipeline.tablassert.run``
+is replaced with a fake — proving every external boundary is substitutable. The default (unpatched)
+mock path is also exercised. (The native Go extract path is validated by ``uv run dakp up`` + the Go
+parity tests; the Airflow DAG wiring by ``test_dag.py``.)
+
+WHY this test matters: it is the monkeypatch-first full-pipeline guardrail — it proves the harness's
+stage wiring is substitutable at every external boundary (each fetcher + the Tablassert handoff), so
+a regression in the wiring (e.g. resolving ``tablassert.run`` through a from-import instead of the
+package attribute) is caught immediately.
 """
 
 from __future__ import annotations
@@ -12,10 +18,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from harness import run_stages
+
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.pipeline import run_pipeline
 from dakp_pipeline.sources import dailymed, drugsfda, faers
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
@@ -40,7 +47,7 @@ def test_full_pipeline_uses_mocked_sources(monkeypatch, tmp_path: Path) -> None:
     # No real Tablassert on the dev laptop.
     monkeypatch.setattr("dakp_pipeline.tablassert.run", _fake_tablassert_run)
 
-    result = run_pipeline(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "work")
+    result = run_stages(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "work")
 
     assert result.table("approved_treats_assertions").rows > 0
     assert result.table("faers_applied_to_treat_assertions").rows > 0
@@ -58,7 +65,7 @@ def test_full_pipeline_uses_mocked_sources(monkeypatch, tmp_path: Path) -> None:
 def test_default_mock_path_matches_cli_acceptance(tmp_path: Path) -> None:
     """The unpatched mock path (default fetchers + mock tablassert handoff) runs clean,
     mirroring `uv run dakp run --profile mock ...`."""
-    result = run_pipeline(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "work")
+    result = run_stages(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "work")
 
     for table in ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions"):
         assert result.table(table).rows > 0

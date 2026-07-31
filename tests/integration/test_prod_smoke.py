@@ -1,7 +1,8 @@
 """Offline ``prod`` smoke run: REAL fetchers/extractors over mocked HTTP.
 
-Runs :func:`dakp_pipeline.pipeline.run_pipeline` with a ``prod``-like profile
-(``mock_sources=False``) so **every fetcher takes its real (download) branch**, but
+Runs the shared ``run_stages`` stage harness (tests/integration/harness.py — the same Python
+wiring the Airflow DAG drives, Airflow-free) with a ``prod``-like profile (``mock_sources=False``)
+so **every fetcher takes its real (download) branch**, but
 monkeypatches the stdlib HTTP seam (``urllib.request.urlopen``) to serve the tiny pipeline
 fixtures *as if downloaded*. Contraindications are text-mined from the downloaded DailyMed
 SPL contraindication sections (offline dictionary NER backend over the ontology fixture).
@@ -29,8 +30,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-
-from dakp_pipeline.pipeline import run_pipeline
+from harness import run_stages
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -157,7 +157,7 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(run_module, "run_subprocess", _fake_tablassert_subprocess)
 
     workdir = tmp_path / "work"
-    result = run_pipeline(
+    result = run_stages(
         profile="prod",
         fixture_root=_FIXTURE_ROOT,  # only loads the disease map; fetchers DOWNLOAD (mock_sources=False)
         workdir=workdir,

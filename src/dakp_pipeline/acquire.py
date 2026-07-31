@@ -1,4 +1,4 @@
-"""Acquisition orchestration — shared download-to-store logic for the DAG + ``run_pipeline``.
+"""Acquisition orchestration — shared download-to-store logic for the DAG + the test harness.
 
 Thin, decoupled helpers that wrap the source fetchers (:mod:`dakp_pipeline.sources`) and the
 NER model cache (:mod:`dakp_pipeline.ner.model_cache`) so both the Airflow acquisition tasks
@@ -109,7 +109,7 @@ def acquire_all(ctx: TaskContext, *, downloader: model_cache.Downloader | None =
     The four acquisitions are independent and content-addressed (order-independent hashes), so
     running them on a bounded thread pool is deterministic. The ``downloader`` is forwarded to
     the NER-model acquisition (the source fetchers own their own monkeypatchable network
-    boundaries). Useful as the single acquisition entry point for ``run_pipeline``.
+    boundaries). Useful as the single acquisition entry point for the DAG + test harness.
     """
     concurrency = max(1, load_profile(ctx.profile).download.concurrency)
     jobs: dict[str, Callable[[], list[ArtifactRef]]] = {

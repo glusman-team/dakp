@@ -26,9 +26,9 @@ from typing import Any
 
 import polars as pl
 import pytest
+from harness import run_stages
 
 from dakp_pipeline.io.contracts import ArtifactRef
-from dakp_pipeline.pipeline import run_pipeline
 from dakp_pipeline.translator import contract, regression
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
@@ -65,7 +65,7 @@ LEGACY_CONDITION_CATEGORIES: tuple[str, ...] = ("Disease", "PhenotypicFeature")
 def built(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     """Run the real mock pipeline (no network, no Tablassert) and capture the assertion tables."""
     workdir = tmp_path_factory.mktemp("semantic-equiv")
-    result = run_pipeline(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=workdir)
+    result = run_stages(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=workdir)
     tables: dict[str, pl.DataFrame] = {}
     refs: list[ArtifactRef] = []
     for name in ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions"):
@@ -252,7 +252,7 @@ def test_output_is_byte_deterministic_across_runs(built: dict[str, Any], tmp_pat
     Deterministic bytes in -> deterministic edge ids out (Tablassert derives UUIDs from the
     resolved triples). This is the rebuild's equivalent of the legacy uuid3 edge-id stability.
     """
-    rerun = run_pipeline(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "rerun")
+    rerun = run_stages(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "rerun")
     for name in ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions"):
         first = built["result"].table(name).path.read_bytes()
         second = rerun.table(name).path.read_bytes()

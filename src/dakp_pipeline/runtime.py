@@ -1,7 +1,7 @@
 """Airflow-native runtime helpers — the canonical home for run-context + build-summary logic.
 
-The DAG is the only orchestrator (the pure-Python ``run_pipeline`` CLI runner is retired — see
-plans/airflow-native-go-workers.md). Tasks build their :class:`TaskContext` from the ``dakp_config``
+The DAG is the only orchestrator (the former pure-Python pipeline runner is retired). Tasks build
+their :class:`TaskContext` from the ``dakp_config``
 Airflow Variable (the single source of run config, shared by the Python tasks and the native Go
 bundle workers) via :func:`build_context_from_config`, and the final summary is written by
 :func:`write_build_summary`.

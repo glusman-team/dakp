@@ -1,7 +1,7 @@
 """``dakp_build`` Airflow DAG — the full pipeline task graph (Airflow-native).
 
-This is the **only** orchestrator: the pure-Python ``run_pipeline`` CLI runner is retired (see
-plans/airflow-native-go-workers.md). The heavy parsing/extraction runs as **native Airflow Go SDK
+This is the **only** orchestrator (the former pure-Python pipeline runner is retired). The heavy
+parsing/extraction runs as **native Airflow Go SDK
 bundle workers** (``go/cmd/dakp-bundle``): the three ``extract_*`` tasks are ``@task.stub(queue=
 "golang")`` declarations whose Go implementations the ExecutableCoordinator forks per task instance.
 Every other stage (acquisition, assertion shaping, Tablassert handoff, translator contract +
