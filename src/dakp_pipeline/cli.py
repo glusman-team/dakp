@@ -52,6 +52,7 @@ _DEFAULT_FIXTURE_ROOT = _REPO_ROOT / "tests" / "fixtures" / "pipeline"
 _DEFAULT_AIRFLOW_HOME = _REPO_ROOT / "tmp" / "airflow-home"
 _DEFAULT_PORT = 8090  # 8080 is commonly taken (e.g. by the aoe daemon on dev hosts)
 _DEFAULT_LOG_LEVEL = "INFO"
+_SMALL_SCOPE = 1  # `--small` bounds scope to ~1 FAERS quarter + 1 DailyMed release (the ONE surviving integer knob)
 
 # Poll budgets (matches the retired bash orchestrator).
 _API_WAIT_ROUNDS = 90
@@ -191,11 +192,13 @@ def _preflight() -> int:
     return 0
 
 
-def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool) -> int:
+def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, small: bool = False) -> int:
     """Run the pipeline end-to-end via a local Airflow. Returns a process exit code.
 
     Always runs real acquisition; ``fullmap`` only decides the Tablassert handoff mode (a path
-    triggers the real handoff, absent => deferred — never a hard failure).
+    triggers the real handoff, absent => deferred — never a hard failure). ``small`` bounds the
+    acquisition SCOPE to a tiny real subset (~1 FAERS quarter + 1 DailyMed release) — same pipeline,
+    less data; it is not a profile and changes nothing else (threads stay ``os.cpu_count()``).
     """
     workdir = _DEFAULT_WORKDIR
     fixture_root = _DEFAULT_FIXTURE_ROOT
@@ -262,13 +265,15 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool) -> i
     run_subprocess(["uv", "run", "airflow", "pools", "set", EXTRACT_POOL, "4", "Concurrent raw->interim extracts (Go bundle)"], env=env)
 
     # --- 4. set the per-run config Variable (shared by Python tasks + Go bundle) -
-    # null quarter/release limits => unbounded full build; threads = all cores (Go contract).
+    # `--small` bounds the acquisition scope (quarter/release limit = _SMALL_SCOPE); otherwise null
+    # limits => unbounded full build. threads = all cores either way (Go all-cores contract).
+    scope_limit = _SMALL_SCOPE if small else None
     config: dict[str, Any] = {
         "workdir": str(workdir),
         "fixture_root": str(fixture_root),
         "threads": os.cpu_count(),
-        "quarter_limit": None,
-        "release_limit": None,
+        "quarter_limit": scope_limit,
+        "release_limit": scope_limit,
         "force": False,
         "log_level": log_level,
         "fullmap": fullmap,
@@ -366,6 +371,7 @@ app = App(name="dakp", help="DAKP pipeline runner — one command runs the whole
 def up(
     *,
     fullmap: Annotated[str | None, Parameter(name=["--fullmap", "-f"])] = None,
+    small: Annotated[bool, Parameter(name=["--small", "-s"])] = False,
     port: Annotated[int, Parameter(name=["--port", "-p"])] = _DEFAULT_PORT,
     log_level: Annotated[str, Parameter(name=["--log-level", "-l"])] = _DEFAULT_LOG_LEVEL,
     detach: Annotated[bool, Parameter(name=["--detach", "-d"])] = False,
@@ -373,10 +379,11 @@ def up(
     """Run the pipeline end-to-end via a local Airflow (build Go bundle, trigger, wait).
 
     Always runs real acquisition. ``--fullmap <path>`` triggers the real Tablassert handoff
-    (without it the handoff is deferred, never an error). ``--detach`` triggers and returns
-    immediately instead of waiting.
+    (without it the handoff is deferred, never an error). ``--small`` runs a bounded real-data dev
+    run (~1 FAERS quarter + 1 DailyMed release) — same pipeline, less data. ``--detach`` triggers
+    and returns immediately instead of waiting.
     """
-    raise SystemExit(run_up(fullmap=fullmap, port=port, log_level=log_level, detach=detach))
+    raise SystemExit(run_up(fullmap=fullmap, port=port, log_level=log_level, detach=detach, small=small))
 
 
 @app.command

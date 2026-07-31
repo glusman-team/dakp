@@ -142,6 +142,19 @@ def test_up_config_variable_carries_null_limits_and_fullmap(monkeypatch: pytest.
     assert "memory_budget_gb" not in config
 
 
+def test_up_small_sets_scope_bounds(monkeypatch: pytest.MonkeyPatch, sandbox: Path) -> None:
+    fake = _patch_happy(monkeypatch)
+
+    cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False, small=True)
+
+    (variables_call,) = fake.commands_containing("variables")
+    config = json.loads(variables_call[-1])
+    assert config["quarter_limit"] == 1  # --small => ~1 FAERS quarter
+    assert config["release_limit"] == 1  # --small => ~1 DailyMed release
+    assert config["threads"] == os.cpu_count()  # scope bound does NOT touch threads (Go contract)
+    assert config["fullmap"] is None
+
+
 def test_up_success_without_summary_file_still_succeeds(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _patch_happy(monkeypatch)  # no summary file written
 
