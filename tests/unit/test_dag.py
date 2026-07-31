@@ -7,7 +7,8 @@ the ``golang`` queue, and that acquisition runs on the download pool.
 
 from __future__ import annotations
 
-from dakp_pipeline.dags import dakp_build
+# ``dakp_build`` (and thus ``import airflow``) is pulled in lazily via the ``dakp_build`` fixture so
+# pytest-xdist workers don't pay the Airflow import during per-worker collection (see conftest.py).
 
 _EXPECTED_TASK_IDS = {
     "acquire_dailymed",
@@ -29,7 +30,7 @@ _GO_STUB_IDS = {"extract_dailymed", "extract_faers", "extract_drugsfda"}
 _ACQUIRE_IDS = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ner_models"}
 
 
-def test_module_constants() -> None:
+def test_module_constants(dakp_build) -> None:
     assert dakp_build.DAG_ID == "dakp_build"
     assert dakp_build.GO_QUEUE == "golang"
     assert dakp_build.DOWNLOAD_POOL == "dakp_download"
@@ -37,13 +38,13 @@ def test_module_constants() -> None:
     assert dakp_build.CONFIG_VARIABLE == "dakp_config"
 
 
-def test_dag_object_and_task_ids() -> None:
+def test_dag_object_and_task_ids(dakp_build) -> None:
     dag = dakp_build.dag_obj
     assert dag.dag_id == "dakp_build"
     assert {t.task_id for t in dag.tasks} == _EXPECTED_TASK_IDS
 
 
-def test_extract_tasks_are_go_stubs_on_golang_queue() -> None:
+def test_extract_tasks_are_go_stubs_on_golang_queue(dakp_build) -> None:
     dag = dakp_build.dag_obj
     for task_id in _GO_STUB_IDS:
         task = dag.get_task(task_id)
@@ -52,13 +53,13 @@ def test_extract_tasks_are_go_stubs_on_golang_queue() -> None:
         assert type(task).__name__ == "_StubOperator"
 
 
-def test_acquisition_tasks_use_download_pool() -> None:
+def test_acquisition_tasks_use_download_pool(dakp_build) -> None:
     dag = dakp_build.dag_obj
     for task_id in _ACQUIRE_IDS:
         assert dag.get_task(task_id).pool == dakp_build.DOWNLOAD_POOL
 
 
-def test_dag_task_graph() -> None:
+def test_dag_task_graph(dakp_build) -> None:
     dag = dakp_build.dag_obj
 
     def upstream(task_id: str) -> set[str]:

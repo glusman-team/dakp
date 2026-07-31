@@ -14,8 +14,9 @@ import pytest
 from dakp_pipeline import dags as dags_pkg
 from dakp_pipeline import runtime
 from dakp_pipeline.config import DownloadConfig, Profile
-from dakp_pipeline.dags import dakp_build
 from dakp_pipeline.runtime import build_context_from_config
+
+# ``dakp_build`` (and ``import airflow``) arrives via the lazy ``dakp_build`` fixture (conftest.py).
 
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -51,7 +52,7 @@ def test_build_context_from_config_forwards_drugsfda_url(tmp_path: Path, monkeyp
     assert ctx.params["drugsfda_url"] == "https://example.invalid/x.zip"
 
 
-def test_get_dag_returns_dag_object() -> None:
+def test_get_dag_returns_dag_object(dakp_build) -> None:
     assert dags_pkg.get_dag() is dakp_build.dag_obj
 
 
