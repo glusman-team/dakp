@@ -68,7 +68,7 @@ class _BlankNER(DiseaseNER):
 
 
 def _ctx(tmp_path: Path, params: Mapping[str, Any]) -> TaskContext:
-    context = TaskContext(profile="mock", workdir=tmp_path / "work", fixture_root=FIXTURE_ROOT, threads=1, memory_budget_gb=1, params=params)
+    context = TaskContext(workdir=tmp_path / "work", fixture_root=FIXTURE_ROOT, params=params)
     Workdir(context.workdir).create()
     return context
 

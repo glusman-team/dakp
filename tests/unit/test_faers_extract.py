@@ -33,7 +33,7 @@ def _refs() -> list[ArtifactRef]:
 def _ctx(wd: Path, **params: Any) -> TaskContext:
     merged: dict[str, Any] = {"quarter_limit": None}
     merged.update(params)
-    return TaskContext(profile="mock", workdir=wd, fixture_root=_FIXTURE_ROOT, threads=1, memory_budget_gb=1, params=merged)
+    return TaskContext(workdir=wd, fixture_root=_FIXTURE_ROOT, params=merged)
 
 
 def _extract(wd: Path, refs: list[ArtifactRef] | None = None) -> list[ArtifactRef]:

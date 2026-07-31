@@ -1,20 +1,14 @@
 """DailyMed SPL acquisition — real fetcher behind the :class:`Fetcher` protocol.
 
-Two acquisition profiles, both idempotent and content-addressed (BLAKE3 manifest +
-checksums), and both recording source provenance (URL / ETag / Last-Modified) into the
-artifact manifest:
-
-* ``mock``  — ingest the tiny SPL fixture(s) under ``ctx.fixture_root`` into the
-  content-addressed store, tagging each manifest with a ``fixture://`` source block.
-  No network; this is what the test suite exercises.
-* real     — download the DailyMed full-release index + release ZIPs using **stdlib
-  ``urllib`` only** (no ``requests``), streaming each release into the content-addressed
-  store. Re-ingesting an identical release is a cache hit; conditional GET
-  (``If-None-Match`` / ``If-Modified-Since``) skips bytes the server confirms unchanged.
-  Each release ZIP's SPL XML members are extracted and ingested individually (the SPL
-  extractor reads ``.xml``/``.xml.gz``, not ZIPs), mirroring the legacy
-  ``getFullRelease.pl`` "extract XMLs into ``xmls/<bin>/...xml.gz``" step. ``release_limit``
-  (profile/CLI) bounds how many releases a bounded smoke/sample run processes.
+Idempotent and content-addressed (BLAKE3 manifest + checksums), recording source provenance
+(URL / ETag / Last-Modified) into the artifact manifest. Downloads the DailyMed full-release
+index + release ZIPs using **stdlib ``urllib`` only** (no ``requests``), streaming each release
+into the content-addressed store. Re-ingesting an identical release is a cache hit; conditional
+GET (``If-None-Match`` / ``If-Modified-Since``) skips bytes the server confirms unchanged. Each
+release ZIP's SPL XML members are extracted and ingested individually (the SPL extractor reads
+``.xml``/``.xml.gz``, not ZIPs), mirroring the legacy ``getFullRelease.pl`` "extract XMLs into
+``xmls/<bin>/...xml.gz``" step. ``release_limit`` (run param) bounds how many releases a bounded
+run processes. Offline tests monkeypatch the module-level ``fetch`` / the stdlib ``urlopen`` seam.
 
 The legacy ``ref/legacy/DailyMed/bin/getFullRelease.pl`` is intentionally **not** replicated: it
 destructively stashed whole download directories (``rm -r $ddir.prev``; ``mv $ddir
@@ -53,48 +47,18 @@ _FULL_RELEASES_HEADING = "Full Releases"
 #   <a href="https://dailymed-data.nlm.nih.gov/public-release-files/dm_spl_release_human_rx_part1.zip">
 _RELEASE_ZIP_HREF = re.compile(r'href="(?P<url>https?://[^"]+\.zip)"', re.IGNORECASE)
 
-# Fixture paths relative to fixture_root (see tests/fixtures/pipeline/).
-_DAILYMED_FIXTURES: tuple[str, ...] = ("dailymed/dailymed_spl.xml.gz",)
-
 _DOWNLOAD_TIMEOUT = 60.0
 _CHUNK = 1 << 20  # 1 MiB streaming window.
 
 
 class DailyMedFetcher:
-    """Acquire DailyMed SPL full-release artifacts (mock fixtures or real network)."""
+    """Acquire DailyMed SPL full-release artifacts over the network (stdlib only)."""
 
     def fetch(self, ctx: TaskContext) -> list[ArtifactRef]:
-        if ctx.profile == "mock":
-            return _ingest_fixtures(ctx)
         return _download_full_release(ctx)
 
 
 fetch = DailyMedFetcher().fetch
-
-
-# --- mock profile --------------------------------------------------------------
-
-
-def _ingest_fixtures(ctx: TaskContext) -> list[ArtifactRef]:
-    """Content-address each DailyMed fixture and return refs with fixture provenance."""
-    if ctx.fixture_root is None:
-        msg = "TaskContext.fixture_root is None; cannot ingest DailyMed fixtures"
-        raise ValueError(msg)
-    store = ArtifactStore(Workdir(ctx.workdir))
-    log = bind(task_id="fetch_dailymed", profile=ctx.profile)
-    refs: list[ArtifactRef] = []
-    for name in _DAILYMED_FIXTURES:
-        path = ctx.fixture_root / name
-        if not path.exists():
-            msg = f"DailyMed fixture not found: {path}"
-            raise FileNotFoundError(msg)
-        ref, cache_hit = store.ingest(path, alias=f"dailymed/{name}", source=SourceBlock(url=f"fixture://{name}", retrieved_at=_now_iso()))
-        refs.append(ref)
-        log.info("ingested fixture", artifact_id=ref.blake3, cache_hit=cache_hit, fixture=name)
-    return refs
-
-
-# --- real profile (stdlib only; never exercised by the test suite) -------------
 
 
 def _download_full_release(ctx: TaskContext) -> list[ArtifactRef]:
@@ -108,7 +72,7 @@ def _download_full_release(ctx: TaskContext) -> list[ArtifactRef]:
     store = ArtifactStore(Workdir(ctx.workdir))
     staging = Workdir(ctx.workdir).root / ".staging" / "dailymed"
     staging.mkdir(parents=True, exist_ok=True)
-    log = bind(task_id="fetch_dailymed", profile=ctx.profile)
+    log = bind(task_id="fetch_dailymed")
 
     index_html = _fetch_index(ctx, staging, store)
     release_urls = _apply_release_limit(_parse_release_zips(index_html), ctx)
@@ -190,8 +154,8 @@ def _download_one(url: str, staging: Path, store: ArtifactStore) -> list[Artifac
 def _apply_release_limit(urls: list[str], ctx: TaskContext) -> list[str]:
     """Slice to the first N full releases when ``release_limit`` is set (<=0 / None = all).
 
-    Bounds a ``prod``/``sample`` run to a tiny real DailyMed scope (e.g. ``release_limit=1`` via the
-    integration test harness, as the offline prod smoke test does), mirroring FAERS ``quarter_limit``.
+    Bounds a run to a tiny real DailyMed scope (e.g. ``release_limit=1`` via the integration test
+    harness, as the offline smoke test does), mirroring FAERS ``quarter_limit``.
     """
     limit = ctx.params.get("release_limit")
     if not isinstance(limit, int) or limit <= 0:

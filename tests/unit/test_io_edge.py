@@ -174,7 +174,7 @@ def test_hash_tree_does_not_recurse_into_symlinked_dirs(tmp_path: Path) -> None:
 
 
 def _ctx(tmp_path: Path, fixture_root: Path | None) -> TaskContext:
-    return TaskContext(profile="mock", workdir=tmp_path, fixture_root=fixture_root, threads=1, memory_budget_gb=1, params={})
+    return TaskContext(workdir=tmp_path, fixture_root=fixture_root, params={})
 
 
 def test_fixture_with_none_root_raises(tmp_path: Path) -> None:
@@ -208,7 +208,7 @@ def test_artifactref_is_frozen_and_hashable(tmp_path: Path) -> None:
     # Hashable (usable in sets / dict keys) and repr-able.
     assert {ref} == {ref}
     assert "b3:aa" in repr(ref)
-    assert "mock" in repr(_ctx(tmp_path, None))
+    assert "workdir" in repr(_ctx(tmp_path, None))
 
 
 def test_protocol_classes_are_runtime_checkable() -> None:

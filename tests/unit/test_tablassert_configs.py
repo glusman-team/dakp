@@ -29,7 +29,7 @@ from dakp_pipeline.paths import Workdir
 from dakp_pipeline.tablassert import configs as tablassert_configs
 from dakp_pipeline.tablassert.run import (
     TABLASERT_DIR_ENV,
-    MockTablassertRunner,
+    DeferredTablassertRunner,
     TablassertRunner,
     _resolve_tablassert_dir,
     qc_runtime_available,
@@ -107,8 +107,8 @@ def _assertion_refs(workdir: Workdir) -> list[ArtifactRef]:
     return [store.register(_write_assertion_tsv(table, workdir), media_type=schemas.TSV_MEDIA_TYPE, rows=1) for table in TABLES]
 
 
-def _ctx(workdir: Workdir, profile: str = "mock", **params: object) -> TaskContext:
-    return TaskContext(profile=profile, workdir=workdir.root, fixture_root=None, threads=1, memory_budget_gb=1, params=params)
+def _ctx(workdir: Workdir, **params: object) -> TaskContext:
+    return TaskContext(workdir=workdir.root, fixture_root=None, params=params)
 
 
 def _read_report(workdir: Workdir) -> dict:
@@ -262,21 +262,21 @@ def test_generate_links_assertion_inputs_as_provenance(tmp_path: Path) -> None:
     assert len(graph_manifest["inputs"]) == 3
 
 
-# --- runner: mock handoff report --------------------------------------------------
+# --- runner: deferred handoff report ----------------------------------------------
 
 
-def test_mock_runner_writes_deferred_handoff_report(tmp_path: Path) -> None:
+def test_deferred_runner_writes_deferred_handoff_report(tmp_path: Path) -> None:
     workdir = Workdir(tmp_path / "work")
     workdir.create()
     assertion_refs = _assertion_refs(workdir)
     config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
 
-    refs = MockTablassertRunner().run(assertion_refs, config_refs, _ctx(workdir))
+    refs = DeferredTablassertRunner().run(assertion_refs, config_refs, _ctx(workdir))
 
     assert len(refs) == 1
     assert refs[0].uri == workdir.reports / "tablassert_handoff.json"
     report = _read_report(workdir)
-    assert report["mode"] == "mock"
+    assert report["mode"] == "deferred"
     assert report["status"] == "deferred"
     assert report["stage"] == "tablassert_handoff"
     assert {entry["table"] for entry in report["assertion_inputs"]} == set(TABLES)
@@ -527,24 +527,24 @@ def test_real_runner_appends_release_flag(monkeypatch: pytest.MonkeyPatch, tmp_p
 # --- module-level dispatch --------------------------------------------------------
 
 
-def test_run_dispatches_to_mock_in_mock_profile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_run_dispatches_to_deferred_without_run_tablassert(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     workdir = Workdir(tmp_path / "work")
     workdir.create()
     assertion_refs = _assertion_refs(workdir)
     config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
 
     def no_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-        msg = "subprocess must not run in the mock profile"
+        msg = "subprocess must not run when the handoff is deferred"
         raise AssertionError(msg)
 
     monkeypatch.setattr(_RUN_MODULE, "run_subprocess", no_subprocess)
 
-    # run_tablassert=True is ignored under the mock profile -> deferred mock handoff, no subprocess.
-    run_tablassert(assertion_refs, config_refs, _ctx(workdir, run_tablassert=True))
-    assert _read_report(workdir)["mode"] == "mock"
+    # No run_tablassert (no fullmap) -> deferred handoff, no subprocess.
+    run_tablassert(assertion_refs, config_refs, _ctx(workdir))
+    assert _read_report(workdir)["mode"] == "deferred"
 
 
-def test_run_dispatches_to_real_outside_mock_profile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_run_dispatches_to_real_with_run_tablassert(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     workdir = Workdir(tmp_path / "work")
     workdir.create()
     assertion_refs = _assertion_refs(workdir)
@@ -556,5 +556,5 @@ def test_run_dispatches_to_real_outside_mock_profile(monkeypatch: pytest.MonkeyP
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
 
-    run_tablassert(assertion_refs, config_refs, _ctx(workdir, profile="prod", run_tablassert=True, fullmap="data/fullmap"))
+    run_tablassert(assertion_refs, config_refs, _ctx(workdir, run_tablassert=True, fullmap="data/fullmap"))
     assert _read_report(workdir)["mode"] == "real"

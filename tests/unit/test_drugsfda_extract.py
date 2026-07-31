@@ -28,7 +28,7 @@ _ALL_FIXTURES = ("drugsfda_products.tsv", "drugsfda_applications.tsv", "drugsfda
 
 
 def _ctx(workdir: Path) -> TaskContext:
-    return TaskContext(profile="mock", workdir=workdir, fixture_root=_FIXTURE_ROOT, threads=1, memory_budget_gb=1, params={})
+    return TaskContext(workdir=workdir, fixture_root=_FIXTURE_ROOT, params={})
 
 
 def _ingest(workdir: Path, names: tuple[str, ...]) -> list[ArtifactRef]:

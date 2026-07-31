@@ -1,14 +1,11 @@
 """FAERS quarterly ASCII acquisition.
 
-Real acquisition discovers quarterly ASCII zips from the FDA exports index, downloads each
-into the BLAKE3 content-addressed store (idempotent — re-downloading identical bytes is a
-cache hit, never a duplicate store entry), and honors ``quarter_limit`` (process only the N
-most-recent quarters) for dev/sample runs. Unlike the legacy ``getLatest.pl``, this fetcher
-never destructively renames or stashes files.
-
-The ``mock`` profile resolves tiny ``$``-delimited fixture files under
-``ctx.fixture_root/faers``; the extractor reads those loose ``.txt`` files directly (no
-network, no zip).
+Discovers quarterly ASCII zips from the FDA exports index, downloads each into the BLAKE3
+content-addressed store (idempotent — re-downloading identical bytes is a cache hit, never a
+duplicate store entry), and honors ``quarter_limit`` (process only the N most-recent quarters)
+for bounded runs. Unlike the legacy ``getLatest.pl``, this fetcher never destructively renames
+or stashes files. Offline tests monkeypatch the module-level :data:`fetch` (or the
+:meth:`FAERSFetcher.fetch_index` / :meth:`FAERSFetcher.download_quarter` network boundaries).
 
 Monkeypatchable boundaries:
 
@@ -21,7 +18,6 @@ from __future__ import annotations
 
 import re
 import urllib.request
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,13 +28,10 @@ from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import SourceBlock
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.sources import ingest_fixtures
 
 # FDA exports index lists quarterly ASCII zips as faers_ascii_<YYYY>q<N>.zip.
 FDA_FAERS_INDEX_URL = "https://fis.fda.gov/content/Exports"
 _FAERS_ZIP_RE = re.compile(r"faers_ascii_(\d{4})q(\d)\.zip", re.IGNORECASE)
-# Quarter label embedded in a FAERS filename, e.g. DEMO24Q3.txt or faers_ascii_2024q3.zip.
-_QUARTER_IN_NAME_RE = re.compile(r"(\d{2})q(\d)", re.IGNORECASE)
 _DEFAULT_TIMEOUT = 120.0
 
 
@@ -69,12 +62,6 @@ def discover_quarters(index_html: str, *, base_url: str = FDA_FAERS_INDEX_URL) -
     return [QuarterSource(label, found[label]) for label in sorted(found, reverse=True)]
 
 
-def _fixture_quarter(name: str) -> str | None:
-    """Canonical quarter label for a fixture filename like ``DEMO24Q3.txt``."""
-    match = _QUARTER_IN_NAME_RE.search(name)
-    return f"{match.group(1)}Q{match.group(2)}".upper() if match else None
-
-
 def _apply_quarter_limit[T](quarters: list[T], ctx: TaskContext) -> list[T]:
     """Slice to the N most-recent quarters when ``quarter_limit`` is set (<=0 / None = all)."""
     limit = ctx.params.get("quarter_limit")
@@ -84,41 +71,16 @@ def _apply_quarter_limit[T](quarters: list[T], ctx: TaskContext) -> list[T]:
 
 
 class FAERSFetcher:
-    """Acquire FAERS quarterly ASCII artifacts (real download or mock fixtures)."""
+    """Acquire FAERS quarterly ASCII artifacts over the network."""
 
     def fetch(self, ctx: TaskContext) -> list[ArtifactRef]:
-        refs = self._fetch_fixtures(ctx) if ctx.profile == "mock" else self._fetch_remote(ctx)
-        logger.info("faers acquisition complete", profile=ctx.profile, artifacts=len(refs))
-        return refs
-
-    # -- mock profile ---------------------------------------------------------
-    def _fetch_fixtures(self, ctx: TaskContext) -> list[ArtifactRef]:
-        if ctx.fixture_root is None:
-            msg = "TaskContext.fixture_root is None; cannot resolve FAERS fixtures"
-            raise ValueError(msg)
-        faers_dir = ctx.fixture_root / "faers"
-        by_quarter: dict[str, list[str]] = defaultdict(list)
-        for path in sorted(faers_dir.glob("*.txt")):
-            quarter = _fixture_quarter(path.name)
-            if quarter is not None:
-                by_quarter[quarter].append(path.name)
-        quarters = _apply_quarter_limit(sorted(by_quarter, reverse=True), ctx)
-        names: list[str] = []
-        for quarter in quarters:
-            names.extend(f"faers/{name}" for name in sorted(by_quarter[quarter]))
-        if not names:
-            logger.warning("no FAERS fixtures found", fixture_root=str(faers_dir))
-            return []
-        return ingest_fixtures(ctx, tuple(names), namespace="faers")
-
-    # -- real profile ---------------------------------------------------------
-    def _fetch_remote(self, ctx: TaskContext) -> list[ArtifactRef]:
         index_html = self.fetch_index(ctx)
         quarters = _apply_quarter_limit(discover_quarters(index_html), ctx)
         if not quarters:
             logger.warning("no FAERS quarters discovered from index")
             return []
-        refs: list[ArtifactRef] = [self.download_quarter(ctx, source) for source in quarters]
+        refs = [self.download_quarter(ctx, source) for source in quarters]
+        logger.info("faers acquisition complete", artifacts=len(refs))
         return refs
 
     def fetch_index(self, ctx: TaskContext) -> str:

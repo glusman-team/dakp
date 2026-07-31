@@ -17,7 +17,7 @@ from dakp_pipeline.tablassert.run import _find_graph, run_subprocess
 
 
 def _ctx(workdir: Path) -> TaskContext:
-    return TaskContext(profile="mock", workdir=workdir, fixture_root=None, threads=1, memory_budget_gb=1, params={})
+    return TaskContext(workdir=workdir, fixture_root=None, params={})
 
 
 def test_run_subprocess_captures_stdout() -> None:

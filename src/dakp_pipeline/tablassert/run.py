@@ -3,9 +3,9 @@
 DAKP ships NO local KGX compiler; ``tablassert`` is a CORE dependency installed by the single
 ``uv sync`` (PLAN.md "Tablassert modeling layer" / "Dependency philosophy"). The real runner
 (:class:`TablassertRunner`) shells out to the installed ``tablassert`` CLI and captures stdout /
-exit code into a handoff report; the mock runner (:class:`MockTablassertRunner`) writes a
-deferred-handoff report without ever touching Tablassert (default in the ``mock`` profile and in
-tests).
+exit code into a handoff report; the deferred runner (:class:`DeferredTablassertRunner`) writes a
+deferred-handoff report without ever touching Tablassert (used when no fullmap triggers the real
+handoff, and in tests).
 
 The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it is on
 ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout override (the
@@ -17,7 +17,8 @@ the required ``tablassert[qc]`` install) is importable; ``--release`` is a boole
 
 The module-level :func:`run` is the package entry point used by ``pipeline.py`` and
 ``dags.dakp_build`` (``from dakp_pipeline.tablassert import run``); it dispatches to the real
-or mock runner based on ``ctx``. Tests monkeypatch the runner's subprocess hook
+runner when ``ctx.params["run_tablassert"]`` is truthy, else the deferred runner. Tests monkeypatch
+the runner's subprocess hook
 (:func:`run_subprocess`) and the availability probes (:func:`tablassert_available` /
 :func:`qc_runtime_available`) — no real Tablassert required.
 """
@@ -201,15 +202,15 @@ class TablassertRunner:
 
 
 @dataclass(frozen=True)
-class MockTablassertRunner:
-    """Write a deferred-handoff report; never touch Tablassert (mock profile + tests)."""
+class DeferredTablassertRunner:
+    """Write a deferred-handoff report; never touch Tablassert (no fullmap trigger + tests)."""
 
     def run(self, assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
-        report = _base_report("mock", assertion_refs, config_refs)
+        report = _base_report("deferred", assertion_refs, config_refs)
         report.update(
             {
                 "status": "deferred",
-                "reason": "mock profile / run_tablassert disabled; canonical resolution + KGX compilation delegated to the installed tablassert CLI",
+                "reason": "no fullmap provided (run_tablassert disabled); canonical resolution + KGX compilation delegated to the installed tablassert CLI",
             }
         )
         return [_write_report(report, assertion_refs, ctx)]
@@ -218,12 +219,12 @@ class MockTablassertRunner:
 def run(assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
     """Package entry point (``pipeline.py`` / ``dags.dakp_build``): dispatch to a runner.
 
-    Real execution requires ``run_tablassert`` truthy in ``ctx.params`` AND a non-``mock``
-    profile; otherwise the mock runner writes a deferred-handoff report. Returns a list with
-    one ArtifactRef to the handoff report.
+    Real execution requires ``run_tablassert`` truthy in ``ctx.params`` (derived from a fullmap
+    path); otherwise the deferred runner writes a deferred-handoff report. Returns a list with one
+    ArtifactRef to the handoff report.
     """
-    run_real = bool(ctx.params.get("run_tablassert")) and ctx.profile != "mock"
-    runner: TablassertRunner | MockTablassertRunner = TablassertRunner() if run_real else MockTablassertRunner()
+    run_real = bool(ctx.params.get("run_tablassert"))
+    runner: TablassertRunner | DeferredTablassertRunner = TablassertRunner() if run_real else DeferredTablassertRunner()
     return runner.run(assertion_refs, config_refs, ctx)
 
 
@@ -231,7 +232,7 @@ __all__ = [
     "DEFAULT_TABLASERT_DIR",
     "REPORT_NAME",
     "TABLASERT_DIR_ENV",
-    "MockTablassertRunner",
+    "DeferredTablassertRunner",
     "TablassertRunner",
     "qc_runtime_available",
     "run",

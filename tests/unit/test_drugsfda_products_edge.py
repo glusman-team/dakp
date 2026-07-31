@@ -34,7 +34,7 @@ _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
 def _ctx(wd: Path, **params: object) -> TaskContext:
     Workdir(wd).create()
-    return TaskContext(profile="mock", workdir=wd, fixture_root=_FIXTURE_ROOT, threads=1, memory_budget_gb=1, params=params)
+    return TaskContext(workdir=wd, fixture_root=_FIXTURE_ROOT, params=params)
 
 
 def _ref(path: Path) -> ArtifactRef:

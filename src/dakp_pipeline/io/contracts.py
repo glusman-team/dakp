@@ -38,24 +38,23 @@ class ArtifactRef:
 class TaskContext:
     """Per-task execution context passed to every fetcher/extractor/transformer.
 
-    Fields match the PLAN.md sketch exactly. Fetchers/extractors build their own
-    :class:`~dakp_pipeline.io.artifact_store.ArtifactStore` from ``workdir`` on demand,
-    keeping the context itself lightweight and serializable.
+    Fetchers/extractors build their own :class:`~dakp_pipeline.io.artifact_store.ArtifactStore`
+    from ``workdir`` on demand, keeping the context itself lightweight and serializable. Run
+    behavior (quarter/release limits, ``force``, the Tablassert handoff trigger) lives in
+    ``params``; there is no machine sizing or execution tier — one pipeline always runs real
+    acquisition.
     """
 
-    profile: str  # mock | sample | prod
     workdir: Path
     fixture_root: Path | None
-    threads: int
-    memory_budget_gb: int
     params: Mapping[str, Any]
 
     def fixture(self, name: str) -> ArtifactRef:
         """Return an :class:`ArtifactRef` for a fixture file under ``fixture_root``.
 
-        Used by mocked fetchers (and by the PLAN.md integration-test sketch, e.g.
-        ``ctx.fixture("dailymed_release.zip")``). The ref points directly at the fixture
-        file; it is not copied into the content-addressed store.
+        Used by tests' monkeypatched fetchers (e.g. ``ctx.fixture("dailymed_release.zip")``).
+        The ref points directly at the fixture file; it is not copied into the content-addressed
+        store.
         """
         if self.fixture_root is None:
             msg = "TaskContext.fixture_root is None; cannot resolve fixture"

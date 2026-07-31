@@ -4,12 +4,11 @@ Acquires the FDA "Drugs@FDA Data Files" ZIP — the same artifact the legacy
 ``ref/legacy/DrugsFDA/bin/download.pl`` fetched from ``https://www.fda.gov/media/89850/download`` —
 content-addresses it with BLAKE3, and returns one :class:`ArtifactRef`.
 
-* ``mock`` profile: ingests tiny Products/Applications/Submissions fixtures so the
-  pipeline (and tests) never touch the network.
-* any other profile: streams the ZIP with stdlib :mod:`urllib` (no new dependency) into a
-  temp path, then :meth:`ArtifactStore.ingest` copies it into the content-addressed store
-  with a provenance manifest. Identical bytes hash to the same store path, so re-runs are
-  a cache hit (no copy, manifest reused).
+Streams the ZIP with stdlib :mod:`urllib` (no new dependency) into a temp path, then
+:meth:`ArtifactStore.ingest` copies it into the content-addressed store with a provenance
+manifest. Identical bytes hash to the same store path, so re-runs are a cache hit (no copy,
+manifest reused). Offline tests monkeypatch :func:`download_drugsfda_zip` to serve a local
+fixture ZIP.
 
 Idempotent and non-destructive: the only writes are the content-addressed store copy, its
 alias, and its manifest. The download target is monkeypatchable via
@@ -28,27 +27,17 @@ from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import SourceBlock
 from dakp_pipeline.logging_setup import bind
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.sources import ingest_fixtures
 
 # The FDA "Drugs@FDA Data Files" ZIP (legacy ref/legacy/DrugsFDA/bin/download.pl target).
 DRUGSFDA_DATA_FILES_URL = "https://www.fda.gov/media/89850/download"
 
-# Fixture refs used by the mock profile; they mirror the real Products/Applications/
-# Submissions tab-delimited tables so the extractor treats mock and real inputs alike.
-_DRUGSFDA_FIXTURES = ("drugsfda/drugsfda_products.tsv", "drugsfda/drugsfda_applications.tsv", "drugsfda/drugsfda_submissions.tsv")
-
 
 class DrugsFDAFetcher:
-    """Acquire Drugs@FDA product/application/submission tables."""
+    """Acquire Drugs@FDA product/application/submission tables over the network."""
 
     url: str = DRUGSFDA_DATA_FILES_URL
 
     def fetch(self, ctx: TaskContext) -> list[ArtifactRef]:
-        if ctx.profile == "mock":
-            return ingest_fixtures(ctx, _DRUGSFDA_FIXTURES, namespace="drugsfda")
-        return self._fetch_real(ctx)
-
-    def _fetch_real(self, ctx: TaskContext) -> list[ArtifactRef]:
         store = ArtifactStore(Workdir(ctx.workdir))
         url = str(ctx.params.get("drugsfda_url", self.url))
         log = bind(task_id="acquire_drugsfda", url=url)

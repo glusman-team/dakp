@@ -9,13 +9,11 @@ dataframes.
 
 Idempotent and non-destructive: raw downloads land in the BLAKE3 content-addressed store
 (re-ingesting identical bytes is a cache hit) and NER weights land in the model cache
-(re-used by tree hash). Nothing is renamed or deleted except per-run staging files.
-
-The mock profile never touches the network: the source fetchers ingest fixtures and the NER
-model acquisition is a no-op (the deterministic offline NER backend needs no weights). The
-fullmap redb is NOT acquired here — it is an external artifact the caller supplies (the CLI
-``--fullmap`` path, threaded into ``ctx.params["fullmap"]`` for the Tablassert handoff); DAKP
-never downloads a fullmap.
+(re-used by tree hash). Nothing is renamed or deleted except per-run staging files. Offline
+tests monkeypatch the source fetchers' module-level ``fetch`` and inject a fake NER
+``downloader``. The fullmap redb is NOT acquired here — it is an external artifact the caller
+supplies (the CLI ``--fullmap`` path, threaded into ``ctx.params["fullmap"]`` for the Tablassert
+handoff); DAKP never downloads a fullmap.
 """
 
 from __future__ import annotations
@@ -24,7 +22,6 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from dakp_pipeline.config import load_profile
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import bind
 from dakp_pipeline.ner import model_cache
@@ -34,22 +31,25 @@ from dakp_pipeline.sources import dailymed, drugsfda, faers
 #: Media type for a cached NER model directory (a tree artifact, not a single file).
 _MODEL_DIR_MEDIA_TYPE = "application/x-directory"
 
+#: Max concurrent source downloads (sizes the thread pool / the Airflow download pool).
+_DOWNLOAD_CONCURRENCY = 4
+
 
 # --- source acquisition (delegate to the real fetchers) -------------------------
 
 
 def acquire_dailymed(ctx: TaskContext) -> list[ArtifactRef]:
-    """Acquire DailyMed SPL full-release artifacts (fixtures in mock, network otherwise)."""
+    """Acquire DailyMed SPL full-release artifacts over the network."""
     return dailymed.fetch(ctx)
 
 
 def acquire_faers(ctx: TaskContext) -> list[ArtifactRef]:
-    """Acquire FAERS quarterly ASCII artifacts (fixtures in mock, network otherwise)."""
+    """Acquire FAERS quarterly ASCII artifacts over the network."""
     return faers.fetch(ctx)
 
 
 def acquire_drugsfda(ctx: TaskContext) -> list[ArtifactRef]:
-    """Acquire the Drugs@FDA data-files ZIP (fixtures in mock, network otherwise)."""
+    """Acquire the Drugs@FDA data-files ZIP over the network."""
     return drugsfda.fetch(ctx)
 
 
@@ -57,16 +57,13 @@ def acquire_drugsfda(ctx: TaskContext) -> list[ArtifactRef]:
 
 
 def default_ner_models(ctx: TaskContext) -> list[str]:
-    """NER model ids to cache for ``ctx`` (mock = none; else config override or backend default).
+    """NER model ids to cache for ``ctx``: the default GLiNER checkpoint the NER backend loads.
 
-    The mock profile uses the deterministic offline NER backend, which needs no weights, so it
-    acquires nothing. Other profiles use :attr:`DownloadConfig.ner_model_ids` when set, else
-    the default GLiNER checkpoint the production NER backend loads.
+    A real run downloads the GLiNER weights; offline tests pass an explicit ``models=`` list (and
+    a fake ``downloader``) to :func:`acquire_ner_models` instead of relying on this default.
     """
-    if ctx.profile == "mock":
-        return []
-    configured = list(load_profile(ctx.profile).download.ner_model_ids)
-    return configured or [DEFAULT_MODEL]
+    del ctx  # the default model set is fixed; the context is kept for a stable call signature
+    return [DEFAULT_MODEL]
 
 
 def model_ref_to_artifact(ref: model_cache.ModelRef) -> ArtifactRef:
@@ -80,16 +77,12 @@ def acquire_ner_models(
     """Download/cache NER model weights via :func:`model_cache.ensure_model`; return manifests.
 
     Idempotent: a cached model whose content tree hash still matches is a hit (no download).
-    ``force`` (from ``ctx.params``) re-downloads unconditionally. ``models`` overrides the
-    profile-derived default (:func:`default_ner_models`); ``downloader`` is injectable for
-    offline tests (defaults to the Hugging Face Hub downloader, which needs the NER
-    dependencies). The mock profile with no explicit ``models`` acquires nothing.
+    ``force`` (from ``ctx.params``) re-downloads unconditionally. ``models`` overrides the default
+    (:func:`default_ner_models`); ``downloader`` is injectable for offline tests (defaults to the
+    Hugging Face Hub downloader, which needs the NER dependencies).
     """
-    log = bind(task_id="acquire_ner_models", profile=ctx.profile)
+    log = bind(task_id="acquire_ner_models")
     model_ids = list(models) if models is not None else default_ner_models(ctx)
-    if not model_ids:
-        log.info("no NER models to acquire (deterministic backend; no weights needed)")
-        return []
     force = bool(ctx.params.get("force", False))
     resolved_cache = Path(cache_dir) if cache_dir is not None else model_cache.default_model_cache_dir(ctx.workdir)
     refs: list[ArtifactRef] = []
@@ -104,14 +97,13 @@ def acquire_ner_models(
 
 
 def acquire_all(ctx: TaskContext, *, downloader: model_cache.Downloader | None = None) -> dict[str, list[ArtifactRef]]:
-    """Run every acquisition, bounded by :attr:`DownloadConfig.concurrency`; return keyed manifests.
+    """Run every acquisition, bounded by :data:`_DOWNLOAD_CONCURRENCY`; return keyed manifests.
 
     The four acquisitions are independent and content-addressed (order-independent hashes), so
     running them on a bounded thread pool is deterministic. The ``downloader`` is forwarded to
     the NER-model acquisition (the source fetchers own their own monkeypatchable network
     boundaries). Useful as the single acquisition entry point for the DAG + test harness.
     """
-    concurrency = max(1, load_profile(ctx.profile).download.concurrency)
     jobs: dict[str, Callable[[], list[ArtifactRef]]] = {
         "dailymed": lambda: acquire_dailymed(ctx),
         "drugsfda": lambda: acquire_drugsfda(ctx),
@@ -119,7 +111,7 @@ def acquire_all(ctx: TaskContext, *, downloader: model_cache.Downloader | None =
         "ner_models": lambda: acquire_ner_models(ctx, downloader=downloader),
     }
     results: dict[str, list[ArtifactRef]] = {}
-    with ThreadPoolExecutor(max_workers=min(concurrency, len(jobs))) as pool:
+    with ThreadPoolExecutor(max_workers=min(_DOWNLOAD_CONCURRENCY, len(jobs))) as pool:
         futures = {name: pool.submit(job) for name, job in jobs.items()}
         for name, future in futures.items():
             results[name] = future.result()

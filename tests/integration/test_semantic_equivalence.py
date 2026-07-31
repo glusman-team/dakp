@@ -26,7 +26,7 @@ from typing import Any
 
 import polars as pl
 import pytest
-from harness import run_stages
+from harness import install_fixture_fetchers, run_stages
 
 from dakp_pipeline.io.contracts import ArtifactRef
 from dakp_pipeline.translator import contract, regression
@@ -58,14 +58,21 @@ DINGO_OBJECT_CATEGORIES: tuple[str, ...] = ("biolink:Disease", "biolink:Phenotyp
 LEGACY_CONDITION_CATEGORIES: tuple[str, ...] = ("Disease", "PhenotypicFeature")
 
 
-# --- pipeline fixture (module-scoped: run the real mock pipeline once) -------------
+# --- pipeline fixture (module-scoped: run the offline fixture pipeline once) ------
 
 
 @pytest.fixture(scope="module")
 def built(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
-    """Run the real mock pipeline (no network, no Tablassert) and capture the assertion tables."""
+    """Run the offline fixture pipeline (fetchers monkeypatched, no Tablassert) once."""
     workdir = tmp_path_factory.mktemp("semantic-equiv")
-    result = run_stages(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=workdir)
+    # Fetchers always run their real branches; route them to the fixtures for this offline build.
+    # The patch is undone once the tables are built (the byte-determinism re-run re-installs it).
+    monkeypatch = pytest.MonkeyPatch()
+    install_fixture_fetchers(monkeypatch)
+    try:
+        result = run_stages(fixture_root=_FIXTURE_ROOT, workdir=workdir)
+    finally:
+        monkeypatch.undo()
     tables: dict[str, pl.DataFrame] = {}
     refs: list[ArtifactRef] = []
     for name in ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions"):
@@ -75,7 +82,7 @@ def built(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     # Recover the registered ArtifactRefs from the build summary's table list.
     import json
 
-    assert result.build_summary is not None, "mock pipeline produced no build summary"
+    assert result.build_summary is not None, "offline pipeline produced no build summary"
     summary = json.loads(result.build_summary.read_text(encoding="utf-8"))
     for entry in summary["tables"]:
         refs.append(ArtifactRef(uri=Path(entry["path"]), blake3=entry["artifact_id"], media_type="text/tab-separated-values", rows=entry["rows"]))
@@ -246,13 +253,14 @@ def test_rows_uniquely_keyed_by_subject_predicate_object(built: dict[str, Any]) 
         assert len(triples) == len(set(triples)), f"duplicate (subject,predicate,object) triple in {frame.columns}"
 
 
-def test_output_is_byte_deterministic_across_runs(built: dict[str, Any], tmp_path: Path) -> None:
+def test_output_is_byte_deterministic_across_runs(built: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Re-running the identical pipeline reproduces byte-identical assertion TSVs.
 
     Deterministic bytes in -> deterministic edge ids out (Tablassert derives UUIDs from the
     resolved triples). This is the rebuild's equivalent of the legacy uuid3 edge-id stability.
     """
-    rerun = run_stages(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "rerun")
+    install_fixture_fetchers(monkeypatch)
+    rerun = run_stages(fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "rerun")
     for name in ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions"):
         first = built["result"].table(name).path.read_bytes()
         second = rerun.table(name).path.read_bytes()

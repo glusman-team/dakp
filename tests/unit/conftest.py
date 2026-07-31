@@ -47,9 +47,7 @@ def disease_map() -> dict[str, dict[str, str]]:
 
 @pytest.fixture
 def ctx(tmp_path: Path, disease_map: dict[str, dict[str, str]]) -> TaskContext:
-    context = TaskContext(
-        profile="mock", workdir=tmp_path / "work", fixture_root=FIXTURE_ROOT, threads=1, memory_budget_gb=1, params={"disease_map": disease_map}
-    )
+    context = TaskContext(workdir=tmp_path / "work", fixture_root=FIXTURE_ROOT, params={"disease_map": disease_map})
     Workdir(context.workdir).create()
     return context
 

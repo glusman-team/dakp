@@ -1,9 +1,8 @@
-"""Offline ``prod`` smoke run: REAL fetchers/extractors over mocked HTTP.
+"""Offline smoke run: REAL fetchers/extractors over mocked HTTP.
 
 Runs the shared ``run_stages`` stage harness (tests/integration/harness.py — the same Python
-wiring the Airflow DAG drives, Airflow-free) with a ``prod``-like profile (``mock_sources=False``)
-so **every fetcher takes its real (download) branch**, but
-monkeypatches the stdlib HTTP seam (``urllib.request.urlopen``) to serve the tiny pipeline
+wiring the Airflow DAG drives, Airflow-free). Fetchers always take their real (download) branch;
+the test monkeypatches the stdlib HTTP seam (``urllib.request.urlopen``) to serve the tiny pipeline
 fixtures *as if downloaded*. Contraindications are text-mined from the downloaded DailyMed
 SPL contraindication sections (offline dictionary NER backend over the ontology fixture).
 This validates the real fetcher → extractor → aggregation → Tablassert-handoff path
@@ -12,11 +11,9 @@ end-to-end with no network and without the multi-TB full build: ``quarter_limit`
 
 The artifacts are derived from the "downloaded" bytes through the REAL code path (DailyMed
 release-ZIP expansion, ``$``-delimited FAERS ZIP parsing, SPL XML extraction, Drugs@FDA ZIP
-parsing, content-addressed ingest) — **not** the mock fixture shortcut (the
-``profile == "mock"`` fixture-ingest branch, which is structurally unreachable here). The
-Tablassert *handoff* runs its real runner; only the ``../Tablassert`` subprocess is faked
-(the documented ``run_subprocess`` seam), since Tablassert is not a dependency. Stays fully
-offline so it passes in CI.
+parsing, content-addressed ingest). The Tablassert *handoff* runs its real runner (``run_tablassert``
+set via the fullmap param); only the ``../Tablassert`` subprocess is faked (the documented
+``run_subprocess`` seam). Stays fully offline so it passes in CI.
 """
 
 from __future__ import annotations
@@ -158,15 +155,10 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
 
     workdir = tmp_path / "work"
     result = run_stages(
-        profile="prod",
-        fixture_root=_FIXTURE_ROOT,  # only loads the disease map; fetchers DOWNLOAD (mock_sources=False)
+        fixture_root=_FIXTURE_ROOT,  # only loads the disease map; fetchers DOWNLOAD (real branches)
         workdir=workdir,
-        params={"quarter_limit": 1, "release_limit": 1, "fullmap": str(tmp_path / "fullmap.redb")},
+        params={"run_tablassert": True, "quarter_limit": 1, "release_limit": 1, "fullmap": str(tmp_path / "fullmap.redb")},
     )
-
-    # A real (non-mock) profile drove the run.
-    assert result.profile.name == "prod"
-    assert result.profile.mock_sources is False
 
     # All three assertion tables were produced by the real aggregation, with rows.
     for table in ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions"):
@@ -184,7 +176,7 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
     assert "Ibuprofen" in contra  # NER-mined from the DailyMed contraindication section
     assert "asthma" in contra
 
-    # Build summary + REAL Tablassert handoff (mode "real", not the mock deferred report).
+    # Build summary + REAL Tablassert handoff (mode "real", not the deferred report).
     assert result.build_summary is not None
     assert result.build_summary.exists()
     handoff = json.loads((workdir / "data" / "reports" / "tablassert_handoff.json").read_text(encoding="utf-8"))

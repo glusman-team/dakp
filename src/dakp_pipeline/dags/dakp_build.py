@@ -9,8 +9,8 @@ regression, build summary) is a real Python TaskFlow task reusing the existing s
 
 Tasks pass ``list[ArtifactRef]`` manifests over XCom (serialized to JSON dicts via
 :mod:`dakp_pipeline.io.xcom` so the native Go workers read/write the same manifests); heavy bytes
-move through the BLAKE3 content-addressed filesystem store. Run config (workdir / profile /
-fixtures) comes from the ``dakp_config`` Airflow Variable, set by the one-command orchestrator
+move through the BLAKE3 content-addressed filesystem store. Run config (workdir / fixtures /
+limits) comes from the ``dakp_config`` Airflow Variable, set by the one-command orchestrator
 (``dakp up``) and shared by the Python tasks and the Go bundle.
 """
 
@@ -42,7 +42,7 @@ DOWNLOAD_POOL = "dakp_download"
 #: Pool bounding concurrent raw->interim parses (CPU I/O) — the Go extract stubs run here.
 EXTRACT_POOL = "dakp_extract"
 
-#: Airflow Variable (JSON) holding the per-run config (workdir / profile / fixture_root / limits).
+#: Airflow Variable (JSON) holding the per-run config (workdir / fixture_root / threads / limits).
 CONFIG_VARIABLE = "dakp_config"
 
 
@@ -126,7 +126,7 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
         assertion_refs = [*refs_from_xcom(approved), *refs_from_xcom(uses), *refs_from_xcom(contra)]
         report = translator_contract.validate(assertion_refs)
         regression_report = regression.check_assertion_tables(assertion_refs)
-        summary = runtime.write_build_summary(Workdir(ctx.workdir), ctx.profile, assertion_refs, refs_from_xcom(kgx), report, regression_report)
+        summary = runtime.write_build_summary(Workdir(ctx.workdir), assertion_refs, refs_from_xcom(kgx), report, regression_report)
         return str(summary)
 
     # -- wiring -----------------------------------------------------------------

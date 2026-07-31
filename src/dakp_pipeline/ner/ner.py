@@ -10,7 +10,7 @@ Composite design (gazetteer-first, GLiNER-augmented)
 * **Offline mode (default):** a curated disease/phenotype :class:`~dakp_pipeline.ner.dictionary.Gazetteer`
   + deterministic :class:`~dakp_pipeline.ner.lexical.LexicalMatcher`. Precision 1.000 / F1
   0.955 on the benchmark fixture, zero heavy dependencies, fully deterministic. Used by tests
-  and the mock pipeline.
+  and offline runs.
 * **Production mode (``offline=False``):** the same gazetteer anchors high-precision spans and
   GLiNER zero-shot (``urchade/gliner_small-v2.1``, laptop-safe) fills out-of-gazetteer gaps.
   Gazetteer spans win on overlap; non-overlapping GLiNER spans add recall. ``gliner`` is a core

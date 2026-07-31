@@ -30,7 +30,7 @@ _FAERS_DIR = _FIXTURE_ROOT / "faers"
 
 
 def _ctx(wd: Path) -> TaskContext:
-    return TaskContext(profile="mock", workdir=wd, fixture_root=_FIXTURE_ROOT, threads=1, memory_budget_gb=1, params={})
+    return TaskContext(workdir=wd, fixture_root=_FIXTURE_ROOT, params={})
 
 
 def _ref(path: Path) -> ArtifactRef:

@@ -4,12 +4,12 @@ Replaces the retired ``scripts/dakp_up.sh`` / ``scripts/dakp_down.sh`` shell orc
 ``Makefile`` / direnv ``.envrc`` setup with a single self-contained cyclopts CLI (``uv run dakp …``).
 Everything the run needs is built in: locations (workdir, Airflow home, fixture root) and scope are
 hardcoded constants derived from the repo root, and the CLI reads **no environment variables**. The
-only inputs are the ``profile`` positional plus a few short-aliased flags (``--fullmap/-f``,
-``--port/-p``, ``--log-level/-l``, ``--detach/-d``).
+only inputs are a few short-aliased flags (``--fullmap/-f``, ``--port/-p``, ``--log-level/-l``,
+``--detach/-d``).
 
 Commands::
 
-    uv run dakp up [profile]   # build+pack the Go bundle, start Airflow, run dakp_build, wait
+    uv run dakp up             # build+pack the Go bundle, start Airflow, run dakp_build, wait
     uv run dakp down           # stop the local Airflow started by `up`
     uv run dakp clean          # remove caches, coverage data, tmp/, and the Go worker binary
 
@@ -17,7 +17,8 @@ Commands::
 (self-heals a corrupt venv), builds + packs the native Go bundle, starts Airflow standalone with the
 ExecutableCoordinator configured, sets the ``dakp_config`` Variable + task pools, triggers the
 ``dakp_build`` DAG, and waits for it to finish (unless ``--detach``). The fullmap redb is never
-downloaded — ``--fullmap <path>`` points at a prebuilt redb (required for the real ``prod`` handoff).
+downloaded — ``--fullmap <path>`` points at a prebuilt redb and triggers the real Tablassert
+handoff (without it the handoff is deferred, never an error).
 
 Every side effect goes through a small module-level function (``run_subprocess``, ``api_up``,
 ``dag_registered``, ``run_state``, ``start_standalone``, ``sleep``, …) so the tests monkeypatch the
@@ -38,11 +39,9 @@ import subprocess
 import time
 import urllib.request
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
 from cyclopts import App, Parameter
-
-from dakp_pipeline.config import load_profile
 
 #: Repository root (``src/dakp_pipeline/cli.py`` -> two levels up).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -61,8 +60,6 @@ _DAG_WAIT_ROUNDS = 45
 _DAG_WAIT_SECONDS = 2
 _RUN_WAIT_ROUNDS = 300
 _RUN_WAIT_SECONDS = 3
-
-ProfileName = Literal["mock", "sample", "prod"]
 
 
 # --- side-effect boundary (monkeypatch points for tests) --------------------------
@@ -194,13 +191,12 @@ def _preflight() -> int:
     return 0
 
 
-def run_up(*, profile: str, fullmap: str | None, port: int, log_level: str, detach: bool) -> int:
-    """Run the pipeline end-to-end on ``profile`` via a local Airflow. Returns a process exit code."""
-    # Fast-fail: the real (prod) Tablassert handoff needs a fullmap; DAKP never downloads one.
-    if load_profile(profile).run_tablassert and not fullmap:
-        print(f"!!! profile {profile!r} runs the real Tablassert handoff, which needs a fullmap redb: pass --fullmap <path>")
-        return 2
+def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool) -> int:
+    """Run the pipeline end-to-end via a local Airflow. Returns a process exit code.
 
+    Always runs real acquisition; ``fullmap`` only decides the Tablassert handoff mode (a path
+    triggers the real handoff, absent => deferred — never a hard failure).
+    """
     workdir = _DEFAULT_WORKDIR
     fixture_root = _DEFAULT_FIXTURE_ROOT
     airflow_home = _DEFAULT_AIRFLOW_HOME
@@ -266,17 +262,18 @@ def run_up(*, profile: str, fullmap: str | None, port: int, log_level: str, deta
     run_subprocess(["uv", "run", "airflow", "pools", "set", EXTRACT_POOL, "4", "Concurrent raw->interim extracts (Go bundle)"], env=env)
 
     # --- 4. set the per-run config Variable (shared by Python tasks + Go bundle) -
-    # null quarter/release limits => profile default (prod = unbounded full build).
+    # null quarter/release limits => unbounded full build; threads = all cores (Go contract).
     config: dict[str, Any] = {
         "workdir": str(workdir),
-        "profile": profile,
         "fixture_root": str(fixture_root),
+        "threads": os.cpu_count(),
         "quarter_limit": None,
         "release_limit": None,
+        "force": False,
         "log_level": log_level,
         "fullmap": fullmap,
     }
-    print(f">>> [4/6] setting {CONFIG_VARIABLE} Variable (profile={profile} workdir={workdir})")
+    print(f">>> [4/6] setting {CONFIG_VARIABLE} Variable (workdir={workdir})")
     run_subprocess(["uv", "run", "airflow", "variables", "set", CONFIG_VARIABLE, json.dumps(config)], env=env)
 
     # --- 5. trigger the DAG run -------------------------------------------------
@@ -367,20 +364,19 @@ app = App(name="dakp", help="DAKP pipeline runner — one command runs the whole
 
 @app.command
 def up(
-    profile: Annotated[ProfileName, Parameter(name="profile")] = "mock",
     *,
     fullmap: Annotated[str | None, Parameter(name=["--fullmap", "-f"])] = None,
     port: Annotated[int, Parameter(name=["--port", "-p"])] = _DEFAULT_PORT,
     log_level: Annotated[str, Parameter(name=["--log-level", "-l"])] = _DEFAULT_LOG_LEVEL,
     detach: Annotated[bool, Parameter(name=["--detach", "-d"])] = False,
 ) -> None:
-    """Run the pipeline end-to-end on PROFILE via a local Airflow (build Go bundle, trigger, wait).
+    """Run the pipeline end-to-end via a local Airflow (build Go bundle, trigger, wait).
 
-    PROFILE selects sources + concurrency + the Tablassert handoff mode: ``mock`` (fixtures; no
-    network; the default), ``sample`` (real sources, bounded), ``prod`` (real full build; needs
-    ``--fullmap``). ``--detach`` triggers and returns immediately instead of waiting.
+    Always runs real acquisition. ``--fullmap <path>`` triggers the real Tablassert handoff
+    (without it the handoff is deferred, never an error). ``--detach`` triggers and returns
+    immediately instead of waiting.
     """
-    raise SystemExit(run_up(profile=profile, fullmap=fullmap, port=port, log_level=log_level, detach=detach))
+    raise SystemExit(run_up(fullmap=fullmap, port=port, log_level=log_level, detach=detach))
 
 
 @app.command

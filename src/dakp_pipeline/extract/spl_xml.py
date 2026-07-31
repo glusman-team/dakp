@@ -21,7 +21,7 @@ Tablassert-readable form).
 Field semantics are ported from ``ref/legacy/DailyMed/bin/parseXML-xtree.py`` (HL7 v3 SPL) but as
 clean, typed Python. The extractor handles two shapes:
 
-* **mock** — the namespace-free simplified fixture (direct ``<setId>`` /
+* **fixture** — the namespace-free simplified fixture (direct ``<setId>`` /
   ``<activeIngredient>`` / ``<section loinc=...>`` children).
 * **HL7 v3** — real DailyMed SPL (``urn:hl7-org:v3``): set id from ``<setId root=>``,
   approvals from ``subjectOf/approval`` (NDA ids under OID ``2.16.840.1.113883.3.150``;
@@ -252,7 +252,7 @@ def _looks_hl7v3(path: Path) -> bool:
     return _HL7V3_NS.encode("utf-8") in head or b"urn:hl7-org:v3" in head
 
 
-# --- mock (namespace-free) document parse --------------------------------------
+# --- fixture (namespace-free) document parse -----------------------------------
 
 
 def _parse_mock_document(elem: ET.Element) -> DocumentRecord:
@@ -367,13 +367,13 @@ def _collect_sections(section_elems: list[ET.Element], warnings: list[str]) -> l
             if not candidate:
                 continue
             # Fall back to the first code present, but prefer a LOINC-shaped code
-            # (digit-dash-digit) if one appears (the mock fixture carries LOINC on the section).
+            # (digit-dash-digit) if one appears (the fixture carries LOINC on the section).
             if not loinc:
                 loinc = candidate
             if _looks_loinc(candidate):
                 loinc = candidate
                 break
-        loinc = loinc or _attr(sec, "loinc")  # mock stores LOINC directly on <section>
+        loinc = loinc or _attr(sec, "loinc")  # the fixture stores LOINC directly on <section>
         name = _attr(sec, "name") or SECTION_CODE_NAMES.get(loinc, loinc)
         title_elem = next(_descendants(sec, "title"), None)
         if title_elem is not None:

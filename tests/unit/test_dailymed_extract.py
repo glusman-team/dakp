@@ -17,19 +17,20 @@ from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import read_manifest
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.sources import dailymed
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
+_DAILYMED_FIXTURE = "dailymed/dailymed_spl.xml.gz"
 
 
 def _ctx(tmp_path: Path) -> TaskContext:
-    return TaskContext(profile="mock", workdir=(tmp_path / "work"), fixture_root=_FIXTURE_ROOT, threads=1, memory_budget_gb=1, params={})
+    return TaskContext(workdir=(tmp_path / "work"), fixture_root=_FIXTURE_ROOT, params={})
 
 
 def _acquire_and_extract(tmp_path: Path) -> tuple[list[ArtifactRef], list[ArtifactRef], TaskContext]:
     ctx = _ctx(tmp_path)
     Workdir(ctx.workdir).create()
-    raw = dailymed.fetch(ctx)
+    # Fetchers always run real; the extractor test reads the SPL fixture directly (offline).
+    raw = [ctx.fixture(_DAILYMED_FIXTURE)]
     refs = spl_xml.extract(raw, ctx)
     return raw, refs, ctx
 
@@ -144,10 +145,10 @@ def test_source_record_id_is_deterministic(tmp_path: Path) -> None:
     ctx_b = _ctx(tmp_path / "b")
     Workdir(ctx_b.workdir).create()
 
-    raw = dailymed.fetch(ctx_a)
+    raw = [ctx_a.fixture(_DAILYMED_FIXTURE)]
     refs_a = spl_xml.extract(raw, ctx_a)
     # Same source artifact id for the same fixture content.
-    raw_b = dailymed.fetch(ctx_b)
+    raw_b = [ctx_b.fixture(_DAILYMED_FIXTURE)]
     assert [r.blake3 for r in raw] == [r.blake3 for r in raw_b]
     refs_b = spl_xml.extract(raw_b, ctx_b)
 

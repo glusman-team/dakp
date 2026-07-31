@@ -36,7 +36,7 @@ from typing import Any
 
 import pytest
 import tiny_fullmap
-from harness import run_stages
+from harness import install_fixture_fetchers, run_stages
 
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
@@ -108,11 +108,17 @@ def _canonicalize_edge(edge: dict[str, Any]) -> dict[str, Any]:
 
 @pytest.fixture(scope="module")
 def kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
-    """Run the mock pipeline + a REAL ``tablassert build-kg`` once; return the produced KGX."""
+    """Run the offline fixture pipeline + a REAL ``tablassert build-kg`` once; return the KGX."""
     work = tmp_path_factory.mktemp("dakp-kgx-e2e") / "work"
 
-    # (1) Hermetic mock pipeline -> assertion TSVs (data/tabular/) + generated tables/*.yaml configs.
-    run_stages(profile="mock", fixture_root=_FIXTURE_ROOT, workdir=work)
+    # (1) Hermetic offline pipeline -> assertion TSVs (data/tabular/) + generated tables/*.yaml.
+    # Fetchers always run their real branches; route them to the fixtures for this hermetic build.
+    monkeypatch = pytest.MonkeyPatch()
+    install_fixture_fetchers(monkeypatch)
+    try:
+        run_stages(fixture_root=_FIXTURE_ROOT, workdir=work)
+    finally:
+        monkeypatch.undo()
 
     # (2) Tiny fullmap at <work>/.fullmap/fullmap.redb (graph.yaml's `fullmap: ".fullmap"` resolves
     #     relative to the build cwd = <work>). Built in a child process so the build-kg subprocess
@@ -124,9 +130,9 @@ def kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
     assertion_refs = [_ref(path, "text/tab-separated-values") for path in sorted(tabular.glob("*_assertions.tsv"))]
     tables_dir = work / "tables"
     config_refs = [_ref(path, "application/x-yaml") for path in sorted(tables_dir.glob("*.yaml"))]
-    # profile is cosmetic here: we call TablassertRunner.run() directly (bypassing the module-level
-    # run() dispatcher that branches on profile); only params["fullmap"] is read by the runner.
-    ctx = TaskContext(profile="prod", workdir=work, fixture_root=_FIXTURE_ROOT, threads=1, memory_budget_gb=1, params={"fullmap": ".fullmap"})
+    # We call TablassertRunner.run() directly (bypassing the module-level run() dispatcher); only
+    # params["fullmap"] is read by the runner.
+    ctx = TaskContext(workdir=work, fixture_root=_FIXTURE_ROOT, params={"fullmap": ".fullmap"})
     report_refs = TablassertRunner().run(assertion_refs, config_refs, ctx)
     report: dict[str, Any] = json.loads(report_refs[0].uri.read_text(encoding="utf-8"))
 

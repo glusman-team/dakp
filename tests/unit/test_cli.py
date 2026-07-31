@@ -10,6 +10,7 @@ exercised separately in ``test_cli_edge.py``.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -92,7 +93,7 @@ def test_up_mock_happy_path_reuses_running_airflow(monkeypatch: pytest.MonkeyPat
     fake = _patch_happy(monkeypatch)  # api_up True -> reuse
     _write_summary(sandbox)
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=False)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 0
     out = capsys.readouterr().out
@@ -113,7 +114,7 @@ def test_up_starts_airflow_when_not_running(monkeypatch: pytest.MonkeyPatch, san
     _patch_happy(monkeypatch, api_up=_bools(False, True))  # down once, then up
     _write_summary(sandbox)
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=False)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 0
     assert started == [1]
@@ -125,22 +126,26 @@ def test_up_starts_airflow_when_not_running(monkeypatch: pytest.MonkeyPatch, san
 def test_up_config_variable_carries_null_limits_and_fullmap(monkeypatch: pytest.MonkeyPatch, sandbox: Path) -> None:
     fake = _patch_happy(monkeypatch)
 
-    cli.run_up(profile="prod", fullmap="/maps/fullmap.redb", port=8090, log_level="DEBUG", detach=False)
+    cli.run_up(fullmap="/maps/fullmap.redb", port=8090, log_level="DEBUG", detach=False)
 
     (variables_call,) = fake.commands_containing("variables")
     config = json.loads(variables_call[-1])
-    assert config["profile"] == "prod"
-    assert config["quarter_limit"] is None  # hardcoded -> profile default
+    assert config["quarter_limit"] is None  # null => unbounded full build
     assert config["release_limit"] is None
+    assert config["force"] is False
+    assert config["threads"] == os.cpu_count()  # Go all-cores contract
     assert config["log_level"] == "DEBUG"
     assert config["fullmap"] == "/maps/fullmap.redb"
     assert config["workdir"] == str(sandbox / "work")
+    # The machine-sizing / profile keys are gone from the Variable.
+    assert "profile" not in config
+    assert "memory_budget_gb" not in config
 
 
 def test_up_success_without_summary_file_still_succeeds(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _patch_happy(monkeypatch)  # no summary file written
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=False)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 0
     assert "SUCCESS" in capsys.readouterr().out
@@ -152,7 +157,7 @@ def test_up_detach_returns_after_trigger(monkeypatch: pytest.MonkeyPatch, sandbo
     fake = _patch_happy(monkeypatch)
     monkeypatch.setattr(cli, "run_state", lambda db, dag_id: states.append("polled") or "success")
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=True)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=True)
 
     assert code == 0
     assert "detached" in capsys.readouterr().out
@@ -168,7 +173,7 @@ def test_up_preflight_reinstall_heals(monkeypatch: pytest.MonkeyPatch, sandbox: 
     fake = _patch_happy(monkeypatch)
     monkeypatch.setattr(cli, "airflow_importable", _bools(False, True))
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=False)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 0
     assert fake.commands_containing("--reinstall-package")
@@ -180,7 +185,7 @@ def test_up_preflight_cache_clean_heals(monkeypatch: pytest.MonkeyPatch, sandbox
     fake = _patch_happy(monkeypatch)
     monkeypatch.setattr(cli, "airflow_importable", _bools(False, False, True))
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=False)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 0
     assert fake.commands_containing("cache")  # a corrupt uv cache was cleaned
@@ -191,7 +196,7 @@ def test_up_preflight_still_broken(monkeypatch: pytest.MonkeyPatch, sandbox: Pat
     fake = _patch_happy(monkeypatch)
     monkeypatch.setattr(cli, "airflow_importable", _bools(False))
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=False)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 1
     assert "still fails to import" in capsys.readouterr().out
@@ -206,7 +211,7 @@ def test_up_go_pack_failure_with_stderr(monkeypatch: pytest.MonkeyPatch, sandbox
     monkeypatch.setattr(cli, "airflow_importable", lambda: True)
     monkeypatch.setattr(cli, "run_subprocess", fake)
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=False)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 1
     out = capsys.readouterr().out
@@ -219,7 +224,7 @@ def test_up_go_pack_failure_without_stderr(monkeypatch: pytest.MonkeyPatch, sand
     monkeypatch.setattr(cli, "airflow_importable", lambda: True)
     monkeypatch.setattr(cli, "run_subprocess", fake)
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=False)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 1
     assert "bundle pack failed" in capsys.readouterr().out
@@ -233,7 +238,7 @@ def test_up_api_never_comes_up(monkeypatch: pytest.MonkeyPatch, sandbox: Path, c
     monkeypatch.setattr(cli, "run_subprocess", FakeSubprocess())
     monkeypatch.setattr(cli, "_tail", lambda path, lines=40: tailed.append(path))
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=False)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 1
     assert "did not come up" in capsys.readouterr().out
@@ -244,7 +249,7 @@ def test_up_dag_never_registers(monkeypatch: pytest.MonkeyPatch, sandbox: Path, 
     _patch_happy(monkeypatch)
     monkeypatch.setattr(cli, "dag_registered", lambda db, dag_id: False)
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=False)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 1
     assert "never registered" in capsys.readouterr().out
@@ -257,7 +262,7 @@ def test_up_trigger_failure_with_stderr(monkeypatch: pytest.MonkeyPatch, sandbox
     monkeypatch.setattr(cli, "dag_registered", lambda db, dag_id: True)
     monkeypatch.setattr(cli, "run_subprocess", fake)
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=False)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 1
     out = capsys.readouterr().out
@@ -272,7 +277,7 @@ def test_up_trigger_failure_without_stderr(monkeypatch: pytest.MonkeyPatch, sand
     monkeypatch.setattr(cli, "dag_registered", lambda db, dag_id: True)
     monkeypatch.setattr(cli, "run_subprocess", fake)
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=False)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 1
     assert "trigger failed" in capsys.readouterr().out
@@ -281,7 +286,7 @@ def test_up_trigger_failure_without_stderr(monkeypatch: pytest.MonkeyPatch, sand
 def test_up_run_failed(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _patch_happy(monkeypatch, run_state="failed")
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=False)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 1
     assert "final=failed" in capsys.readouterr().out
@@ -290,20 +295,10 @@ def test_up_run_failed(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: p
 def test_up_run_times_out(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _patch_happy(monkeypatch, run_state="running")  # never success/failed -> exhausts the poll budget
 
-    code = cli.run_up(profile="mock", fullmap=None, port=8090, log_level="INFO", detach=False)
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 1
     assert "final=timeout" in capsys.readouterr().out
-
-
-def test_up_prod_without_fullmap_fails_fast(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    fake = _patch_happy(monkeypatch)
-
-    code = cli.run_up(profile="prod", fullmap=None, port=8090, log_level="INFO", detach=False)
-
-    assert code == 2
-    assert "--fullmap" in capsys.readouterr().out
-    assert fake.calls == []  # bailed before any subprocess work
 
 
 # --- down -------------------------------------------------------------------------
@@ -414,12 +409,13 @@ def test_down_command_raises_systemexit(monkeypatch: pytest.MonkeyPatch, sandbox
 def test_up_command_raises_systemexit(monkeypatch: pytest.MonkeyPatch, sandbox: Path) -> None:
     _patch_happy(monkeypatch)
     with pytest.raises(SystemExit) as excinfo:
-        cli.up("mock")
+        cli.up()
     assert excinfo.value.code == 0
 
 
 def test_up_command_surfaces_failure_code(monkeypatch: pytest.MonkeyPatch, sandbox: Path) -> None:
-    _patch_happy(monkeypatch)
+    monkeypatch.setattr(cli, "airflow_importable", lambda: True)
+    monkeypatch.setattr(cli, "run_subprocess", FakeSubprocess(fail_markers=("airflow-go-pack",)))
     with pytest.raises(SystemExit) as excinfo:
-        cli.up("prod")  # prod without --fullmap fails fast with code 2
-    assert excinfo.value.code == 2
+        cli.up()  # the Go bundle pack fails -> run_up returns 1, surfaced as the exit code
+    assert excinfo.value.code == 1

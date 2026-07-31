@@ -1,7 +1,8 @@
-"""Unit tests for the FAERS fetcher (Milestone 2).
+"""Unit tests for the FAERS fetcher.
 
-Covers: FDA index parsing (pure), mock fixture discovery + ``quarter_limit`` truncation,
-and the real network path driven entirely through monkeypatched boundaries (no network).
+Covers: FDA index parsing (pure) and the real network path driven entirely through monkeypatched
+boundaries (no network). The real HTTP bodies (``fetch_index`` / ``_http_get_text`` /
+``_http_download``) are covered end-to-end by the integration ``test_prod_smoke.py``.
 """
 
 from __future__ import annotations
@@ -20,10 +21,10 @@ from dakp_pipeline.sources import faers as faers_source
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
 
-def _ctx(wd: Path, *, profile: str = "mock", **params: Any) -> TaskContext:
+def _ctx(wd: Path, **params: Any) -> TaskContext:
     merged: dict[str, Any] = {"quarter_limit": None}
     merged.update(params)
-    return TaskContext(profile=profile, workdir=wd, fixture_root=_FIXTURE_ROOT, threads=1, memory_budget_gb=1, params=merged)
+    return TaskContext(workdir=wd, fixture_root=_FIXTURE_ROOT, params=merged)
 
 
 # --- discover_quarters (pure parser) --------------------------------------------
@@ -52,42 +53,7 @@ def test_discover_quarters_empty_html() -> None:
     assert faers_source.discover_quarters("<html>no links</html>") == []
 
 
-# --- mock profile ---------------------------------------------------------------
-
-
-def test_mock_fetch_returns_all_fixture_families(tmp_path: Path) -> None:
-    refs = faers_source.fetch(_ctx(tmp_path))
-    # 11 fixture .txt files across two quarters (24Q3: 6 families, 24Q2: 5 families).
-    assert len(refs) == 11
-    names = {ref.uri.name for ref in refs}
-    assert {"DEMO24Q3.txt", "DELETE24Q3.txt", "REAC24Q2.txt"} <= names
-    # Every ref resolves to a readable, content-addressed store path with a b3: id.
-    assert all(ref.uri.exists() for ref in refs)
-    assert all(ref.blake3.startswith("b3:") for ref in refs)
-
-
-def test_mock_fetch_honors_quarter_limit(tmp_path: Path) -> None:
-    refs = faers_source.fetch(_ctx(tmp_path, quarter_limit=1))
-    assert len(refs) == 6  # most-recent quarter (24Q3) only
-    assert all("24Q3" in ref.uri.name for ref in refs)
-
-
-def test_mock_fetch_quarter_limit_two_returns_both_quarters(tmp_path: Path) -> None:
-    assert len(faers_source.fetch(_ctx(tmp_path, quarter_limit=2))) == 11
-
-
-@pytest.mark.parametrize("bad", [0, -3])
-def test_mock_fetch_non_positive_limit_means_all(tmp_path: Path, bad: int) -> None:
-    assert len(faers_source.fetch(_ctx(tmp_path, quarter_limit=bad))) == 11
-
-
-def test_mock_fetch_requires_fixture_root(tmp_path: Path) -> None:
-    ctx = TaskContext(profile="mock", workdir=tmp_path, fixture_root=None, threads=1, memory_budget_gb=1, params={})
-    with pytest.raises(ValueError, match="fixture_root"):
-        faers_source.fetch(ctx)
-
-
-# --- real profile (monkeypatched network boundaries) ---------------------------
+# --- real path (monkeypatched network boundaries) -------------------------------
 
 
 def _build_fake_zip(dest: Path) -> None:
@@ -124,7 +90,7 @@ def test_real_fetch_uses_monkeypatched_index_and_download(tmp_path: Path, monkey
 
     monkeypatch.setattr(fetcher, "download_quarter", fake_download)
 
-    refs = fetcher.fetch(_ctx(tmp_path, profile="sample"))
+    refs = fetcher.fetch(_ctx(tmp_path))
     assert len(refs) == 2  # both discovered quarters
     assert captured == ["24Q3", "24Q1"]  # most-recent first
     assert all(ref.uri.suffix == ".zip" for ref in refs)
@@ -134,9 +100,17 @@ def test_real_fetch_honors_quarter_limit(tmp_path: Path, monkeypatch: pytest.Mon
     fetcher = faers_source.FAERSFetcher()
     monkeypatch.setattr(fetcher, "fetch_index", lambda ctx: "<a href='faers_ascii_2024q3.zip'>a</a><a href='faers_ascii_2024q1.zip'>b</a>")
     monkeypatch.setattr(fetcher, "download_quarter", lambda ctx, source: _ingest_fake_zip(ctx.workdir, source))
-    refs = fetcher.fetch(_ctx(tmp_path, profile="sample", quarter_limit=1))
+    refs = fetcher.fetch(_ctx(tmp_path, quarter_limit=1))
     assert len(refs) == 1
     assert "24Q3" in refs[0].uri.name
+
+
+@pytest.mark.parametrize("bad", [0, -3])
+def test_real_fetch_non_positive_limit_means_all(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: int) -> None:
+    fetcher = faers_source.FAERSFetcher()
+    monkeypatch.setattr(fetcher, "fetch_index", lambda ctx: "<a href='faers_ascii_2024q3.zip'>a</a><a href='faers_ascii_2024q1.zip'>b</a>")
+    monkeypatch.setattr(fetcher, "download_quarter", lambda ctx, source: _ingest_fake_zip(ctx.workdir, source))
+    assert len(fetcher.fetch(_ctx(tmp_path, quarter_limit=bad))) == 2
 
 
 def test_module_level_fetch_is_monkeypatchable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
