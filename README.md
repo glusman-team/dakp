@@ -9,10 +9,10 @@ operational entry point and links into [`docs/`](./docs).
 > **Status — final architecture.** The pipeline is **Airflow-native**: the `dakp_build` DAG is the
 > only orchestrator, and the heavy DailyMed/FAERS/Drugs@FDA extraction runs as **native Airflow Go
 > SDK bundle workers** (no subprocess/OS commands). One command runs the whole pipeline end to end:
-> `make install` then `make up-mock` (see the [Quickstart](#quickstart-mocked-laptop-safe)). Real
+> `uv sync` then `uv run dakp up` (see the [Quickstart](#quickstart-mocked-laptop-safe)). Real
 > stdlib-HTTP source downloaders, a single benchmarked NER backend, evidence-rich assertion
 > aggregation, and a delegated Tablassert KGX handoff. The mock profile runs the whole DAG on tiny
-> fixtures with **no network and no Tablassert** (Airflow runs locally via `make up-mock`); the full
+> fixtures with **no network and no Tablassert** (Airflow runs locally via `uv run dakp up`); the full
 > production build runs on the `wenceslaus` host (see
 > [`docs/wenceslaus-runbook.md`](./docs/wenceslaus-runbook.md)). What changed relative to the legacy
 > build — and why it is equivalent-or-better — is documented in
@@ -97,27 +97,26 @@ Requires Python ≥ 3.12, [uv](https://docs.astral.sh/uv/), and a Go toolchain �
 native worker bundle).
 
 ```bash
-make install        # uv sync — ONE command installs ALL runtime + dev deps (Airflow 3, GLiNER, tablassert[qc])
+uv sync             # ONE command: full runtime + dev deps (Airflow 3, GLiNER, tablassert[qc]) + the `dakp` CLI
 uv run pytest -q    # unit + mocked integration (no network; the tests need no running Airflow)
-direnv allow        # load the run config from .envrc (one-time; or `source .envrc`)
-make up-mock        # build+pack the Go bundle, start Airflow, run dakp_build, wait
-make down           # stop the local Airflow
+uv run dakp up      # build+pack the Go bundle, start Airflow, run dakp_build, wait (mock profile; no network)
+uv run dakp down    # stop the local Airflow
 ```
 
-`make up-mock` (and `up-sample` / `up-prod`) build + pack the native Go bundle, start a local
-Airflow (standalone, port 8090) with the Go coordinator configured, provision the task pools, set
-the per-run `dakp_config` Variable, trigger the `dakp_build` DAG, wait for it to finish, and print
-the build summary. All run configuration — `WORKDIR`, `AIRFLOW_PORT`, `QUARTER_LIMIT`,
-`RELEASE_LIMIT`, `LOG_LEVEL`, etc. — lives in [`.envrc`](./.envrc) (direnv), documented there with
-its options. The `up-*` targets pin the profile; override any var inline (e.g.
-`AIRFLOW_PORT=8091 make up-mock`).
+`uv run dakp up` (and `dakp up sample` / `dakp up prod`) build + pack the native Go bundle, start a
+local Airflow (standalone, port 8090) with the Go coordinator configured, provision the task pools,
+set the per-run `dakp_config` Variable, trigger the `dakp_build` DAG, wait for it to finish, and
+print the build summary. The CLI is fully self-contained: run locations (workdir, Airflow home,
+fixture root) and scope are built-in constants and it reads **no environment variables**. The only
+inputs are the profile positional and a few flags — `--fullmap/-f` (the prebuilt fullmap redb;
+required for `prod`), `--port/-p`, `--log-level/-l`, and `--detach/-d` (trigger and return without
+waiting). See `uv run dakp up --help`.
 
 The mock run needs no network and no real Tablassert. It writes three uncompressed TSV assertion
 tables, generated Tablassert configs, a build summary, and a deferred-handoff manifest (see
 [Where things land](#where-things-land)). The **test suite runs offline** — NER defaults to a
 deterministic gazetteer and the mock profile defers the Tablassert handoff — but a single
-`make install` (`uv sync`) installs the entire production runtime in one command (there are no
-optional extras).
+`uv sync` installs the entire production runtime in one command (there are no optional extras).
 
 ## Profiles
 
@@ -135,26 +134,28 @@ The heavy extraction always runs as **native Go workers** (the Airflow Go SDK bu
 only sizes concurrency/memory and selects sources + the Tablassert handoff mode.
 
 The real fetchers use stdlib HTTP (no `requests`) and are content-addressed and idempotent.
-`prod` defaults to the full scope (`QUARTER_LIMIT` / `RELEASE_LIMIT` empty in `.envrc` = all
-quarters/releases) and runs the real Tablassert handoff; bound it with `QUARTER_LIMIT` /
-`RELEASE_LIMIT` for a tiny real smoke run (below).
+`prod` defaults to the full scope (all quarters/releases) and runs the real Tablassert handoff
+against the fullmap you pass with `--fullmap`. The CLI does not bound scope; for a tiny offline
+exercise of the real code path, run the bounded smoke test (below).
 
-## Makefile targets
+## CLI commands
 
-The Makefile is deliberately minimal — just the run controls. All run configuration lives in
-[`.envrc`](./.envrc) (direnv); each variable is documented there with its options. `make help` lists
-the targets.
+The `dakp` CLI (installed by `uv sync`) is the single run control. It is fully self-contained — run
+locations (workdir, Airflow home, fixture root) and scope are built-in constants, and it reads **no
+environment variables**. `uv run dakp --help` lists the commands; `uv run dakp up --help` lists the
+`up` flags.
 
-| Target | What it does |
+| Command | What it does |
 | --- | --- |
-| `make install` | `uv sync` — ONE command installs every runtime + dev dep (Airflow 3, GLiNER NER, `tablassert[qc]`) |
-| `make up-mock` | end-to-end run on the `mock` profile (fixtures; no network) via Airflow |
-| `make up-sample` | end-to-end run on the `sample` profile (real sources, bounded scope) |
-| `make up-prod` | end-to-end run on the `prod` profile (real build; scope from `.envrc`) |
-| `make down` | stop the local Airflow started by the `up-*` targets |
-| `make clean` | remove caches, coverage data, the Go binary, and `tmp/` |
+| `uv run dakp up [profile]` | end-to-end run on `profile` (`mock` default / `sample` / `prod`) via local Airflow |
+| `uv run dakp up prod --fullmap <path>` | the real full-scope build, handed the prebuilt fullmap redb |
+| `uv run dakp down` | stop the local Airflow started by `up` |
+| `uv run dakp clean` | remove caches, coverage data, the Go binary, and `tmp/` |
 
-Quality gates have no make wrapper — run them directly:
+`uv sync` itself is the one-command install of every runtime + dev dep (Airflow 3, GLiNER NER,
+`tablassert[qc]`) plus the `dakp` CLI.
+
+Quality gates have no CLI wrapper — run them directly:
 
 ```bash
 uv run pytest -q                    # tests (branch coverage: uv run pytest --cov, fail_under = 100)
@@ -169,22 +170,20 @@ The full profile targets `wenceslaus` (Ubuntu 24.04, dual Xeon Gold 6230 / 80 lo
 the fullmap build and the full prod KG are wenceslaus-only, while mock/sample runs and NER are
 laptop-safe. The exact commands are in [`docs/wenceslaus-runbook.md`](./docs/wenceslaus-runbook.md).
 
-### Bounded `prod` smoke run (laptop-safe with network)
+### Validating the real path (bounded, offline)
 
-To validate the **real** fetcher → extractor → NER → aggregation → Tablassert-handoff path without
-the multi-TB full build, bound the scope so only one FAERS quarter and one DailyMed release are
-processed:
+The CLI's `prod` run is always **full-scope** (it reads no env vars and offers no scope flags) and is
+wenceslaus-only. To validate the **real** fetcher → extractor → NER → aggregation → Tablassert-handoff
+path without the multi-TB full build, run the bounded offline smoke test, which exercises the exact
+same real stage code (via the `run_pipeline` harness) with the HTTP layer mocked — one FAERS quarter
+and one DailyMed release:
 
 ```bash
-QUARTER_LIMIT=1 RELEASE_LIMIT=1 WORKDIR=/tmp/dakp-prod-smoke make up-prod
+uv run pytest tests/integration/test_prod_smoke.py -q
 ```
 
-The `dakp_config` Variable that `make up-prod` sets carries the profile + scope. `QUARTER_LIMIT` /
-`RELEASE_LIMIT` empty (the [`.envrc`](./.envrc) default) mean "profile default" — for `prod` that is
-**all** quarters/releases (the full-scope build); set them to a number to bound a smoke run. The offline
-integration test [`tests/integration/test_prod_smoke.py`](./tests/integration/test_prod_smoke.py)
-exercises the exact same real stage code path (via the `run_pipeline` harness) with the HTTP layer
-mocked, so it passes in CI with no network.
+It passes in CI with no network. The full-scope production build itself is
+`uv run dakp up prod --fullmap <path>` (see [`docs/wenceslaus-runbook.md`](./docs/wenceslaus-runbook.md)).
 
 ## The DAG
 
@@ -298,7 +297,7 @@ The fetcher/extractor/shaper pattern is uniform and monkeypatchable. To add sour
 ## Dependency philosophy
 
 Lean runtime, stdlib-first where practical. There are **no optional extras** — one `uv sync`
-(`make install`) installs the entire production runtime: **apache-airflow (3.x — the pipeline is
+installs the entire production runtime: **apache-airflow (3.x — the pipeline is
 Airflow-native), polars, loguru, blake3, pydantic, pendulum**, the biomedical NER backend
 (**gliner** zero-shot, pulls torch), and **`tablassert[qc]`** (the KG build plus its embedding-based
 `--qc` audit). GLiNER is still lazy-imported (module load never touches torch) and the mock profile

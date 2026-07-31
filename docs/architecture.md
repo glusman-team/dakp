@@ -207,7 +207,7 @@ Consequently, **every worker that runs any task must see the same workdir / cont
 store**, and **every worker that runs an `extract_*` task must have the packed bundle in its
 `executables_root`**:
 
-- **LocalExecutor (`make up-mock`, single host):** automatic — one machine, one filesystem. The
+- **LocalExecutor (`uv run dakp up`, single host):** automatic — one machine, one filesystem. The
   orchestrator builds the bundle into `$AIRFLOW_HOME/executable-bundles` and points the coordinator
   at it; the workdir is local.
 - **CeleryExecutor / distributed workers:** the workdir + store must live on a **shared/networked
@@ -215,8 +215,8 @@ store**, and **every worker that runs an `extract_*` task must have the packed b
   deployed to `executables_root` on every worker that serves the `golang` queue. Otherwise a Go
   extract task on worker B cannot read the raw artifacts worker A acquired.
 
-Required Airflow config (set by `scripts/dakp_up.sh` via `AIRFLOW__*` env vars; equivalently
-`airflow.cfg`):
+Required Airflow config (set by the `dakp up` orchestrator ([`cli.py`](../src/dakp_pipeline/cli.py))
+via `AIRFLOW__*` env vars; equivalently `airflow.cfg`):
 
 - `[sdk] coordinators` — register `airflow.sdk.coordinators.executable.ExecutableCoordinator` with
   `executables_root` pointing at the packed-bundle directory.

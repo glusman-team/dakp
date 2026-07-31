@@ -107,7 +107,7 @@ That's it. `dakp-worker faers ...` now works, and `dakp-worker help` lists it. R
 ## How Airflow runs the bundle (native workers)
 
 The production path is the Airflow Go SDK bundle. Build + pack it into the coordinator's
-`executables_root` (the one-command `make up-mock` does this automatically):
+`executables_root` (the one-command `uv run dakp up` does this automatically):
 
 ```bash
 go tool airflow-go-pack --output <executables_root>/dakp-bundle ./cmd/dakp-bundle

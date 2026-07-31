@@ -998,6 +998,7 @@ source = { editable = "." }
 dependencies = [
     { name = "apache-airflow" },
     { name = "blake3" },
+    { name = "cyclopts" },
     { name = "gliner" },
     { name = "huggingface-hub" },
     { name = "loguru" },
@@ -1020,6 +1021,7 @@ dev = [
 requires-dist = [
     { name = "apache-airflow", specifier = ">=3,<4" },
     { name = "blake3", specifier = ">=1.0.0" },
+    { name = "cyclopts", specifier = ">=4" },
     { name = "gliner", specifier = ">=0.1.15" },
     { name = "huggingface-hub", specifier = ">=0.24" },
     { name = "loguru", specifier = ">=0.7.3" },

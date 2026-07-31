@@ -190,8 +190,8 @@ def _download_one(url: str, staging: Path, store: ArtifactStore) -> list[Artifac
 def _apply_release_limit(urls: list[str], ctx: TaskContext) -> list[str]:
     """Slice to the first N full releases when ``release_limit`` is set (<=0 / None = all).
 
-    Bounds a ``prod``/``sample`` smoke run to a tiny real DailyMed scope (e.g.
-    ``RELEASE_LIMIT=1 make up-prod``), mirroring FAERS ``quarter_limit``.
+    Bounds a ``prod``/``sample`` run to a tiny real DailyMed scope (e.g. ``release_limit=1`` via the
+    ``run_pipeline`` harness, as the offline prod smoke test does), mirroring FAERS ``quarter_limit``.
     """
     limit = ctx.params.get("release_limit")
     if not isinstance(limit, int) or limit <= 0:

@@ -161,7 +161,7 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
         profile="prod",
         fixture_root=_FIXTURE_ROOT,  # only loads the disease map; fetchers DOWNLOAD (mock_sources=False)
         workdir=workdir,
-        params={"quarter_limit": 1, "release_limit": 1},
+        params={"quarter_limit": 1, "release_limit": 1, "fullmap": str(tmp_path / "fullmap.redb")},
     )
 
     # A real (non-mock) profile drove the run.

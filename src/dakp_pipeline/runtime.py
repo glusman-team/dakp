@@ -50,6 +50,8 @@ def build_context_from_config(cfg: Mapping[str, Any]) -> TaskContext:
     extra: dict[str, object] = {}
     if profile.download.drugsfda_url:
         extra["drugsfda_url"] = profile.download.drugsfda_url
+    if cfg.get("fullmap") is not None:
+        extra["fullmap"] = str(cfg["fullmap"])
     return build_context(profile, wd, cfg.get("fixture_root"), extra or None)
 
 

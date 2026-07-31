@@ -18,38 +18,34 @@ runs offline: NER defaults to the deterministic gazetteer and the mock profile d
 ## Running the mock pipeline
 
 ```bash
-make up-mock    # build+pack the Go bundle, start Airflow, run dakp_build, wait
-make down       # stop the local Airflow when done
+uv run dakp up    # build+pack the Go bundle, start Airflow, run dakp_build, wait (mock profile)
+uv run dakp down  # stop the local Airflow when done
 ```
 
-`make up-mock` builds + packs the native Go bundle, starts a local Airflow (standalone, port 8090)
+`uv run dakp up` builds + packs the native Go bundle, starts a local Airflow (standalone, port 8090)
 with the Go coordinator + pools configured, sets the `dakp_config` Variable (mock profile, fixtures
-under `tests/fixtures/pipeline`), triggers `dakp_build`, and waits. All run configuration (`WORKDIR`,
-`AIRFLOW_PORT`, `QUARTER_LIMIT`, `RELEASE_LIMIT`, `LOG_LEVEL`, ...) lives in
-[`../.envrc`](../.envrc) (direnv); the `up-sample` / `up-prod` targets select other profiles.
-Outputs land under the workdir (default `tmp/airflow-run/data/`; see
+under `tests/fixtures/pipeline`), triggers `dakp_build`, and waits. The CLI is self-contained (run
+locations and scope are built-in constants; it reads no env vars); `dakp up sample` / `dakp up prod`
+select other profiles. Outputs land under the workdir (`tmp/airflow-run/data/`; see
 [`../README.md`](../README.md#where-things-land)). A successful run prints `SUCCESS` and the
 `build_summary.json` path. It needs no network and no real Tablassert (the mock profile defers the
 handoff).
 
-## Running a bounded `prod` smoke run
+## Running a bounded `prod` smoke run (offline)
 
-The `prod` profile runs the **real** fetchers/extractors/NER/aggregation. Bound the scope so a smoke
-run stays tiny (one FAERS quarter, one DailyMed release):
+The `prod` profile runs the **real** fetchers/extractors/NER/aggregation. The CLI's `prod` run is
+always full-scope (wenceslaus-only), so to keep a smoke run tiny (one FAERS quarter, one DailyMed
+release) and offline, use the bounded smoke test, which drives the same real stage code via the
+`run_pipeline` harness with the HTTP layer mocked:
 
 ```bash
-QUARTER_LIMIT=1 RELEASE_LIMIT=1 WORKDIR=/tmp/dakp-prod-smoke make up-prod
+uv run pytest -q tests/integration/test_prod_smoke.py
 ```
 
-(`QUARTER_LIMIT`/`RELEASE_LIMIT` empty — the [`../.envrc`](../.envrc) default — mean "profile
-default"; for `prod` that is all quarters/releases. Set them to a number, as above, to bound a smoke
-run; no script edits needed.)
-
-This hits the real FDA/DailyMed network endpoints. For an **offline** exercise of the same real code
-path (HTTP layer mocked, fixtures served "as if downloaded"), run
-`uv run pytest -q tests/integration/test_prod_smoke.py` — it passes in CI with no network. The
-Tablassert *handoff* runs its real runner; only the `tablassert` subprocess is faked (tablassert is
-installed, but the smoke run stays offline).
+It passes in CI with no network (fixtures served "as if downloaded"). The Tablassert *handoff* runs
+its real runner; only the `tablassert` subprocess is faked (tablassert is installed, but the smoke
+run stays offline). The full-scope networked build is `uv run dakp up prod --fullmap <path>` (see
+[`wenceslaus-runbook.md`](./wenceslaus-runbook.md)).
 
 ## Common failures
 
@@ -58,13 +54,7 @@ installed, but the smoke run stays offline).
 `sample` and `prod` run the real stdlib-HTTP downloaders (DailyMed full releases, FAERS quarterly
 zips, Drugs@FDA data files), so they need network access to the FDA/DailyMed endpoints. A fetch
 failure raises loudly (no silent fixture fallback). **Fix:** check connectivity/proxy, or validate
-the real path offline with the bounded smoke test above. Bound scope with `QUARTER_LIMIT` /
-`RELEASE_LIMIT` (in [`../.envrc`](../.envrc)) to keep a real run small.
-
-### `--fixture-root is required for the mock profile`
-
-The CLI enforces this ([`cli.py`](../src/dakp_pipeline/cli.py)). **Fix:** pass
-`--fixture-root tests/fixtures/pipeline`.
+the real path offline with the bounded smoke test above (the CLI's `prod` run is full-scope).
 
 ### `fixture not found: <path>` / `cannot ingest missing file`
 
@@ -76,14 +66,14 @@ path in the relevant [`sources/<x>.py`](../src/dakp_pipeline/sources/) module ag
 
 A full (non-mock) run reached `run_tablassert` with `run_tablassert=True` but `tablassert` is not
 importable and no editable-checkout override is set. There is deliberately **no local KGX
-fallback**. **Fix:** `uv sync` (or `make install`), or point at a local checkout via
+fallback**. **Fix:** `uv sync`, or point at a local checkout via
 `DAKP_TABLASERT_DIR` / the `tablassert_dir` param. The mock profile defers the handoff and never
 needs Tablassert.
 
 ### `NERDependencyError: … reinstall with uv sync`
 
 A production-mode `DiseaseNER(offline=False)` ran but `gliner` is somehow not importable.
-**Fix:** `uv sync` (or `make install`). Offline mode (the default, used by tests and
+**Fix:** `uv sync`. Offline mode (the default, used by tests and
 the mock pipeline) never imports the heavy NER deps.
 
 ### `subject_curie` / `object_curie` empty in the output TSVs
@@ -103,11 +93,11 @@ per-table `missing_columns` list, then check the corresponding shaper in
 
 ### The DAG did not register / Airflow does not see `dakp_build`
 
-Airflow 3 is a hard dependency, so the DAG always constructs; `make up-mock` points
+Airflow 3 is a hard dependency, so the DAG always constructs; `uv run dakp up` points
 `AIRFLOW__CORE__DAGS_FOLDER` at `src/dakp_pipeline/dags`. **Fix:** check the DAG parsed without
 import errors (`airflow dags list-import-errors`) and that the dag-processor has refreshed
-(`make up-mock` waits for registration). If a task is stuck `scheduled`, ensure the `dakp_download` /
-`dakp_extract` pools exist (`make up-mock` provisions them; `airflow pools list` to verify).
+(`uv run dakp up` waits for registration). If a task is stuck `scheduled`, ensure the `dakp_download` /
+`dakp_extract` pools exist (`uv run dakp up` provisions them; `airflow pools list` to verify).
 
 ## Reruns
 
@@ -196,4 +186,4 @@ The integration tests are the canonical examples of substituting every external 
 - [`wenceslaus-runbook.md`](./wenceslaus-runbook.md) — the full production build (fullmap + prod KG).
 - [`logging.md`](./logging.md) — reading a failed run from logs, summary, and manifests.
 - [`architecture.md`](./architecture.md) — the content-addressed store and provenance DAG.
-- [`../README.md`](../README.md) — profiles, quickstart, and Makefile targets.
+- [`../README.md`](../README.md) — profiles, quickstart, and CLI commands.

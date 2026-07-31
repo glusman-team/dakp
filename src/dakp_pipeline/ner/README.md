@@ -61,7 +61,7 @@ time) and the whole test suite runs offline. If a dep is somehow not importable,
 Reinstall the full runtime to use production mode:
 
 ```bash
-uv sync    # or: make install
+uv sync
 ```
 
 The NER deps are intentionally heavy (pull torch/transformers) but are part of the one required

@@ -31,6 +31,7 @@ classifiers = [
 dependencies = [
     "apache-airflow>=3,<4",
     "blake3>=1.0.0",
+    "cyclopts>=4",
     "gliner>=0.1.15",
     "huggingface_hub>=0.24",
     "loguru>=0.7.3",
@@ -48,6 +49,9 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.15.6",
 ]
+
+[project.scripts]
+dakp = "dakp_pipeline.cli:app"
 
 [build-system]
 requires = ["hatchling>=1.27"]

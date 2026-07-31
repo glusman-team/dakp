@@ -42,7 +42,6 @@ from dakp_pipeline.io.manifests import OperationBlock
 from dakp_pipeline.paths import Workdir
 
 DEFAULT_TABLASERT_DIR = "../Tablassert"
-DEFAULT_FULLMAP = ".fullmap"
 TABLASERT_DIR_ENV = "DAKP_TABLASERT_DIR"
 REPORT_NAME = "tablassert_handoff.json"
 _REPORT_SCHEMA = "dakp.tablassert_handoff.v1"
@@ -151,7 +150,15 @@ class TablassertRunner:
 
     def run(self, assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
         graph_yaml = _find_graph(config_refs, ctx)
-        fullmap = str(ctx.params.get("fullmap") or DEFAULT_FULLMAP)
+        fullmap_value = ctx.params.get("fullmap")
+        if not fullmap_value:
+            msg = (
+                "a fullmap redb path is required for a real Tablassert handoff but none was provided: pass "
+                "`--fullmap <path>` to `dakp up` (DAKP no longer downloads a fullmap; build one with "
+                "`tablassert build-fullmap`)"
+            )
+            raise RuntimeError(msg)
+        fullmap = str(fullmap_value)
         tablassert_dir = _resolve_tablassert_dir(self.tablassert_dir, ctx.params.get("tablassert_dir"))
         if tablassert_dir is None and not tablassert_available():
             msg = (
@@ -221,7 +228,6 @@ def run(assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: 
 
 
 __all__ = [
-    "DEFAULT_FULLMAP",
     "DEFAULT_TABLASERT_DIR",
     "REPORT_NAME",
     "TABLASERT_DIR_ENV",

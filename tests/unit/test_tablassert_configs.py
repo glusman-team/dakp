@@ -198,7 +198,7 @@ def test_graph_config_structure() -> None:
     assert graph["version"]
     assert graph["description"]
     assert graph["infores"] == INFORES_DAKP
-    assert graph["fullmap"] == ".fullmap"
+    assert graph["fullmap"] == ".fullmap"  # placeholder; the runner overrides it with --fullmap <path>
     assert graph["tables"] == ["tables/approved_treats.yaml", "tables/faers_applied_to_treat.yaml", "tables/contraindications.yaml"]
 
 
@@ -374,7 +374,7 @@ def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
 
-    refs = TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir))
+    refs = TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="data/fullmap"))
 
     assert len(refs) == 1
     # The subprocess hook was invoked once, from the workdir root, with the build-kg command.
@@ -382,7 +382,7 @@ def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
     command, cwd = calls[0]
     assert cwd == workdir.root
     assert command[:4] == ["uv", "run", "tablassert", "build-kg"]
-    assert command[-2:] == ["--fullmap", ".fullmap"]
+    assert command[-2:] == ["--fullmap", "data/fullmap"]
     assert command[4] == str(workdir.root / "tables" / "graph.yaml")
 
     report = _read_report(workdir)
@@ -407,7 +407,7 @@ def test_real_runner_records_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
-    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir))
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="data/fullmap"))
 
     report = _read_report(workdir)
     assert report["mode"] == "real"
@@ -448,6 +448,17 @@ def test_real_runner_raises_when_tablassert_missing(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(_RUN_MODULE, "tablassert_available", lambda: False)
 
     with pytest.raises(RuntimeError, match="uv sync"):
+        TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="data/fullmap"))
+
+
+def test_real_runner_raises_when_fullmap_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    workdir = Workdir(tmp_path / "work")
+    workdir.create()
+    assertion_refs = _assertion_refs(workdir)
+    config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
+
+    _patch_installed(monkeypatch)
+    with pytest.raises(RuntimeError, match="fullmap"):
         TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir))
 
 
@@ -466,7 +477,7 @@ def test_real_runner_appends_qc_when_runtime_available(monkeypatch: pytest.Monke
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "qc_runtime_available", lambda: True)
     monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
-    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, qc=True))
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, qc=True, fullmap="data/fullmap"))
 
     assert "--qc" in seen[0]
     assert _read_report(workdir)["qc"] is True
@@ -487,7 +498,7 @@ def test_real_runner_skips_qc_when_runtime_missing(monkeypatch: pytest.MonkeyPat
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "qc_runtime_available", lambda: False)
     monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
-    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, qc=True))
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, qc=True, fullmap="data/fullmap"))
 
     assert "--qc" not in seen[0]
     assert _read_report(workdir)["qc"] is False
@@ -507,7 +518,7 @@ def test_real_runner_appends_release_flag(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
-    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, release=True))
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, release=True, fullmap="data/fullmap"))
 
     assert "--release" in seen[0]
     assert _read_report(workdir)["release"] is True
@@ -545,5 +556,5 @@ def test_run_dispatches_to_real_outside_mock_profile(monkeypatch: pytest.MonkeyP
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
 
-    run_tablassert(assertion_refs, config_refs, _ctx(workdir, profile="prod", run_tablassert=True))
+    run_tablassert(assertion_refs, config_refs, _ctx(workdir, profile="prod", run_tablassert=True, fullmap="data/fullmap"))
     assert _read_report(workdir)["mode"] == "real"

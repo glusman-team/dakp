@@ -44,6 +44,10 @@ INFORES_DAKP = "infores:multiomics-drugapprovals"
 AGENT_TYPE = "manual_validation_of_automated_agent"
 
 GRAPH_NAME = "dakp"
+#: Placeholder ``fullmap`` written into ``graph.yaml``. Tablassert's ``Graph`` model REQUIRES a
+#: ``fullmap`` field, so the generated config carries this placeholder; the runner always overrides
+#: it with the explicit ``--fullmap <path>`` CLI arg (the user-supplied prebuilt fullmap redb). DAKP
+#: never downloads a fullmap — see ``tablassert/run.py`` (which requires ``ctx.params["fullmap"]``).
 FULLMAP_DEFAULT = ".fullmap"
 SOURCE_URL_BASE = "https://example.invalid/dakp/generated"
 GRAPH_DESCRIPTION = (
@@ -290,9 +294,11 @@ def generate(assertion_refs: list[ArtifactRef], ctx: TaskContext) -> list[Artifa
     """Write ``tables/graph.yaml`` plus one table config per assertion table into the workdir.
 
     Configs land in ``<workdir>/tables/`` so their workdir-relative references
-    (``tables/<name>.yaml``, ``data/tabular/<table>.tsv``, ``.fullmap``) resolve when
-    Tablassert runs from the workdir root. Returns ``[graph_ref, *table_refs]`` in the
-    canonical table order; assertion refs are linked as input provenance by table stem.
+    (``tables/<name>.yaml``, ``data/tabular/<table>.tsv``) resolve when Tablassert runs from the
+    workdir root. ``graph.yaml`` carries a placeholder ``fullmap`` (:data:`FULLMAP_DEFAULT`, required
+    by Tablassert's ``Graph`` model) that the runner overrides with the explicit ``--fullmap <path>``
+    CLI arg. Returns ``[graph_ref, *table_refs]`` in the canonical table order; assertion refs are
+    linked as input provenance by table stem.
     """
     workdir = Workdir(ctx.workdir)
     store = ArtifactStore(workdir)

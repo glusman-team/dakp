@@ -1,7 +1,7 @@
 """DAG wiring tests for the Airflow-native ``dakp_build`` DAG (Airflow 3 is a hard dependency).
 
 The DAG always imports and constructs (no optional-extra guard). These tests assert the module
-constants, the 14-task graph, that the three ``extract_*`` tasks are native Go SDK stubs routed to
+constants, the 13-task graph, that the three ``extract_*`` tasks are native Go SDK stubs routed to
 the ``golang`` queue, and that acquisition runs on the download pool.
 """
 
@@ -14,7 +14,6 @@ _EXPECTED_TASK_IDS = {
     "acquire_faers",
     "acquire_drugsfda",
     "acquire_ner_models",
-    "acquire_ontologies",
     "extract_dailymed",
     "extract_faers",
     "extract_drugsfda",
@@ -27,7 +26,7 @@ _EXPECTED_TASK_IDS = {
 }
 
 _GO_STUB_IDS = {"extract_dailymed", "extract_faers", "extract_drugsfda"}
-_ACQUIRE_IDS = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ner_models", "acquire_ontologies"}
+_ACQUIRE_IDS = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ner_models"}
 
 
 def test_module_constants() -> None:
@@ -80,7 +79,7 @@ def test_dag_task_graph() -> None:
 
     shapes = {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"}
     assert upstream("generate_tablassert_configs") == shapes
-    assert upstream("run_tablassert") == shapes | {"generate_tablassert_configs", "acquire_ontologies"}
+    assert upstream("run_tablassert") == shapes | {"generate_tablassert_configs"}
     assert upstream("write_build_summary") == shapes | {"run_tablassert"}
 
     # The summary is terminal.

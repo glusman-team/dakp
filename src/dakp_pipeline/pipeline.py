@@ -3,7 +3,7 @@
 The production orchestrator is the Airflow DAG (:mod:`dakp_pipeline.dags.dakp_build`); the CLI that
 used to wrap this runner is retired (see plans/airflow-native-go-workers.md). ``run_pipeline`` is
 kept as a fast, Airflow-free way to exercise the stage functions and the **pure-Python reference
-extractors** end-to-end (the native Go extractors are validated by ``make up-mock`` + the Go parity
+extractors** end-to-end (the native Go extractors are validated by ``uv run dakp up`` + the Go parity
 tests). It wires every stage exactly as the DAG does and shares the same context/summary helpers
 (:mod:`dakp_pipeline.runtime`), so its outputs match the DAG's.
 
@@ -68,7 +68,7 @@ def run_pipeline(
 
     Stages: acquire -> extract -> shape assertions -> generate Tablassert configs -> Tablassert
     handoff -> translator contract + regression -> build summary. This is an Airflow-free test/dev
-    harness; real Airflow execution is the DAG's job (``make up-mock``).
+    harness; real Airflow execution is the DAG's job (``uv run dakp up``).
     """
     resolved_profile = load_profile(profile)
     wd = Workdir(Path(workdir))

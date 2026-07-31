@@ -30,8 +30,6 @@ class DownloadConfig(BaseModel):
 
     concurrency: int = Field(default=4, ge=1, description="Max concurrent source downloads (sizes the Airflow download pool / acquire_all workers).")
     ner_model_ids: tuple[str, ...] = Field(default_factory=tuple, description="NER model ids to cache; empty = backend default (mock acquires none).")
-    fullmap_source: str | None = Field(default=None, description="fullmap redb source URL/path for Tablassert resolution; None = acquire-layer stub.")
-    ontology_sources: dict[str, str] = Field(default_factory=dict, description="Extra ontology term-list sources as name -> URL/path.")
     drugsfda_url: str | None = Field(default=None, description="Override the Drugs@FDA data-files ZIP URL (forwarded to the fetcher).")
 
 

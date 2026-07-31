@@ -11,7 +11,7 @@ Tasks pass ``list[ArtifactRef]`` manifests over XCom (serialized to JSON dicts v
 :mod:`dakp_pipeline.io.xcom` so the native Go workers read/write the same manifests); heavy bytes
 move through the BLAKE3 content-addressed filesystem store. Run config (workdir / profile /
 fixtures) comes from the ``dakp_config`` Airflow Variable, set by the one-command orchestrator
-(``make up-mock``) and shared by the Python tasks and the Go bundle.
+(``dakp up``) and shared by the Python tasks and the Go bundle.
 """
 
 from __future__ import annotations
@@ -77,10 +77,6 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
     def acquire_ner_models() -> list[dict[str, Any]]:
         return refs_to_xcom(acquire.acquire_ner_models(_ctx()))
 
-    @task(pool=DOWNLOAD_POOL)
-    def acquire_ontologies() -> list[dict[str, Any]]:
-        return refs_to_xcom(acquire.acquire_ontologies(_ctx()))
-
     # -- extraction (native Go SDK bundle workers) ------------------------------
     # No Python body: the ExecutableCoordinator forks the Go bundle, which reads the upstream
     # acquire_* ArtifactRefs from XCom, parses with internal/{dailymed,faers,drugsfda}, writes the
@@ -119,10 +115,7 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
         return refs_to_xcom(tablassert_configs.generate(refs, _ctx()))
 
     @task
-    def run_tablassert(approved: Any, uses: Any, contra: Any, configs: Any, ontologies: Any) -> list[dict[str, Any]]:
-        # ``ontologies`` (fullmap redb / term lists) is an ordering dependency: Tablassert resolves
-        # canonical entities against the fullmap acquired by acquire_ontologies.
-        del ontologies
+    def run_tablassert(approved: Any, uses: Any, contra: Any, configs: Any) -> list[dict[str, Any]]:
         assertion_refs = [*refs_from_xcom(approved), *refs_from_xcom(uses), *refs_from_xcom(contra)]
         return refs_to_xcom(tablassert.run(assertion_refs, refs_from_xcom(configs), _ctx()))
 
@@ -141,7 +134,6 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
     faers_raw = acquire_faers()
     drugsfda_raw = acquire_drugsfda()
     ner_models = acquire_ner_models()
-    ontologies = acquire_ontologies()
 
     dm_ext = extract_dailymed(dm_raw)
     faers_ext = extract_faers(faers_raw)
@@ -152,7 +144,7 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
     contra = shape_contraindication_tables(dm_ext, ner_models)
 
     configs = generate_tablassert_configs(approved, uses, contra)
-    kgx = run_tablassert(approved, uses, contra, configs, ontologies)
+    kgx = run_tablassert(approved, uses, contra, configs)
     write_build_summary(approved, uses, contra, kgx)
 
 

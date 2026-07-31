@@ -12,7 +12,7 @@ KGX compilation, dedup, deterministic IDs, or RIG generation.
 ## Tablassert is the installed PyPI package
 
 KGX compilation uses the **installed `tablassert` CLI** (PyPI `8.0.0`, a core dependency) — not a
-local checkout. Install with `uv sync` (or `make install`). The runner shells out to the venv
+local checkout. Install with `uv sync`. The runner shells out to the venv
 `tablassert` binary (falling back to `uv run tablassert`) and captures
 stdout / exit code into the handoff report. An optional editable-checkout override (the
 `tablassert_dir` ctx param, the `DAKP_TABLASERT_DIR` env var, or `TablassertRunner.tablassert_dir`)
