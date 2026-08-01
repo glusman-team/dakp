@@ -1,6 +1,7 @@
 package airflow
 
 import (
+	"archive/zip"
 	"context"
 	"os"
 	"path/filepath"
@@ -91,4 +92,53 @@ func refNames(refs []ArtifactRef) []string {
 		out = append(out, filepath.Base(r.URI))
 	}
 	return out
+}
+
+// TestExtractDrugsFDAFromZip covers the real download shape: the Drugs@FDA data-files zip carries
+// Products/Applications/Submissions as members at the archive root. StageInputs only links the zip
+// into inDir, so ExtractDrugsFDA must unpack the members and extract them like the loose fixtures.
+func TestExtractDrugsFDAFromZip(t *testing.T) {
+	files, err := filepath.Glob("../drugsfda/testdata/*.tsv")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("drugsfda fixtures: %v (%d)", err, len(files))
+	}
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "drugsfda_data_files.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	for _, fpath := range files {
+		body, err := os.ReadFile(fpath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w, err := zw.Create(filepath.Base(fpath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := blake3store.HashFile(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Workdir: t.TempDir(), Profile: "mock", Threads: 4}
+	got, err := ExtractDrugsFDA(context.Background(), cfg, []ArtifactRef{{URI: zipPath, Blake3: id, MediaType: "application/zip"}})
+	if err != nil {
+		t.Fatalf("ExtractDrugsFDA(zip): %v", err)
+	}
+	if len(got) == 0 || filepath.Base(got[0].URI) != "products.parquet" {
+		t.Fatalf("got %v, want products.parquet first", refNames(got))
+	}
 }

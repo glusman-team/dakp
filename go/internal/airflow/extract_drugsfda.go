@@ -1,11 +1,14 @@
 package airflow
 
 import (
+	"archive/zip"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/glusman-team/dakp/go/internal/drugsfda"
 )
@@ -41,6 +44,9 @@ func ExtractDrugsFDA(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 	defer os.RemoveAll(scratch)
 	inDir := filepath.Join(scratch, "in")
 	if err := StageInputs(inputs, inDir); err != nil {
+		return nil, err
+	}
+	if err := unpackDrugsFDAZips(inDir); err != nil {
 		return nil, err
 	}
 
@@ -139,6 +145,57 @@ func writeDrugsFDAParquet(store Store, dir, name string, columns []string, rows 
 		SchemaFingerprint: SchemaFingerprint(columns), Inputs: inputIDs,
 		Warnings: warnings, Operation: "extract_drugsfda_" + name,
 	})
+}
+
+// unpackDrugsFDAZips extracts the members of any .zip files directly under inDir into inDir (flat,
+// basename only), so the Drugs@FDA ASCII tables (Products.txt / Applications.txt / Submissions.txt)
+// that ship inside the downloaded data-files zip become discoverable as loose files. Loose tables
+// (the fixture mirrors) are left untouched. Mirrors the Python collector, which reads the tables
+// straight out of the zip.
+func unpackDrugsFDAZips(inDir string) error {
+	entries, err := os.ReadDir(inDir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".zip") {
+			continue
+		}
+		if err := extractZipFlat(filepath.Join(inDir, e.Name()), inDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// extractZipFlat writes each non-directory member of zipPath to destDir under its basename.
+func extractZipFlat(zipPath, destDir string) error {
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	for _, f := range reader.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		dst, err := os.Create(filepath.Join(destDir, filepath.Base(f.Name)))
+		if err != nil {
+			rc.Close()
+			return err
+		}
+		_, err = io.Copy(dst, rc)
+		dst.Close()
+		rc.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // discoverDrugsFDAInputs lists the regular files directly under inDir, classifies each by filename
