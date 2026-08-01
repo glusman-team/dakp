@@ -38,7 +38,7 @@ dependencies = [
     "pendulum>=3",
     "polars>=1.30.0",
     "pydantic>=2.12.0",
-    "tablassert[qc]>=8.0.0",
+    "tablassert[qc]>=8.0.1",
 ]
 
 [dependency-groups]

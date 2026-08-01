@@ -19,8 +19,9 @@ The configs match the ACTUAL current Tablassert 8.x schema (verified against
 * column-encoded ``statement.subject`` / ``statement.object`` / ``statement.predicate``
   with drug / disease ``prioritize`` categories;
 * a ``provenance.override`` (:class:`~tablassert.models.ManualProvenance`) block carrying
-  the DAKP infores, the DINGO-conventional upstream infores chain, ``knowledge_level`` and
-  ``agent_type`` (no ``publication`` — the override replaces repo/publication provenance);
+  the DINGO-conventional upstream infores chain, ``knowledge_level`` and ``agent_type``
+  (the DAKP ``infores`` is graph-level only since Tablassert 8.0.1 forbids it in the override;
+  no ``publication`` — the override replaces repo/publication provenance);
 * column-encoded evidence ``annotations``.
 
 Column letters are DERIVED from the assertion-table column contracts in
@@ -190,14 +191,7 @@ def table_config(table: str) -> dict[str, Any]:
             "predicate": predicate,
             "object": {"method": "column", "encoding": column_letter(table, OBJECT_COLUMN), "prioritize": list(OBJECT_PRIORITIZE)},
         },
-        "provenance": {
-            "override": {
-                "infores": INFORES_DAKP,
-                "upstream_resource_ids": list(upstream),
-                "knowledge_level": knowledge_level,
-                "agent_type": agent_type,
-            }
-        },
+        "provenance": {"override": {"upstream_resource_ids": list(upstream), "knowledge_level": knowledge_level, "agent_type": agent_type}},
         "annotations": annotations,
     }
 

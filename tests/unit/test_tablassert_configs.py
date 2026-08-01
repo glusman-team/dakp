@@ -168,7 +168,7 @@ def test_table_config_structure(table: str) -> None:
 
     # ManualProvenance override matching the DINGO conventions (no publication alongside override).
     override = config["provenance"]["override"]
-    assert override["infores"] == INFORES_DAKP
+    assert "infores" not in override  # the DAKP infores is graph-level only (Tablassert 8.0.1 forbids it here)
     assert override["upstream_resource_ids"] == upstream
     assert override["knowledge_level"] == knowledge_level
     assert override["agent_type"] == agent_type
@@ -198,7 +198,7 @@ def test_graph_config_structure() -> None:
     assert graph["version"]
     assert graph["description"]
     assert graph["infores"] == INFORES_DAKP
-    assert graph["fullmap"] == ".fullmap"  # placeholder; the runner overrides it with --fullmap <path>
+    assert graph["fullmap"] == ".fullmap"  # default placeholder; generate() writes the real ctx fullmap path
     assert graph["tables"] == ["tables/approved_treats.yaml", "tables/faers_applied_to_treat.yaml", "tables/contraindications.yaml"]
 
 

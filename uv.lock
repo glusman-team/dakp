@@ -1029,7 +1029,7 @@ requires-dist = [
     { name = "pendulum", specifier = ">=3" },
     { name = "polars", specifier = ">=1.30.0" },
     { name = "pydantic", specifier = ">=2.12.0" },
-    { name = "tablassert", extras = ["qc"], specifier = ">=8.0.0" },
+    { name = "tablassert", extras = ["qc"], specifier = ">=8.0.1" },
 ]
 
 [package.metadata.requires-dev]
@@ -4017,7 +4017,7 @@ wheels = [
 
 [[package]]
 name = "tablassert"
-version = "8.0.0"
+version = "8.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "biolink-model" },
@@ -4030,14 +4030,14 @@ dependencies = [
     { name = "rapidfuzz" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4f/24/25c3ac2620bb13574d919c6ee77b6c7603c801634fa95a9f6b6c45ba3d75/tablassert-8.0.0.tar.gz", hash = "sha256:bd2430852f9a9df3d80ecee556d845bd26f9c5e5f42aab148a91da63cd3d5736", size = 164134, upload-time = "2026-07-30T03:37:22.125Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b4/bb/a29617bf38674e65e34ef46df306fb083114b842bda5c6dd5d38df7a78a6/tablassert-8.0.1.tar.gz", hash = "sha256:b8825102a12a0ccbfdbee58af6ba35374a7513c6d7e7bf452d1bbda5085efd35", size = 163296, upload-time = "2026-07-30T20:58:07.289Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f1/45/86cb5ff8fa75b5211aef7e0fcbd7a5c5b282dc20a45b417b29da9cfda5c7/tablassert-8.0.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:dbf535ec37c430fb5083f0737091459d933f2020c16d6f8db18967e2b2a51b89", size = 1078981, upload-time = "2026-07-30T03:21:03.455Z" },
-    { url = "https://files.pythonhosted.org/packages/e5/93/b41b87e75c42bcb49c3e2290cba9f11d64f8c830e8837e8a1f04dcfb054b/tablassert-8.0.0-cp312-cp312-manylinux_2_34_x86_64.whl", hash = "sha256:8aa962d1b9858423234b43e1802f84c9428f42d1b30461f02a967e4084a718c0", size = 1222502, upload-time = "2026-07-30T03:21:04.782Z" },
-    { url = "https://files.pythonhosted.org/packages/de/90/46b1605093dab1ec7af6ee6e7b4be75ce0b2674247cb68704a40b15d524d/tablassert-8.0.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:dc72a8721704454ad626075e31ad8e2b6256537b0ddf16601da23723931a9cd0", size = 1078426, upload-time = "2026-07-30T03:21:06.327Z" },
-    { url = "https://files.pythonhosted.org/packages/64/bb/f96e7a7202f98656d2cf0f33033aeaf43917bf78167bf1b04d5b63f492a5/tablassert-8.0.0-cp313-cp313-manylinux_2_34_x86_64.whl", hash = "sha256:d7cf4506b42bbd839d03d4cd8c495ab2c1eb9106742970c85ad9eb29dd38b286", size = 1221927, upload-time = "2026-07-30T03:21:07.85Z" },
-    { url = "https://files.pythonhosted.org/packages/13/fc/268463ef62e09786db7fb869ce88f461fd5e6b631620513cf78d276c06e8/tablassert-8.0.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:e375e347a805d4c48766adca413230601329854cf624c75a2904f798a00d0a23", size = 1078337, upload-time = "2026-07-30T03:21:09.421Z" },
-    { url = "https://files.pythonhosted.org/packages/43/e9/2a8e204fd2a5572ad6f80d6bc2c58aa861ab89c3b15be52687cb1e62392c/tablassert-8.0.0-cp314-cp314-manylinux_2_34_x86_64.whl", hash = "sha256:83fc6917e641468064500691178b0699ab6f2bcf3a90222509efb5f9d00d5b31", size = 1224010, upload-time = "2026-07-30T03:21:10.796Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/85/05e57c37d7be5f7834360607bf3bbc9963b0b5cc89dbf11bb9732c6ee51b/tablassert-8.0.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:58d64c257e0dbf93bc3f76ab75970a2a119fc79c0a558521b1508708b93391bd", size = 1078209, upload-time = "2026-07-30T20:57:57.456Z" },
+    { url = "https://files.pythonhosted.org/packages/52/64/e87fc5a6efa1a8b6b78f36e2d03b8713b1286a2fcfe111b404d6d5115404/tablassert-8.0.1-cp312-cp312-manylinux_2_34_x86_64.whl", hash = "sha256:069817dcdb75b6a83dddf314d605bc51352490217358252ef7d1b4067c0d7e2f", size = 1221729, upload-time = "2026-07-30T20:57:59.067Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/42/98c21f10efe51284bf6f5f543532eb774b1c6699da991d256c8f09444c57/tablassert-8.0.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:aafd593abfb749668b3d81628423e94c6e7040178cea830680ff3e1e1bdd2ed3", size = 1077652, upload-time = "2026-07-30T20:58:00.612Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/e0/a717df076fed2b949569e7e0c5aaf7434b5d49e9919993384a00fb06cc05/tablassert-8.0.1-cp313-cp313-manylinux_2_34_x86_64.whl", hash = "sha256:b3673f668cb3d00ff7214258e2e529ff3a925e07878eb385c9b40131f863280a", size = 1221155, upload-time = "2026-07-30T20:58:02.177Z" },
+    { url = "https://files.pythonhosted.org/packages/1a/de/bacabf85d7e19276b863ab2caeee6d171dc4b4da8e4f76c720fb4417cab4/tablassert-8.0.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:3ef08e334203f63eca324afa1ae016884223cb327e41f534aaafede436ee05ce", size = 1077565, upload-time = "2026-07-30T20:58:03.906Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/dd/79fc37cdd93f89aa84b8122acea8bff7cbc8e57a0e5506f4e2a1caa890f9/tablassert-8.0.1-cp314-cp314-manylinux_2_34_x86_64.whl", hash = "sha256:6ae638bcb5c650835fb50dbaeec70140ce372e41c628c29fe31a9d692a9250b7", size = 1223239, upload-time = "2026-07-30T20:58:05.746Z" },
 ]
 
 [package.optional-dependencies]
