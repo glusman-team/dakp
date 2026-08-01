@@ -17,6 +17,7 @@ baseline; subjects carry no CURIE (FAERS gives no drug id here). Canonical mappi
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 
 import polars as pl
@@ -30,6 +31,27 @@ _PREDICATE = "biolink:applied_to_treat"
 # Stable FAERS applied-to-treat labels (resolved planning decision: keep current behavior).
 _STATUS = "observed_use"
 _KNOWLEDGE_LEVEL = "statistical_association"
+
+# FAERS ``indi_pt`` is free text and carries non-disease usage-context values that name no real
+# condition (placeholders like "Product used for unknown indication", generic procedures like a
+# bare "Prophylaxis"/"Chemotherapy", and reporting artifacts like "Medication error"). These are
+# not drug->condition observations and would otherwise default to bogus "Disease" objects (~41% of
+# the case-weighted rows in a real quarter). Specific conditions are untouched: "Migraine
+# prophylaxis" or "Hormone receptor positive HER2 negative breast cancer" do NOT match (the anchored
+# generic terms require the whole string; the phrase terms target the placeholder wording only).
+_NON_DISEASE_INDICATION_RE = re.compile(
+    r"unknown indication|unapproved indication|off[- ]label|ill-defined|adverse drug reaction"
+    r"|evidence based treatment|medication error|not applicable"
+    r"|product used for|product use in|drug use in|product dose|product prescribing"
+    r"|product storage|product availab|product quality"
+    r"|\Aprophylaxis\Z|\Apremedication\Z|\Achemotherapy\Z|\Adrug therapy\Z|\Asupplementation therapy\Z",
+    re.IGNORECASE,
+)
+
+
+def is_non_disease_indication(indication: str) -> bool:
+    """True when a FAERS indication is a placeholder/usage-context value naming no real condition."""
+    return bool(_NON_DISEASE_INDICATION_RE.search(indication.strip()))
 
 
 class ObservedUsesShaper:
@@ -59,6 +81,8 @@ def build_observed_use_rows(faers_cases: pl.DataFrame | None, disease_map: Mappi
 
     rows: list[dict[str, str]] = []
     for drug, indication in sorted(pair_cases):
+        if is_non_disease_indication(indication):
+            continue  # FAERS placeholder/usage-context indication, not a drug->condition observation
         matches = match_diseases(indication, disease_map)
         obj = matches[0] if matches else {"text": indication, "curie": "", "name": indication, "category": "Disease"}
         rows.append(
@@ -86,4 +110,4 @@ def build_observed_use_rows(faers_cases: pl.DataFrame | None, disease_map: Mappi
 
 transform = ObservedUsesShaper().transform
 
-__all__ = ["ObservedUsesShaper", "build_observed_use_rows", "transform"]
+__all__ = ["ObservedUsesShaper", "build_observed_use_rows", "is_non_disease_indication", "transform"]

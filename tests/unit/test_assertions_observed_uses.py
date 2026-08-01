@@ -10,7 +10,7 @@ from __future__ import annotations
 import polars as pl
 
 from dakp_pipeline.assertions.evidence import find_faers_cases
-from dakp_pipeline.assertions.observed_uses import ObservedUsesShaper, build_observed_use_rows
+from dakp_pipeline.assertions.observed_uses import ObservedUsesShaper, build_observed_use_rows, is_non_disease_indication
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 
@@ -76,6 +76,43 @@ def test_rows_are_deterministically_ordered(faers_refs: list[ArtifactRef], disea
 
 def test_no_faers_cases_yields_no_rows(disease_map: dict[str, dict[str, str]]) -> None:
     assert build_observed_use_rows(None, disease_map) == []
+
+
+def test_is_non_disease_indication_classifier() -> None:
+    # Placeholders / usage-context / generic procedures (no real condition named) -> filtered.
+    for bad in [
+        "Product used for unknown indication",
+        "Prophylaxis",
+        "Ill-defined disorder",
+        "Off label use",
+        "Chemotherapy",
+        "Medication error",
+        "Premedication",
+        "Adverse drug reaction",
+        "Supplementation therapy",
+        "Product use in unapproved indication",
+    ]:
+        assert is_non_disease_indication(bad), bad
+    # Case-insensitive and tolerant of surrounding whitespace.
+    assert is_non_disease_indication("  product used for UNKNOWN indication  ")
+    # Specific conditions — including procedure-worded ones that NAME a condition — are kept.
+    for good in [
+        "Migraine prophylaxis",
+        "Prophylaxis against graft versus host disease",
+        "Hormone receptor positive HER2 negative breast cancer",
+        "Type 2 diabetes mellitus",
+        "asthma",
+        "pain",
+        "Contraception",
+    ]:
+        assert not is_non_disease_indication(good), good
+
+
+def test_non_disease_indications_are_filtered_from_rows(disease_map: dict[str, dict[str, str]]) -> None:
+    cases = pl.DataFrame({"drugname": ["DrugX", "DrugX", "DrugX"], "indication": ["Product used for unknown indication", "Prophylaxis", "asthma"]})
+    rows = build_observed_use_rows(cases, disease_map)
+    # Only the real condition survives; the two placeholder indications are dropped.
+    assert [r["object_text"] for r in rows] == ["asthma"]
 
 
 def test_shaper_writes_uncompressed_tsv_with_contract_columns(faers_refs: list[ArtifactRef], ctx: TaskContext) -> None:
