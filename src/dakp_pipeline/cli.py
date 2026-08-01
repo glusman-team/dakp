@@ -23,7 +23,7 @@ handoff (without it the handoff is deferred, never an error).
 Every side effect goes through a small module-level function (``run_subprocess``, ``api_up``,
 ``dag_registered``, ``run_state``, ``start_standalone``, ``sleep``, …) so the tests monkeypatch the
 boundary and exercise every branch with no real Airflow / Go / network — the same convention as
-:mod:`dakp_pipeline.tablassert.run`.
+:mod:`dakp_pipeline.tablassert`.
 """
 
 from __future__ import annotations

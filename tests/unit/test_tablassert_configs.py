@@ -22,12 +22,12 @@ from pathlib import Path
 import pytest
 import yaml
 
+from dakp_pipeline import tablassert as tablassert_configs
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.tablassert import configs as tablassert_configs
-from dakp_pipeline.tablassert.run import (
+from dakp_pipeline.tablassert import (
     TABLASERT_DIR_ENV,
     DeferredTablassertRunner,
     TablassertRunner,
@@ -35,12 +35,12 @@ from dakp_pipeline.tablassert.run import (
     qc_runtime_available,
     tablassert_available,
 )
-from dakp_pipeline.tablassert.run import run as run_tablassert
+from dakp_pipeline.tablassert import run as run_tablassert
 
-# The package ``__init__`` re-exports the ``run`` *function*, shadowing the ``run`` submodule
-# attribute on ``dakp_pipeline.tablassert``. Patch the subprocess hook on the actual module
-# object (import_module always returns the module), not the shadowed package attribute.
-_RUN_MODULE = importlib.import_module("dakp_pipeline.tablassert.run")
+# The flat ``dakp_pipeline.tablassert`` module IS the runner module: patch the subprocess hook
+# and availability probes on the module object (import_module always returns the module) so the
+# runner resolves the patched callables from its module globals at call time.
+_RUN_MODULE = importlib.import_module("dakp_pipeline.tablassert")
 
 TABLES = ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions")
 

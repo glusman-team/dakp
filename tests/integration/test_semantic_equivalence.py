@@ -9,9 +9,10 @@ module asserts the rebuild **preserves** those semantics.
 
 This is a semantic-*preservation* guardrail, not edge-for-edge equality with the legacy build.
 The rebuild deliberately improves coverage and mappings (PLAN.md "allowing improved coverage and
-improved mappings"; :mod:`dakp_pipeline.translator.regression`); the invariants locked here are the
+improved mappings"); the invariants locked here are the
 family / predicate / category / provenance / label / evidence contracts the old KP established and
 the DINGO reference ingest (``../DINGO/src/translator_ingest/ingests/dakp/dakp_rig.yaml``) publishes.
+The guardrails live in :mod:`dakp_pipeline.translator`.
 
 The deliberate, documented *differences* (contraindications NER-mined from DailyMed instead of the
 MEDI/Matrix xlsx; the preserved FAERS ``observed_use``/``statistical_association`` label instead of
@@ -28,8 +29,8 @@ import polars as pl
 import pytest
 from harness import install_fixture_fetchers, run_stages
 
+from dakp_pipeline import translator
 from dakp_pipeline.io.contracts import ArtifactRef
-from dakp_pipeline.translator import contract, regression
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -110,7 +111,7 @@ def test_all_three_edge_families_present(built: dict[str, Any]) -> None:
 
 def test_regression_invariants_pass_and_see_every_family(built: dict[str, Any]) -> None:
     """The legacy-informed regression guardrail passes and observes all three families."""
-    report = regression.check_assertion_tables(built["refs"])
+    report = translator.check_assertion_tables(built["refs"])
     assert report.ok, f"regression violations: {[v.message for v in report.violations]}"
     assert set(report.families_seen) == {TREATS, APPLIED_TO_TREAT, CONTRAINDICATED_IN}
     assert report.row_count > 0
@@ -118,7 +119,7 @@ def test_regression_invariants_pass_and_see_every_family(built: dict[str, Any]) 
 
 def test_assertion_tables_satisfy_column_contract(built: dict[str, Any]) -> None:
     """Every public assertion table exists with its declared Translator column contract."""
-    report = contract.validate(built["refs"])
+    report = translator.validate(built["refs"])
     assert report.ok, f"contract problems: {report.problems}"
 
 
@@ -155,7 +156,7 @@ def test_provenance_primary_is_always_dakp(built: dict[str, Any]) -> None:
     """Every family aggregates under infores:multiomics-drugapprovals as primary_knowledge_source."""
     for frame in built["tables"].values():
         primaries = {str(rec.get("primary_knowledge_source")) for rec in frame.iter_rows(named=True)}
-        assert primaries == {contract.INFORES_DAKP}, f"unexpected primary sources: {primaries}"
+        assert primaries == {translator.INFORES_DAKP}, f"unexpected primary sources: {primaries}"
 
 
 @pytest.mark.parametrize(
@@ -271,17 +272,17 @@ def test_output_is_byte_deterministic_across_runs(built: dict[str, Any], tmp_pat
 
 
 def test_contract_categories_match_dingo_rig() -> None:
-    """contract.py's subject/object category tuples equal the DINGO dakp_rig.yaml categories."""
-    assert contract.CHEMICAL_DRUG_CATEGORIES == DINGO_SUBJECT_CATEGORIES
-    assert contract.DISEASE_PHENOTYPE_CATEGORIES == DINGO_OBJECT_CATEGORIES
+    """The translator module's subject/object category tuples equal the DINGO dakp_rig.yaml categories."""
+    assert translator.CHEMICAL_DRUG_CATEGORIES == DINGO_SUBJECT_CATEGORIES
+    assert translator.DISEASE_PHENOTYPE_CATEGORIES == DINGO_OBJECT_CATEGORIES
 
 
 def test_contract_edge_families_match_dingo_predicates() -> None:
-    """contract.EDGE_FAMILIES publishes exactly the three DINGO predicates + upstream chains."""
-    assert tuple(contract.EDGE_FAMILIES) == (TREATS, APPLIED_TO_TREAT, CONTRAINDICATED_IN)
-    assert contract.EDGE_FAMILIES[TREATS].required_upstream == frozenset({"infores:dailymed", "infores:faers"})
-    assert contract.EDGE_FAMILIES[APPLIED_TO_TREAT].required_upstream == frozenset({"infores:faers", "infores:dailymed"})
-    assert contract.EDGE_FAMILIES[CONTRAINDICATED_IN].required_upstream == frozenset({"infores:dailymed"})
+    """translator.EDGE_FAMILIES publishes exactly the three DINGO predicates + upstream chains."""
+    assert tuple(translator.EDGE_FAMILIES) == (TREATS, APPLIED_TO_TREAT, CONTRAINDICATED_IN)
+    assert translator.EDGE_FAMILIES[TREATS].required_upstream == frozenset({"infores:dailymed", "infores:faers"})
+    assert translator.EDGE_FAMILIES[APPLIED_TO_TREAT].required_upstream == frozenset({"infores:faers", "infores:dailymed"})
+    assert translator.EDGE_FAMILIES[CONTRAINDICATED_IN].required_upstream == frozenset({"infores:dailymed"})
 
 
 # --- 8. the produced rows satisfy the full KGX/Translator contract ----------------
@@ -360,5 +361,5 @@ def test_produced_rows_pass_the_kgx_translator_contract(built: dict[str, Any]) -
     """
     nodes, edges = _synthesize_kgx(built["tables"])
     assert edges, "no edges synthesized from the assertion tables"
-    report = contract.validate_kgx(nodes, edges)
+    report = translator.validate_kgx(nodes, edges)
     assert report.ok, f"KGX contract problems: {report.problems}"

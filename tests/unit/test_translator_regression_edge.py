@@ -1,4 +1,4 @@
-"""Edge-case tests for ``dakp_pipeline.translator.regression``.
+"""Edge-case tests for the ``dakp_pipeline.translator`` regression guardrails.
 
 Covers the two branches the fixture/positive tests miss: a family invariant whose
 ``knowledge_level`` is ``None`` (the guard skips the check), reached by monkeypatching a
@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
+from dakp_pipeline import translator as regression
 from dakp_pipeline.io.contracts import ArtifactRef
-from dakp_pipeline.translator import regression
-from dakp_pipeline.translator.regression import check_assertion_tables, check_rows
+from dakp_pipeline.translator import check_assertion_tables, check_rows
 
 _DAKP = "infores:multiomics-drugapprovals"
 

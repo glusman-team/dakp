@@ -11,8 +11,8 @@ from __future__ import annotations
 import gzip
 from pathlib import Path
 
-from dakp_pipeline.translator import contract
-from dakp_pipeline.translator.contract import (
+from dakp_pipeline import translator as contract
+from dakp_pipeline.translator import (
     DUPLICATE_NODE_ID,
     INCOMPATIBLE_OBJECT_CATEGORY,
     INCOMPATIBLE_SUBJECT_CATEGORY,

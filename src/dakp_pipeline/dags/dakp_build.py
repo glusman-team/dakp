@@ -22,14 +22,11 @@ from airflow.models import Variable
 from airflow.sdk import dag, task
 from pendulum import datetime
 
-from dakp_pipeline import acquire, runtime, tablassert
+from dakp_pipeline import acquire, runtime, tablassert, translator
 from dakp_pipeline.assertions import approved_treats, contraindications, observed_uses
 from dakp_pipeline.io.contracts import TaskContext
 from dakp_pipeline.io.xcom import refs_from_xcom, refs_to_xcom
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.tablassert import configs as tablassert_configs
-from dakp_pipeline.translator import contract as translator_contract
-from dakp_pipeline.translator import regression
 
 # --- DAG-level constants ---------------------------------------------------------
 
@@ -112,7 +109,7 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
     @task
     def generate_tablassert_configs(approved: Any, uses: Any, contra: Any) -> list[dict[str, Any]]:
         refs = [*refs_from_xcom(approved), *refs_from_xcom(uses), *refs_from_xcom(contra)]
-        return refs_to_xcom(tablassert_configs.generate(refs, _ctx()))
+        return refs_to_xcom(tablassert.generate(refs, _ctx()))
 
     @task
     def run_tablassert(approved: Any, uses: Any, contra: Any, configs: Any) -> list[dict[str, Any]]:
@@ -124,8 +121,8 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
     def write_build_summary(approved: Any, uses: Any, contra: Any, kgx: Any) -> str:
         ctx = _ctx()
         assertion_refs = [*refs_from_xcom(approved), *refs_from_xcom(uses), *refs_from_xcom(contra)]
-        report = translator_contract.validate(assertion_refs)
-        regression_report = regression.check_assertion_tables(assertion_refs)
+        report = translator.validate(assertion_refs)
+        regression_report = translator.check_assertion_tables(assertion_refs)
         summary = runtime.write_build_summary(Workdir(ctx.workdir), assertion_refs, refs_from_xcom(kgx), report, regression_report)
         return str(summary)
 

@@ -11,7 +11,7 @@ parity tests; the Airflow DAG wiring by ``test_dag.py``.)
 WHY this test matters: it is the monkeypatch-first full-pipeline guardrail — it proves the harness's
 stage wiring is substitutable at every external boundary (each fetcher + the Tablassert handoff), so
 a regression in the wiring (e.g. resolving ``tablassert.run`` through a from-import instead of the
-package attribute) is caught immediately.
+module attribute) is caught immediately.
 """
 
 from __future__ import annotations

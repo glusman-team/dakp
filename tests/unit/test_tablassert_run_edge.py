@@ -1,9 +1,8 @@
-"""Edge-case tests for ``dakp_pipeline.tablassert.run``.
+"""Edge-case tests for the ``dakp_pipeline.tablassert`` runner.
 
 Covers the real ``run_subprocess`` body (a genuine subprocess, including a non-zero exit that
 must NOT raise) and the ``_find_graph`` conventional-path fallback when no ``graph.yaml`` ref is
-present. The submodule is imported directly (the package ``__init__`` re-exports the ``run``
-function, shadowing the submodule attribute).
+present.
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ from pathlib import Path
 
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.tablassert.run import _find_graph, run_subprocess
+from dakp_pipeline.tablassert import _find_graph, run_subprocess
 
 
 def _ctx(workdir: Path) -> TaskContext:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dakp_pipeline.assertions import approved_treats, contraindications, observed_uses
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.translator.regression import EXPECTED_FAMILIES, RegressionReport, check_assertion_tables, check_rows
+from dakp_pipeline.translator import EXPECTED_FAMILIES, RegressionReport, check_assertion_tables, check_rows
 
 _DAKP = "infores:multiomics-drugapprovals"
 

@@ -1,9 +1,15 @@
-"""Generate Tablassert Graph + per-table config YAMLs.
+"""Tablassert handoff: generate Graph/table configs and (optionally) run Tablassert.
+
+Flattened from the former ``tablassert/configs.py`` + ``tablassert/run.py`` (US-004).
 
 DAKP does everything up to the shape Tablassert consumes, then emits ONE Graph config
-(``tables/graph.yaml``) plus one table config per assertion table. The configs match the
-ACTUAL current Tablassert 8.x schema (verified against ``../Tablassert/src/tablassert/
-models.py`` and its ``ingests.to_sections`` loader):
+(``tables/graph.yaml``) plus one table config per assertion table (:func:`generate`).
+Canonical entity resolution, KGX compilation, dedup, deterministic IDs, and RIG generation
+are delegated to ``../Tablassert`` — DAKP ships **no** local fallback KGX compiler
+(PLAN.md "Tablassert modeling layer").
+
+The configs match the ACTUAL current Tablassert 8.x schema (verified against
+``../Tablassert/src/tablassert/models.py`` and its ``ingests.to_sections`` loader):
 
 * a table config is a ``template:``-wrapped :class:`~tablassert.models.Section`
   (``source`` / ``statement`` / ``provenance`` / ``annotations``). The loader only reads
@@ -22,11 +28,42 @@ Column letters are DERIVED from the assertion-table column contracts in
 :mod:`dakp_pipeline.io.schemas` (never hardcoded). YAML is emitted by a tiny stdlib
 emitter (no ``pyyaml`` runtime dependency) that round-trips through ``yaml.safe_load``
 (asserted in the unit tests).
+
+The real runner (:class:`TablassertRunner`) shells out to the installed ``tablassert`` CLI
+(a CORE dependency installed by the single ``uv sync``) and captures stdout / exit code into
+a handoff report; the deferred runner (:class:`DeferredTablassertRunner`) writes a
+deferred-handoff report without ever touching Tablassert (used when no fullmap triggers the
+real handoff, and in tests).
+
+The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it is
+on ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout override (the
+``tablassert_dir`` ctx param, the ``DAKP_TABLASERT_DIR`` env var, or the
+``TablassertRunner.tablassert_dir`` field; conventionally ``DEFAULT_TABLASERT_DIR``) switches
+to ``uv run --with-editable <dir> tablassert`` for dev against a local ``../Tablassert``
+checkout. ``--qc`` is appended only when requested AND the QC audit runtime
+(sentence-transformers, part of the required ``tablassert[qc]`` install) is importable;
+``--release`` is a boolean flag.
+
+The module-level :func:`run` is the entry point the stage harness and ``dags.dakp_build``
+invoke as a MODULE ATTRIBUTE at call time (``tablassert.run(...)``), so
+``monkeypatch.setattr("dakp_pipeline.tablassert.run", ...)`` replaces the callable they see.
+It dispatches to the real runner when ``ctx.params["run_tablassert"]`` is truthy, else the
+deferred runner. Tests monkeypatch the runner's subprocess hook (:func:`run_subprocess`) and
+the availability probes (:func:`tablassert_available` / :func:`qc_runtime_available`) — no
+real Tablassert required.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import json
+import os
 import re
+import shutil
+import subprocess
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -47,7 +84,7 @@ GRAPH_NAME = "dakp"
 #: Placeholder ``fullmap`` written into ``graph.yaml``. Tablassert's ``Graph`` model REQUIRES a
 #: ``fullmap`` field, so the generated config carries this placeholder; the runner always overrides
 #: it with the explicit ``--fullmap <path>`` CLI arg (the user-supplied prebuilt fullmap redb). DAKP
-#: never downloads a fullmap — see ``tablassert/run.py`` (which requires ``ctx.params["fullmap"]``).
+#: never downloads a fullmap — see :class:`TablassertRunner` (which requires ``ctx.params["fullmap"]``).
 FULLMAP_DEFAULT = ".fullmap"
 SOURCE_URL_BASE = "https://example.invalid/dakp/generated"
 GRAPH_DESCRIPTION = (
@@ -100,7 +137,7 @@ OBJECT_COLUMN = "object_text"
 SUBJECT_PRIORITIZE = ("Drug", "SmallMolecule", "ChemicalEntity")
 OBJECT_PRIORITIZE = ("Disease", "PhenotypicFeature")
 
-_OPERATION = "generate_tablassert_configs"
+_GENERATE_OPERATION = "generate_tablassert_configs"
 
 
 # --- Excel-style column letters ---------------------------------------------------
@@ -306,7 +343,7 @@ def generate(assertion_refs: list[ArtifactRef], ctx: TaskContext) -> list[Artifa
     tables_dir.mkdir(parents=True, exist_ok=True)
 
     input_ids = {ref.uri.stem: ref.blake3 for ref in assertion_refs}
-    operation = OperationBlock(name=_OPERATION)
+    operation = OperationBlock(name=_GENERATE_OPERATION)
 
     table_refs: list[ArtifactRef] = []
     table_paths: list[str] = []
@@ -326,17 +363,214 @@ def generate(assertion_refs: list[ArtifactRef], ctx: TaskContext) -> list[Artifa
     return [graph_ref, *table_refs]
 
 
+# --- runner ------------------------------------------------------------------------
+
+DEFAULT_TABLASERT_DIR = "../Tablassert"
+TABLASERT_DIR_ENV = "DAKP_TABLASERT_DIR"
+REPORT_NAME = "tablassert_handoff.json"
+_REPORT_SCHEMA = "dakp.tablassert_handoff.v1"
+_RUN_OPERATION = "run_tablassert"
+
+
+def run_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    """Execute ``command`` capturing stdout/stderr, never raising on non-zero exit.
+
+    This is the monkeypatch point for tests: patch the ``run_subprocess`` attribute on THIS
+    module (``dakp_pipeline.tablassert``) and no real process is spawned.
+    """
+    return subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
+
+
+def tablassert_available() -> bool:
+    """True when the ``tablassert`` package (a core DAKP dependency) is importable here."""
+    return importlib.util.find_spec("tablassert") is not None
+
+
+def qc_runtime_available() -> bool:
+    """True when the QC audit runtime (sentence-transformers, via ``tablassert[qc]``) is importable."""
+    return importlib.util.find_spec("sentence_transformers") is not None
+
+
+def _command_prefix(tablassert_dir: str | None) -> list[str]:
+    """argv prefix that launches the ``tablassert`` CLI.
+
+    Editable override (dev against a local checkout): ``uv run --with-editable <dir> tablassert``;
+    installed package: the venv ``tablassert`` binary when it is on ``PATH``, otherwise
+    ``uv run tablassert`` (uv materializes the console script for the rare importable-but-no-PATH
+    case; the availability guard in ``TablassertRunner.run`` has already confirmed ``tablassert``
+    is importable before this fallback is reachable).
+    """
+    if tablassert_dir:
+        return ["uv", "run", "--with-editable", tablassert_dir, "tablassert"]
+    binary = shutil.which("tablassert")
+    if binary is not None:
+        return [binary]
+    return ["uv", "run", "tablassert"]
+
+
+def _resolve_tablassert_dir(runner_dir: str | None, params_dir: str | None) -> str | None:
+    """Editable-checkout override precedence: ctx param > ``DAKP_TABLASERT_DIR`` env > runner default.
+
+    ``None`` (the default everywhere) means "use the installed PyPI package".
+    """
+    return params_dir or os.environ.get(TABLASERT_DIR_ENV) or runner_dir
+
+
+def _base_report(mode: str, assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef]) -> dict[str, Any]:
+    return {
+        "schema_version": _REPORT_SCHEMA,
+        "stage": "tablassert_handoff",
+        "mode": mode,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "assertion_inputs": [{"table": ref.uri.stem, "artifact_id": ref.blake3, "rows": ref.rows} for ref in assertion_refs],
+        "config_inputs": [str(ref.uri) for ref in config_refs],
+    }
+
+
+def _write_report(report: dict[str, Any], assertion_refs: list[ArtifactRef], ctx: TaskContext) -> ArtifactRef:
+    workdir = Workdir(ctx.workdir)
+    path = workdir.reports / REPORT_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    store = ArtifactStore(workdir)
+    return store.register(
+        path, media_type="application/json", inputs=[ref.blake3 for ref in assertion_refs], operation=OperationBlock(name=_RUN_OPERATION)
+    )
+
+
+def _find_graph(config_refs: list[ArtifactRef], ctx: TaskContext) -> Path:
+    """Locate ``graph.yaml`` among the generated config refs (fall back to the conventional path)."""
+    for ref in config_refs:
+        if ref.uri.name == "graph.yaml":
+            return ref.uri
+    return Workdir(ctx.workdir).root / "tables" / "graph.yaml"
+
+
+@dataclass(frozen=True)
+class TablassertRunner:
+    """Run the INSTALLED ``tablassert`` CLI (a core DAKP dependency) as a subprocess.
+
+    Builds ``tablassert build-kg <graph.yaml> --fullmap <path> [--qc] [--release]`` and records
+    stdout / stderr / exit code in the handoff report. A non-zero exit is captured as
+    ``status: failed`` (logged loudly), not raised — the report is the artifact the pipeline
+    surfaces. Raises ``RuntimeError`` when ``tablassert`` is unavailable and no editable-checkout
+    override is configured (reinstall with ``uv sync``).
+    """
+
+    tablassert_dir: str | None = None
+
+    def build_command(
+        self, graph_yaml: Path, fullmap: str, *, tablassert_dir: str | None = None, qc: bool = False, release: bool = False
+    ) -> list[str]:
+        """The exact Tablassert invocation (pure; testable without spawning a process)."""
+        command = [*_command_prefix(tablassert_dir), "build-kg", str(graph_yaml), "--fullmap", fullmap]
+        if qc:
+            command.append("--qc")
+        if release:
+            command.append("--release")
+        return command
+
+    def run(self, assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
+        graph_yaml = _find_graph(config_refs, ctx)
+        fullmap_value = ctx.params.get("fullmap")
+        if not fullmap_value:
+            msg = (
+                "a fullmap redb path is required for a real Tablassert handoff but none was provided: pass "
+                "`--fullmap <path>` to `dakp up` (DAKP no longer downloads a fullmap; build one with "
+                "`tablassert build-fullmap`)"
+            )
+            raise RuntimeError(msg)
+        fullmap = str(fullmap_value)
+        tablassert_dir = _resolve_tablassert_dir(self.tablassert_dir, ctx.params.get("tablassert_dir"))
+        if tablassert_dir is None and not tablassert_available():
+            msg = (
+                "tablassert is not available: it is a core DAKP dependency, so reinstall with `uv sync`, or point at a "
+                f"local editable checkout via the tablassert_dir param / {TABLASERT_DIR_ENV} env var"
+            )
+            raise RuntimeError(msg)
+
+        qc_requested = bool(ctx.params.get("qc"))
+        qc = qc_requested and qc_runtime_available()
+        if qc_requested and not qc:
+            logger.warning("tablassert --qc requested but the QC audit runtime (sentence-transformers) is not importable; running without --qc")
+        release = bool(ctx.params.get("release"))
+
+        command = self.build_command(graph_yaml, fullmap, tablassert_dir=tablassert_dir, qc=qc, release=release)
+        cwd = Workdir(ctx.workdir).root
+
+        logger.info("running Tablassert: {}", " ".join(command))
+        completed = run_subprocess(command, cwd=cwd)
+        status = "ok" if completed.returncode == 0 else "failed"
+        if completed.returncode != 0:
+            logger.error("Tablassert exited {}: {}", completed.returncode, (completed.stderr or "").strip()[:2000])
+
+        report = _base_report("real", assertion_refs, config_refs)
+        report.update(
+            {
+                "status": status,
+                "command": command,
+                "exit_code": completed.returncode,
+                "stdout": completed.stdout,
+                "stderr": completed.stderr,
+                "graph_config": str(graph_yaml),
+                "fullmap": fullmap,
+                "tablassert_dir": tablassert_dir,
+                "qc": qc,
+                "release": release,
+            }
+        )
+        return [_write_report(report, assertion_refs, ctx)]
+
+
+@dataclass(frozen=True)
+class DeferredTablassertRunner:
+    """Write a deferred-handoff report; never touch Tablassert (no fullmap trigger + tests)."""
+
+    def run(self, assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
+        report = _base_report("deferred", assertion_refs, config_refs)
+        report.update(
+            {
+                "status": "deferred",
+                "reason": "no fullmap provided (run_tablassert disabled); canonical resolution + KGX compilation delegated to the installed tablassert CLI",
+            }
+        )
+        return [_write_report(report, assertion_refs, ctx)]
+
+
+def run(assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
+    """Module entry point (stage harness / ``dags.dakp_build``): dispatch to a runner.
+
+    Callers invoke this as a module attribute at call time (``tablassert.run(...)``) so
+    ``monkeypatch.setattr("dakp_pipeline.tablassert.run", ...)`` replaces the callable they see.
+    Real execution requires ``run_tablassert`` truthy in ``ctx.params`` (derived from a fullmap
+    path); otherwise the deferred runner writes a deferred-handoff report. Returns a list with
+    one ArtifactRef to the handoff report.
+    """
+    run_real = bool(ctx.params.get("run_tablassert"))
+    runner: TablassertRunner | DeferredTablassertRunner = TablassertRunner() if run_real else DeferredTablassertRunner()
+    return runner.run(assertion_refs, config_refs, ctx)
+
+
 __all__ = [
     "AGENT_TYPE",
+    "DEFAULT_TABLASERT_DIR",
     "FULLMAP_DEFAULT",
     "GRAPH_DESCRIPTION",
     "GRAPH_NAME",
     "INFORES_DAKP",
+    "REPORT_NAME",
+    "TABLASERT_DIR_ENV",
+    "DeferredTablassertRunner",
+    "TablassertRunner",
     "column_letter",
     "excel_column",
     "generate",
     "graph_config",
     "graph_yaml",
+    "qc_runtime_available",
+    "run",
+    "run_subprocess",
+    "tablassert_available",
     "table_config",
     "table_yaml",
 ]

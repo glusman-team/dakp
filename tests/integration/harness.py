@@ -14,7 +14,7 @@ run, and monkeypatch boundaries stay identical across tests.
 
 Fully monkeypatchable: the source fetchers are resolved through their owning MODULE at call time
 (``dailymed.fetch``/``faers.fetch``/``drugsfda.fetch``) and ``tablassert.run`` through its owning
-PACKAGE (``dakp_pipeline.tablassert.run``), so ``monkeypatch.setattr(dailymed, "fetch", ...)`` and
+MODULE (``dakp_pipeline.tablassert``), so ``monkeypatch.setattr(dailymed, "fetch", ...)`` and
 ``monkeypatch.setattr("dakp_pipeline.tablassert.run", ...)`` take effect exactly as they did with
 the retired runner. Fetchers always run their real (download) branches; :func:`install_fixture_fetchers`
 is the shared offline stand-in that routes them to the tiny pipeline fixtures via ``ctx.fixture()``.
@@ -33,6 +33,7 @@ from typing import Any
 import pytest
 
 from dakp_pipeline import tablassert as _tablassert
+from dakp_pipeline import translator
 from dakp_pipeline.assertions import approved_treats, contraindications, observed_uses
 from dakp_pipeline.extract import drugsfda_products, faers_ascii, spl_xml
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
@@ -40,9 +41,6 @@ from dakp_pipeline.logging_setup import configure_logging
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.runtime import build_context, write_build_summary
 from dakp_pipeline.sources import dailymed, drugsfda, faers
-from dakp_pipeline.tablassert import configs as _tablassert_configs
-from dakp_pipeline.translator import contract as translator_contract
-from dakp_pipeline.translator import regression
 
 
 @dataclass
@@ -130,14 +128,14 @@ def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: 
     assertion_refs = [*approved, *uses, *contra]
 
     # 4. Generate Tablassert Graph + per-table configs.
-    config_refs = _tablassert_configs.generate(assertion_refs, ctx)
+    config_refs = _tablassert.generate(assertion_refs, ctx)
 
     # 5. Tablassert handoff (deferred unless run_tablassert is set; no local KGX compiler).
     kgx_refs = _tablassert.run(assertion_refs, config_refs, ctx)
 
     # 6. Translator-readiness contract + regression + build summary.
-    report = translator_contract.validate(assertion_refs)
-    regression_report = regression.check_assertion_tables(assertion_refs)
+    report = translator.validate(assertion_refs)
+    regression_report = translator.check_assertion_tables(assertion_refs)
     build_summary = write_build_summary(wd, assertion_refs, kgx_refs, report, regression_report)
 
     tables = {ref.uri.stem: TableOutput(ref.uri.stem, ref.uri, ref.rows or 0) for ref in assertion_refs}

@@ -12,7 +12,7 @@ Proves the FULL path works on a TINY, hermetic fullmap (no network):
    ``id``/``name``/``category``; edges carry ``subject``/``predicate``/``object`` + DAKP provenance
    (``infores:multiomics-drugapprovals`` primary + the per-family upstream infores); all three edge
    families (``treats`` / ``applied_to_treat`` / ``contraindicated_in``) are present; and
-   :func:`dakp_pipeline.translator.contract.validate_kgx` passes.
+   :func:`dakp_pipeline.translator.validate_kgx` passes.
 
 The whole module SKIPS when ``tablassert`` is not importable (dependencies not yet installed) — it
 runs once ``uv sync`` has materialized the runtime. ``tests/`` is outside the coverage ``source``,
@@ -40,8 +40,8 @@ from harness import install_fixture_fetchers, run_stages
 
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.tablassert.run import TablassertRunner
-from dakp_pipeline.translator.contract import EDGE_FAMILIES, INFORES_DAKP, read_kgx_jsonl, validate_kgx
+from dakp_pipeline.tablassert import TablassertRunner
+from dakp_pipeline.translator import EDGE_FAMILIES, INFORES_DAKP, read_kgx_jsonl, validate_kgx
 
 # Skip the WHOLE module when tablassert is not importable (deps not installed). tiny_fullmap imports
 # tablassert only inside its child build process, so importing it above is safe even when absent.

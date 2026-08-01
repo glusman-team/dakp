@@ -1,4 +1,4 @@
-"""Edge-case tests for ``dakp_pipeline.translator.contract``.
+"""Edge-case tests for the ``dakp_pipeline.translator`` contract layer.
 
 Targets the negative branches the fixture-based tests do not isolate: the legacy ``validate``
 unreadable-table and missing-column paths, and the KGX validator's per-field guards (malformed
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from dakp_pipeline.io.contracts import ArtifactRef
-from dakp_pipeline.translator.contract import (
+from dakp_pipeline.translator import (
     DUPLICATE_EDGE_ID,
     INVALID_NODE_CATEGORY,
     INVALID_PREDICATE,

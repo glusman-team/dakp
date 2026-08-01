@@ -17,11 +17,10 @@ from typing import Any
 
 import polars as pl
 
+from dakp_pipeline import translator
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import configure_logging
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.translator import contract as translator_contract
-from dakp_pipeline.translator import regression
 
 __all__ = ["build_context", "build_context_from_config", "write_build_summary"]
 
@@ -73,8 +72,8 @@ def write_build_summary(
     wd: Workdir,
     assertion_refs: list[ArtifactRef],
     kgx_refs: list[ArtifactRef],
-    report: translator_contract.ContractReport,
-    regression_report: regression.RegressionReport,
+    report: translator.ContractReport,
+    regression_report: translator.RegressionReport,
 ) -> Path:
     """Write the build-summary JSON under the workdir's reports dir and return its path."""
     summary_path = wd.reports / "build_summary.json"
