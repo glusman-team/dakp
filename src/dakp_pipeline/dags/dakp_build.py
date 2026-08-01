@@ -26,6 +26,7 @@ from dakp_pipeline import acquire, runtime, tablassert, translator
 from dakp_pipeline.assertions import approved_treats, contraindications, observed_uses
 from dakp_pipeline.io.contracts import TaskContext
 from dakp_pipeline.io.xcom import refs_from_xcom, refs_to_xcom
+from dakp_pipeline.ner.ner import DiseaseNER
 from dakp_pipeline.paths import Workdir
 
 # --- DAG-level constants ---------------------------------------------------------
@@ -100,10 +101,18 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
 
     @task
     def shape_contraindication_tables(dm_ext: Any, ner_models: Any) -> list[dict[str, Any]]:
-        # ``ner_models`` is an ordering dependency only: the NER backend lazily loads weights cached
-        # by acquire_ner_models, so mining must run after acquisition — the model refs are not inputs.
+        # ``ner_models`` is an ordering dependency: the production NER lazily loads the GLiNER
+        # weights cached by acquire_ner_models, so mining runs after acquisition (the model refs
+        # aren't inputs).
         del ner_models
-        return refs_to_xcom(contraindications.transform(refs_from_xcom(dm_ext), _ctx()))
+        ctx = _ctx()
+        # Production composite NER (curated gazetteer anchors + GLiNER zero-shot recall) mines
+        # contraindication diseases far beyond any fixed gazetteer. It loads the GLiNER checkpoint
+        # acquire_ner_models cached under the workdir. Offline tests inject their own deterministic
+        # backend (or fall back to the gazetteer); this production wiring is DAG-only.
+        ner = DiseaseNER(offline=False, workdir=ctx.workdir)
+        ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
+        return refs_to_xcom(contraindications.transform(refs_from_xcom(dm_ext), ctx))
 
     # -- tablassert handoff (Python) --------------------------------------------
     @task
