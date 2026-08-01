@@ -107,6 +107,16 @@ def _overlaps_any(start: int, end: int, covered: list[tuple[int, int]]) -> bool:
     return any(start < cov_end and cov_start < end for cov_start, cov_end in covered)
 
 
+def _model_device() -> str:
+    """Device the GLiNER model runs on: CUDA when available (orders of magnitude faster than the
+    CPU fallback, which saturates every core), else CPU."""
+    try:
+        import torch  # lazy: no torch at module load
+    except ImportError:
+        return "cpu"
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
 class DiseaseNER:
     """The single composite disease/phenotype mention extractor.
 
@@ -178,7 +188,7 @@ class DiseaseNER:
             except ImportError as exc:
                 raise NERDependencyError(_install_message("gliner")) from exc
             ref = ensure_model(self._model_id, cache_dir=self._cache_dir, workdir=self._workdir)
-            self._model = GLiNER.from_pretrained(str(ref.path))
+            self._model = GLiNER.from_pretrained(str(ref.path), map_location=_model_device())
         return self._model
 
     def _merge_model_spans(self, text: str, gazetteer_mentions: list[Mention]) -> list[Mention]:

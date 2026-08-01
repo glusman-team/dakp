@@ -18,7 +18,7 @@ import pytest
 
 from dakp_pipeline.ner import ner as ner_module
 from dakp_pipeline.ner.model_cache import ModelRef
-from dakp_pipeline.ner.ner import DEFAULT_MODEL, DiseaseNER, Mention, _install_message, _overlaps_any, _sort_key
+from dakp_pipeline.ner.ner import DEFAULT_MODEL, DiseaseNER, Mention, _install_message, _model_device, _overlaps_any, _sort_key
 
 # --- helpers -------------------------------------------------------------------
 
@@ -27,6 +27,28 @@ def test_install_message_names_module_and_command() -> None:
     message = _install_message("gliner")
     assert "gliner" in message
     assert "uv sync" in message
+
+
+# --- _model_device: CUDA when available, CPU fallbacks -------------------------
+
+
+def test_model_device_selects_cuda_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert _model_device() == "cuda"
+
+
+def test_model_device_falls_back_to_cpu_without_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert _model_device() == "cpu"
+
+
+def test_model_device_cpu_when_torch_unimportable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "torch", None)  # makes `import torch` raise ImportError
+    assert _model_device() == "cpu"
 
 
 def test_sort_key_and_overlaps_helpers() -> None:
@@ -71,16 +93,19 @@ class _FakeGLiNERModel:
 
 class _FakeGLiNER:
     loaded_from: ClassVar[list[str]] = []
+    loaded_map_location: ClassVar[list[str]] = []
     model = _FakeGLiNERModel([])
 
     @staticmethod
-    def from_pretrained(path: str) -> _FakeGLiNERModel:
+    def from_pretrained(path: str, map_location: str = "cpu") -> _FakeGLiNERModel:
         _FakeGLiNER.loaded_from.append(path)
+        _FakeGLiNER.loaded_map_location.append(map_location)
         return _FakeGLiNER.model
 
 
 def _install_fake_gliner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, predictions: list[dict[str, Any]]) -> None:
     _FakeGLiNER.loaded_from = []
+    _FakeGLiNER.loaded_map_location = []
     _FakeGLiNER.model = _FakeGLiNERModel(predictions)
     module = types.ModuleType("gliner")
     module.GLiNER = _FakeGLiNER  # type: ignore[attr-defined]
