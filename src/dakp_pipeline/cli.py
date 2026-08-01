@@ -59,7 +59,7 @@ _API_WAIT_ROUNDS = 90
 _API_WAIT_SECONDS = 2
 _DAG_WAIT_ROUNDS = 45
 _DAG_WAIT_SECONDS = 2
-_RUN_WAIT_ROUNDS = 300
+_RUN_WAIT_ROUNDS = 1200  # 60 min @ 3s: a release's GLiNER contraindication mining + KG build can take ~20+ min
 _RUN_WAIT_SECONDS = 3
 
 
