@@ -69,3 +69,16 @@ def faers_refs(ctx: TaskContext) -> list[ArtifactRef]:
     """FAERS 24Q3 cases *without* the DELETE file, so all three cases (incl. Placebo) survive."""
     names = ("DEMO24Q3.txt", "DRUG24Q3.txt", "INDI24Q3.txt", "REAC24Q3.txt")
     return faers_ascii.extract([_ref(FIXTURE_ROOT / "faers" / name) for name in names], ctx)
+
+
+@pytest.fixture(scope="session")
+def dakp_build():
+    """The Airflow ``dakp_build`` DAG module, imported lazily at execution (not collection).
+
+    pytest-xdist collects the whole suite in *every* worker; importing the Airflow DAG at test-module
+    load made all 24 workers pay ~1s of ``import airflow`` during collection. Importing it here defers
+    that cost to the one worker that actually runs a DAG test, keeping per-worker collection cheap.
+    """
+    from dakp_pipeline.dags import dakp_build as _dag_build
+
+    return _dag_build

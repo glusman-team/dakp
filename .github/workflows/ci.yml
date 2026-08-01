@@ -1,0 +1,131 @@
+# CI for the DAKP rebuild. Modeled on ../Tablassert/.github/workflows/ci.yml: aggressive caching +
+# fully parallel jobs (no `needs:` between them, so they fan out at once).
+#
+#   python-lint   ruff check + ruff format --check
+#   python-type   pyright
+#   python-test   pytest -q --cov (addopts adds `-n auto`; pytest-cov combines per-xdist-worker
+#                 coverage so the 100% branch gate in pyproject.toml still holds)
+#   go            cd go && go test ./...
+#   pre-commit    validates the contributor hook wiring (.pre-commit-config.yaml)
+#
+# Caching is keyed on lockfiles so it invalidates exactly when dependencies change:
+#   - astral-sh/setup-uv caches the uv download/wheel cache, keyed on uv.lock.
+#   - actions/setup-go caches the Go build + module cache, keyed on go/go.sum.
+#   - actions/cache caches pre-commit's hook environments, keyed on .pre-commit-config.yaml.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sync dev dependencies
+        run: uv sync --group dev
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+  python-type:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sync dev dependencies
+        run: uv sync --group dev
+      - name: Pyright
+        run: uv run pyright
+
+  python-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sync dev dependencies
+        run: uv sync --group dev
+      # addopts supplies `-n auto --cov`; pytest-cov merges the per-worker .coverage files and the
+      # fail_under=100 branch gate (pyproject.toml) fails the job on any regression.
+      - name: Run tests (parallel, with coverage gate)
+        run: uv run pytest -q --cov
+
+  go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache: true
+          cache-dependency-path: go/go.sum
+      - name: Go test
+        run: go test ./...
+
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sync dev dependencies
+        run: uv sync --group dev
+      - name: Cache pre-commit hook environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: ${{ runner.os }}-pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: Run pre-commit
+        run: uv run pre-commit run --all-files

@@ -47,6 +47,7 @@ dev = [
     "pyright>=1.1.411",
     "pytest>=9.0.0",
     "pytest-cov>=7.1.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.15.6",
 ]
 
@@ -62,7 +63,11 @@ packages = ["src/dakp_pipeline"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# `-n auto` runs the suite in parallel across all cores via pytest-xdist (pytest-cov combines the
+# per-worker coverage data, so the 100% branch gate below still holds). `--cov` is baked in so the
+# fail_under gate runs on every invocation. Heavy imports (Airflow) are deferred to fixtures so
+# per-worker collection stays cheap (see tests/unit/conftest.py).
+addopts = "-q -n auto --cov"
 markers = ["network: tests that require internet access"]
 
 [tool.coverage.run]

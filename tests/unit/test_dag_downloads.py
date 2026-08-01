@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 from dakp_pipeline import acquire, runtime
-from dakp_pipeline.dags import dakp_build
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.sources import dailymed, drugsfda, faers
@@ -125,7 +124,7 @@ def test_acquire_all_runs_every_source(tmp_path: Path, monkeypatch: pytest.Monke
 # --- DAG wiring (import-safe; graph assertions gated on airflow) ----------------
 
 
-def test_dag_module_importable_and_acquisition_wired() -> None:
+def test_dag_module_importable_and_acquisition_wired(dakp_build) -> None:
     assert dakp_build.DAG_ID == "dakp_build"
     assert dakp_build.DOWNLOAD_POOL == "dakp_download"
     # The acquisition tasks are present in the constructed DAG (they delegate to acquire.*, whose
@@ -148,7 +147,7 @@ def test_build_context_forwards_fullmap(tmp_path: Path) -> None:
     assert ctx.params["run_tablassert"] is True
 
 
-def test_dag_includes_acquisition_tasks_and_pools() -> None:
+def test_dag_includes_acquisition_tasks_and_pools(dakp_build) -> None:
     dag = dakp_build.dag_obj
     acquire_ids = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ner_models"}
     assert acquire_ids <= {t.task_id for t in dag.tasks}
