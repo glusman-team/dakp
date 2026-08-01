@@ -80,10 +80,11 @@ INFORES_DAKP = "infores:multiomics-drugapprovals"
 AGENT_TYPE = "manual_validation_of_automated_agent"
 
 GRAPH_NAME = "dakp"
-#: Placeholder ``fullmap`` written into ``graph.yaml``. Tablassert's ``Graph`` model REQUIRES a
-#: ``fullmap`` field, so the generated config carries this placeholder; the runner always overrides
-#: it with the explicit ``--fullmap <path>`` CLI arg (the user-supplied prebuilt fullmap redb). DAKP
-#: never downloads a fullmap — see :class:`TablassertRunner` (which requires ``ctx.params["fullmap"]``).
+#: Fallback ``fullmap`` written into ``graph.yaml`` when no real fullmap is configured (deferred
+#: runs, which never invoke ``build-kg``). Tablassert's ``Graph`` model REQUIRES a ``fullmap``
+#: field, and for a graph build Tablassert reads the fullmap path FROM this field (it ignores the
+#: ``--fullmap`` CLI arg unless ``--table-config`` wraps a single table) — so :func:`generate`
+#: writes the real ``ctx.params["fullmap"]`` here for real runs. DAKP never downloads a fullmap.
 FULLMAP_DEFAULT = ".fullmap"
 SOURCE_URL_BASE = "https://example.invalid/dakp/generated"
 GRAPH_DESCRIPTION = (
@@ -201,11 +202,14 @@ def table_config(table: str) -> dict[str, Any]:
     }
 
 
-def graph_config(tables: list[str] | None = None, version: str | None = None) -> dict[str, Any]:
+def graph_config(tables: list[str] | None = None, version: str | None = None, fullmap: str = FULLMAP_DEFAULT) -> dict[str, Any]:
     """Build the Tablassert ``Graph`` config dict (verified against ``tablassert.models.Graph``).
 
     ``tables`` defaults to the three committed table configs (``tables/<basename>.yaml``);
-    ``version`` defaults to the DAKP package version.
+    ``version`` defaults to the DAKP package version. ``fullmap`` is the fullmap redb path the
+    ``build-kg`` resolve step reads from the Graph config (Tablassert ignores the ``--fullmap`` CLI
+    arg for graph builds); it defaults to :data:`FULLMAP_DEFAULT` for deferred runs that never
+    invoke ``build-kg``.
     """
     if tables is None:
         tables = [f"tables/{_TABLE_SPECS[table][0]}.yaml" for table in _TABLE_ORDER]
@@ -214,7 +218,7 @@ def graph_config(tables: list[str] | None = None, version: str | None = None) ->
         "version": version if version is not None else __version__,
         "description": GRAPH_DESCRIPTION,
         "infores": INFORES_DAKP,
-        "fullmap": FULLMAP_DEFAULT,
+        "fullmap": fullmap,
         "tables": list(tables),
     }
 
@@ -318,9 +322,9 @@ def table_yaml(table: str) -> str:
     return _dump_yaml({"template": table_config(table)})
 
 
-def graph_yaml(tables: list[str] | None = None, version: str | None = None) -> str:
+def graph_yaml(tables: list[str] | None = None, version: str | None = None, fullmap: str = FULLMAP_DEFAULT) -> str:
     """Serialized Graph config YAML."""
-    return _dump_yaml(graph_config(tables=tables, version=version))
+    return _dump_yaml(graph_config(tables=tables, version=version, fullmap=fullmap))
 
 
 # --- runtime generation into the workdir ------------------------------------------
@@ -331,10 +335,11 @@ def generate(assertion_refs: list[ArtifactRef], ctx: TaskContext) -> list[Artifa
 
     Configs land in ``<workdir>/tables/`` so their workdir-relative references
     (``tables/<name>.yaml``, ``data/tabular/<table>.tsv``) resolve when Tablassert runs from the
-    workdir root. ``graph.yaml`` carries a placeholder ``fullmap`` (:data:`FULLMAP_DEFAULT`, required
-    by Tablassert's ``Graph`` model) that the runner overrides with the explicit ``--fullmap <path>``
-    CLI arg. Returns ``[graph_ref, *table_refs]`` in the canonical table order; assertion refs are
-    linked as input provenance by table stem.
+    workdir root. ``graph.yaml`` carries the fullmap redb path the ``build-kg`` resolve step reads
+    (Tablassert reads it from the Graph config, ignoring the ``--fullmap`` CLI arg for graph
+    builds): the real ``ctx.params["fullmap"]`` when present, else the :data:`FULLMAP_DEFAULT`
+    placeholder (deferred runs never invoke ``build-kg``). Returns ``[graph_ref, *table_refs]`` in
+    the canonical table order; assertion refs are linked as input provenance by table stem.
     """
     workdir = Workdir(ctx.workdir)
     store = ArtifactStore(workdir)
@@ -355,7 +360,8 @@ def generate(assertion_refs: list[ArtifactRef], ctx: TaskContext) -> list[Artifa
         table_refs.append(store.register(config_path, media_type="application/yaml", inputs=inputs, operation=operation))
 
     graph_path = tables_dir / "graph.yaml"
-    graph_path.write_text(graph_yaml(table_paths), encoding="utf-8")
+    fullmap = str(ctx.params["fullmap"]) if ctx.params.get("fullmap") else FULLMAP_DEFAULT
+    graph_path.write_text(graph_yaml(table_paths, fullmap=fullmap), encoding="utf-8")
     graph_ref = store.register(graph_path, media_type="application/yaml", inputs=[ref.blake3 for ref in table_refs], operation=operation)
 
     logger.info("generated Tablassert configs: graph + {} tables -> {}", len(table_refs), tables_dir)
