@@ -12,7 +12,7 @@ from typing import Any
 
 from dakp_pipeline.io import schemas
 
-# Translator provenance constants (PLAN.md "Translator provenance conventions").
+# Translator provenance constants (Translator provenance conventions).
 INFORES_DAKP = "infores:multiomics-drugapprovals"
 INFORES_DAILYMED = "infores:dailymed"
 INFORES_FAERS = "infores:faers"

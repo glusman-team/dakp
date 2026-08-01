@@ -391,7 +391,7 @@ def _source_record_id(frame: pl.DataFrame, family: str, source_b3: str) -> pl.Ex
     """Deterministic per-row id: ``<source-hash-prefix>:<primaryid>[:<seq|pt>]``.
 
     Derived from source hash + source-local identifiers (not mutable row order), per the
-    PLAN.md "Extraction requirements" contract.
+    extraction requirements contract.
     """
     short = source_b3.split(":", 1)[1][:12]
     parts: list[pl.Expr] = [pl.lit(short), pl.col("primaryid")]

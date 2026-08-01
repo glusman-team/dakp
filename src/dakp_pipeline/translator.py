@@ -27,7 +27,7 @@ import-safe and monkeypatchable. Three public entry points:
 * :func:`check_rows` / :func:`check_assertion_tables` — regression guardrails asserting the
   produced assertion/edge set preserves the three DAKP edge families and their Translator
   provenance semantics — without requiring edge-for-edge equality with the legacy build
-  (PLAN.md: "allowing improved coverage and improved mappings"). The invariants are the
+  (allowing improved coverage and improved mappings). The invariants are the
   family/provenance/label contracts the legacy DAKP established and the rebuild locks in:
 
   * ``biolink:treats`` — FDA-approved condition assertions: ``clinical_approval_status`` is

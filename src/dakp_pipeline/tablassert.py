@@ -5,8 +5,7 @@ Flattened from the former ``tablassert/configs.py`` + ``tablassert/run.py`` (US-
 DAKP does everything up to the shape Tablassert consumes, then emits ONE Graph config
 (``tables/graph.yaml``) plus one table config per assertion table (:func:`generate`).
 Canonical entity resolution, KGX compilation, dedup, deterministic IDs, and RIG generation
-are delegated to ``../Tablassert`` — DAKP ships **no** local fallback KGX compiler
-(PLAN.md "Tablassert modeling layer").
+are delegated to ``../Tablassert`` — DAKP ships **no** local fallback KGX compiler.
 
 The configs match the ACTUAL current Tablassert 8.x schema (verified against
 ``../Tablassert/src/tablassert/models.py`` and its ``ingests.to_sections`` loader):

@@ -1,7 +1,6 @@
 # DAKP Go workers
 
-Native Go workers for the Airflow-native DAKP pipeline (see
-[`../plans/airflow-native-go-workers.md`](../plans/airflow-native-go-workers.md)). The heavy
+Native Go workers for the Airflow-native DAKP pipeline. The heavy
 parsing/extraction (DailyMed, FAERS, Drugs@FDA) runs **inside an Airflow Go SDK bundle**
 ([`cmd/dakp-bundle`](./cmd/dakp-bundle)) — the DAG's `extract_*` tasks are `@task.stub(queue=
 "golang")` declarations the ExecutableCoordinator forks per task instance (no subprocess/OS-command
@@ -149,8 +148,8 @@ error.
 
 ## Content addressing (BLAKE3)
 
-BLAKE3 is DAKP's primary content hash (`PLAN.md`, "Nix-store-inspired artifact and
-cryptography model"). Canonical artifact ids are `b3:<hex>` with a **32-byte / 64-hex**
+BLAKE3 is DAKP's primary content hash (a Nix-store-inspired artifact and
+cryptography model). Canonical artifact ids are `b3:<hex>` with a **32-byte / 64-hex**
 digest.
 
 - **Library:** [`github.com/zeebo/blake3`](https://pkg.go.dev/github.com/zeebo/blake3)

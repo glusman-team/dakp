@@ -1,6 +1,6 @@
 """Artifact manifests — the JSON provenance record for every content-addressed artifact.
 
-Shape matches the ``PLAN.md`` "BLAKE3 artifact manifest shape" sketch (``schema_version``
+The manifest is the BLAKE3 artifact manifest shape (``schema_version``
 ``dakp.artifact.v1``). Modeled with pydantic v2 for validation and (de)serialization.
 """
 

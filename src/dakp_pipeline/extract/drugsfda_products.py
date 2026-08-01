@@ -18,7 +18,7 @@ Design notes:
 * Column mapping is name-and-alias based (``ApplicationNumber`` vs ``ApplNo``), so the
   parser tolerates the real Drugs@FDA schema, the legacy NDC ``product.txt`` schema, and
   the fixture subset alike.
-* Parsing is pure functions over frames/paths wherever possible (PLAN.md extraction
+* Parsing is pure functions over frames/paths wherever possible (an extraction
   requirement), making file inputs easy to monkeypatch in tests.
 """
 
@@ -163,7 +163,7 @@ class DrugsFDAProductsExtractor:
             warnings.extend(p_warnings)
             _fill_appl_type_map(appl_type_map, products_frame)
             refs.append(self._register_parquet(wd, store, products_frame, "products", PRODUCTS_COLUMNS, [source_blake3], len(p_warnings)))
-            # Uncompressed source-section TSV for Tablassert handoff (PLAN.md: Tablassert
+            # Uncompressed source-section TSV for Tablassert handoff (Tablassert
             # cannot read compressed inputs).
             tsv_out = wd.tabular / "drugsfda_products.tsv"
             schemas.write_tsv(products_frame.select(PRODUCTS_COLUMNS), tsv_out)

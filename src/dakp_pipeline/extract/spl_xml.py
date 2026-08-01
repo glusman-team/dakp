@@ -52,8 +52,8 @@ from dakp_pipeline.io.manifests import OperationBlock, TableBlock
 from dakp_pipeline.logging_setup import bind
 from dakp_pipeline.paths import Workdir
 
-# LOINC section codes DAKP consumes, with stable output names (PLAN.md "Sharded DailyMed
-# extraction sketch"). Codes absent here are still extracted; the name just falls back
+# LOINC section codes DAKP consumes, with stable output names (sharded DailyMed
+# extraction). Codes absent here are still extracted; the name just falls back
 # to the XML ``name`` attribute or the LOINC code itself.
 SECTION_CODE_NAMES = {
     "34067-9": "indications_and_usage",

@@ -198,7 +198,7 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
     Always runs real acquisition; ``fullmap`` only decides the Tablassert handoff mode (a path
     triggers the real handoff, absent => deferred — never a hard failure). ``small`` bounds the
     acquisition SCOPE to a tiny real subset (~1 FAERS quarter + 1 DailyMed release) — same pipeline,
-    less data; it is not a profile and changes nothing else (threads stay ``os.cpu_count()``).
+    less data; it changes nothing else (threads stay ``os.cpu_count()``).
     """
     workdir = _DEFAULT_WORKDIR
     fixture_root = _DEFAULT_FIXTURE_ROOT

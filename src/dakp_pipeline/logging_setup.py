@@ -1,6 +1,5 @@
 """Logging: ``loguru`` is the primary structured logger, bridged into stdlib ``logging``
-so Airflow's task-instance file handler captures every record (per ``PLAN.md`` "Logging
-and observability").
+so Airflow's task-instance file handler captures every record.
 
 Two pieces:
 

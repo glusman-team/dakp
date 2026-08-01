@@ -1,5 +1,4 @@
-"""Core source-shaping interfaces — exactly as sketched in ``PLAN.md`` ("Core
-source-shaping interfaces").
+"""Core source-shaping interfaces.
 
 Every stage of the pipeline communicates through :class:`ArtifactRef` handles (paths +
 BLAKE3 ids + optional manifest/schema metadata) rather than in-memory dataframes, so

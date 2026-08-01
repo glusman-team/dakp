@@ -27,7 +27,7 @@ from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 
 _TABLE = "faers_applied_to_treat_assertions"
 _PREDICATE = "biolink:applied_to_treat"
-# Stable FAERS applied-to-treat labels (PLAN.md "Resolved planning decisions": keep current behavior).
+# Stable FAERS applied-to-treat labels (resolved planning decision: keep current behavior).
 _STATUS = "observed_use"
 _KNOWLEDGE_LEVEL = "statistical_association"
 

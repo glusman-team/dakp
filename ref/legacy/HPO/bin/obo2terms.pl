@@ -1,1 +1,0 @@
-../../MONDO/bin/obo2terms.pl

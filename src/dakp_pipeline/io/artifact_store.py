@@ -3,7 +3,7 @@
 Every raw download and derived artifact is hashed with BLAKE3 and stored immutably under
 ``data/raw/by-hash/<hex>/``; human-readable aliases (under ``data/raw/aliases/``) point at
 the hash. Re-ingesting an identical artifact is a cache hit (no copy, manifest reused).
-Reuse is keyed by content hash, never by filename or mtime (per ``PLAN.md``).
+Reuse is keyed by content hash, never by filename or mtime.
 
 Two ingest modes:
 

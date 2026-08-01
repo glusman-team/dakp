@@ -1,7 +1,7 @@
 """Tabular contracts: ordered column lists for every public TSV table, schema
 fingerprints, and polars-backed read/write helpers.
 
-Column lists follow ``PLAN.md`` "Public tabular contracts". Tablassert-facing tables are
+Column lists are the public tabular contracts. Tablassert-facing tables are
 uncompressed TSV (Tablassert cannot read compressed inputs); interim tables are parquet.
 """
 
@@ -13,7 +13,7 @@ import polars as pl
 
 from dakp_pipeline.io.content_hash import hash_bytes
 
-# --- public TSV column contracts (PLAN.md "Public tabular contracts") -------------
+# --- public TSV column contracts -------------------------------------------------
 
 DAILYMED_SPL_DOCUMENTS_COLUMNS = [
     "spl_document_id",

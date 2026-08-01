@@ -40,7 +40,7 @@ underperformed; it is dropped from the shipped extra.
 
 * **Offline mode (default):** the curated disease/phenotype gazetteer + deterministic lexical
   matcher. Precision 1.000, F1 0.955 on the fixture, zero heavy dependencies, fully
-  deterministic — the best single laptop-safe option. Used by tests and the mock pipeline.
+  deterministic — the best single laptop-safe option. Used by tests and offline runs.
 * **Production mode:** the same gazetteer anchors high-precision spans, and GLiNER zero-shot
   fills out-of-gazetteer gaps (gazetteer spans win on overlap; non-overlapping GLiNER spans
   add recall) → near-perfect recall at gazetteer precision. GLiNER is a core, lazy-imported dep.

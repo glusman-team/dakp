@@ -2,7 +2,7 @@
 
 All paths are derived from a single workdir root, which is supplied by the caller
 (CLI ``--workdir``, Airflow DAG param ``workdir``, or ``tmp_path`` in tests). The
-layout mirrors the directory tree sketched in ``PLAN.md`` ("Proposed repository layout").
+layout mirrors the directory tree the pipeline writes under that root.
 """
 
 from __future__ import annotations

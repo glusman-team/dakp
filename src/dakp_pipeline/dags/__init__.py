@@ -1,7 +1,6 @@
 """Airflow DAGs for the DAKP pipeline.
 
-Airflow 3 is a hard dependency (the pipeline is Airflow-native — see
-plans/airflow-native-go-workers.md), so :mod:`dakp_pipeline.dags.dakp_build` always imports and
+Airflow 3 is a hard dependency (the pipeline is Airflow-native), so :mod:`dakp_pipeline.dags.dakp_build` always imports and
 constructs the DAG at module load. :func:`get_dag` returns the constructed DAG object; the
 one-command ``uv run dakp up`` orchestrator (:mod:`dakp_pipeline.cli`) triggers it via ``airflow dags
 trigger dakp_build``.

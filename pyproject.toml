@@ -92,16 +92,7 @@ indent-width = 4
 target-version = "py312"
 src = ["src", "tests"]
 extend-exclude = [
-    # Legacy Perl/Python source kept only for audit (PLAN.md "reuse" / "ref/legacy").
-    # The new DAG never imports them; ruff/pyright must not lint them.
-    "bin",
-    "DailyMed",
-    "DrugsFDA",
-    "FAERS",
-    "HPO",
-    "MONDO",
-    "matrix",
-    "ref",
+    # Generated runtime workdirs (pipeline output + scratch); never lint them.
     "data",
     "tmp",
 ]

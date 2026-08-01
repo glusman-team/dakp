@@ -18,7 +18,7 @@ Benchmarked on a hand-labeled fixture (27 cases / 35 gold spans, `tests/eval/`):
 | scispacy  | 0.571     | 0.457  | 0.508 | dropped: no phenotype label, coarse spans |
 
 * **Offline mode (default):** curated gazetteer + deterministic lexical matcher. Precision
-  1.000 / F1 0.955, zero heavy deps, fully deterministic. Used by tests + the mock pipeline.
+  1.000 / F1 0.955, zero heavy deps, fully deterministic. Used by tests + offline runs.
 * **Production mode (`offline=False`):** the same gazetteer anchors high-precision spans and
   GLiNER zero-shot (`urchade/gliner_small-v2.1`) fills out-of-gazetteer gaps (gazetteer wins on
   overlap) → near-perfect recall at gazetteer precision. GLiNER is a core, lazy-imported dependency.

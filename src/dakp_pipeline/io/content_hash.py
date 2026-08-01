@@ -1,7 +1,7 @@
 """BLAKE3 content + tree hashing.
 
 BLAKE3 is the primary DAKP content hash for speed on large source files and extracted
-trees (per ``PLAN.md`` "Nix-store-inspired artifact and cryptography model with BLAKE3").
+trees (a Nix-store-inspired artifact and cryptography model with BLAKE3).
 Optional SHA-256/SRI metadata is computed only as interoperability sugar; the canonical
 artifact id is always ``b3:<hex>``.
 
