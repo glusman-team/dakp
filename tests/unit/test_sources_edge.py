@@ -321,7 +321,7 @@ def test_dailymed_index_304_with_cache_returns_cached_text(tmp_path: Path, monke
     assert [r.blake3 for r in second] == [r.blake3 for r in first]
 
 
-def test_dailymed_release_304_returns_cached_ref(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dailymed_release_304_reexpands_cached_spl_members(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     spl = b"<splBatch/>"
     zip_bytes = _release_zip({"drug1.xml": spl})
     state = {"not_modified": False}
@@ -339,10 +339,11 @@ def test_dailymed_release_304_returns_cached_ref(tmp_path: Path, monkeypatch: py
     first = dailymed.fetch(ctx)
     assert len(first) == 1
     state["not_modified"] = True
-    # Release 304: the cached release ZIP ref is returned (the ZIP itself, not its members).
+    # Release 304: the cached release ZIP is re-expanded into its SPL members (no re-download) —
+    # the same SPL refs the first run produced (what the SPL extractor consumes), not the ZIP itself.
     second = dailymed.fetch(ctx)
-    assert len(second) == 1
-    assert second[0].uri.name.endswith(".zip")
+    assert [r.blake3 for r in second] == [r.blake3 for r in first]
+    assert second[0].uri.name.endswith(".xml")
 
 
 def test_dailymed_release_304_without_cache_returns_empty(tmp_path: Path) -> None:

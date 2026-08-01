@@ -1,6 +1,7 @@
 package airflow
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"os"
@@ -99,4 +100,71 @@ func mustStage(t *testing.T, refs []ArtifactRef) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// TestLoadFAERSSourcesFromZip covers the real download shape: a quarterly ASCII zip nests the .txt
+// files under ASCII/ (plus non-ASCII members to skip); loadFAERSSources must read the .txt members
+// straight out of the archive (mirrors faers_ascii._iter_faers_sources).
+func TestLoadFAERSSourcesFromZip(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "faers_ascii_24Q3.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	for _, name := range []string{"DEMO24Q3.txt", "DRUG24Q3.txt"} {
+		body, err := os.ReadFile(filepath.Join("../faers/testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		w, err := zw.Create("ASCII/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A non-FAERS member (no family prefix) must be skipped.
+	if w, err := zw.Create("ASCII/Readme.pdf"); err != nil {
+		t.Fatal(err)
+	} else if _, err := w.Write([]byte("not ascii")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := blake3store.HashFile(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcs, err := loadFAERSSources(mustStage(t, []ArtifactRef{{URI: zipPath, Blake3: id, MediaType: "application/zip"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(srcs) != 2 {
+		t.Fatalf("got %d sources, want 2 (DEMO + DRUG from the zip)", len(srcs))
+	}
+	byFamily := map[string]faers.Source{}
+	for _, s := range srcs {
+		byFamily[s.Family] = s
+	}
+	for _, fam := range []string{"DEMO", "DRUG"} {
+		s, ok := byFamily[fam]
+		if !ok {
+			t.Fatalf("missing %s source", fam)
+		}
+		if s.Quarter != "24Q3" {
+			t.Errorf("%s quarter = %q, want 24Q3", fam, s.Quarter)
+		}
+		want, _ := os.ReadFile(filepath.Join("../faers/testdata", fam+"24Q3.txt"))
+		if !bytes.Equal(s.Content, want) {
+			t.Errorf("%s content mismatch", fam)
+		}
+	}
 }

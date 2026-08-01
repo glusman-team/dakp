@@ -1,8 +1,10 @@
 package airflow
 
 import (
+	"archive/zip"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -168,11 +170,13 @@ func writeFAERSCasesTSV(path string, cases []faers.Case) error {
 	return f.Close()
 }
 
-// loadFAERSSources walks inDir (recursively) for .txt files, keeps those whose basename resolves
-// to a FAERS family + quarter, and loads each as a faers.Source (content-hashed for the b3-derived
-// source_record_id). Sorted path order for determinism. Mirrors the CLI's loadFAERSSources.
+// loadFAERSSources collects the FAERS ASCII sources from inDir: loose .txt files (pre-unpacked
+// quarters) and .txt members inside quarterly ASCII .zip archives (the shape the FAERS fetcher
+// downloads). Each kept source's basename resolves to a FAERS family + quarter; content is hashed
+// for the b3-derived source_record_id. Sorted path order for determinism. Mirrors
+// faers_ascii._iter_faers_sources (loose .txt or zip members).
 func loadFAERSSources(inDir string) ([]faers.Source, error) {
-	var paths []string
+	var txtPaths, zipPaths []string
 	err := filepath.WalkDir(inDir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -180,32 +184,88 @@ func loadFAERSSources(inDir string) ([]faers.Source, error) {
 		if d.IsDir() {
 			return nil
 		}
-		if strings.EqualFold(filepath.Ext(path), ".txt") {
-			paths = append(paths, path)
+		switch {
+		case strings.EqualFold(filepath.Ext(path), ".txt"):
+			txtPaths = append(txtPaths, path)
+		case strings.EqualFold(filepath.Ext(path), ".zip"):
+			zipPaths = append(zipPaths, path)
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(paths)
+	sort.Strings(txtPaths)
+	sort.Strings(zipPaths)
 
 	var srcs []faers.Source
-	for _, p := range paths {
-		family, quarter := faers.FamilyAndQuarter(filepath.Base(p))
+	for _, p := range txtPaths {
+		src, ok, err := faersSourceFromLoose(p)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			srcs = append(srcs, src)
+		}
+	}
+	for _, zp := range zipPaths {
+		zipSrcs, err := faersSourcesFromZip(zp)
+		if err != nil {
+			return nil, err
+		}
+		srcs = append(srcs, zipSrcs...)
+	}
+	return srcs, nil
+}
+
+// faersSourceFromLoose loads one loose .txt file as a faers.Source (ok=false if its name does not
+// resolve to a FAERS family + quarter).
+func faersSourceFromLoose(path string) (faers.Source, bool, error) {
+	name := filepath.Base(path)
+	family, quarter := faers.FamilyAndQuarter(name)
+	if family == "" || quarter == "" {
+		return faers.Source{}, false, nil
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return faers.Source{}, false, err
+	}
+	return faers.Source{
+		Quarter: quarter, Family: family, Content: content,
+		SourceName: name, SourceB3: blake3store.HashBytes(content),
+	}, true, nil
+}
+
+// faersSourcesFromZip reads each .txt member of a quarterly ASCII zip directly (no disk unpack),
+// keeping members whose basename resolves to a FAERS family + quarter.
+func faersSourcesFromZip(zipPath string) ([]faers.Source, error) {
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	var srcs []faers.Source
+	for _, file := range reader.File {
+		if file.FileInfo().IsDir() || !strings.EqualFold(filepath.Ext(file.Name), ".txt") {
+			continue
+		}
+		name := filepath.Base(file.Name)
+		family, quarter := faers.FamilyAndQuarter(name)
 		if family == "" || quarter == "" {
 			continue
 		}
-		content, err := os.ReadFile(p)
+		rc, err := file.Open()
+		if err != nil {
+			return nil, err
+		}
+		content, err := io.ReadAll(rc)
+		rc.Close()
 		if err != nil {
 			return nil, err
 		}
 		srcs = append(srcs, faers.Source{
-			Quarter:    quarter,
-			Family:     family,
-			Content:    content,
-			SourceName: filepath.Base(p),
-			SourceB3:   blake3store.HashBytes(content),
+			Quarter: quarter, Family: family, Content: content,
+			SourceName: name, SourceB3: blake3store.HashBytes(content),
 		})
 	}
 	return srcs, nil

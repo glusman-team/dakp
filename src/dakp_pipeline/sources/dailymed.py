@@ -133,21 +133,26 @@ def _download_one(url: str, staging: Path, store: ArtifactStore) -> list[Artifac
     The release ZIP is recorded under its ``dailymed/<name>`` alias (provenance anchor +
     conditional-GET source for future runs), then its SPL XML members are extracted and
     ingested individually — those ``.xml``/``.xml.gz`` refs are what the SPL extractor
-    consumes. On HTTP 304 the previously cached release ref is returned unchanged
-    (idempotent re-run); returns ``[]`` only if a 304 occurs with no cached copy resolvable.
+    consumes. On HTTP 304 the cached release ZIP is re-expanded into its SPL members (no
+    re-download), so a re-run yields the same SPL refs the extractor needs; returns ``[]`` only
+    if a 304 occurs with no cached copy resolvable.
     """
     name = url.rsplit("/", 1)[-1]
     alias = f"dailymed/{name}"
     dest = staging / name
+    out_dir = staging / f"{name}-xml"
     source = _prior_source(store, alias=alias)
     etag, last_modified = _conditional_download(url, dest, source)
     if not dest.exists():
-        # 304 Not Modified: the cached artifact is still current — return it, do not drop it.
+        # 304 Not Modified: the cached release ZIP is still current — re-expand it into its SPL XML
+        # members (no re-download). The SPL extractor consumes the .xml/.xml.gz refs, not the ZIP.
         cached = _cached_ref(store, alias=alias)
-        return [cached] if cached is not None else []
+        if cached is None:
+            return []
+        return _expand_release_zip(cached.uri, out_dir, store, SourceBlock(url=url, retrieved_at=_now_iso()), release_name=name)
     src_block = SourceBlock(url=url, etag=etag, last_modified=last_modified, retrieved_at=_now_iso())
     store.ingest(dest, alias=alias, source=src_block)
-    refs = _expand_release_zip(dest, store, src_block, release_name=name)
+    refs = _expand_release_zip(dest, out_dir, store, src_block, release_name=name)
     dest.unlink(missing_ok=True)  # staged zip no longer needed once its XMLs are content-addressed
     return refs
 
@@ -164,7 +169,7 @@ def _apply_release_limit(urls: list[str], ctx: TaskContext) -> list[str]:
     return urls[:limit]
 
 
-def _expand_release_zip(zip_path: Path, store: ArtifactStore, source: SourceBlock, *, release_name: str) -> list[ArtifactRef]:
+def _expand_release_zip(zip_path: Path, out_dir: Path, store: ArtifactStore, source: SourceBlock, *, release_name: str) -> list[ArtifactRef]:
     """Ingest the SPL XML documents of a DailyMed release ZIP as individual artifacts.
 
     DailyMed full-release ZIPs are nested: the outer archive holds one ``.zip`` per SPL document
@@ -174,10 +179,9 @@ def _expand_release_zip(zip_path: Path, store: ArtifactStore, source: SourceBloc
     ``dailymed/<release>::<member>`` with the release's source provenance. A top-level
     ``.xml``/``.xml.gz`` member (older release layouts) is ingested directly. Non-SPL members are
     skipped; a release yielding no SPL documents returns ``[]`` (logged) rather than failing the
-    whole acquisition.
+    whole acquisition. Extracted members are staged under ``out_dir`` (caller-owned scratch).
     """
     log = bind(task_id="fetch_dailymed", release=release_name)
-    out_dir = zip_path.parent / f"{zip_path.stem}-xml"
     out_dir.mkdir(parents=True, exist_ok=True)
     refs: list[ArtifactRef] = []
     with zipfile.ZipFile(zip_path) as archive:
