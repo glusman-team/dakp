@@ -114,6 +114,22 @@ def test_blank_mined_span_is_skipped(tmp_path: Path) -> None:
     assert build_contraindication_rows([sections, ingredients], _BlankNER()) == []  # whitespace-only -> skipped
 
 
+# --- mined mention text is case-normalized --------------------------------------
+
+
+def test_mined_mention_case_is_normalized(tmp_path: Path) -> None:
+    # The same ingredient mentions the disease with different casing across SPL sections; the mined
+    # mention text is canonicalized (normalize_text) so the case variants collapse to one object
+    # instead of fragmenting into asthma / Asthma / ASTHMA rows.
+    sections = _sections(tmp_path, [("SET-A", "SET-A#d", "Asthma"), ("SET-B", "SET-B#d", "contraindicated in ASTHMA")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugY", "UNII:Y"), ("active", "SET-B", "DrugY", "UNII:Y")])
+    ner = DiseaseNER(gazetteer={"asthma": "disease"})
+    rows = build_contraindication_rows([sections, ingredients], ner)
+    assert len(rows) == 1  # both sets aggregate to the single (DrugY, asthma) pair
+    assert rows[0]["object_text"] == "asthma"
+    assert rows[0]["subject_text"] == "DrugY"
+
+
 # --- DailyMedEvidence.active_ingredients_by_set: missing fields + duplicates ----
 
 

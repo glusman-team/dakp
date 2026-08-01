@@ -48,6 +48,7 @@ from typing import Any
 from dakp_pipeline.assertions import INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, row_for
 from dakp_pipeline.assertions.evidence import build_dailymed_evidence, sorted_pipe, write_assertion_table
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
+from dakp_pipeline.ner.dictionary import normalize_text
 from dakp_pipeline.ner.ner import DiseaseNER, Mention, extract_contraindication_diseases
 
 _TABLE = "contraindication_assertions"
@@ -97,7 +98,9 @@ def build_contraindication_rows(inputs: Iterable[ArtifactRef], ner: DiseaseNER) 
             continue
         for doc_id, text in evidence.contraindication_docs[set_id]:
             for mention in extract_contraindication_diseases(text, ner):
-                object_text = mention.text.strip()
+                # Canonicalize the mined mention (lowercase / strip punctuation) so case variants
+                # (asthma / Asthma / ASTHMA) aggregate to one object instead of fragmenting the rows.
+                object_text = normalize_text(mention.text)
                 if not object_text:
                     continue
                 for ingredient_name, ingredient_unii in ingredients:
