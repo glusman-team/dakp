@@ -193,6 +193,24 @@ def test_dailymed_real_fetch_expands_release_spl_members(tmp_path: Path, monkeyp
     assert all(r.uri.exists() for r in refs)
 
 
+def test_dailymed_real_fetch_descends_into_nested_doc_zips(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Real DailyMed releases nest one zip per SPL document; the SPL .xml lives inside each inner zip.
+    spl = b"<splBatch><document><setId>N1</setId></document></splBatch>"
+    doc_zip = _release_zip({"subdir/": b"", "ABCD-1234.xml": spl, "ABCD-1234-image01.jpg": b"jpeg"})
+    release_bytes = _release_zip(
+        {"prescription/20060131_ABCD-1234.zip": doc_zip, "prescription/20060131_EFGH-5678.zip": _release_zip({"EFGH-5678.xml": spl})}
+    )
+    _patch_urlopen(
+        monkeypatch,
+        {"spl-resources-all-drug-labels.cfm": _FakeResponse(_INDEX_HTML.encode()), "dm_spl_release_human_rx_part1.zip": _FakeResponse(release_bytes)},
+    )
+    refs = dailymed.fetch(_ctx(tmp_path))
+    # Two nested doc zips -> two SPL .xml ingested; the dir entry + .jpg media are skipped.
+    assert len(refs) == 2
+    assert all(r.uri.suffix == ".xml" for r in refs)
+    assert all(r.uri.exists() for r in refs)
+
+
 def test_dailymed_real_fetch_release_limit_slices_releases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     two_release_index = (
         "<html><h2>Full Releases</h2>"

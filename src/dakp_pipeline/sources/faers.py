@@ -29,8 +29,13 @@ from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import SourceBlock
 from dakp_pipeline.paths import Workdir
 
-# FDA exports index lists quarterly ASCII zips as faers_ascii_<YYYY>q<N>.zip.
-FDA_FAERS_INDEX_URL = "https://fis.fda.gov/content/Exports"
+# FDA quarterly-data-extract listing page (anchors discovery of the ASCII zips). The old
+# ``https://fis.fda.gov/content/Exports`` index now 404s; the listing moved here. The quarterly
+# ASCII zips themselves still live under ``https://fis.fda.gov/content/Exports/`` (the download
+# base), named ``faers_ascii_<YYYY>q<N>.zip``.
+FDA_FAERS_INDEX_URL = "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
+#: Where the quarterly ASCII zips are downloaded from (the listing page only anchors discovery).
+FDA_FAERS_DOWNLOAD_BASE = "https://fis.fda.gov/content/Exports"
 _FAERS_ZIP_RE = re.compile(r"faers_ascii_(\d{4})q(\d)\.zip", re.IGNORECASE)
 _DEFAULT_TIMEOUT = 120.0
 
@@ -43,7 +48,7 @@ class QuarterSource:
     url: str
 
 
-def discover_quarters(index_html: str, *, base_url: str = FDA_FAERS_INDEX_URL) -> list[QuarterSource]:
+def discover_quarters(index_html: str, *, base_url: str = FDA_FAERS_DOWNLOAD_BASE) -> list[QuarterSource]:
     """Parse FDA index HTML into most-recent-first ``(quarter, url)`` entries.
 
     Pure function (no network). Quarter labels are canonicalized to ``YYQ<N>`` (e.g.
@@ -118,4 +123,4 @@ def _http_download(url: str, dest: Path, *, timeout: float) -> Path:
 
 fetch = FAERSFetcher().fetch
 
-__all__ = ["FDA_FAERS_INDEX_URL", "FAERSFetcher", "QuarterSource", "discover_quarters", "fetch"]
+__all__ = ["FDA_FAERS_DOWNLOAD_BASE", "FDA_FAERS_INDEX_URL", "FAERSFetcher", "QuarterSource", "discover_quarters", "fetch"]

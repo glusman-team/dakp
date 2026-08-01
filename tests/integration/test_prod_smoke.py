@@ -66,8 +66,9 @@ def _faers_quarter_zip(quarter: str, families: tuple[str, ...]) -> bytes:
 def _downloaded_payloads() -> dict[str, bytes]:
     """The bytes the mocked HTTP layer serves for each real source URL."""
     return {
-        # DailyMed: one release ZIP carrying the SPL fixture as an inner .xml.gz member.
-        "dailymed_release": _zip_bytes({"dailymed_spl.xml.gz": _read_fixture("dailymed/dailymed_spl.xml.gz")}),
+        # DailyMed: one release ZIP nesting a per-document ZIP that carries the SPL fixture .xml.gz
+        # (mirrors the real full-release layout the fetcher descends into).
+        "dailymed_release": _zip_bytes({"prescription/doc1.zip": _zip_bytes({"dailymed_spl.xml.gz": _read_fixture("dailymed/dailymed_spl.xml.gz")})}),
         # FAERS: quarterly ASCII ZIPs (24Q3 carries the DELETE family; 24Q2 has none).
         "faers_24q3": _faers_quarter_zip("24Q3", ("DEMO", "DRUG", "INDI", "REAC", "RPSR", "DELETE")),
         "faers_24q2": _faers_quarter_zip("24Q2", ("DEMO", "DRUG", "INDI", "REAC", "RPSR")),
@@ -102,14 +103,14 @@ class _FakeHTTPResponse:
 def _install_fake_http(monkeypatch: pytest.MonkeyPatch, requested: list[str]) -> None:
     """Route every real source URL to fixture bytes; fail loudly on any other access."""
     payloads = _downloaded_payloads()
-    # Ordered most-specific-first: quarter/release ZIP URLs contain the index URL as a prefix.
+    # Ordered most-specific-first so a ZIP URL is matched before any broader index needle.
     routes: list[tuple[str, bytes]] = [
         ("dm_spl_release_human_rx_part1.zip", payloads["dailymed_release"]),
         ("dm_spl_release_human_rx_part2.zip", payloads["dailymed_release"]),
         ("spl-resources-all-drug-labels.cfm", _DAILYMED_INDEX_HTML.encode("utf-8")),
         ("faers_ascii_2024q3.zip", payloads["faers_24q3"]),
         ("faers_ascii_2024q2.zip", payloads["faers_24q2"]),
-        ("fis.fda.gov/content/Exports", _FAERS_INDEX_HTML.encode("utf-8")),
+        ("FPD-QDE-FAERS.html", _FAERS_INDEX_HTML.encode("utf-8")),
         ("fda.gov/media/89850/download", payloads["drugsfda"]),
     ]
 
@@ -184,7 +185,7 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
 
     # The real download branches ran (index + per-source URLs were requested over HTTP)...
     assert any("spl-resources-all-drug-labels.cfm" in u for u in requested)
-    assert any("fis.fda.gov/content/Exports" in u for u in requested)
+    assert any("FPD-QDE-FAERS.html" in u for u in requested)
     assert any("fda.gov/media/89850/download" in u for u in requested)
     # ...bounded: release_limit=1 fetched DailyMed part1 only, quarter_limit=1 fetched 24Q3 only.
     assert any("dm_spl_release_human_rx_part1.zip" in u for u in requested)

@@ -24,6 +24,7 @@ is also module-level so wiring tests can stub it (no real network in CI).
 from __future__ import annotations
 
 import http
+import io
 import re
 import shutil
 import urllib.error
@@ -164,12 +165,16 @@ def _apply_release_limit(urls: list[str], ctx: TaskContext) -> list[str]:
 
 
 def _expand_release_zip(zip_path: Path, store: ArtifactStore, source: SourceBlock, *, release_name: str) -> list[ArtifactRef]:
-    """Ingest the SPL XML members of a DailyMed release ZIP as individual artifacts.
+    """Ingest the SPL XML documents of a DailyMed release ZIP as individual artifacts.
 
-    The SPL extractor reads ``.xml``/``.xml.gz`` (not ZIPs), so each SPL member is extracted
-    to staging and content-addressed under ``dailymed/<release>/<member>`` with the release's
-    source provenance. Non-SPL members (and nested archives) are skipped; a release with no
-    SPL members yields ``[]`` (logged) rather than failing the whole acquisition.
+    DailyMed full-release ZIPs are nested: the outer archive holds one ``.zip`` per SPL document
+    (e.g. ``prescription/<date>_<uuid>.zip``), and each inner archive holds that document's
+    ``.xml`` (plus media we ignore). The SPL extractor reads ``.xml``/``.xml.gz`` (not ZIPs), so
+    this descends into each per-document ZIP and content-addresses the SPL XML inside under
+    ``dailymed/<release>::<member>`` with the release's source provenance. A top-level
+    ``.xml``/``.xml.gz`` member (older release layouts) is ingested directly. Non-SPL members are
+    skipped; a release yielding no SPL documents returns ``[]`` (logged) rather than failing the
+    whole acquisition.
     """
     log = bind(task_id="fetch_dailymed", release=release_name)
     out_dir = zip_path.parent / f"{zip_path.stem}-xml"
@@ -179,20 +184,42 @@ def _expand_release_zip(zip_path: Path, store: ArtifactStore, source: SourceBloc
         for info in archive.infolist():
             if info.is_dir():
                 continue
-            member = Path(info.filename).name
-            if not _looks_like_spl_name(member):
-                continue
-            target = out_dir / member
-            with archive.open(info) as src, target.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
-            # Flat ``::<member>`` alias (not nested under the release) so it never collides
-            # with the release ZIP's own ``dailymed/<release>`` alias file.
-            ref, _ = store.ingest(target, alias=f"dailymed/{release_name}::{member}", source=source)
-            refs.append(ref)
-            target.unlink(missing_ok=True)
+            name = Path(info.filename).name
+            if name.lower().endswith(".zip"):
+                # Nested per-document archive: ingest the SPL XML it contains.
+                refs.extend(_expand_doc_zip(archive.read(info), out_dir, store, source, release_name=release_name))
+            elif _looks_like_spl_name(name):
+                refs.append(_ingest_spl_bytes(archive.read(info), name, out_dir, store, source, release_name=release_name))
     if not refs:
         log.warning("release ZIP contained no SPL XML members", release=release_name)
     return refs
+
+
+def _expand_doc_zip(doc_bytes: bytes, out_dir: Path, store: ArtifactStore, source: SourceBlock, *, release_name: str) -> list[ArtifactRef]:
+    """Ingest the SPL XML member(s) of one nested per-document DailyMed ZIP (held in memory)."""
+    refs: list[ArtifactRef] = []
+    with zipfile.ZipFile(io.BytesIO(doc_bytes)) as doc_archive:
+        for info in doc_archive.infolist():
+            if info.is_dir():
+                continue
+            member = Path(info.filename).name
+            if _looks_like_spl_name(member):
+                refs.append(_ingest_spl_bytes(doc_archive.read(info), member, out_dir, store, source, release_name=release_name))
+    return refs
+
+
+def _ingest_spl_bytes(data: bytes, member: str, out_dir: Path, store: ArtifactStore, source: SourceBlock, *, release_name: str) -> ArtifactRef:
+    """Write one SPL member to staging and content-address it under the release alias.
+
+    A flat ``::<member>`` alias (not nested under the release) never collides with the release
+    ZIP's own ``dailymed/<release>`` alias file; per-document SPL names are UUIDs, so they are
+    unique within a release.
+    """
+    target = out_dir / member
+    target.write_bytes(data)
+    ref, _ = store.ingest(target, alias=f"dailymed/{release_name}::{member}", source=source)
+    target.unlink(missing_ok=True)
+    return ref
 
 
 def _looks_like_spl_name(name: str) -> bool:
