@@ -91,6 +91,14 @@ def test_is_non_disease_indication_classifier() -> None:
         "Adverse drug reaction",
         "Supplementation therapy",
         "Product use in unapproved indication",
+        # legacy DAKP FAERS stop-list union (ref/legacy FAERS/bin):
+        "Intentional product misuse",
+        "Exposure during pregnancy",
+        "Foetal exposure during pregnancy",
+        "Product origin unknown",
+        "Accidental exposure to product",
+        "Product use issue",
+        "Product administration",
     ]:
         assert is_non_disease_indication(bad), bad
     # Case-insensitive and tolerant of surrounding whitespace.

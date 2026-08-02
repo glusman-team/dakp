@@ -36,14 +36,17 @@ _KNOWLEDGE_LEVEL = "statistical_association"
 # condition (placeholders like "Product used for unknown indication", generic procedures like a
 # bare "Prophylaxis"/"Chemotherapy", and reporting artifacts like "Medication error"). These are
 # not drug->condition observations and would otherwise default to bogus "Disease" objects (~41% of
-# the case-weighted rows in a real quarter). Specific conditions are untouched: "Migraine
-# prophylaxis" or "Hormone receptor positive HER2 negative breast cancer" do NOT match (the anchored
-# generic terms require the whole string; the phrase terms target the placeholder wording only).
+# the case-weighted rows in a real quarter). The list is the union of the legacy DAKP FAERS
+# stop-lists (ref/legacy FAERS/bin/drug2indi.pl + listCases.pl + caseList2uses.pl). Specific
+# conditions are untouched: "Migraine prophylaxis" or "Hormone receptor positive HER2 negative
+# breast cancer" do NOT match (the anchored generic terms require the whole string; the phrase
+# terms target the placeholder wording only).
 _NON_DISEASE_INDICATION_RE = re.compile(
     r"unknown indication|unapproved indication|off[- ]label|ill-defined|adverse drug reaction"
     r"|evidence based treatment|medication error|not applicable"
-    r"|product used for|product use in|drug use in|product dose|product prescribing"
-    r"|product storage|product availab|product quality"
+    r"|product used for|product use in|product use issue|drug use in|product dose|product prescribing"
+    r"|product storage|product availab|product quality|product misuse|product origin unknown"
+    r"|product administration|accidental exposure|exposure during pregnancy"
     r"|\Aprophylaxis\Z|\Apremedication\Z|\Achemotherapy\Z|\Adrug therapy\Z|\Asupplementation therapy\Z",
     re.IGNORECASE,
 )
