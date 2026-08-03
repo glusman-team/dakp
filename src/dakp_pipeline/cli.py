@@ -173,6 +173,10 @@ def _airflow_env(airflow_home: Path, bundle_dir: Path, port: int) -> dict[str, s
             "AIRFLOW__API__HOST": "127.0.0.1",
             # MANDATORY: without this the task supervisor's Execution-API client defaults to localhost:8080.
             "AIRFLOW__CORE__EXECUTION_API_SERVER_URL": f"{base_url}/execution/",
+            # Full-build acquisition XComs are LARGE (one ArtifactRef per DailyMed SPL member across
+            # all releases); the task-SDK default 5s Execution-API timeout makes the Go extractors'
+            # upstream XCom read die with ReadTimeout under real data. Give the API real headroom.
+            "AIRFLOW__WORKERS__EXECUTION_API_TIMEOUT": "300",
             "AIRFLOW__SDK__COORDINATORS": json.dumps(
                 {"go": {"classpath": "airflow.sdk.coordinators.executable.ExecutableCoordinator", "kwargs": {"executables_root": [str(bundle_dir)]}}}
             ),
