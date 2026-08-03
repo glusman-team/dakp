@@ -37,11 +37,13 @@ class FakeSubprocess:
 
     def __init__(self, fail_markers: tuple[str, ...] = (), stderr: str = "boom") -> None:
         self.calls: list[list[str]] = []
+        self.envs: list[dict[str, str] | None] = []
         self.fail_markers = fail_markers
         self.stderr = stderr
 
     def __call__(self, command: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         self.calls.append(command)
+        self.envs.append(env)
         joined = " ".join(command)
         failed = any(marker in joined for marker in self.fail_markers)
         return subprocess.CompletedProcess(args=command, returncode=1 if failed else 0, stdout="", stderr=self.stderr if failed else "")
@@ -207,13 +209,63 @@ def test_up_preflight_cache_clean_heals(monkeypatch: pytest.MonkeyPatch, sandbox
 def test_up_preflight_still_broken(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(cli, "airflow_importable", _bools(False))
     fake = _patch_happy(monkeypatch)
+    fake.fail_markers = ("import airflow",)  # the bail diagnostic probe fails with stderr
     monkeypatch.setattr(cli, "airflow_importable", _bools(False))
 
     code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
+    out = capsys.readouterr().out
     assert code == 1
-    assert "still fails to import" in capsys.readouterr().out
+    assert "still fails to import" in out
+    assert "boom" in out  # the actual import error is surfaced, not swallowed
     assert not fake.commands_containing("airflow-go-pack")  # bailed before the bundle step
+
+
+def test_up_preflight_still_broken_without_import_stderr(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(cli, "airflow_importable", _bools(False))
+    fake = FakeSubprocess(fail_markers=("import airflow",), stderr="")
+    _patch_happy(monkeypatch)
+    monkeypatch.setattr(cli, "run_subprocess", fake)
+    monkeypatch.setattr(cli, "airflow_importable", _bools(False))
+
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "still fails to import" in out
+
+
+def test_up_preflight_heal_failure_prints_stderr_and_bounds_lock_wait(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(cli, "airflow_importable", _bools(False, True))
+    fake = FakeSubprocess(fail_markers=("sync",), stderr="error: Timeout (60s) when waiting for lock on /home/u/.cache/uv")
+    _patch_happy(monkeypatch)
+    monkeypatch.setattr(cli, "run_subprocess", fake)
+    monkeypatch.setattr(cli, "airflow_importable", _bools(False, True))
+
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
+
+    out = capsys.readouterr().out
+    assert code == 0  # the second probe passed; the failed heal step did not abort the run
+    assert "heal step failed" in out
+    assert "waiting for lock" in out  # a held cache lock is visible, never swallowed
+    heal_env = fake.envs[0]
+    assert heal_env is not None
+    assert heal_env["UV_LOCK_TIMEOUT"] == str(cli._UV_HEAL_LOCK_TIMEOUT_SECONDS)
+
+
+def test_up_preflight_heal_failure_without_stderr(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(cli, "airflow_importable", _bools(False, True))
+    fake = FakeSubprocess(fail_markers=("sync",), stderr="")
+    _patch_happy(monkeypatch)
+    monkeypatch.setattr(cli, "run_subprocess", fake)
+    monkeypatch.setattr(cli, "airflow_importable", _bools(False, True))
+
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "heal step failed" in out
+    assert "waiting for lock" not in out  # no stderr to echo
 
 
 # --- up: failure paths ------------------------------------------------------------

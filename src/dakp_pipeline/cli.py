@@ -62,6 +62,11 @@ _DAG_WAIT_SECONDS = 2
 _RUN_WAIT_ROUNDS = 1200  # 60 min @ 3s: a release's GLiNER contraindication mining + KG build can take ~20+ min
 _RUN_WAIT_SECONDS = 3
 
+#: Heal steps cap uv's cache-lock wait: a stray long-running ``uv run`` child (e.g. an orphaned
+#: ``airflow standalone``) holds uv's cache lock for its whole lifetime, and uv's 300s default
+#: would stall ``dakp up`` silently while nothing is healed.
+_UV_HEAL_LOCK_TIMEOUT_SECONDS = 60
+
 
 # --- side-effect boundary (monkeypatch points for tests) --------------------------
 
@@ -177,6 +182,20 @@ def _airflow_env(airflow_home: Path, bundle_dir: Path, port: int) -> dict[str, s
     return env
 
 
+def _run_heal(command: list[str]) -> None:
+    """Run one preflight self-heal step with a bounded cache-lock wait; print stderr on failure.
+
+    Never raises: a failed heal step (e.g. uv's cache lock held by a stray ``uv run`` child) must
+    surface its stderr and still let the rest of the heal ladder run.
+    """
+    result = run_subprocess(command, env={**os.environ, "UV_LOCK_TIMEOUT": str(_UV_HEAL_LOCK_TIMEOUT_SECONDS)})
+    if result.returncode == 0:
+        return
+    print(f"!!! heal step failed (rc={result.returncode}): {' '.join(command)}")
+    if result.stderr:
+        print(result.stderr.strip()[-2000:])
+
+
 def _preflight() -> int:
     """Verify the Airflow install is intact, self-healing a corrupt venv. Returns 0 when healthy.
 
@@ -184,16 +203,23 @@ def _preflight() -> int:
     ``import airflow`` die with a cryptic yaml ReaderError. Reinstall the owning package
     (``apache-airflow-core``, which ships the file — NOT the ``apache-airflow`` meta-package) instead
     of crashing; if a corrupt uv cache re-supplies the bad bytes, drop the cached copy and re-fetch.
+    Heal-step failures print their stderr (a common one: uv's cache lock held by a stray
+    ``uv run airflow standalone`` — ``dakp down`` releases it); if nothing heals, the bail prints
+    the actual ``import airflow`` error.
     """
     if airflow_importable():
         return 0
     print(">>> [preflight] Airflow install is broken; reinstalling apache-airflow-core")
-    run_subprocess(["uv", "sync", "--reinstall-package", "apache-airflow-core"])
+    _run_heal(["uv", "sync", "--reinstall-package", "apache-airflow-core"])
     if not airflow_importable():
-        run_subprocess(["uv", "cache", "clean", "apache-airflow-core"])
-        run_subprocess(["uv", "sync", "--reinstall-package", "apache-airflow-core"])
+        _run_heal(["uv", "cache", "clean", "apache-airflow-core"])
+        _run_heal(["uv", "sync", "--reinstall-package", "apache-airflow-core"])
     if not airflow_importable():
-        print("!!! Airflow still fails to import after reinstall; inspect .venv (try: uv sync --reinstall)")
+        probe = run_subprocess([sys.executable, "-c", "import airflow"])
+        print("!!! Airflow still fails to import after reinstall; import error:")
+        if probe.stderr:
+            print(probe.stderr.strip()[-2000:])
+        print("!!! inspect .venv (try: uv sync --reinstall); if the error mentions a uv lock, run `dakp down` — a stray Airflow holds it")
         return 1
     return 0
 
