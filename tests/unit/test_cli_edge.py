@@ -37,6 +37,7 @@ def test_run_subprocess_captures_nonzero_without_raising() -> None:
 
 
 def test_airflow_importable_true_when_installed() -> None:
+    # Real body: spawns ``[sys.executable, "-c", "import airflow"]`` (a real import, a few seconds).
     assert cli.airflow_importable() is True  # apache-airflow is a hard DAKP dependency
 
 

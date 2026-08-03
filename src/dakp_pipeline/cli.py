@@ -29,13 +29,13 @@ boundary and exercise every branch with no real Airflow / Go / network — the s
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import json
 import os
 import shutil
 import signal
 import sqlite3
 import subprocess
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -72,8 +72,14 @@ def run_subprocess(command: list[str], cwd: Path | None = None, env: dict[str, s
 
 
 def airflow_importable() -> bool:
-    """True when ``import airflow`` would succeed here (the preflight health probe)."""
-    return importlib.util.find_spec("airflow") is not None
+    """True when ``import airflow`` really succeeds here (the preflight health probe).
+
+    Runs a real import in a subprocess: ``find_spec`` only locates the package and passes even when
+    shipped data files are corrupt (a bit-rotted ``config_templates/config.yml`` kills
+    ``import airflow`` deep inside YAML parsing). Subprocess so a broken install never poisons this
+    process and a just-healed install is re-tested against fresh bytes.
+    """
+    return run_subprocess([sys.executable, "-c", "import airflow"]).returncode == 0
 
 
 def api_up(base_url: str) -> bool:
