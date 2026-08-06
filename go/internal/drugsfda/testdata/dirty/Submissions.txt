@@ -1,0 +1,4 @@
+ApplNo	SubmissionType	SubmissionNo	SubmissionStatus	SubmissionStatusDate	SubmissionsPublicNotes
+021812	SUPPL	10	AP	2013-12-13 00:00:00	Label for Menís Rogaine
+205525	ORIG	1	AP	2016-07-01 00:00:00	FR Notice on DEA Scheduling; Date of Approval ñ March 23, 2017
+205836	ORIG	1	AP	2016-02-18 00:00:00	CafÈ ìquotedî bullet ï undefined Å end

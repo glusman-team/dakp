@@ -277,3 +277,59 @@ def test_empty_input_emits_only_warnings(tmp_path: Path) -> None:
     assert refs[0].uri.name == "extract_warnings.jsonl"
     assert refs[0].rows is not None
     assert refs[0].rows >= 1
+
+
+# --- encoding sanitization (cp1252 fallback for invalid UTF-8 bytes) -------------
+
+
+def test_to_valid_utf8_cp1252_fallback() -> None:
+    """Invalid UTF-8 bytes decode as Windows-1252; valid input passes through unchanged.
+
+    Mirrors the Go mirror's drugsfda.toValidUTF8 (byte-for-byte; the 2026-08-06 live-feed
+    equivalence run confirmed identical output on the real 9.3 MB Submissions.txt).
+    """
+    cases = [
+        (b"NDA012345", "NDA012345"),  # ascii fast path
+        ("válido ✓".encode(), "válido ✓"),  # utf-8 fast path
+        (b"Men\x92s Rogaine", "Men\u2019s Rogaine"),  # live-feed right single quote
+        (b"Approval \x96 March 23", "Approval \u2013 March 23"),  # live-feed en dash
+        (b"caf\xe9", "caf\u00e9"),  # latin-1 range byte
+        (b"\x93quoted\x94 \x95", "\u201cquoted\u201d \u2022"),  # quotes + bullet
+        (b"a\x81b\x8dc\x8fd\x90e\x9df", "a\ufffdb\ufffdc\ufffdd\ufffde\ufffdf"),  # undefined cp1252 -> U+FFFD
+        (b"trunc\xe2", "trunc\u00e2"),  # truncated multibyte lead
+        (b"x\xed\xa0\x80y", "x\u00ed\u00a0\u20acy"),  # surrogate halves, byte-by-byte
+        (b"", ""),
+    ]
+    for raw, want in cases:
+        assert ext._to_valid_utf8(raw) == want, f"_to_valid_utf8({raw!r})"
+
+
+def test_dirty_cp1252_submissions_extract_to_valid_utf8(tmp_path: Path) -> None:
+    """Real-feed cp1252 bytes in SubmissionsPublicNotes must not poison the parquet output.
+
+    Before the fix the raw bytes reached the parquet STRING columns and strict readers
+    failed (polars: 'String data contained invalid UTF-8'); the sanitized output decodes
+    them as Windows-1252 and round-trips.
+    """
+    dirty = (
+        b"ApplNo\tSubmissionType\tSubmissionNo\tSubmissionStatus\tSubmissionStatusDate\tSubmissionsPublicNotes\r\n"
+        b"021812\tSUPPL\t10\tAP\t2013-12-13 00:00:00\tLabel for Men\x92s Rogaine\r\n"
+        b"205525\tORIG\t1\tAP\t2016-07-01 00:00:00\tFR Notice on DEA Scheduling; Date of Approval \x96 March 23, 2017\r\n"
+        b"205836\tORIG\t1\tAP\t2016-02-18 00:00:00\tCaf\xe9 \x93quoted\x94 bullet \x95 undefined \x81 end\r\n"
+    )
+    src = tmp_path / "Submissions.txt"
+    src.write_bytes(dirty)
+    workdir = Workdir(tmp_path / "work")
+    workdir.create()
+    store = ArtifactStore(workdir)
+    ref, _ = store.ingest(src, alias="drugsfda/Submissions.txt")
+    ext.extract([ref], _ctx(workdir.root))
+
+    # Strict polars read must succeed (the pre-fix failure mode) ...
+    submissions = pl.read_parquet(workdir.interim / "drugsfda" / "submissions.parquet")
+    assert submissions.height == 3
+    # ... with the cp1252 bytes decoded, not dropped or raw.
+    notes = submissions.get_column("submission_notes").to_list()
+    assert notes[0] == "Label for Men\u2019s Rogaine"
+    assert notes[1] == "FR Notice on DEA Scheduling; Date of Approval \u2013 March 23, 2017"
+    assert notes[2] == "Caf\u00e9 \u201cquoted\u201d bullet \u2022 undefined \ufffd end"

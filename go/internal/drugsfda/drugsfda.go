@@ -19,6 +19,12 @@
 //     empty or contains a quote, tab, CR, or LF; embedded quotes are doubled. In
 //     particular an EMPTY field is written as the two literal characters "" (not nothing).
 //
+// Encoding: the live FDA feeds are "mostly ASCII + occasional Windows-1252 bytes" (e.g. 0x92
+// right single quote, 0x96 en dash in SubmissionsPublicNotes). ParseTSVReader sanitizes every
+// cell with toValidUTF8 (valid UTF-8 passes through; invalid bytes decode as Windows-1252), so
+// all downstream artifacts (parquet STRING columns, the Tablassert TSV) are spec-compliant
+// UTF-8. Inputs already valid UTF-8 produce byte-identical output.
+//
 // Application-number normalization ports the legacy ref/legacy/FAERS/bin/drug2indi.pl readNDAproducts
 // semantics (s/^(NDA|BLA|ANDA)0*(.+)/): the raw APPLICATIONNUMBER is preserved AND both
 // normalized forms are kept — digits with leading zeroes kept (appl_no, e.g. 012345) and
@@ -35,6 +41,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
+
+	"golang.org/x/text/encoding/charmap"
 )
 
 // --- normalized column contracts (mirror drugsfda_products.py) -------------------
@@ -612,6 +621,9 @@ func ParseTSV(path string) (Table, error) {
 }
 
 // ParseTSVReader parses tab-delimited TSV from r into a Table with the given source name.
+// Every cell is sanitized to valid UTF-8 (toValidUTF8) so downstream parquet STRING columns
+// stay spec-compliant: the live FDA feeds contain Windows-1252 bytes (e.g. 0x92 ’, 0x96 –
+// in SubmissionsPublicNotes) that are not valid UTF-8.
 func ParseTSVReader(r io.Reader, sourceName string) (Table, error) {
 	cr := csv.NewReader(r)
 	cr.Comma = '\t'
@@ -631,6 +643,9 @@ func ParseTSVReader(r io.Reader, sourceName string) (Table, error) {
 		if len(rec) == 0 || (len(rec) == 1 && rec[0] == "") {
 			continue // skip blank lines
 		}
+		for i, cell := range rec {
+			rec[i] = toValidUTF8(cell)
+		}
 		if header == nil {
 			header = rec
 			continue
@@ -641,6 +656,31 @@ func ParseTSVReader(r io.Reader, sourceName string) (Table, error) {
 		return Table{}, fmt.Errorf("parse %s: empty TSV (no header row)", sourceName)
 	}
 	return Table{SourceName: sourceName, Header: header, Rows: rows}, nil
+}
+
+// toValidUTF8 returns s unchanged when it is already valid UTF-8 (the fast path for the
+// overwhelmingly common clean cells); otherwise it rewrites each invalid byte as its
+// Windows-1252 rune (the encoding the FDA feeds actually use — cp1252 equals Latin-1 except
+// 0x80-0x9F, which hold the ’ “ ” – — • punctuation seen in the data). The five cp1252-
+// undefined bytes (0x81, 0x8D, 0x8F, 0x90, 0x9D) decode to U+FFFD per the WHATWG index.
+// Mirrors _to_valid_utf8 in src/dakp_pipeline/extract/drugsfda_products.py.
+func toValidUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		run, size := utf8.DecodeRuneInString(s[i:])
+		if run == utf8.RuneError && size == 1 {
+			b.WriteRune(charmap.Windows1252.DecodeByte(s[i]))
+			i++
+			continue
+		}
+		b.WriteString(s[i : i+size])
+		i += size
+	}
+	return b.String()
 }
 
 // --- TSV writing (polars write_csv byte-compatible) ------------------------------

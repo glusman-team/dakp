@@ -409,6 +409,62 @@ func TestCombinedApplicationNumberColumn(t *testing.T) {
 	}
 }
 
+// --- encoding sanitization (cp1252 fallback for invalid UTF-8 bytes) ------------
+
+func TestToValidUTF8(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"ascii passthrough", "NDA012345", "NDA012345"},
+		{"utf8 passthrough", "v\u00e1lido \u2713", "v\u00e1lido \u2713"},
+		{"right single quote", "Men\x92s Rogaine", "Men\u2019s Rogaine"},
+		{"en dash", "Approval \x96 March 23", "Approval \u2013 March 23"},
+		{"latin1 byte", "caf\xe9", "caf\u00e9"},
+		{"quotes and bullet", "\x93quoted\x94 \x95", "\u201cquoted\u201d \u2022"},
+		{"undefined cp1252 byte -> U+FFFD", "a\x81b\x8dc\x8fd\x90e\x9df", "a\ufffdb\ufffdc\ufffdd\ufffde\ufffdf"},
+		{"truncated multibyte lead", "trunc\xe2", "trunc\u00e2"},
+		{"surrogate halves byte-by-byte", "x\xed\xa0\x80y", "x\u00ed\u00a0\u20acy"},
+		{"empty", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := toValidUTF8(c.in); got != c.want {
+				t.Errorf("toValidUTF8(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseTSVReaderSanitizesCP1252(t *testing.T) {
+	// Real-feed shape: \r\n line endings and cp1252 bytes in the notes column.
+	in := "ApplNo\tSubmissionsPublicNotes\r\n021812\tLabel for Men\x92s Rogaine\r\n"
+	tbl, err := ParseTSVReader(strings.NewReader(in), "Submissions.txt")
+	if err != nil {
+		t.Fatalf("ParseTSVReader: %v", err)
+	}
+	if len(tbl.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(tbl.Rows))
+	}
+	if got := tbl.Rows[0][1]; got != "Label for Men\u2019s Rogaine" {
+		t.Errorf("notes cell = %q, want %q", got, "Label for Men\u2019s Rogaine")
+	}
+}
+
+// TestParityGoldenTSVCP1252 extends the cross-language parity gate to dirty inputs: the
+// golden was generated with the PYTHON reference (drugsfda_products._read_tsv +
+// _build_submissions + schemas.write_tsv) from the same cp1252 fixture bytes, so a
+// byte-for-byte match proves Go and Python sanitize identically on real-feed data.
+func TestParityGoldenTSVCP1252(t *testing.T) {
+	tbl, err := ParseTSV(filepath.Join("testdata", "dirty", "Submissions.txt"))
+	if err != nil {
+		t.Fatalf("ParseTSV(dirty/Submissions.txt): %v", err)
+	}
+	res := Extract(Tables{Submissions: &tbl})
+	got := renderTSV(t, SubmissionsColumns, res.Submissions)
+	want := readGolden(t, "drugsfda_submissions_cp1252.tsv")
+	if !bytes.Equal(got, want) {
+		t.Errorf("dirty submissions TSV differs from Python golden\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
 // --- determinism + parity --------------------------------------------------------
 
 func TestDeterminism(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/glusman-team/dakp/go/internal/blake3store"
 	"github.com/glusman-team/dakp/go/internal/drugsfda"
@@ -140,5 +141,95 @@ func TestExtractDrugsFDAFromZip(t *testing.T) {
 	}
 	if len(got) == 0 || filepath.Base(got[0].URI) != "products.parquet" {
 		t.Fatalf("got %v, want products.parquet first", refNames(got))
+	}
+}
+
+// TestExtractDrugsFdadirtyUTF8 covers the live-feed shape: the real Drugs@FDA Submissions.txt
+// carries Windows-1252 bytes (0x92 ’, 0x96 – in SubmissionsPublicNotes). Before the
+// toValidUTF8 fix these bytes reached the parquet STRING columns raw, violating the Parquet
+// spec and breaking strict readers (polars: "String data contained invalid UTF-8"). The
+// sanitized output must be valid UTF-8 with the cp1252 bytes decoded.
+func TestExtractDrugsFDADirtyUTF8(t *testing.T) {
+	dirty, err := os.ReadFile("../drugsfda/testdata/dirty/Submissions.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	products, err := os.ReadFile("../drugsfda/testdata/drugsfda_products.tsv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "drugsfda_data_files.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	for name, body := range map[string][]byte{"Submissions.txt": dirty, "Products.txt": products} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := blake3store.HashFile(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Workdir: t.TempDir(), Profile: "mock", Threads: 4}
+	got, err := ExtractDrugsFDA(context.Background(), cfg, []ArtifactRef{{URI: zipPath, Blake3: id, MediaType: "application/zip"}})
+	if err != nil {
+		t.Fatalf("ExtractDrugsFDA(dirty zip): %v", err)
+	}
+
+	// refs: products.parquet, drugsfda_products.tsv, submissions.parquet, extract_warnings.jsonl.
+	var submissionsPath string
+	for _, ref := range got {
+		if filepath.Base(ref.URI) == "submissions.parquet" {
+			submissionsPath = ref.URI
+		}
+	}
+	if submissionsPath == "" {
+		t.Fatalf("no submissions.parquet in refs %v", refNames(got))
+	}
+
+	cols, rows := readBack(t, submissionsPath)
+	if len(rows) != 3 {
+		t.Fatalf("submissions rows = %d, want 3", len(rows))
+	}
+	notesIdx := -1
+	for i, c := range cols {
+		if c == "submission_notes" {
+			notesIdx = i
+		}
+	}
+	if notesIdx < 0 {
+		t.Fatalf("submission_notes column missing: %v", cols)
+	}
+	for ri, row := range rows {
+		for ci, cell := range row {
+			if !utf8.ValidString(cell) {
+				t.Errorf("row %d col %s = %q is not valid UTF-8", ri, cols[ci], cell)
+			}
+		}
+	}
+	wantNotes := []string{
+		"Label for Men\u2019s Rogaine",
+		"FR Notice on DEA Scheduling; Date of Approval \u2013 March 23, 2017",
+		"Caf\u00e9 \u201cquoted\u201d bullet \u2022 undefined \ufffd end",
+	}
+	for ri, want := range wantNotes {
+		if got := rows[ri][notesIdx]; got != want {
+			t.Errorf("row %d notes = %q, want %q", ri, got, want)
+		}
 	}
 }

@@ -18,6 +18,12 @@ Design notes:
 * Column mapping is name-and-alias based (``ApplicationNumber`` vs ``ApplNo``), so the
   parser tolerates the real Drugs@FDA schema, the legacy NDC ``product.txt`` schema, and
   the fixture subset alike.
+* Input bytes are sanitized to valid UTF-8 before parsing (:func:`_to_valid_utf8`): valid
+  UTF-8 passes through unchanged and invalid bytes are decoded as Windows-1252 (the
+  encoding the live FDA feeds actually use — e.g. ``0x92`` right single quote and ``0x96``
+  en dash in SubmissionsPublicNotes). This keeps polars strict-UTF-8 reads from crashing
+  on the real feed and keeps every downstream artifact spec-compliant. Mirrors the Go
+  mirror's ``drugsfda.toValidUTF8`` byte-for-byte.
 * Parsing is pure functions over frames/paths wherever possible (an extraction
   requirement), making file inputs easy to monkeypatch in tests.
 """
@@ -303,9 +309,76 @@ def _read_tsv(path: Path) -> pl.DataFrame:
 
 
 def _read_tsv_bytes(data: bytes) -> pl.DataFrame:
-    # infer_schema_length=0 -> every column is Utf8, preserving leading zeroes and
-    # NDA/BLA/ANDA prefixes that integer inference would silently strip.
-    return pl.read_csv(io.BytesIO(data), separator="\t", infer_schema_length=0)
+    # Sanitize to valid UTF-8 first (Windows-1252 fallback for invalid bytes; the live FDA
+    # feeds carry cp1252 bytes like 0x92 U+2019 / 0x96 U+2013 that polars' strict UTF-8
+    # reader would reject), then parse. infer_schema_length=0 -> every column is Utf8,
+    # preserving leading zeroes and NDA/BLA/ANDA prefixes that integer inference would
+    # silently strip.
+    clean = _to_valid_utf8(data).encode("utf-8")
+    return pl.read_csv(io.BytesIO(clean), separator="\t", infer_schema_length=0)
+
+
+# Windows-1252 runes for 0x80-0x9F (cp1252 == Latin-1 except this range). The five
+# cp1252-undefined bytes (0x81, 0x8D, 0x8F, 0x90, 0x9D) are absent and decode to U+FFFD,
+# matching the WHATWG index and the Go mirror (charmap.Windows1252.DecodeByte).
+_CP1252_HIGH: dict[int, str] = {
+    0x80: "\u20ac",  # euro sign
+    0x82: "\u201a",  # single low-9 quote
+    0x83: "\u0192",  # latin small f with hook
+    0x84: "\u201e",  # double low-9 quote
+    0x85: "\u2026",  # horizontal ellipsis
+    0x86: "\u2020",  # dagger
+    0x87: "\u2021",  # double dagger
+    0x88: "\u02c6",  # modifier circumflex
+    0x89: "\u2030",  # per mille
+    0x8A: "\u0160",  # S with caron
+    0x8B: "\u2039",  # single left angle quote
+    0x8C: "\u0152",  # OE ligature
+    0x8E: "\u017d",  # Z with caron
+    0x91: "\u2018",  # left single quote
+    0x92: "\u2019",  # right single quote
+    0x93: "\u201c",  # left double quote
+    0x94: "\u201d",  # right double quote
+    0x95: "\u2022",  # bullet
+    0x96: "\u2013",  # en dash
+    0x97: "\u2014",  # em dash
+    0x98: "\u02dc",  # small tilde
+    0x99: "\u2122",  # trademark
+    0x9A: "\u0161",  # s with caron
+    0x9B: "\u203a",  # single right angle quote
+    0x9C: "\u0153",  # oe ligature
+    0x9E: "\u017e",  # z with caron
+    0x9F: "\u0178",  # Y with diaeresis
+}
+
+
+def _to_valid_utf8(data: bytes) -> str:
+    """Decode ``data`` as UTF-8, mapping each invalid byte through Windows-1252.
+
+    Clean inputs take the single C-speed ``bytes.decode`` fast path. On error, the valid
+    spans around each invalid byte are decoded in bulk and the invalid byte itself is
+    mapped through ``_CP1252_HIGH`` (0x80-0x9F) or Latin-1 (>= 0xA0), with U+FFFD for the
+    five cp1252-undefined bytes — byte-for-byte the Go mirror's ``drugsfda.toValidUTF8``.
+    """
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    parts: list[str] = []
+    i, n = 0, len(data)
+    while i < n:
+        try:
+            parts.append(data[i:].decode("utf-8"))
+            break
+        except UnicodeDecodeError as exc:
+            parts.append(data[i : i + exc.start].decode("utf-8"))
+            byte = data[i + exc.start]
+            if byte >= 0xA0:
+                parts.append(chr(byte))
+            else:
+                parts.append(_CP1252_HIGH.get(byte, "\ufffd"))
+            i += exc.start + 1
+    return "".join(parts)
 
 
 # --- column normalization -------------------------------------------------------
