@@ -90,8 +90,8 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
 
     # -- assertion shaping (Python) ---------------------------------------------
     @task
-    def shape_treatment_tables(dm_ext: Any, drugsfda_ext: Any) -> list[dict[str, Any]]:
-        refs = [*refs_from_xcom(dm_ext), *refs_from_xcom(drugsfda_ext)]
+    def shape_treatment_tables(dm_ext: Any, drugsfda_ext: Any, faers_ext: Any) -> list[dict[str, Any]]:
+        refs = [*refs_from_xcom(dm_ext), *refs_from_xcom(drugsfda_ext), *refs_from_xcom(faers_ext)]
         return refs_to_xcom(approved_treats.transform(refs, _ctx()))
 
     @task
@@ -145,7 +145,7 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
     faers_ext = extract_faers(faers_raw)
     drugsfda_ext = extract_drugsfda(drugsfda_raw)
 
-    approved = shape_treatment_tables(dm_ext, drugsfda_ext)
+    approved = shape_treatment_tables(dm_ext, drugsfda_ext, faers_ext)
     uses = shape_faers_use_tables(faers_ext, dm_ext)
     contra = shape_contraindication_tables(dm_ext, ner_models)
 

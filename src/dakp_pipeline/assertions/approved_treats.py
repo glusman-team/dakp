@@ -13,10 +13,12 @@ An approved-treats row requires an **NDA-bearing drug-indication pair** that sat
    SPL indication support.
 
 Candidate drug-indication pairs come from **FAERS** (``cases.parquet`` rows carrying an NDA +
-indication) — the primary source. The current pipeline wires this stage with DailyMed +
-Drugs@FDA only (FAERS joins this stage in a later milestone), so when no FAERS case table is
-present the candidates fall back to DailyMed SPL indication sections whose text names a
-dictionary condition. Both paths apply the *same* three-part filter above.
+indication) — the primary source, wired into this stage by the DAG. Placeholder/usage-context
+FAERS indications ("Product used for unknown indication", bare "Prophylaxis", ...) are dropped
+via the shared :func:`~dakp_pipeline.assertions.observed_uses.is_non_disease_indication`
+stop-list. When no FAERS case table is present the candidates fall back to DailyMed SPL
+indication sections whose text names a dictionary condition. Both paths apply the *same*
+three-part filter above.
 
 Provenance (``approval_ids``, ``supporting_spl_sets``, ``supporting_spl_documents``) is
 aggregated per ``(subject, object)`` as deduplicated, sorted, pipe-joined lists. Subject CURIEs
@@ -41,11 +43,15 @@ from dakp_pipeline.assertions.evidence import (
     sorted_pipe,
     write_assertion_table,
 )
+from dakp_pipeline.assertions.observed_uses import is_non_disease_indication
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 
 _TABLE = "approved_treats_assertions"
 _PREDICATE = "biolink:treats"
 _STATUS = "approved_for_condition"
+
+#: Case-table columns the FAERS candidate path reads (projection keeps production-scale reads cheap).
+_FAERS_CASE_COLUMNS = ("nda", "nda_raw", "indication", "ingredient", "drugname")
 
 
 class ApprovedTreatsShaper:
@@ -53,7 +59,7 @@ class ApprovedTreatsShaper:
         disease_map: dict[str, dict[str, str]] = ctx.params.get("disease_map", {})  # type: ignore[assignment]
         dailymed = build_dailymed_evidence(inputs)
         drugsfda_map = build_drugsfda_ingredient_map(inputs)
-        faers_cases = find_faers_cases(inputs)
+        faers_cases = find_faers_cases(inputs, columns=_FAERS_CASE_COLUMNS)
         rows = build_approved_treats_rows(faers_cases, dailymed, drugsfda_map, disease_map)
         return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_approved_treats")
 
@@ -149,6 +155,8 @@ def _faers_candidates(faers_cases: pl.DataFrame, disease_map: Mapping[str, Mappi
         indication = str(rec.get("indication") or "").strip()
         if not norm or not indication:
             continue
+        if is_non_disease_indication(indication):
+            continue  # FAERS placeholder/usage-context indication, not a drug->condition approval claim
         key = (norm, indication)
         if key in seen:
             continue

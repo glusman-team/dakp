@@ -107,7 +107,30 @@ def test_multi_nda_for_same_subject_object_aggregates_approval_ids(disease_map: 
     assert row["supporting_spl_documents"] == "SET-A#34067-9|SET-B#34067-9"
 
 
-# --- DailyMed fallback (current pipeline wires no FAERS into this stage) ---------
+def test_faers_placeholder_indication_is_not_an_approval_claim(disease_map: dict[str, dict[str, str]]) -> None:
+    # Every gate passes for this NDA (Drugs@FDA mapping, DailyMed approval, indication section),
+    # but the FAERS indication is a usage-context placeholder, not a condition -> no row.
+    ev = DailyMedEvidence(
+        approval_sets={"12345": {"SET-A"}},
+        approval_display={"12345": "012345"},
+        set_ingredient={"SET-A": ("Examplestatin", "UNII:QFX8B1R4QF")},
+        indication_docs={"SET-A": [("SET-A#34067-9", "hypercholesterolemia")]},
+    )
+    mapping = {"12345": {"EXAMPLESTATIN"}}
+    cases = pl.DataFrame(
+        {
+            "nda": ["012345", "012345"],
+            "indication": ["Product used for unknown indication", "hypercholesterolemia"],
+            "drugname": ["Examplestatin"] * 2,
+            "ingredient": ["Examplestatin"] * 2,
+        }
+    )
+
+    rows = build_approved_treats_rows(cases, ev, mapping, disease_map)
+    assert [row["object_text"] for row in rows] == ["hypercholesterolemia"]  # placeholder dropped, real pair kept
+
+
+# --- DailyMed fallback (used when no FAERS case table is present) ---------------
 
 
 def test_dailymed_fallback_when_no_faers_cases(

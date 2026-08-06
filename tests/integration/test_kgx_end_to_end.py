@@ -51,7 +51,8 @@ _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
 # The exact (subject, predicate, object) triples the tiny fixtures produce, post fullmap resolution.
 # Advil (FAERS brand) canonicalizes to CHEBI:5855 (ibuprofen); Examplestatin -> the fictional
-# CHEBI:1000001 stand-in. See tiny_fullmap.TERMS.
+# CHEBI:1000001 stand-in. See tiny_fullmap.TERMS. Treats edges reflect the FAERS-primary candidate
+# path: only the NDA-bearing FAERS pairs (Examplestatin/hypercholesterolemia, Advil/headache).
 _TREATS = "biolink:treats"
 _APPLIED = "biolink:applied_to_treat"
 _CONTRA = "biolink:contraindicated_in"
@@ -59,13 +60,12 @@ EXPECTED_EDGES: frozenset[tuple[str, str, str]] = frozenset(
     {
         ("CHEBI:1000001", _TREATS, "MONDO:0005154"),  # Examplestatin -> hypercholesterolemia
         ("CHEBI:5855", _TREATS, "HP:0002315"),  # Ibuprofen -> headache
-        ("CHEBI:5855", _TREATS, "HP:0012531"),  # Ibuprofen -> pain
         ("CHEBI:5855", _APPLIED, "HP:0002315"),  # Advil -> headache
         ("CHEBI:1000001", _APPLIED, "MONDO:0005154"),  # Examplestatin -> hypercholesterolemia
         ("CHEBI:5855", _CONTRA, "MONDO:0004979"),  # Ibuprofen -> asthma
     }
 )
-EXPECTED_NODE_IDS: frozenset[str] = frozenset({"CHEBI:5855", "CHEBI:1000001", "MONDO:0005154", "HP:0002315", "HP:0012531", "MONDO:0004979"})
+EXPECTED_NODE_IDS: frozenset[str] = frozenset({"CHEBI:5855", "CHEBI:1000001", "MONDO:0005154", "HP:0002315", "MONDO:0004979"})
 
 
 @dataclass(frozen=True)

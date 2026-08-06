@@ -122,7 +122,7 @@ def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: 
     drugsfda_ext = drugsfda_products.extract(drugsfda_raw, ctx)
 
     # 3. Shape assertion tables (uncompressed TSV, Tablassert-facing).
-    approved = approved_treats.transform([*dm_ext, *drugsfda_ext], ctx)
+    approved = approved_treats.transform([*dm_ext, *drugsfda_ext, *faers_ext], ctx)
     uses = observed_uses.transform([*faers_ext, *dm_ext], ctx)
     contra = contraindications.transform([*dm_ext], ctx)
     assertion_refs = [*approved, *uses, *contra]
