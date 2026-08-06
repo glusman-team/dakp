@@ -39,6 +39,12 @@ dependencies = [
     "polars>=1.30.0",
     "pydantic>=2.12.0",
     "tablassert[qc]>=8.0.1",
+    # torch is transitive (gliner, sentence-transformers via tablassert[qc]) but pinned here so
+    # the CUDA wheel selection is explicit: the default PyPI wheels are built for CUDA 13
+    # (+cu130) and refuse to initialize on our CUDA 12.8 driver ("driver too old, found
+    # version 12080"). The cu128 index ships driver-12.x-compatible wheels only up to 2.11,
+    # hence the cap. See [tool.uv.sources] / [[tool.uv.index]] below.
+    "torch>=2.9,<2.12",
 ]
 
 [dependency-groups]
@@ -53,6 +59,17 @@ dev = [
 
 [project.scripts]
 dakp = "dakp_pipeline.cli:app"
+
+# Pull torch from the official PyTorch cu128 wheel index (CUDA 12.8 builds) instead of PyPI,
+# whose torch wheels are +cu130 and require a CUDA >= 13 driver. `explicit = true` keeps this
+# index scoped to torch only; everything else still resolves from PyPI.
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [build-system]
 requires = ["hatchling>=1.27"]
