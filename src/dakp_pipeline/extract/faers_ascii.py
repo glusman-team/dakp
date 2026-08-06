@@ -33,9 +33,9 @@ Outputs (under ``data/interim/faers/``):
   Tablassert source-section handoff.
 * ``delete_audit.parquet`` / ``dedup_audit.parquet`` — DELETE and cross-quarter-dedup audits.
 
-The global ``cases.parquet`` ref is returned **first** so
-:meth:`dakp_pipeline.assertions.approved_treats._first_parquet` (used by the observed-uses
-shaper) resolves it via the ``"faers"`` path segment.
+The global ``cases.parquet`` ref is returned **first** so the shapers' filename-based
+:func:`dakp_pipeline.assertions.evidence.find_faers_cases` resolution (which prefers the
+global table — no ``quarter=`` in its path) sees it ahead of the per-quarter partitions.
 """
 
 from __future__ import annotations
@@ -252,7 +252,7 @@ class FAERSASCIIExtractor:
             deduped=dedup_audit.height,
             warnings=warnings.total,
         )
-        # cases_ref first so the observed-uses shaper's _first_parquet("faers") resolves it.
+        # cases_ref first so find_faers_cases resolves the global case table ahead of partitions.
         return [cases_ref, tsv_ref, delete_ref, dedup_ref, warnings_ref, *normalized_refs]
 
     def _write_table(

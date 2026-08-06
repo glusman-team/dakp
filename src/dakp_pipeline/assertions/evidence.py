@@ -115,8 +115,9 @@ def find_faers_cases(inputs: Iterable[ArtifactRef], columns: tuple[str, ...] | N
 
     ``columns`` optionally projects the read to a subset of columns — the production case
     table is tens of millions of rows wide, so shapers that need only a few columns
-    (observed-uses: drugname/indication/primaryid) skip the rest (a cheap schema peek
-    decides which requested columns actually exist, so a primaryid-less table still loads).
+    (observed-uses: drugname/indication/primaryid; approved-treats: nda/nda_raw/indication/
+    ingredient/drugname) skip the rest (a cheap schema peek decides which requested columns
+    actually exist, so a primaryid-less table still loads).
     """
     refs = list(inputs)
     global_cases: ArtifactRef | None = None

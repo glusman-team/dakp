@@ -193,6 +193,6 @@ def test_shaper_writes_uncompressed_tsv_with_contract_columns(
 
     frame = schemas.read_table(out.uri)
     assert frame.columns == schemas.APPROVED_TREATS_COLUMNS
-    assert frame.height == 3  # DailyMed-fallback path (no FAERS wired in)
+    assert frame.height == 3  # DailyMed-fallback path (no FAERS case table among the inputs)
     # Uncompressed: plain-text header is the first line.
     assert out.uri.read_bytes().startswith(b"subject_text\t")

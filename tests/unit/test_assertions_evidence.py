@@ -136,7 +136,7 @@ def test_find_faers_cases_resolves_global_cases(faers_refs: list[ArtifactRef]) -
 
 
 def test_find_faers_cases_none_without_faers(dailymed_refs: list[ArtifactRef]) -> None:
-    # The approved-treats stage is wired with DailyMed+Drugs@FDA only -> no FAERS case table.
+    # Inputs carrying no FAERS case table resolve to None (shapers fall back accordingly).
     assert find_faers_cases(dailymed_refs) is None
     assert find_faers_cases([]) is None
 
