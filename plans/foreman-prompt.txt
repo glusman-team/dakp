@@ -1,0 +1,81 @@
+foreman — in /home/skyeav/Code/ISB/DAKP, finish simplifying the pipeline to its simplest honest form.
+
+PRECONDITION: the `uv run dakp` CLI from plans/cli-replaces-scripts.md has already landed (a prior agent
+built it: a single cyclopts CLI replacing the Makefile + scripts/*.sh + .envrc/direnv; the fullmap is now a
+caller-supplied `--fullmap <path>`). Confirm that work is committed on the branch before starting; if any of
+it is still uncommitted, STOP and report instead of editing concurrently. That CLI is the single run
+surface — BUILD ON IT, do not recreate it.
+
+Dispatch ONE Ralph sub-orchestrator for this (coherent single-repo build), not a fan-out of shallow workers.
+
+THE CORE (must survive, semantically equivalent to legacy — test_semantic_equivalence.py stays green):
+acquire → extract (native Go workers) → NER → aggregate → Tablassert KGX handoff → 3 assertion TSVs
+(treats / observed-use / contraindication). KEEP the Airflow DAG (dakp_build) and the native Go workers.
+
+DEV FULLMAP: a real prebuilt fullmap is available at /home/skyeav/Desktop/fullmap/data/fullmap.redb.
+Use it to exercise a REAL Tablassert handoff end-to-end during development (uv run dakp up --fullmap
+/home/skyeav/Desktop/fullmap/data/fullmap.redb) so you verify the full KGX build path, not just the
+deferred handoff. It is large (~49G) — a bounded verification run is fine.
+
+RUN ON THIS LAPTOP + DRIVE THE REFACTOR FROM A LIVE RUN:
+- The environment here is ready (deps installed, airflow 3.3.0; 24-thread Ryzen, 30G RAM, NVMe). FIRST get
+  the pipeline running end-to-end on this laptop to establish a green baseline, THEN refactor against that
+  live feedback loop (run -> observe -> simplify -> re-run). Do not edit blind.
+- Big downloads must happen ONCE: keep acquisition content-addressed/idempotent (BLAKE3) so reruns reuse the
+  cache. There is disk space for the downloads.
+- Make the pipeline run AS FAST AS POSSIBLE within these constraints: parallelize the Go extraction across
+  all cores, avoid redundant parquet reads / repeated I/O, keep dev iterations bounded. The bottleneck is
+  I/O + fullmap resolution, not CPU — profile before optimizing; never sacrifice correctness or simplicity
+  for a micro-opt.
+- Laptop limits to respect: 30G RAM (the 49G fullmap may not fully fit — keep real runs bounded so the
+  working set stays small) and 208G free disk (a full multi-TB prod build is server-scale; bounded real runs
+  are the laptop target).
+
+DELETE / SIMPLIFY:
+- Profiles: remove mock/sample/prod entirely — config.py Profile/load_profile/_PROFILE_TABLE, every
+  profile branch across the ~26 src files, AND the CLI `[profile]` positional. One pipeline that runs
+  REAL. There is NO offline flag and NO profile: offline execution is purely a test-suite concern
+  (monkeypatched fetchers + fixtures). A real Tablassert handoff is triggered simply by passing
+  `--fullmap <path>`; without it the handoff is deferred. A simple integer scope bound (quarters/releases)
+  may survive ONLY as the internal knob the new `--small` flag sets — that is scope, not a profile.
+- ADD an elegant single CLI flag (e.g. `uv run dakp up --small`) that turns on a SCOPED build for feedback:
+  run the FULL pipeline on a tiny subset — download only ~1 FAERS quarter + 1 DailyMed release (bound the
+  download itself, not just the processing), run every stage, and build a MINIMAL KG (far fewer edges than
+  the full build) against the Desktop fullmap. Use THIS as the fast dev feedback loop. The flag bounds SCOPE
+  only — it is NOT a profile: it does not switch to fixtures, does not defer the handoff, and does not size
+  threads/memory; pipeline behavior is identical, only the data volume changes.
+- Machine naming: remove wenceslaus / laptop / workstation / /local_raid1 / threads / memory_budget_gb
+  and docs/wenceslaus-runbook.md. One pipeline, one "how to run."
+- Duplicate harness: delete pipeline.py::run_pipeline. The Airflow DAG is the SINGLE harness. Migrate
+  tests that used run_pipeline (test_mock_pipeline, test_prod_smoke, semantic_equivalence) to drive the
+  DAG or call the stage functions directly, holding 100% branch coverage.
+- Docs: delete docs/ entirely; fold what a user needs into ONE clear README (what it is + how to run).
+- ref/legacy: delete (it's in git history).
+- Flatten the directory structure; collapse single-file packages / needless nesting.
+- QUESTION + simplify: the BLAKE3 content-addressed store / ArtifactRef / manifests / xcom — do stages
+  need content-addressed handles, or just files in a workdir? Prefer the simpler thing that keeps the
+  tests green.
+- KEEP the 100% branch-coverage gate (fail_under=100). When you delete code, delete its tests + covered
+  branches in the same step (net-neutral); never drop the gate.
+
+APPROACH (two phases):
+1. PROPOSE: a written simplification plan. For each item: current state, simpler alternative, cost to
+   keep, recommendation. Gate the CRITICAL architectural calls to me before executing.
+2. EXECUTE: small green-test increments. End with one README "how to run this one pipeline."
+
+ACCEPTANCE / DoD:
+- grep -rniE "wenceslaus|/local_raid1|\bprofile\b|\bmock\b|\bsample\b|\bprod\b|run_pipeline" src/ README.md
+  → no profile/machine/harness leftovers (fixtures-only test code aside).
+- One way to run: `uv run dakp up [--fullmap PATH]`, documented in the README.
+- docs/ and ref/legacy gone; directory structure flattened.
+- uv run pytest green; uv run ruff check + uv run pyright clean; `uv run dakp up` produces the 3 TSVs +
+  handoff; test_semantic_equivalence.py still passes; no extractor implemented twice; net LOC way down.
+- Real handoff verified: `uv run dakp up --fullmap /home/skyeav/Desktop/fullmap/data/fullmap.redb`
+  produces KGX output (or a bounded equivalent), confirming the full Tablassert path works.
+- The pipeline actually runs end-to-end on this laptop (mock run green; bounded real run with the Desktop
+  fullmap produces KGX); reruns reuse cached downloads (no re-download); extraction is parallelized across cores.
+- Scoped dev build works: `uv run dakp up --fullmap /home/skyeav/Desktop/fullmap/data/fullmap.redb --small`
+  downloads only a small portion, runs every stage, and produces a minimal KG (far fewer edges than the full
+  build) — the fast feedback loop.
+
+Conventions: uv project; ruff lint+format; pyright; tests meaningful not exhaustive.
