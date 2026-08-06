@@ -35,7 +35,6 @@ from pathlib import Path
 
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.io.downloads import infer_media_type
 from dakp_pipeline.io.manifests import SourceBlock
 from dakp_pipeline.logging_setup import bind
 from dakp_pipeline.paths import Workdir
@@ -98,7 +97,7 @@ def _fetch_index(ctx: TaskContext, staging: Path, store: ArtifactStore) -> str:
     source = _prior_source(store, alias=alias)
     etag, last_modified = _conditional_download(FULL_RELEASE_INDEX_URL, dest, source)
     if not dest.exists():
-        cached = _cached_ref(store, alias=alias)
+        cached = store.cached_ref(alias)
         if cached is None:
             msg = "server returned 304 for the DailyMed index but no cached copy exists"
             raise RuntimeError(msg)
@@ -146,7 +145,7 @@ def _download_one(url: str, staging: Path, store: ArtifactStore) -> list[Artifac
     if not dest.exists():
         # 304 Not Modified: the cached release ZIP is still current — re-expand it into its SPL XML
         # members (no re-download). The SPL extractor consumes the .xml/.xml.gz refs, not the ZIP.
-        cached = _cached_ref(store, alias=alias)
+        cached = store.cached_ref(alias)
         if cached is None:
             return []
         return _expand_release_zip(cached.uri, out_dir, store, SourceBlock(url=url, retrieved_at=_now_iso()), release_name=name)
@@ -269,24 +268,6 @@ def _prior_source(store: ArtifactStore, *, alias: str) -> SourceBlock | None:
     artifact_id = alias_path.read_text(encoding="utf-8").strip()
     manifest = store.read_manifest(artifact_id)
     return manifest.source if manifest is not None else None
-
-
-def _cached_ref(store: ArtifactStore, *, alias: str) -> ArtifactRef | None:
-    """Reconstruct an :class:`ArtifactRef` for an already-ingested artifact (used on 304).
-
-    Reads the alias + sibling ``.path`` pointer written by :meth:`ArtifactStore.ingest`.
-    Returns ``None`` if the alias or path pointer is missing.
-    """
-    wd = Workdir(store.workdir.root)
-    id_path = wd.aliases / alias
-    if not id_path.exists():
-        return None
-    artifact_id = id_path.read_text(encoding="utf-8").strip()
-    path_file = wd.aliases / f"{alias}.path"
-    if not path_file.exists():
-        return None
-    uri = Path(path_file.read_text(encoding="utf-8").strip())
-    return ArtifactRef(uri=uri, blake3=artifact_id, media_type=infer_media_type(uri), manifest=store.manifest_path(artifact_id))
 
 
 def _now_iso() -> str:

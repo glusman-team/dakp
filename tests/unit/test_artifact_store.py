@@ -106,3 +106,17 @@ def test_write_and_read_tsv_round_trips(tmp_path: Path) -> None:
     back = schemas.read_table(path)
     assert back.columns == ["a", "b"]
     assert back.height == 2
+
+
+def test_cached_ref_resolves_ingested_alias(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    src = tmp_path / "quarter.zip"
+    src.write_bytes(b"faers quarter bytes")
+    ref, _ = store.ingest(src, alias="faers/faers_ascii_24Q3.zip")
+
+    cached = store.cached_ref("faers/faers_ascii_24Q3.zip")
+    assert cached is not None
+    assert cached.blake3 == ref.blake3
+    assert cached.uri == ref.uri
+    assert cached.uri.exists()
+    assert cached.manifest == ref.manifest

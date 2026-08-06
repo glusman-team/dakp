@@ -25,6 +25,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -34,6 +35,7 @@ import (
 	"sync"
 
 	"github.com/glusman-team/dakp/go/internal/blake3store"
+	"github.com/zeebo/blake3"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -218,17 +220,30 @@ func FamilyAndQuarter(name string) (family, quarter string) {
 // ParseSource parses one `$`-delimited ASCII source into a normalized Table with
 // quarter/source_file/source_record_id provenance prepended (mirrors
 // faers_ascii._parse_source). It returns nil (after recording a warning) if the source has
-// no usable header/rows or no primaryid/isr column. Parsing streams line-by-line via bufio.
+// no usable header/rows or no primaryid/isr column. It is a thin wrapper over ParseStream
+// for in-memory content (batch path: tests, the dakp-worker CLI).
 func ParseSource(src Source, warn *Warnings) *Table {
 	if len(bytes.TrimSpace(src.Content)) == 0 {
 		warn.Add(src.Quarter, src.Family, "empty_file", "no bytes")
 		return nil
 	}
-	r := bufio.NewReaderSize(bytes.NewReader(src.Content), 1<<20)
+	return ParseStream(bytes.NewReader(src.Content), src.Quarter, src.Family, src.SourceName, warn)
+}
 
-	header, err := readLine(r)
+// ParseStream parses one `$`-delimited ASCII source from a stream into a normalized Table —
+// the streaming counterpart of ParseSource for the bounded-memory production path (the
+// quarterly files are far too large to buffer whole). Bytes are tee'd into a BLAKE3 hasher as
+// they are read, so the source_record_id prefix is exactly the one HashBytes(content) would
+// yield (b3 digest of the same bytes) without ever materializing the content. Line reads
+// stream via bufio. Returns nil (after recording a warning) if the source has no usable
+// header/rows or no primaryid/isr column.
+func ParseStream(r io.Reader, quarter, family, sourceName string, warn *Warnings) *Table {
+	hasher := blake3.New()
+	br := bufio.NewReaderSize(io.TeeReader(r, hasher), 1<<20)
+
+	header, err := readLine(br)
 	if err != nil { // EOF (or read error) before any header line
-		warn.Add(src.Quarter, src.Family, "empty_file", "no data rows")
+		warn.Add(quarter, family, "empty_file", "no data rows")
 		return nil
 	}
 
@@ -255,7 +270,7 @@ func ParseSource(src Source, warn *Warnings) *Table {
 				}
 			}
 		} else {
-			warn.Add(src.Quarter, src.Family, "missing_primaryid", "no primaryid/isr column")
+			warn.Add(quarter, family, "missing_primaryid", "no primaryid/isr column")
 			return nil
 		}
 	}
@@ -263,12 +278,12 @@ func ParseSource(src Source, warn *Warnings) *Table {
 	ncols := len(rawCols)
 	var rows [][]string
 	for {
-		line, rerr := readLine(r)
+		line, rerr := readLine(br)
 		if rerr == io.EOF && line == "" {
 			break
 		}
 		if rerr != nil && rerr != io.EOF {
-			warn.Add(src.Quarter, src.Family, "parse_error", rerr.Error())
+			warn.Add(quarter, family, "parse_error", rerr.Error())
 			return nil
 		}
 		fields := strings.Split(line, Delimiter)
@@ -284,11 +299,11 @@ func ParseSource(src Source, warn *Warnings) *Table {
 		rows = append(rows, row)
 	}
 	if len(rows) == 0 {
-		warn.Add(src.Quarter, src.Family, "empty_file", "no data rows")
+		warn.Add(quarter, family, "empty_file", "no data rows")
 		return nil
 	}
 
-	short := b3Short(src.SourceB3)
+	short := b3Short(blake3store.ArtifactID(hex.EncodeToString(hasher.Sum(nil))))
 	cols := make([]string, 0, 3+len(names))
 	cols = append(cols, "quarter", "source_file", "source_record_id")
 	cols = append(cols, names...)
@@ -296,11 +311,11 @@ func ParseSource(src Source, warn *Warnings) *Table {
 	out := make([][]string, 0, len(rows))
 	for _, row := range rows {
 		full := make([]string, 0, len(cols))
-		full = append(full, src.Quarter, src.SourceName, sourceRecordID(short, src.Family, row, names))
+		full = append(full, quarter, sourceName, sourceRecordID(short, family, row, names))
 		full = append(full, row...)
 		out = append(out, full)
 	}
-	return &Table{Quarter: src.Quarter, Family: src.Family, Columns: cols, Rows: out}
+	return &Table{Quarter: quarter, Family: family, Columns: cols, Rows: out}
 }
 
 // readLine reads one line, stripping the trailing CRLF/LF. On EOF with no remaining data it
@@ -674,6 +689,13 @@ func ExtractParsed(byQF map[string]map[string]*Table, warn *Warnings) Result {
 	}
 }
 
+// BuildDeleteAudit projects the DELETE tables to the delete-audit rows, sorted by
+// auditSortKey (mirrors faers_ascii._select_delete_audit). Exported for the streaming
+// production path, which accumulates the (tiny) DELETE tables quarter by quarter.
+func BuildDeleteAudit(deleteTables []*Table) []DeleteAuditRow {
+	return buildDeleteAudit(deleteTables)
+}
+
 // buildDeleteAudit projects the DELETE tables to the delete-audit columns, sorted by
 // auditSortKey (mirrors faers_ascii._select_delete_audit).
 func buildDeleteAudit(deleteTables []*Table) []DeleteAuditRow {
@@ -760,6 +782,10 @@ func (c Case) dedupSubsetKey() string {
 	}, "\x1f")
 }
 
+// DedupKey is the cross-quarter dedup key: caseid when present, else primaryid (exported
+// for the streaming deduper; dedupKey stays the internal name).
+func (c Case) DedupKey() string { return c.dedupKey() }
+
 // dedupKey is the cross-quarter dedup key: caseid when present, else primaryid.
 func (c Case) dedupKey() string {
 	if c.CaseID != "" {
@@ -794,6 +820,56 @@ func sortCases(cases []Case) {
 		return a.Indication < b.Indication
 	})
 }
+
+// Deduper applies cross-quarter caseid dedup (most-recent-wins) streaming, quarter by
+// quarter in most-recent-first order, holding only the dedup keys in memory instead of the
+// whole case set (the bounded-memory counterpart of ReduceCases; identical semantics).
+type Deduper struct {
+	seen map[string]string // dedup key -> most-recent quarter observed so far (== winning quarter)
+}
+
+// NewDeduper returns an empty streaming deduper.
+func NewDeduper() *Deduper { return &Deduper{seen: map[string]string{}} }
+
+// Split partitions one quarter's case rows against the quarters seen so far (which are all
+// NEWER, since quarters stream most-recent-first): rows whose dedup key a newer quarter
+// already owns are superseded (returned as audit rows carrying the winning quarter); the
+// rest are kept, in input order. This quarter's own keys are NOT committed until Commit, so
+// rows of the same quarter never supersede each other — matching ReduceCases, where every
+// row of the winning quarter survives.
+func (d *Deduper) Split(quarter string, cases []Case) (kept []Case, audit []DedupAuditRow, newKeys []string) {
+	for _, c := range cases {
+		k := c.dedupKey()
+		if w, ok := d.seen[k]; ok {
+			audit = append(audit, DedupAuditRow{
+				Quarter:        quarter,
+				PrimaryID:      c.PrimaryID,
+				CaseID:         c.CaseID,
+				DedupKey:       k,
+				WinningQuarter: w,
+				SourceFile:     c.SourceFile,
+			})
+			continue
+		}
+		kept = append(kept, c)
+		newKeys = append(newKeys, k)
+	}
+	return kept, audit, newKeys
+}
+
+// Commit records a quarter's dedup keys after all of its rows have been Split.
+func (d *Deduper) Commit(quarter string, keys []string) {
+	for _, k := range keys {
+		d.seen[k] = quarter
+	}
+}
+
+// Len returns the number of dedup keys seen so far (diagnostic/logging).
+func (d *Deduper) Len() int { return len(d.seen) }
+
+// SortDedupAudit orders dedup-audit rows deterministically by auditSortKey (stable), the
+// exported form of the internal sort for the streaming path (mirrors _AUDIT_SORT_KEY).
+func SortDedupAudit(rows []DedupAuditRow) { sortAudit(rows) }
 
 // sortAudit sorts dedup-audit rows deterministically by auditSortKey (stable).
 func sortAudit(rows []DedupAuditRow) {

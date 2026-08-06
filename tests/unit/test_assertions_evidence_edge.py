@@ -93,6 +93,40 @@ def test_find_faers_cases_falls_back_to_tsv(tmp_path: Path) -> None:
     assert frame["drugname"].to_list() == ["TsvDrug"]
 
 
+# --- find_faers_cases: optional column projection ------------------------------
+
+
+def test_find_faers_cases_projection_parquet(tmp_path: Path) -> None:
+    cases = _parquet(tmp_path, "cases.parquet", {"drugname": ["DrugA"], "indication": ["pain"], "primaryid": ["1"], "extra": ["x"]})
+    frame = find_faers_cases([cases], columns=("drugname", "indication", "primaryid"))
+    assert frame is not None
+    assert frame.columns == ["drugname", "indication", "primaryid"]  # extra column skipped
+    assert frame["primaryid"].to_list() == ["1"]
+
+
+def test_find_faers_cases_projection_tsv(tmp_path: Path) -> None:
+    tsv = tmp_path / "faers_cases.tsv"
+    pl.DataFrame({"drugname": ["TsvDrug"], "indication": ["pain"], "primaryid": ["9"]}).write_csv(tsv, separator="\t")
+    frame = find_faers_cases([_ref(tsv)], columns=("drugname", "indication", "primaryid"))
+    assert frame is not None
+    assert frame.columns == ["drugname", "indication", "primaryid"]
+    assert frame["drugname"].to_list() == ["TsvDrug"]
+
+
+def test_find_faers_cases_projection_skips_absent_columns(tmp_path: Path) -> None:
+    # No primaryid column in the table -> projection silently drops it (row-count fallback).
+    cases = _parquet(tmp_path, "cases.parquet", {"drugname": ["DrugA"], "indication": ["pain"]})
+    frame = find_faers_cases([cases], columns=("drugname", "indication", "primaryid"))
+    assert frame is not None
+    assert frame.columns == ["drugname", "indication"]
+
+
+def test_find_faers_cases_projection_rejects_missing_required(tmp_path: Path) -> None:
+    # None of the requested columns exist -> empty frame -> required-column check -> None.
+    cases = _parquet(tmp_path, "cases.parquet", {"unrelated": ["x"]})
+    assert find_faers_cases([cases], columns=("drugname", "indication", "primaryid")) is None
+
+
 # --- build_dailymed_evidence: per-row skip branches (191, 203, 214) -------------
 
 

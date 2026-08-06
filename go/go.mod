@@ -4,6 +4,7 @@ go 1.26.4
 
 require (
 	github.com/apache/airflow/go-sdk v1.0.0-beta3
+	github.com/parquet-go/parquet-go v0.30.1
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/sync v0.22.0
 )
@@ -31,7 +32,6 @@ require (
 	github.com/oklog/run v1.1.0 // indirect
 	github.com/parquet-go/bitpack v1.0.0 // indirect
 	github.com/parquet-go/jsonlite v1.0.0 // indirect
-	github.com/parquet-go/parquet-go v0.30.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.3 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/sagikazarmark/locafero v0.7.0 // indirect

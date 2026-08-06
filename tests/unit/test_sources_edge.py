@@ -11,7 +11,7 @@ FAERS), plus the small defensive branches the happy-path suite never reaches:
 * ``sources/dailymed`` — the full real release pipeline (index fetch -> release ZIP ->
   per-member SPL ingest) with canned HTTP responses; release_limit; conditional-GET headers;
   HTTP 304 handling for both the index and a release (cached-present and cached-absent);
-  release ZIPs with directory entries / non-SPL members / no SPL members; ``_cached_ref``
+  release ZIPs with directory entries / non-SPL members / no SPL members; ``ArtifactStore.cached_ref``
   pointer resolution.
 """
 
@@ -348,7 +348,7 @@ def test_dailymed_release_304_reexpands_cached_spl_members(tmp_path: Path, monke
 
 def test_dailymed_release_304_without_cache_returns_empty(tmp_path: Path) -> None:
     store = _store_for(tmp_path)
-    # No alias recorded for this release -> _cached_ref None -> [] on a 304.
+    # No alias recorded for this release -> cached_ref None -> [] on a 304.
     staging = Workdir(store.workdir.root).root / ".staging" / "dailymed"
     staging.mkdir(parents=True, exist_ok=True)
 
@@ -372,18 +372,18 @@ def _store_for(tmp_path: Path) -> ArtifactStore:
     return ArtifactStore(wd)
 
 
-# --- dailymed: _cached_ref / _prior_source pointer resolution ------------------
+# --- store.cached_ref: alias / .path pointer resolution (shared by fetchers) ---
 
 
-def test_dailymed_cached_ref_missing_alias_and_path(tmp_path: Path) -> None:
+def test_cached_ref_missing_alias_and_path(tmp_path: Path) -> None:
     store = _store_for(tmp_path)
-    assert dailymed._cached_ref(store, alias="dailymed/absent.zip") is None  # no alias
+    assert store.cached_ref("dailymed/absent.zip") is None  # no alias
     # Alias present but sibling .path pointer missing -> None.
     wd = Workdir(store.workdir.root)
     alias_file = wd.aliases / "dailymed" / "half.zip"
     alias_file.parent.mkdir(parents=True, exist_ok=True)
     alias_file.write_text("b3:deadbeef", encoding="utf-8")
-    assert dailymed._cached_ref(store, alias="dailymed/half.zip") is None
+    assert store.cached_ref("dailymed/half.zip") is None
 
 
 def test_dailymed_prior_source_none_when_manifest_absent(tmp_path: Path) -> None:

@@ -600,3 +600,149 @@ func reflectEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// --- streaming parser ----------------------------------------------------------
+
+// TestParseStreamMatchesParseSource locks the streaming parser (bounded-memory production
+// path) to the batch parser: every testdata source must yield an identical Table, including
+// the b3-derived source_record_ids (the tee'd BLAKE3 must equal HashBytes(content)).
+func TestParseStreamMatchesParseSource(t *testing.T) {
+	for _, src := range loadTestdata(t) {
+		want := ParseSource(src, &Warnings{})
+		got := ParseStream(bytes.NewReader(src.Content), src.Quarter, src.Family, src.SourceName, &Warnings{})
+		if want == nil || got == nil {
+			t.Fatalf("%s: ParseSource nil=%v, ParseStream nil=%v", src.SourceName, want == nil, got == nil)
+		}
+		if !reflectEqual(got.Columns, want.Columns) {
+			t.Errorf("%s: columns = %v, want %v", src.SourceName, got.Columns, want.Columns)
+		}
+		if len(got.Rows) != len(want.Rows) {
+			t.Fatalf("%s: rows = %d, want %d", src.SourceName, len(got.Rows), len(want.Rows))
+		}
+		for i := range want.Rows {
+			if !reflectEqual(got.Rows[i], want.Rows[i]) {
+				t.Errorf("%s row %d = %v, want %v", src.SourceName, i, got.Rows[i], want.Rows[i])
+			}
+		}
+	}
+}
+
+func TestParseStreamEmptyAndWarnings(t *testing.T) {
+	warn := &Warnings{}
+	if tbl := ParseStream(strings.NewReader(""), "24Q3", "DEMO", "DEMO24Q3.txt", warn); tbl != nil {
+		t.Fatal("expected nil table for empty stream")
+	}
+	if !warn.Has("empty_file") {
+		t.Fatalf("expected empty_file warning, got %v", warn.Items())
+	}
+	// Header but no data rows.
+	warn2 := &Warnings{}
+	if tbl := ParseStream(strings.NewReader("PRIMARYID$CASEID$\r\n"), "24Q3", "DEMO", "DEMO24Q3.txt", warn2); tbl != nil {
+		t.Fatal("expected nil table for header-only stream")
+	}
+	if !warn2.Has("empty_file") {
+		t.Fatalf("expected empty_file warning, got %v", warn2.Items())
+	}
+}
+
+// --- streaming deduper (bounded-memory counterpart of ReduceCases) --------------
+
+type quarterCases struct {
+	quarter string
+	cases   []Case
+}
+
+// perQuarterTestdataCases builds the per-quarter case joins from testdata most-recent-first
+// — the same per-quarter inputs ExtractParsed feeds ReduceCases.
+func perQuarterTestdataCases(t *testing.T) []quarterCases {
+	t.Helper()
+	byQF := map[string]map[string]*Table{}
+	for _, s := range loadTestdata(t) {
+		if tbl := ParseSource(s, &Warnings{}); tbl != nil && len(tbl.Rows) > 0 {
+			if byQF[s.Quarter] == nil {
+				byQF[s.Quarter] = map[string]*Table{}
+			}
+			byQF[s.Quarter][s.Family] = tbl
+		}
+	}
+	quarters := make([]string, 0, len(byQF))
+	for q := range byQF {
+		quarters = append(quarters, q)
+	}
+	sort.Slice(quarters, func(i, j int) bool { return quarters[i] > quarters[j] })
+	out := make([]quarterCases, 0, len(quarters))
+	warn := &Warnings{}
+	for _, q := range quarters {
+		fam := byQF[q]
+		out = append(out, quarterCases{quarter: q, cases: BuildQuarterCases(fam, q, DeletedPrimaryIDs(fam["DELETE"]), warn)})
+	}
+	return out
+}
+
+func TestDeduperMatchesReduceCases(t *testing.T) {
+	perQuarter := perQuarterTestdataCases(t)
+	frames := make([][]Case, len(perQuarter))
+	for i, qc := range perQuarter {
+		frames[i] = qc.cases
+	}
+	batchKept, batchAudit := ReduceCases(frames)
+
+	d := NewDeduper()
+	var streamKept []Case
+	var streamAudit []DedupAuditRow
+	for _, qc := range perQuarter {
+		kept, audit, newKeys := d.Split(qc.quarter, qc.cases)
+		streamKept = append(streamKept, kept...)
+		streamAudit = append(streamAudit, audit...)
+		d.Commit(qc.quarter, newKeys)
+	}
+	sortCases(streamKept) // batch kept arrives globally sorted
+	SortDedupAudit(streamAudit)
+
+	if len(streamKept) != len(batchKept) {
+		t.Fatalf("streaming kept = %d, want %d", len(streamKept), len(batchKept))
+	}
+	for i := range batchKept {
+		if streamKept[i] != batchKept[i] {
+			t.Fatalf("kept[%d] = %+v, want %+v", i, streamKept[i], batchKept[i])
+		}
+	}
+	if len(streamAudit) != len(batchAudit) {
+		t.Fatalf("streaming audit = %d rows, want %d", len(streamAudit), len(batchAudit))
+	}
+	for i := range batchAudit {
+		if streamAudit[i] != batchAudit[i] {
+			t.Fatalf("audit[%d] = %+v, want %+v", i, streamAudit[i], batchAudit[i])
+		}
+	}
+}
+
+func TestDeduperSameQuarterRowsNeverSupersedeEachOther(t *testing.T) {
+	mk := func(q, pid, caseid string) Case { return Case{Quarter: q, PrimaryID: pid, CaseID: caseid} }
+	d := NewDeduper()
+	// Two rows of the newest quarter share caseid 7 -> BOTH kept (all rows of the winning
+	// quarter survive, same as ReduceCases).
+	kept, audit, newKeys := d.Split("24Q3", []Case{mk("24Q3", "1", "7"), mk("24Q3", "2", "7")})
+	d.Commit("24Q3", newKeys)
+	if len(kept) != 2 || len(audit) != 0 {
+		t.Fatalf("same-quarter split: kept=%d audit=%d, want 2/0", len(kept), len(audit))
+	}
+	// Older-quarter rows for the same key are superseded by 24Q3; unseen keys survive.
+	kept2, audit2, newKeys2 := d.Split("24Q2", []Case{mk("24Q2", "9", "7"), mk("24Q2", "10", "8")})
+	d.Commit("24Q2", newKeys2)
+	if len(kept2) != 1 || kept2[0].PrimaryID != "10" {
+		t.Fatalf("older-quarter kept = %+v, want only primaryid 10", kept2)
+	}
+	if len(audit2) != 1 || audit2[0].PrimaryID != "9" || audit2[0].WinningQuarter != "24Q3" {
+		t.Fatalf("older-quarter audit = %+v, want 9 superseded by 24Q3", audit2)
+	}
+	if d.Len() != 2 {
+		t.Fatalf("deduper keys = %d, want 2", d.Len())
+	}
+	// Split on no cases keeps the deduper unchanged.
+	kept3, audit3, newKeys3 := d.Split("24Q1", nil)
+	d.Commit("24Q1", newKeys3)
+	if kept3 != nil || audit3 != nil || d.Len() != 2 {
+		t.Fatalf("empty split: kept=%v audit=%v keys=%d", kept3, audit3, d.Len())
+	}
+}

@@ -38,6 +38,15 @@ def test_case_count_falls_back_to_rows_without_primaryid(disease_map: dict[str, 
     assert rows[0]["case_count"] == "2"  # no primaryid column -> row count
 
 
+def test_case_count_mixes_distinct_cases_and_anonymous_rows(disease_map: dict[str, dict[str, str]]) -> None:
+    # Distinct non-empty primaryids dedup; null/empty primaryids each count as their own
+    # observation (legacy _row{index} fallback) — the pair total is the sum of both.
+    cases = pl.DataFrame({"primaryid": ["1", "", None, "1", "2"], "drugname": ["DrugX"] * 5, "indication": ["condY"] * 5})
+    rows = build_observed_use_rows(cases, disease_map)
+    assert len(rows) == 1
+    assert rows[0]["case_count"] == "4"  # distinct {1, 2} + 2 anonymous rows
+
+
 def test_observed_uses_from_fixture_cases(faers_refs: list[ArtifactRef], disease_map: dict[str, dict[str, str]]) -> None:
     cases = find_faers_cases(faers_refs)
     rows = build_observed_use_rows(cases, disease_map)

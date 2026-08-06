@@ -119,3 +119,73 @@ def test_module_level_fetch_is_monkeypatchable(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr(faers_source, "fetch", lambda ctx: called.append(1) or [])
     assert faers_source.fetch(_ctx(tmp_path)) == []
     assert called == [1]
+
+
+# --- download_quarter: cache-first acquisition (no re-download of cached quarters) ---
+
+
+def _source() -> faers_source.QuarterSource:
+    return faers_source.QuarterSource(quarter="24Q3", url="https://example.invalid/faers_ascii_2024q3.zip")
+
+
+def test_download_quarter_skips_network_when_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = _source()
+    primed = _ingest_fake_zip(tmp_path, source)  # quarter already content-addressed under its alias
+
+    def no_network(url: str, dest: Path, *, timeout: float) -> Path:
+        pytest.fail("cached quarter must not hit the network")
+
+    monkeypatch.setattr(faers_source, "_http_download", no_network)
+    ref = faers_source.FAERSFetcher().download_quarter(_ctx(tmp_path), source)
+    assert ref.blake3 == primed.blake3
+    assert ref.uri == primed.uri
+
+
+def test_download_quarter_force_redownloads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = _source()
+    primed = _ingest_fake_zip(tmp_path, source)
+    calls: list[str] = []
+
+    def fake_download(url: str, dest: Path, *, timeout: float) -> Path:
+        calls.append(url)
+        _build_fake_zip(dest)
+        return dest
+
+    monkeypatch.setattr(faers_source, "_http_download", fake_download)
+    ref = faers_source.FAERSFetcher().download_quarter(_ctx(tmp_path, force=True), source)
+    assert calls == [source.url]
+    assert ref.blake3 == primed.blake3  # identical bytes -> same content id
+
+
+def test_download_quarter_cache_miss_downloads_and_cleans_staging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = _source()
+
+    def fake_download(url: str, dest: Path, *, timeout: float) -> Path:
+        _build_fake_zip(dest)
+        return dest
+
+    monkeypatch.setattr(faers_source, "_http_download", fake_download)
+    ref = faers_source.FAERSFetcher().download_quarter(_ctx(tmp_path), source)
+    assert ref.uri.exists()
+    assert ref.uri.name == "faers_ascii_24Q3.zip"
+    # The staged download copy is removed once the zip is content-addressed.
+    assert not (Workdir(tmp_path).raw / "downloads" / "faers_ascii_24Q3.zip").exists()
+    # A second call is now a cache hit (no network).
+    monkeypatch.setattr(faers_source, "_http_download", lambda *a, **k: pytest.fail("network called"))
+    again = faers_source.FAERSFetcher().download_quarter(_ctx(tmp_path), source)
+    assert again.blake3 == ref.blake3
+
+
+def test_download_quarter_redownloads_when_alias_points_at_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = _source()
+    primed = _ingest_fake_zip(tmp_path, source)
+    primed.uri.unlink()  # stored file vanished; the alias record remains
+
+    def fake_download(url: str, dest: Path, *, timeout: float) -> Path:
+        _build_fake_zip(dest)
+        return dest
+
+    monkeypatch.setattr(faers_source, "_http_download", fake_download)
+    ref = faers_source.FAERSFetcher().download_quarter(_ctx(tmp_path), source)
+    assert ref.uri.exists()
+    assert ref.blake3 == primed.blake3

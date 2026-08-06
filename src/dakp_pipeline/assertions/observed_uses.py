@@ -60,30 +60,49 @@ def is_non_disease_indication(indication: str) -> bool:
 class ObservedUsesShaper:
     def transform(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
         disease_map: dict[str, dict[str, str]] = ctx.params.get("disease_map", {})  # type: ignore[assignment]
-        faers_cases = find_faers_cases(inputs)
+        # Projection: only the three columns the aggregation needs (the production case table
+        # is tens of millions of rows wide; reading all 17 columns wastes gigabytes).
+        faers_cases = find_faers_cases(inputs, columns=("drugname", "indication", "primaryid"))
         rows = build_observed_use_rows(faers_cases, disease_map)
         return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_faers_applied_to_treat")
 
 
 def build_observed_use_rows(faers_cases: pl.DataFrame | None, disease_map: Mapping[str, Mapping[str, str]]) -> list[dict[str, str]]:
-    """Aggregate FAERS drug-indication case counts into applied-to-treat rows (deterministic)."""
+    """Aggregate FAERS drug-indication case counts into applied-to-treat rows (deterministic).
+
+    The distinct-case counting runs as a Polars group-by (never Python row iteration), so the
+    full-production case table (tens of millions of rows) aggregates in a few seconds with
+    bounded memory. Semantics are unchanged: per (drugname, indication) pair the count is the
+    number of distinct non-empty primaryids plus one per anonymous row (the legacy
+    ``_row{index}`` fallback made every primaryid-less row its own observation), and row-count
+    when the frame has no primaryid column at all.
+    """
     if faers_cases is None:
         return []
 
     has_primaryid = "primaryid" in faers_cases.columns
-    pair_cases: dict[tuple[str, str], set[str]] = {}
-    for index, rec in enumerate(faers_cases.iter_rows(named=True)):
-        drug = str(rec.get("drugname") or "").strip()
-        indication = str(rec.get("indication") or "").strip()
-        if not drug or not indication:
-            continue
-        case_id = str(rec.get("primaryid") or "").strip() if has_primaryid else ""
-        if not case_id:  # no case id -> count rows (each row is its own observation)
-            case_id = f"_row{index}"
-        pair_cases.setdefault((drug, indication), set()).add(case_id)
+    primaryid = pl.col("primaryid").fill_null("").cast(pl.Utf8).str.strip_chars() if has_primaryid else pl.lit("")
+    pairs = (
+        faers_cases.lazy()
+        .select(
+            pl.col("drugname").fill_null("").cast(pl.Utf8).str.strip_chars().alias("drugname"),
+            pl.col("indication").fill_null("").cast(pl.Utf8).str.strip_chars().alias("indication"),
+            primaryid.alias("primaryid"),
+        )
+        .filter((pl.col("drugname") != "") & (pl.col("indication") != ""))
+        .group_by("drugname", "indication")
+        .agg(
+            pl.col("primaryid").filter(pl.col("primaryid") != "").n_unique().alias("distinct_cases"),
+            pl.col("primaryid").filter(pl.col("primaryid") == "").len().alias("anon_rows"),
+        )
+        .collect()
+        .sort("drugname", "indication")
+    )
 
     rows: list[dict[str, str]] = []
-    for drug, indication in sorted(pair_cases):
+    for rec in pairs.iter_rows(named=True):
+        drug = str(rec["drugname"])
+        indication = str(rec["indication"])
         if is_non_disease_indication(indication):
             continue  # FAERS placeholder/usage-context indication, not a drug->condition observation
         matches = match_diseases(indication, disease_map)
@@ -100,7 +119,7 @@ def build_observed_use_rows(faers_cases: pl.DataFrame | None, disease_map: Mappi
                 object_curie=obj["curie"],
                 object_name=obj["name"],
                 object_category=obj["category"],
-                case_count=len(pair_cases[(drug, indication)]),
+                case_count=int(rec["distinct_cases"]) + int(rec["anon_rows"]),
                 clinical_approval_status=_STATUS,
                 knowledge_level=_KNOWLEDGE_LEVEL,
                 agent_type=AT_MANUAL,

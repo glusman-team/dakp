@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -103,14 +104,19 @@ def find_table(inputs: Iterable[ArtifactRef], filename: str) -> pl.DataFrame | N
     return _read_indexed_table(_table_index(inputs), filename)
 
 
-def find_faers_cases(inputs: Iterable[ArtifactRef]) -> pl.DataFrame | None:
+def find_faers_cases(inputs: Iterable[ArtifactRef], columns: tuple[str, ...] | None = None) -> pl.DataFrame | None:
     """Resolve the FAERS case table: the global ``cases.parquet`` (preferred) or ``faers_cases.tsv``.
 
     The extractor emits a global ``cases.parquet`` first plus per-quarter ``cases.parquet``
     partitions; the global one (no ``quarter=`` in its path) is the deduped case join the
     shapers want. Falls back to the public ``faers_cases.tsv`` projection. Returns ``None``
-    when no FAERS case table is present (e.g. the approved-treats stage, which the current
-    pipeline wires without FAERS).
+    when no FAERS case table is present (in which case the approved-treats shaper degrades to
+    its DailyMed fallback candidate path).
+
+    ``columns`` optionally projects the read to a subset of columns — the production case
+    table is tens of millions of rows wide, so shapers that need only a few columns
+    (observed-uses: drugname/indication/primaryid) skip the rest (a cheap schema peek
+    decides which requested columns actually exist, so a primaryid-less table still loads).
     """
     refs = list(inputs)
     global_cases: ArtifactRef | None = None
@@ -127,10 +133,30 @@ def find_faers_cases(inputs: Iterable[ArtifactRef]) -> pl.DataFrame | None:
     chosen = global_cases or any_cases or tsv_cases
     if chosen is None:
         return None
-    frame = schemas.read_table(chosen.uri)
+    frame = _read_case_table(chosen.uri, columns)
     if "drugname" not in frame.columns or "indication" not in frame.columns:
         return None
     return frame
+
+
+def _read_case_table(path: Path, columns: tuple[str, ...] | None) -> pl.DataFrame:
+    """Read the case table, projecting to ``columns`` when given (absent columns are skipped)."""
+    if columns is None:
+        return schemas.read_table(path)
+    available = _schema_columns(path)
+    keep = [c for c in columns if c in available]
+    if not keep:
+        return pl.DataFrame()
+    if path.suffix == ".parquet":
+        return pl.read_parquet(path, columns=keep)
+    return pl.read_csv(path, separator="\t", columns=keep)
+
+
+def _schema_columns(path: Path) -> set[str]:
+    """Column names of a table WITHOUT loading its data (parquet metadata / CSV header scan)."""
+    if path.suffix == ".parquet":
+        return set(pl.read_parquet_schema(path))
+    return set(pl.scan_csv(path, separator="\t").collect_schema().names())
 
 
 # --- DailyMed SPL support index -------------------------------------------------

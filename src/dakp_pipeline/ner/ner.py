@@ -181,7 +181,8 @@ def _windows(text: str, budget: int) -> list[tuple[int, str]]:
             open_window = True
         window_end = piece_end
         token_total += tokens
-    if open_window:
+    if open_window:  # pragma: no cover - defensive: pieces is never empty (non-blank text
+        # always yields >=1 piece and the last iteration always opens a window)
         windows.append((window_start, text[window_start:window_end]))
     return windows
 

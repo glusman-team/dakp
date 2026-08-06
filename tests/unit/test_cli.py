@@ -235,7 +235,9 @@ def test_up_preflight_still_broken_without_import_stderr(monkeypatch: pytest.Mon
     assert "still fails to import" in out
 
 
-def test_up_preflight_heal_failure_prints_stderr_and_bounds_lock_wait(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_up_preflight_heal_failure_prints_stderr_and_bounds_lock_wait(
+    monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setattr(cli, "airflow_importable", _bools(False, True))
     fake = FakeSubprocess(fail_markers=("sync",), stderr="error: Timeout (60s) when waiting for lock on /home/u/.cache/uv")
     _patch_happy(monkeypatch)

@@ -1,11 +1,15 @@
 """FAERS quarterly ASCII acquisition.
 
 Discovers quarterly ASCII zips from the FDA exports index, downloads each into the BLAKE3
-content-addressed store (idempotent — re-downloading identical bytes is a cache hit, never a
-duplicate store entry), and honors ``quarter_limit`` (process only the N most-recent quarters)
-for bounded runs. Unlike the legacy ``getLatest.pl``, this fetcher never destructively renames
-or stashes files. Offline tests monkeypatch the module-level :data:`fetch` (or the
-:meth:`FAERSFetcher.fetch_index` / :meth:`FAERSFetcher.download_quarter` network boundaries).
+content-addressed store, and honors ``quarter_limit`` (process only the N most-recent
+quarters) for bounded runs. Acquisition is cache-first: a quarter whose zip is already
+content-addressed under its ``faers/faers_ascii_<Q>.zip`` alias is reused WITHOUT touching
+the network (FAERS quarterly zips are immutable published snapshots, and fis.fda.gov sends
+no ETag/Last-Modified, so alias reuse — not conditional GET — is the skip mechanism);
+``force`` (run param) re-downloads everything. Unlike the legacy ``getLatest.pl``, this
+fetcher never destructively renames or stashes files. Offline tests monkeypatch the
+module-level :data:`fetch` (or the :meth:`FAERSFetcher.fetch_index` /
+:meth:`FAERSFetcher.download_quarter` network boundaries).
 
 Monkeypatchable boundaries:
 
@@ -17,6 +21,7 @@ Monkeypatchable boundaries:
 from __future__ import annotations
 
 import re
+import shutil
 import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -93,15 +98,27 @@ class FAERSFetcher:
         return _http_get_text(FDA_FAERS_INDEX_URL, timeout=_DEFAULT_TIMEOUT)
 
     def download_quarter(self, ctx: TaskContext, source: QuarterSource) -> ArtifactRef:
-        """Download one quarter zip into the content-addressed store (idempotent by hash)."""
+        """Acquire one quarter zip into the content-addressed store (cache-first).
+
+        A quarter already present under its alias is reused WITHOUT a network call (FAERS
+        quarterly zips are immutable published snapshots; fis.fda.gov sends no ETag or
+        Last-Modified, so conditional GET is impossible and alias reuse is the skip).
+        ``force`` re-downloads unconditionally. Downloads stream in 1 MiB chunks (a quarter
+        zip never sits whole in memory) and the staged copy is removed once content-addressed.
+        """
         wd = Workdir(ctx.workdir)
+        store = ArtifactStore(wd)
+        alias = f"faers/faers_ascii_{source.quarter}.zip"
+        if not bool(ctx.params.get("force", False)):
+            cached = store.cached_ref(alias)
+            if cached is not None and cached.uri.exists():
+                logger.info("faers quarter cached", quarter=source.quarter, artifact_id=cached.blake3)
+                return cached
         dest = wd.raw / "downloads" / f"faers_ascii_{source.quarter}.zip"
         dest.parent.mkdir(parents=True, exist_ok=True)
         _http_download(source.url, dest, timeout=_DEFAULT_TIMEOUT)
-        store = ArtifactStore(wd)
-        ref, cache_hit = store.ingest(
-            dest, alias=f"faers/faers_ascii_{source.quarter}.zip", source=SourceBlock(url=source.url, retrieved_at=datetime.now(UTC).isoformat())
-        )
+        ref, cache_hit = store.ingest(dest, alias=alias, source=SourceBlock(url=source.url, retrieved_at=datetime.now(UTC).isoformat()))
+        dest.unlink(missing_ok=True)  # staged copy no longer needed once content-addressed
         logger.info("faers quarter acquired", quarter=source.quarter, cache_hit=cache_hit, artifact_id=ref.blake3)
         return ref
 
@@ -115,9 +132,10 @@ def _http_get_text(url: str, *, timeout: float) -> str:
 
 
 def _http_download(url: str, dest: Path, *, timeout: float) -> Path:
-    """Download ``url`` to ``dest``. HTTP/URL errors propagate (fail loudly)."""
-    with urllib.request.urlopen(url, timeout=timeout) as response:
-        dest.write_bytes(response.read())
+    """Stream ``url`` to ``dest`` in 1 MiB chunks (a whole quarter zip never sits in memory).
+    HTTP/URL errors propagate (fail loudly)."""
+    with urllib.request.urlopen(url, timeout=timeout) as response, dest.open("wb") as handle:
+        shutil.copyfileobj(response, handle, length=1 << 20)
     return dest
 
 

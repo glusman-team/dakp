@@ -142,6 +142,23 @@ class ArtifactStore:
         path = self.manifest_path(artifact_id)
         return read_manifest(path) if path.exists() else None
 
+    def cached_ref(self, alias: str) -> ArtifactRef | None:
+        """Reconstruct the ref of an already-ingested artifact from its alias.
+
+        Reads the alias + sibling ``.path`` pointer written by :meth:`ingest`; ``None`` when
+        either is missing. Callers must still verify ``ref.uri.exists()`` before reuse — the
+        alias record can outlive a file removed from the store.
+        """
+        id_path = self._aliases / alias
+        if not id_path.exists():
+            return None
+        artifact_id = id_path.read_text(encoding="utf-8").strip()
+        path_file = self._aliases / f"{alias}.path"
+        if not path_file.exists():
+            return None
+        uri = Path(path_file.read_text(encoding="utf-8").strip())
+        return ArtifactRef(uri=uri, blake3=artifact_id, media_type=infer_media_type(uri), manifest=self.manifest_path(artifact_id))
+
     # -- internals -------------------------------------------------------------
     def _write_alias(self, alias: str, artifact_id: str, dest: Path) -> None:
         alias_path = self._aliases / alias
