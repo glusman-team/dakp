@@ -22,6 +22,10 @@ Benchmarked on a hand-labeled fixture (27 cases / 35 gold spans, `tests/eval/`):
 * **Production mode (`offline=False`):** the same gazetteer anchors high-precision spans and
   GLiNER zero-shot (`urchade/gliner_small-v2.1`) fills out-of-gazetteer gaps (gazetteer wins on
   overlap) → near-perfect recall at gazetteer precision. GLiNER is a core, lazy-imported dependency.
+  GLiNER silently truncates inputs past `config.max_len` word tokens (384 on the shipped
+  checkpoint), so long sections (some run to ~3000 words) are predicted in sentence-aware,
+  exact-substring windows of ≤ that budget (`chunk_words` kwarg overrides it) and span offsets are
+  remapped back into full-text coordinates — no mention past the truncation point is lost.
 
 ## Modules
 

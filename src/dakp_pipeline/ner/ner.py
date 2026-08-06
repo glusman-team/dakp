@@ -13,7 +13,10 @@ Composite design (gazetteer-first, GLiNER-augmented)
   and offline runs.
 * **Production mode (``offline=False``):** the same gazetteer anchors high-precision spans and
   GLiNER zero-shot (``urchade/gliner_small-v2.1``, laptop-safe) fills out-of-gazetteer gaps.
-  Gazetteer spans win on overlap; non-overlapping GLiNER spans add recall. ``gliner`` is a core
+  Gazetteer spans win on overlap; non-overlapping GLiNER spans add recall. GLiNER silently
+  truncates inputs past ``config.max_len`` word tokens (384 on the shipped checkpoint), so long
+  sections are predicted in exact-substring windows (:func:`_windows`) whose spans are remapped
+  back into full-text offsets before the merge. ``gliner`` is a core
   DAKP dependency but is imported lazily on first use (no torch at module load), raising
   :class:`~dakp_pipeline.ner.model_cache.NERDependencyError` ("reinstall with `uv sync`") if it is
   somehow not importable.
@@ -27,6 +30,8 @@ Output is sorted deterministically by ``(start, end, type, text)``.
 
 from __future__ import annotations
 
+import itertools
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -38,6 +43,21 @@ from dakp_pipeline.ner.model_cache import NERDependencyError, ensure_model
 # Laptop-safe small zero-shot model; override for a larger / biomedical-tuned checkpoint.
 DEFAULT_MODEL = "urchade/gliner_small-v2.1"
 DEFAULT_THRESHOLD = 0.5
+
+# GLiNER counts input in word tokens from its whitespace splitter and silently truncates anything
+# past ``config.max_len`` tokens (only a UserWarning). Mirror that exact token pattern (gliner's
+# ``WhitespaceTokenSplitter``: every punctuation glyph is its own token) so windows never exceed
+# the model's budget.
+_GLINER_TOKEN = re.compile(r"\w+(?:[-_]\w+)*|\S")
+
+# Sentence-ish piece for window packing: a run of non-terminal characters, trailing terminal
+# punctuation, trailing whitespace. Matches tile the text when the tiling check in
+# :func:`_sentence_piece_spans` holds; otherwise the whole text is one piece.
+_SENTENCE_PIECE = re.compile(r"[^.!?;]+[.!?;]*\s*")
+
+#: Window-budget fallback (GLiNER word tokens) when a model exposes no ``config.max_len``; the
+#: shipped ``urchade/gliner_small-v2.1`` checkpoint sets ``max_len: 384``.
+_DEFAULT_WORD_BUDGET = 384
 
 # Curated high-precision disease/phenotype gazetteer — the offline mode's embedded vocabulary
 # (the same terms benchmarked in ner/BENCHMARK.md). Not exhaustive by design: production mode
@@ -107,6 +127,76 @@ def _overlaps_any(start: int, end: int, covered: list[tuple[int, int]]) -> bool:
     return any(start < cov_end and cov_start < end for cov_start, cov_end in covered)
 
 
+def _sentence_piece_spans(text: str) -> list[tuple[int, int]]:
+    """Char spans of sentence-ish pieces tiling ``text`` exactly (gap-free, in order).
+
+    Falls back to a single whole-text piece when the piece regex cannot tile the text (leading
+    punctuation, dangling terminals), so callers always get contiguous coverage.
+    """
+    spans = [(match.start(), match.end()) for match in _SENTENCE_PIECE.finditer(text)]
+    if (
+        not spans
+        or spans[0][0] != 0
+        or spans[-1][1] != len(text)
+        or any(prev_end != next_start for (_, prev_end), (next_start, _) in itertools.pairwise(spans))
+    ):
+        return [(0, len(text))]
+    return spans
+
+
+def _hard_split_spans(text: str, start: int, end: int, budget: int) -> list[tuple[int, int, int]]:
+    """Split one over-budget ``text[start:end]`` slice into budget-sized ``(start, end, tokens)``
+    windows at GLiNER token-match boundaries (each window stays an exact substring)."""
+    matches = list(_GLINER_TOKEN.finditer(text, start, end))
+    return [(window[0].start(), window[-1].end(), len(window)) for window in (matches[i : i + budget] for i in range(0, len(matches), budget))]
+
+
+def _windows(text: str, budget: int) -> list[tuple[int, str]]:
+    """Slice ``text`` into exact-substring windows of at most ``budget`` GLiNER word tokens.
+
+    Returns ``(start, window)`` pairs with ``window == text[start:start + len(window)]``; the
+    windows follow each other in text order, so entity char offsets predicted on a window remap to
+    full-text coordinates by adding ``start``. Sentence-ish pieces are packed greedily; a single
+    piece longer than the budget is hard-split at token boundaries. Blank text yields no windows.
+    """
+    if not text.strip():
+        return []
+    pieces: list[tuple[int, int, int]] = []
+    for piece_start, piece_end in _sentence_piece_spans(text):
+        tokens = len(_GLINER_TOKEN.findall(text[piece_start:piece_end]))
+        if tokens > budget:
+            pieces.extend(_hard_split_spans(text, piece_start, piece_end, budget))
+        else:
+            pieces.append((piece_start, piece_end, tokens))
+    windows: list[tuple[int, str]] = []
+    window_start = window_end = token_total = 0
+    open_window = False
+    for piece_start, piece_end, tokens in pieces:
+        if open_window and token_total + tokens > budget:
+            windows.append((window_start, text[window_start:window_end]))
+            open_window = False
+            token_total = 0
+        if not open_window:
+            window_start = piece_start
+            open_window = True
+        window_end = piece_end
+        token_total += tokens
+    if open_window:
+        windows.append((window_start, text[window_start:window_end]))
+    return windows
+
+
+def _token_budget(model: Any, override: int | None) -> int:
+    """Window budget in GLiNER word tokens: explicit ``override``, else the model's
+    ``config.max_len``, else :data:`_DEFAULT_WORD_BUDGET` — never below 1."""
+    if override is not None:
+        return max(1, int(override))
+    max_len = getattr(getattr(model, "config", None), "max_len", None)
+    if isinstance(max_len, int) and max_len >= 1:
+        return max_len
+    return _DEFAULT_WORD_BUDGET
+
+
 def _model_device() -> str:
     """Device the GLiNER model runs on: CUDA when available (orders of magnitude faster than the
     CPU fallback, which saturates every core), else CPU."""
@@ -132,6 +222,9 @@ class DiseaseNER:
             curated :data:`EMBEDDED_GAZETTEER`.
         model_id: GLiNER checkpoint (production mode).
         threshold: GLiNER confidence threshold (production mode).
+        chunk_words: window budget in GLiNER word tokens for long texts (production mode);
+            ``None`` = the loaded model's ``config.max_len``, fallback 384. GLiNER silently
+            truncates anything longer, so longer texts are predicted window by window.
         cache_dir / workdir: model-cache location (see :func:`dakp_pipeline.ner.model_cache.ensure_model`).
     """
 
@@ -142,6 +235,7 @@ class DiseaseNER:
         gazetteer: Gazetteer | Mapping[str, str] | None = None,
         model_id: str = DEFAULT_MODEL,
         threshold: float = DEFAULT_THRESHOLD,
+        chunk_words: int | None = None,
         cache_dir: Path | str | None = None,
         workdir: Path | str | None = None,
     ) -> None:
@@ -156,6 +250,7 @@ class DiseaseNER:
         self._offline = offline
         self._model_id = model_id
         self._threshold = threshold
+        self._chunk_words = chunk_words
         self._cache_dir = cache_dir
         self._workdir = workdir
         self._model: Any = None
@@ -192,25 +287,39 @@ class DiseaseNER:
         return self._model
 
     def _merge_model_spans(self, text: str, gazetteer_mentions: list[Mention]) -> list[Mention]:
-        """Add non-overlapping GLiNER disease/phenotype spans; gazetteer spans win on overlap."""
+        """Add non-overlapping GLiNER disease/phenotype spans; gazetteer spans win on overlap.
+
+        GLiNER silently truncates inputs past ``config.max_len`` word tokens, so long text is
+        predicted in exact-substring windows (:func:`_windows`) and each span's offsets are
+        shifted back into full-text coordinates before the merge.
+        """
         model = self._load_model()
-        raw = model.predict_entities(text, list(CONTRAINDICATION_DISEASE_TYPES), threshold=self._threshold)
+        budget = _token_budget(model, self._chunk_words)
         covered: list[tuple[int, int]] = [(mention.start, mention.end) for mention in gazetteer_mentions]
         merged = list(gazetteer_mentions)
-        for entity in raw:
-            etype = canonical_type(str(entity["label"]))
-            if etype not in CONTRAINDICATION_DISEASE_TYPES:
-                continue
-            start, end = int(entity["start"]), int(entity["end"])
-            if _overlaps_any(start, end, covered):
-                continue
-            covered.append((start, end))
-            surface = text[start:end]
-            merged.append(
-                Mention(
-                    text=surface, start=start, end=end, type=etype, score=float(entity["score"]), normalized=normalize_text(surface), notes="gliner"
+        labels = list(CONTRAINDICATION_DISEASE_TYPES)
+        for window_start, window in _windows(text, budget):
+            raw = model.predict_entities(window, labels, threshold=self._threshold)
+            for entity in raw:
+                etype = canonical_type(str(entity["label"]))
+                if etype not in CONTRAINDICATION_DISEASE_TYPES:
+                    continue
+                start, end = window_start + int(entity["start"]), window_start + int(entity["end"])
+                if _overlaps_any(start, end, covered):
+                    continue
+                covered.append((start, end))
+                surface = text[start:end]
+                merged.append(
+                    Mention(
+                        text=surface,
+                        start=start,
+                        end=end,
+                        type=etype,
+                        score=float(entity["score"]),
+                        normalized=normalize_text(surface),
+                        notes="gliner",
+                    )
                 )
-            )
         return merged
 
 
