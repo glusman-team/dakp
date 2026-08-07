@@ -22,6 +22,7 @@ from dakp_pipeline.io.content_hash import digest_dirname, hash_file, hash_tree, 
 from dakp_pipeline.io.contracts import ArtifactRef
 from dakp_pipeline.io.downloads import infer_media_type
 from dakp_pipeline.io.manifests import ArtifactManifest, EnvironmentBlock, HashBlock, OperationBlock, SourceBlock, TableBlock, read_manifest
+from dakp_pipeline.logging_setup import logger, stats
 from dakp_pipeline.paths import Workdir
 
 
@@ -87,6 +88,19 @@ class ArtifactStore:
         )
         manifest.write(self.manifest_path(artifact_id))
 
+        # Per-artifact detail is DEBUG (DailyMed ingests tens of thousands of SPL docs); the
+        # calling stage emits the INFO-level narration for its own artifacts.
+        stats(
+            logger,
+            "store ingest",
+            level="DEBUG",
+            alias=alias if alias is not None else "-",
+            path=str(dest),
+            blake3=artifact_id,
+            bytes=src.stat().st_size,
+            cache_hit=cache_hit,
+            media_type=media,
+        )
         ref = ArtifactRef(uri=dest, blake3=artifact_id, media_type=media, manifest=self.manifest_path(artifact_id))
         return ref, cache_hit
 
@@ -132,6 +146,16 @@ class ArtifactStore:
             table=table if table is not None else TableBlock(rows=rows, schema_fingerprint=schema_fingerprint),
         )
         manifest.write(self.manifest_path(artifact_id))
+        stats(
+            logger,
+            "store register",
+            level="DEBUG",
+            path=str(path),
+            blake3=artifact_id,
+            bytes=path.stat().st_size,
+            rows=rows if rows is not None else "-",
+            media_type=media,
+        )
         return ArtifactRef(
             uri=path, blake3=artifact_id, media_type=media, rows=rows, schema_fingerprint=schema_fingerprint, manifest=self.manifest_path(artifact_id)
         )
