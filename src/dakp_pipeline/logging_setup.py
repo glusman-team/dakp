@@ -156,7 +156,7 @@ def _format_value(value: Any) -> str:
     return str(value)
 
 
-def stats(log: Any, event: str, /, *, level: str = "INFO", **fields: Any) -> None:
+def stats(log: Any, event: str, /, *, level: str = "INFO", _depth: int = 1, **fields: Any) -> None:
     """Emit one ``event: key = value`` log line per field, in insertion order.
 
     Example::
@@ -167,10 +167,11 @@ def stats(log: Any, event: str, /, *, level: str = "INFO", **fields: Any) -> Non
         # extract_faers: cache_hit = false
 
     ``log`` may be the module :data:`logger` or any :func:`bind` result. ``level`` is a loguru
-    level name (e.g. ``"DEBUG"`` for verbose per-artifact stats).
+    level name (e.g. ``"DEBUG"`` for verbose per-artifact stats). ``_depth`` attributes the
+    record to the caller (helpers like :func:`step` pass 2 so records name THEIR caller).
     """
     for key, value in fields.items():
-        log.log(level, "{}: {} = {}", event, key, _format_value(value))
+        log.opt(depth=_depth).log(level, "{}: {} = {}", event, key, _format_value(value))
 
 
 def _elapsed_s(started: float) -> float:
@@ -188,14 +189,14 @@ def step(log: Any, event: str) -> Iterator[None]:
         with step(log, "acquire_faers"):
             refs = faers.fetch(ctx)
     """
-    log.info("{}: started", event)
+    log.opt(depth=1).info("{}: started", event)
     started = time.monotonic()
     try:
         yield
     except BaseException as exc:
-        stats(log, event, failed=True, error=type(exc).__name__, elapsed_s=_elapsed_s(started))
+        stats(log, event, _depth=2, failed=True, error=type(exc).__name__, elapsed_s=_elapsed_s(started))
         raise
-    stats(log, event, finished=True, elapsed_s=_elapsed_s(started))
+    stats(log, event, _depth=2, finished=True, elapsed_s=_elapsed_s(started))
 
 
 def progress(log: Any, event: str, done: int, total: int, *, every: int) -> None:
@@ -205,7 +206,7 @@ def progress(log: Any, event: str, done: int, total: int, *, every: int) -> None
     log, so long loops stay quiet between milestones.
     """
     if done > 0 and every > 0 and done % every == 0:
-        log.info("{}: progress = {}/{}", event, done, total)
+        log.opt(depth=1).info("{}: progress = {}/{}", event, done, total)
 
 
 __all__ = ["FROM_LOGURU_ATTR", "InterceptHandler", "bind", "configure_logging", "logger", "progress", "stats", "step"]

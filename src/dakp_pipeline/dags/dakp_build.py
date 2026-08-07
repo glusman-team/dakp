@@ -62,29 +62,33 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
     # -- acquisition (Python; download pool) ------------------------------------
     @task(pool=DOWNLOAD_POOL)
     def acquire_dailymed() -> list[dict[str, Any]]:
+        ctx = _ctx()
         with step(logger, "task acquire_dailymed"):
-            refs = acquire.acquire_dailymed(_ctx())
+            refs = acquire.acquire_dailymed(ctx)
             stats(logger, "task acquire_dailymed", output_refs=len(refs))
             return refs_to_xcom(refs)
 
     @task(pool=DOWNLOAD_POOL)
     def acquire_faers() -> list[dict[str, Any]]:
+        ctx = _ctx()
         with step(logger, "task acquire_faers"):
-            refs = acquire.acquire_faers(_ctx())
+            refs = acquire.acquire_faers(ctx)
             stats(logger, "task acquire_faers", output_refs=len(refs))
             return refs_to_xcom(refs)
 
     @task(pool=DOWNLOAD_POOL)
     def acquire_drugsfda() -> list[dict[str, Any]]:
+        ctx = _ctx()
         with step(logger, "task acquire_drugsfda"):
-            refs = acquire.acquire_drugsfda(_ctx())
+            refs = acquire.acquire_drugsfda(ctx)
             stats(logger, "task acquire_drugsfda", output_refs=len(refs))
             return refs_to_xcom(refs)
 
     @task(pool=DOWNLOAD_POOL)
     def acquire_ner_models() -> list[dict[str, Any]]:
+        ctx = _ctx()
         with step(logger, "task acquire_ner_models"):
-            refs = acquire.acquire_ner_models(_ctx())
+            refs = acquire.acquire_ner_models(ctx)
             stats(logger, "task acquire_ner_models", output_refs=len(refs))
             return refs_to_xcom(refs)
 
@@ -116,11 +120,12 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
 
     @task
     def shape_faers_use_tables(faers_ext: Any, dm_ext: Any) -> list[dict[str, Any]]:
+        ctx = _ctx()
         with step(logger, "task shape_faers_use_tables"):
             faers_refs, dailymed_refs = refs_from_xcom(faers_ext), refs_from_xcom(dm_ext)
             stats(logger, "task shape_faers_use_tables", faers_refs=len(faers_refs), dailymed_refs=len(dailymed_refs))
             refs = [*faers_refs, *dailymed_refs]
-            out = observed_uses.transform(refs, _ctx())
+            out = observed_uses.transform(refs, ctx)
             stats(logger, "task shape_faers_use_tables", output_refs=len(out))
             return refs_to_xcom(out)
 
@@ -147,20 +152,22 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
     # -- tablassert handoff (Python) --------------------------------------------
     @task
     def generate_tablassert_configs(approved: Any, uses: Any, contra: Any) -> list[dict[str, Any]]:
+        ctx = _ctx()
         with step(logger, "task generate_tablassert_configs"):
             refs = [*refs_from_xcom(approved), *refs_from_xcom(uses), *refs_from_xcom(contra)]
             stats(logger, "task generate_tablassert_configs", assertion_refs=len(refs))
-            out = tablassert.generate(refs, _ctx())
+            out = tablassert.generate(refs, ctx)
             stats(logger, "task generate_tablassert_configs", output_refs=len(out))
             return refs_to_xcom(out)
 
     @task
     def run_tablassert(approved: Any, uses: Any, contra: Any, configs: Any) -> list[dict[str, Any]]:
+        ctx = _ctx()
         with step(logger, "task run_tablassert"):
             assertion_refs = [*refs_from_xcom(approved), *refs_from_xcom(uses), *refs_from_xcom(contra)]
             config_refs = refs_from_xcom(configs)
             stats(logger, "task run_tablassert", assertion_refs=len(assertion_refs), config_refs=len(config_refs))
-            out = tablassert.run(assertion_refs, config_refs, _ctx())
+            out = tablassert.run(assertion_refs, config_refs, ctx)
             stats(logger, "task run_tablassert", output_refs=len(out))
             return refs_to_xcom(out)
 
