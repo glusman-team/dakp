@@ -30,9 +30,12 @@ def build_context_from_config(cfg: Mapping[str, Any]) -> TaskContext:
 
     Resolves the workdir, configures logging, and builds the run params directly from the config:
     ``run_tablassert`` is DERIVED from fullmap presence (a fullmap path triggers the real Tablassert
-    handoff; absent => deferred, never an error), and ``quarter_limit`` / ``release_limit`` / ``force``
-    / ``fullmap`` / ``drugsfda_url`` are forwarded when set. Delegates to :func:`build_context` so the
-    disease map is loaded from the fixture root exactly as the test harness does.
+    handoff; absent => deferred, never an error), and ``quarter_limit`` / ``release_limit`` /
+    ``dailymed_max_age_days`` / ``force`` / ``fullmap`` / ``drugsfda_url`` are forwarded when set.
+    ``fullmap`` is resolved to an absolute path so relative paths passed at ``dakp up`` time are
+    anchored to the caller's CWD, not the Airflow worker's CWD at task-run time.
+    Delegates to :func:`build_context` so the disease map is loaded from the fixture root exactly
+    as the test harness does.
     """
     wd = Workdir(Path(str(cfg["workdir"])))
     wd.create()
@@ -42,10 +45,11 @@ def build_context_from_config(cfg: Mapping[str, Any]) -> TaskContext:
         "run_tablassert": cfg.get("fullmap") is not None,
         "quarter_limit": int(cfg["quarter_limit"]) if cfg.get("quarter_limit") is not None else None,
         "release_limit": int(cfg["release_limit"]) if cfg.get("release_limit") is not None else None,
+        "dailymed_max_age_days": float(cfg["dailymed_max_age_days"]) if cfg.get("dailymed_max_age_days") is not None else None,
         "force": bool(cfg["force"]) if cfg.get("force") is not None else False,
     }
     if cfg.get("fullmap") is not None:
-        params["fullmap"] = str(cfg["fullmap"])
+        params["fullmap"] = str(Path(str(cfg["fullmap"])).resolve())
     if cfg.get("drugsfda_url") is not None:
         params["drugsfda_url"] = str(cfg["drugsfda_url"])
     return build_context(wd, cfg.get("fixture_root"), params)

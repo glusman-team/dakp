@@ -53,6 +53,10 @@ _DEFAULT_AIRFLOW_HOME = _REPO_ROOT / "tmp" / "airflow-home"
 _DEFAULT_PORT = 8090  # 8080 is commonly taken (e.g. by the aoe daemon on dev hosts)
 _DEFAULT_LOG_LEVEL = "INFO"
 _SMALL_SCOPE = 1  # `--small` bounds scope to ~1 FAERS quarter + 1 DailyMed release (the ONE surviving integer knob)
+# A stored DailyMed release younger than this (days) is reused without re-download; DailyMed
+# replaces its fixed-name full-release ZIPs in place, so without the gate every new release
+# re-downloads the whole snapshot (~tens of GB). <= 0 disables the gate (always re-check).
+_DAILYMED_MAX_AGE_DAYS = 7
 
 # Poll budgets (matches the retired bash orchestrator).
 _API_WAIT_ROUNDS = 90
@@ -304,6 +308,8 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
     # --- 4. set the per-run config Variable (shared by Python tasks + Go bundle) -
     # `--small` bounds the acquisition scope (quarter/release limit = _SMALL_SCOPE); otherwise null
     # limits => unbounded full build. threads = all cores either way (Go all-cores contract).
+    # dailymed_max_age_days keeps a stored release fresh for a week (no re-download of unchanged
+    # snapshots); see sources/dailymed.py.
     scope_limit = _SMALL_SCOPE if small else None
     config: dict[str, Any] = {
         "workdir": str(workdir),
@@ -311,6 +317,7 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
         "threads": os.cpu_count(),
         "quarter_limit": scope_limit,
         "release_limit": scope_limit,
+        "dailymed_max_age_days": _DAILYMED_MAX_AGE_DAYS,
         "force": False,
         "log_level": log_level,
         "fullmap": fullmap,

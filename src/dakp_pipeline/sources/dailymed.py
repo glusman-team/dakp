@@ -4,7 +4,16 @@ Idempotent and content-addressed (BLAKE3 manifest + checksums), recording source
 (URL / ETag / Last-Modified) into the artifact manifest. Downloads the DailyMed full-release
 index + release ZIPs using **stdlib ``urllib`` only** (no ``requests``), streaming each release
 into the content-addressed store. Re-ingesting an identical release is a cache hit; conditional
-GET (``If-None-Match`` / ``If-Modified-Since``) skips bytes the server confirms unchanged. Each
+GET (``If-None-Match`` / ``If-Modified-Since``) skips bytes the server confirms unchanged.
+
+Freshness-gated: DailyMed replaces its fixed-name full-release ZIPs **in place** for every new
+release, so conditional GET legitimately re-downloads tens of GB whenever NLM cuts a new
+snapshot. To bound that, a stored release fetched within ``dailymed_max_age_days`` (run param,
+default **7**) is reused with **zero network I/O** for its ZIP — the cached release is
+re-expanded into its SPL members exactly like the HTTP-304 path. The gate keys off the
+``retrieved_at`` recorded in the release ZIP's manifest (no extra requests); a release is at
+most one window stale. ``force`` (run param) bypasses the gate; ``dailymed_max_age_days <= 0``
+disables it (always re-check via conditional GET). Each
 release ZIP's SPL XML members are extracted and ingested individually (the SPL extractor reads
 ``.xml``/``.xml.gz``, not ZIPs), mirroring the legacy ``getFullRelease.pl`` "extract XMLs into
 ``xmls/<bin>/...xml.gz``" step. ``release_limit`` (run param) bounds how many releases a bounded
@@ -41,6 +50,8 @@ from dakp_pipeline.paths import Workdir
 
 # DailyMed "all drug labels" full-release listing (legacy getFullRelease.pl target).
 FULL_RELEASE_INDEX_URL = "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
+#: Default freshness window (days): a stored release younger than this is reused, no download.
+_DEFAULT_MAX_AGE_DAYS = 7.0
 # Anchors the parser to the "Full Releases" section of the index page.
 _FULL_RELEASES_HEADING = "Full Releases"
 # Matches release ZIP hrefs as written by the DailyMed index page, e.g.
@@ -81,9 +92,11 @@ def _download_full_release(ctx: TaskContext) -> list[ArtifactRef]:
         msg = "no DailyMed full-release ZIPs found in index (the listing page layout may have changed)"
         raise RuntimeError(msg)
 
+    max_age_days = _max_age_days(ctx)
+    force = bool(ctx.params.get("force", False))
     refs: list[ArtifactRef] = []
     for url in release_urls:
-        refs.extend(_download_one(url, staging, store))
+        refs.extend(_download_one(url, staging, store, max_age_days=max_age_days, force=force))
     return refs
 
 
@@ -126,8 +139,13 @@ def _parse_release_zips(index_html: str) -> list[str]:
     return urls
 
 
-def _download_one(url: str, staging: Path, store: ArtifactStore) -> list[ArtifactRef]:
+def _download_one(url: str, staging: Path, store: ArtifactStore, *, max_age_days: float | None = None, force: bool = False) -> list[ArtifactRef]:
     """Download one release ZIP and ingest its SPL XML members.
+
+    Freshness gate first: unless ``force`` (or ``max_age_days`` is ``None``), a release whose
+    stored copy is younger than ``max_age_days`` skips the network entirely — the cached ZIP is
+    re-expanded into its SPL members exactly like the HTTP-304 path. That gate is what stops a
+    full re-download every time NLM cuts a new release (fixed-name ZIPs replaced in place).
 
     The release ZIP is recorded under its ``dailymed/<name>`` alias (provenance anchor +
     conditional-GET source for future runs), then its SPL XML members are extracted and
@@ -140,6 +158,15 @@ def _download_one(url: str, staging: Path, store: ArtifactStore) -> list[Artifac
     alias = f"dailymed/{name}"
     dest = staging / name
     out_dir = staging / f"{name}-xml"
+    if not force and max_age_days is not None:
+        age = _release_age_days(store, alias)
+        if age is not None and age < max_age_days:
+            cached = store.cached_ref(alias)
+            if cached is not None and cached.uri.exists():
+                bind(task_id="fetch_dailymed").info(
+                    "dailyMed release fresh, skipping download", release=name, age_days=round(age, 2), max_age_days=max_age_days
+                )
+                return _expand_release_zip(cached.uri, out_dir, store, SourceBlock(url=url, retrieved_at=_now_iso()), release_name=name)
     source = _prior_source(store, alias=alias)
     etag, last_modified = _conditional_download(url, dest, source)
     if not dest.exists():
@@ -230,6 +257,7 @@ def _looks_like_spl_name(name: str) -> bool:
     return name.lower().endswith((".xml.gz", ".xml"))
 
 
+
 def _conditional_download(url: str, dest: Path, source: SourceBlock | None) -> tuple[str | None, str | None]:
     """Stream ``url`` to ``dest`` with conditional headers; return (etag, last_modified).
 
@@ -268,6 +296,41 @@ def _prior_source(store: ArtifactStore, *, alias: str) -> SourceBlock | None:
     artifact_id = alias_path.read_text(encoding="utf-8").strip()
     manifest = store.read_manifest(artifact_id)
     return manifest.source if manifest is not None else None
+
+
+def _max_age_days(ctx: TaskContext) -> float | None:
+    """Resolve the release freshness window (days) from run params.
+
+    Absent/``None`` ⇒ the default window (:data:`_DEFAULT_MAX_AGE_DAYS`); a non-numeric or
+    ``<= 0`` value disables the gate (every run re-checks via conditional GET).
+    """
+    value = ctx.params.get("dailymed_max_age_days")
+    if value is None:
+        return _DEFAULT_MAX_AGE_DAYS
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if value > 0 else None
+
+
+def _release_age_days(store: ArtifactStore, alias: str, *, now: datetime | None = None) -> float | None:
+    """Age of the release stored under ``alias`` in days, or ``None`` when not reusable.
+
+    ``None`` (callers treat it as stale and fall through to the conditional-GET flow) when the
+    alias or the cached ZIP is absent, or the manifest's ``source.retrieved_at`` is missing or
+    not parseable against an aware timestamp.
+    """
+    cached = store.cached_ref(alias)
+    if cached is None or not cached.uri.exists():
+        return None
+    manifest = store.read_manifest(cached.blake3)
+    if manifest is None or not manifest.source.retrieved_at:
+        return None
+    try:
+        retrieved_at = datetime.fromisoformat(manifest.source.retrieved_at)
+        age = (now if now is not None else datetime.now(UTC)) - retrieved_at
+    except (TypeError, ValueError):
+        return None
+    return age.total_seconds() / 86400.0
 
 
 def _now_iso() -> str:

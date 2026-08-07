@@ -9,7 +9,9 @@ FAERS), plus the small defensive branches the happy-path suite never reaches:
 * ``sources/faers`` — remote no-quarters ``[]``, real ``download_quarter`` via a monkeypatched
   HTTP download, quarter-label URL resolution.
 * ``sources/dailymed`` — the full real release pipeline (index fetch -> release ZIP ->
-  per-member SPL ingest) with canned HTTP responses; release_limit; conditional-GET headers;
+  per-member SPL ingest) with canned HTTP responses; release_limit; the freshness gate
+  (stored releases younger than ``dailymed_max_age_days`` skip the network; ``force`` /
+  stale / missing cache fall through); conditional-GET headers;
   HTTP 304 handling for both the index and a release (cached-present and cached-absent);
   release ZIPs with directory entries / non-SPL members / no SPL members; ``ArtifactStore.cached_ref``
   pointer resolution.
@@ -18,9 +20,11 @@ FAERS), plus the small defensive branches the happy-path suite never reaches:
 from __future__ import annotations
 
 import io
+import json
 import urllib.error
 import urllib.request
 import zipfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +32,7 @@ import pytest
 
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import TaskContext
+from dakp_pipeline.io.manifests import SourceBlock
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.sources import dailymed, drugsfda, faers
 
@@ -265,7 +270,8 @@ def test_dailymed_conditional_get_sends_etag_and_last_modified(tmp_path: Path, m
         },
         requests,
     )
-    ctx = _ctx(tmp_path)
+    # max_age_days=0 disables the freshness gate so the second run exercises conditional GET.
+    ctx = _ctx(tmp_path, dailymed_max_age_days=0)
     dailymed.fetch(ctx)  # first run records source etag/last-modified under the release alias
     requests.clear()
     dailymed.fetch(ctx)  # second run: _prior_source finds them -> conditional headers sent
@@ -335,7 +341,8 @@ def test_dailymed_release_304_reexpands_cached_spl_members(tmp_path: Path, monke
         return _FakeResponse(zip_bytes, {"ETag": "zip-e"})
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    ctx = _ctx(tmp_path)
+    # max_age_days=0 disables the freshness gate so the second run exercises the release-304 path.
+    ctx = _ctx(tmp_path, dailymed_max_age_days=0)
     first = dailymed.fetch(ctx)
     assert len(first) == 1
     state["not_modified"] = True
@@ -370,6 +377,144 @@ def _store_for(tmp_path: Path) -> ArtifactStore:
     wd = Workdir(tmp_path / "work")
     wd.create()
     return ArtifactStore(wd)
+
+
+def _age_release(store: ArtifactStore, alias: str, *, days: float) -> None:
+    """Rewrite the stored release's manifest so its ``retrieved_at`` is ``days`` in the past."""
+    cached = store.cached_ref(alias)
+    assert cached is not None
+    manifest_path = store.manifest_path(cached.blake3)
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    data["source"]["retrieved_at"] = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    manifest_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+# --- sources/dailymed: freshness gate (no re-download of a fresh release) ------
+
+
+def test_dailymed_fresh_release_skips_zip_download(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    spl = b"<splBatch/>"
+    zip_bytes = _release_zip({"drug1.xml": spl})
+    requests: list[urllib.request.Request] = []
+    _patch_urlopen(
+        monkeypatch,
+        {"spl-resources-all-drug-labels.cfm": _FakeResponse(_INDEX_HTML.encode()), "dm_spl_release_human_rx_part1.zip": _FakeResponse(zip_bytes)},
+        requests,
+    )
+    ctx = _ctx(tmp_path)
+    first = dailymed.fetch(ctx)
+    assert len(first) == 1
+    requests.clear()
+    # The stored release was fetched moments ago (< 7 days): the gate skips the ZIP download
+    # entirely — only the small index conditional GET goes out, and the cached ZIP is re-expanded
+    # into the same SPL refs.
+    second = dailymed.fetch(ctx)
+    assert [r.full_url for r in requests] == [dailymed.FULL_RELEASE_INDEX_URL]
+    assert [r.blake3 for r in second] == [r.blake3 for r in first]
+
+
+def test_dailymed_stale_release_redownloads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    spl = b"<splBatch/>"
+    zip_bytes = _release_zip({"drug1.xml": spl})
+    requests: list[urllib.request.Request] = []
+    _patch_urlopen(
+        monkeypatch,
+        {"spl-resources-all-drug-labels.cfm": _FakeResponse(_INDEX_HTML.encode()), "dm_spl_release_human_rx_part1.zip": _FakeResponse(zip_bytes)},
+        requests,
+    )
+    ctx = _ctx(tmp_path)
+    dailymed.fetch(ctx)
+    _age_release(_store_for(tmp_path), "dailymed/dm_spl_release_human_rx_part1.zip", days=10)
+    requests.clear()
+    dailymed.fetch(ctx)  # stored copy older than the 7-day window -> conditional GET goes out
+    assert [r for r in requests if "part1.zip" in r.full_url]
+
+
+def test_dailymed_mixed_freshness_downloads_only_stale_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    two_release_index = (
+        "<html><h2>Full Releases</h2>"
+        f'<a href="{_RELEASE_URL}">part1</a>'
+        '<a href="https://dailymed-data.nlm.nih.gov/public-release-files/dm_spl_release_human_rx_part2.zip">part2</a>'
+        "</html>"
+    )
+    requests: list[urllib.request.Request] = []
+    _patch_urlopen(
+        monkeypatch,
+        {
+            "spl-resources-all-drug-labels.cfm": _FakeResponse(two_release_index.encode()),
+            "part1.zip": _FakeResponse(_release_zip({"a.xml": b"<splBatch>A</splBatch>"})),
+            "part2.zip": _FakeResponse(_release_zip({"b.xml": b"<splBatch>B</splBatch>"})),
+        },
+        requests,
+    )
+    ctx = _ctx(tmp_path)
+    dailymed.fetch(ctx)
+    _age_release(_store_for(tmp_path), "dailymed/dm_spl_release_human_rx_part2.zip", days=8)
+    requests.clear()
+    dailymed.fetch(ctx)
+    # Only the stale part2 is re-checked; fresh part1 never hits the network.
+    assert [r.full_url for r in requests if r.full_url.endswith(".zip")] == [
+        "https://dailymed-data.nlm.nih.gov/public-release-files/dm_spl_release_human_rx_part2.zip"
+    ]
+
+
+def test_dailymed_force_bypasses_freshness_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    zip_bytes = _release_zip({"drug1.xml": b"<splBatch/>"})
+    requests: list[urllib.request.Request] = []
+    _patch_urlopen(
+        monkeypatch,
+        {"spl-resources-all-drug-labels.cfm": _FakeResponse(_INDEX_HTML.encode()), "dm_spl_release_human_rx_part1.zip": _FakeResponse(zip_bytes)},
+        requests,
+    )
+    dailymed.fetch(_ctx(tmp_path))
+    requests.clear()
+    dailymed.fetch(_ctx(tmp_path, force=True))  # force re-checks even a fresh release
+    assert [r for r in requests if "part1.zip" in r.full_url]
+
+
+def test_dailymed_fresh_gate_falls_through_when_cache_vanishes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # If the cached ZIP disappears between the age check and the reuse, the gate falls through to
+    # the download flow (here simulated as a 304 with no cache -> []).
+    store = _store_for(tmp_path)
+    staging = Workdir(store.workdir.root).root / ".staging" / "dailymed"
+    staging.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(dailymed, "_release_age_days", lambda *args, **kwargs: 0.0)
+
+    def fake_conditional(url: str, dest: Path, source: Any) -> tuple[None, None]:
+        dest.unlink(missing_ok=True)  # simulate 304: nothing downloaded
+        return None, None
+
+    monkeypatch.setattr(dailymed, "_conditional_download", fake_conditional)
+    assert dailymed._download_one("https://x/never.zip", staging, store, max_age_days=7.0) == []
+
+
+def test_dailymed_release_age_days_edges(tmp_path: Path) -> None:
+    store = _store_for(tmp_path)
+    assert dailymed._release_age_days(store, "dailymed/absent.zip") is None  # no alias -> stale
+
+    src = tmp_path / "rel.zip"
+    src.write_bytes(b"zip-bytes")
+    # Missing / unparseable / naive retrieved_at all mean "not reusable" (stale).
+    for retrieved_at in (None, "not-a-date", "2026-08-01T00:00:00"):
+        store.ingest(src, alias="dailymed/rel.zip", source=SourceBlock(url="https://x/rel.zip", retrieved_at=retrieved_at))
+        assert dailymed._release_age_days(store, "dailymed/rel.zip") is None, retrieved_at
+    # Valid aware timestamp -> age in days against an explicit now.
+    store.ingest(src, alias="dailymed/rel.zip", source=SourceBlock(url="https://x/rel.zip", retrieved_at="2026-08-01T00:00:00+00:00"))
+    age = dailymed._release_age_days(store, "dailymed/rel.zip", now=datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC))
+    assert age == pytest.approx(7.5)
+    # Alias present but the cached file vanished from the store -> stale.
+    ref, _ = store.ingest(src, alias="dailymed/gone.zip", source=SourceBlock(url="https://x/gone.zip", retrieved_at="2026-08-01T00:00:00+00:00"))
+    ref.uri.unlink()
+    assert dailymed._release_age_days(store, "dailymed/gone.zip") is None
+
+
+def test_dailymed_max_age_days_param_resolution(tmp_path: Path) -> None:
+    assert dailymed._max_age_days(_ctx(tmp_path)) == 7.0  # absent -> default window
+    assert dailymed._max_age_days(_ctx(tmp_path, dailymed_max_age_days=None)) == 7.0  # null config -> default
+    assert dailymed._max_age_days(_ctx(tmp_path, dailymed_max_age_days=14)) == 14.0
+    assert dailymed._max_age_days(_ctx(tmp_path, dailymed_max_age_days=0.5)) == 0.5
+    for bad in (0, -1, "week", True):  # non-positive / non-numeric -> gate disabled (always re-check)
+        assert dailymed._max_age_days(_ctx(tmp_path, dailymed_max_age_days=bad)) is None
 
 
 # --- store.cached_ref: alias / .path pointer resolution (shared by fetchers) ---

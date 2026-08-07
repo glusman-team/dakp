@@ -15,7 +15,11 @@ acquire ─▶ extract ─▶ NER ─▶ aggregate ─▶ Tablassert KGX handoff
 ```
 
 - **acquire** — real stdlib-HTTP downloaders for DailyMed full releases, Drugs@FDA, and FAERS
-  quarterly extracts; content-addressed (BLAKE3), idempotent, manifest-recorded.
+  quarterly extracts; content-addressed (BLAKE3), idempotent, manifest-recorded. DailyMed
+  releases are freshness-gated: a stored release fetched within `dailymed_max_age_days`
+  (default **7** days) is reused with zero ZIP downloads — DailyMed replaces its fixed-name
+  full-release ZIPs in place, so without the gate every new release re-downloads the whole
+  snapshot (~tens of GB). `force` bypasses the gate; `<= 0` disables it.
 - **extract** — the heavy parsers run as **native Go bundle workers** (an Airflow Go SDK bundle
   under [`go/`](./go)); the DAG's `extract_*` tasks are `@task.stub(queue="golang")`
   declarations the coordinator forks per task instance.

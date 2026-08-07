@@ -134,6 +134,7 @@ def test_up_config_variable_carries_null_limits_and_fullmap(monkeypatch: pytest.
     config = json.loads(variables_call[-1])
     assert config["quarter_limit"] is None  # null => unbounded full build
     assert config["release_limit"] is None
+    assert config["dailymed_max_age_days"] == 7  # a fresh stored release is reused for a week
     assert config["force"] is False
     assert config["threads"] == os.cpu_count()  # Go all-cores contract
     assert config["log_level"] == "DEBUG"
@@ -153,6 +154,7 @@ def test_up_small_sets_scope_bounds(monkeypatch: pytest.MonkeyPatch, sandbox: Pa
     config = json.loads(variables_call[-1])
     assert config["quarter_limit"] == 1  # --small => ~1 FAERS quarter
     assert config["release_limit"] == 1  # --small => ~1 DailyMed release
+    assert config["dailymed_max_age_days"] == 7  # freshness window is scope-independent
     assert config["threads"] == os.cpu_count()  # scope bound does NOT touch threads (Go contract)
     assert config["fullmap"] is None
 
