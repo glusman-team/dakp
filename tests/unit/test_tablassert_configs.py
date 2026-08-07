@@ -372,7 +372,7 @@ def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="built kg\n", stderr="")
 
     _patch_installed(monkeypatch)
-    monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
+    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
 
     refs = TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="data/fullmap"))
 
@@ -406,7 +406,7 @@ def test_real_runner_records_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         return subprocess.CompletedProcess(args=command, returncode=2, stdout="", stderr="boom")
 
     _patch_installed(monkeypatch)
-    monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
+    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
     TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="data/fullmap"))
 
     report = _read_report(workdir)
@@ -431,7 +431,7 @@ def test_real_runner_honors_ctx_overrides(monkeypatch: pytest.MonkeyPatch, tmp_p
     # A tablassert_dir override selects the editable-checkout prefix AND bypasses the availability
     # check (uv resolves the local checkout transiently), so it runs even when tablassert is absent.
     monkeypatch.setattr(_RUN_MODULE, "tablassert_available", lambda: False)
-    monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
+    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
     TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, tablassert_dir="/opt/tablassert", fullmap="data/fullmap"))
 
     assert seen[0][:5] == ["uv", "run", "--with-editable", "/opt/tablassert", "tablassert"]
@@ -476,7 +476,7 @@ def test_real_runner_appends_qc_when_runtime_available(monkeypatch: pytest.Monke
 
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "qc_runtime_available", lambda: True)
-    monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
+    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
     TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, qc=True, fullmap="data/fullmap"))
 
     assert "--qc" in seen[0]
@@ -497,7 +497,7 @@ def test_real_runner_skips_qc_when_runtime_missing(monkeypatch: pytest.MonkeyPat
 
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "qc_runtime_available", lambda: False)
-    monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
+    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
     TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, qc=True, fullmap="data/fullmap"))
 
     assert "--qc" not in seen[0]
@@ -517,7 +517,7 @@ def test_real_runner_appends_release_flag(monkeypatch: pytest.MonkeyPatch, tmp_p
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
     _patch_installed(monkeypatch)
-    monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
+    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
     TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, release=True, fullmap="data/fullmap"))
 
     assert "--release" in seen[0]
@@ -537,7 +537,7 @@ def test_run_dispatches_to_deferred_without_run_tablassert(monkeypatch: pytest.M
         msg = "subprocess must not run when the handoff is deferred"
         raise AssertionError(msg)
 
-    monkeypatch.setattr(_RUN_MODULE, "run_subprocess", no_subprocess)
+    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", no_subprocess)
 
     # No run_tablassert (no fullmap) -> deferred handoff, no subprocess.
     run_tablassert(assertion_refs, config_refs, _ctx(workdir))
@@ -554,7 +554,7 @@ def test_run_dispatches_to_real_with_run_tablassert(monkeypatch: pytest.MonkeyPa
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok", stderr="")
 
     _patch_installed(monkeypatch)
-    monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
+    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
 
     run_tablassert(assertion_refs, config_refs, _ctx(workdir, run_tablassert=True, fullmap="data/fullmap"))
     assert _read_report(workdir)["mode"] == "real"

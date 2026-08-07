@@ -19,7 +19,7 @@ import polars as pl
 
 from dakp_pipeline import translator
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.logging_setup import configure_logging
+from dakp_pipeline.logging_setup import configure_logging, logger, stats
 from dakp_pipeline.paths import Workdir
 
 __all__ = ["build_context", "build_context_from_config", "write_build_summary"]
@@ -96,6 +96,12 @@ def write_build_summary(
         },
     }
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    event = "build_summary"
+    stats(logger, event, path=str(summary_path), tables=len(assertion_refs), handoff_refs=len(kgx_refs))
+    for ref in assertion_refs:
+        stats(logger, event, table=ref.uri.stem, rows=ref.rows if ref.rows is not None else "-", blake3=ref.blake3)
+    stats(logger, event, contract_ok=report.ok, contract_problems=len(report.problems))
+    stats(logger, event, regression_ok=regression_report.ok, regression_violations=len(regression_report.violations))
     return summary_path
 
 
