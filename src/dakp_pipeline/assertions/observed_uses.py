@@ -25,6 +25,7 @@ import polars as pl
 from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_FAERS, join_pipe, match_diseases, row_for
 from dakp_pipeline.assertions.evidence import find_faers_cases, write_assertion_table
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
+from dakp_pipeline.logging_setup import logger, stats, step
 
 _TABLE = "faers_applied_to_treat_assertions"
 _PREDICATE = "biolink:applied_to_treat"
@@ -59,12 +60,14 @@ def is_non_disease_indication(indication: str) -> bool:
 
 class ObservedUsesShaper:
     def transform(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
-        disease_map: dict[str, dict[str, str]] = ctx.params.get("disease_map", {})  # type: ignore[assignment]
-        # Projection: only the three columns the aggregation needs (the production case table
-        # is tens of millions of rows wide; reading all 17 columns wastes gigabytes).
-        faers_cases = find_faers_cases(inputs, columns=("drugname", "indication", "primaryid"))
-        rows = build_observed_use_rows(faers_cases, disease_map)
-        return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_faers_applied_to_treat")
+        with step(logger, "shape_faers_applied_to_treat"):
+            disease_map: dict[str, dict[str, str]] = ctx.params.get("disease_map", {})  # type: ignore[assignment]
+            stats(logger, "shape_faers_applied_to_treat", inputs=len(inputs), disease_map_terms=len(disease_map))
+            # Projection: only the three columns the aggregation needs (the production case table
+            # is tens of millions of rows wide; reading all 17 columns wastes gigabytes).
+            faers_cases = find_faers_cases(inputs, columns=("drugname", "indication", "primaryid"))
+            rows = build_observed_use_rows(faers_cases, disease_map)
+            return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_faers_applied_to_treat")
 
 
 def build_observed_use_rows(faers_cases: pl.DataFrame | None, disease_map: Mapping[str, Mapping[str, str]]) -> list[dict[str, str]]:
@@ -100,10 +103,14 @@ def build_observed_use_rows(faers_cases: pl.DataFrame | None, disease_map: Mappi
     )
 
     rows: list[dict[str, str]] = []
+    pairs_seen = 0
+    stoplist_drops = 0
     for rec in pairs.iter_rows(named=True):
+        pairs_seen += 1
         drug = str(rec["drugname"])
         indication = str(rec["indication"])
         if is_non_disease_indication(indication):
+            stoplist_drops += 1
             continue  # FAERS placeholder/usage-context indication, not a drug->condition observation
         matches = match_diseases(indication, disease_map)
         obj = matches[0] if matches else {"text": indication, "curie": "", "name": indication, "category": "Disease"}
@@ -127,6 +134,7 @@ def build_observed_use_rows(faers_cases: pl.DataFrame | None, disease_map: Mappi
                 upstream_resource_ids=join_pipe(INFORES_FAERS, INFORES_DAILYMED),
             )
         )
+    stats(logger, "shape_faers_applied_to_treat", pairs=pairs_seen, stoplist_drops=stoplist_drops, assertions=len(rows))
     return rows
 
 

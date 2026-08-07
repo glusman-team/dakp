@@ -32,10 +32,12 @@ from __future__ import annotations
 
 import itertools
 import re
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from dakp_pipeline.logging_setup import logger, stats
 from dakp_pipeline.ner.dictionary import CONTRAINDICATION_DISEASE_TYPES, TYPE_DISEASE, TYPE_PHENOTYPE, Gazetteer, canonical_type, normalize_text
 from dakp_pipeline.ner.lexical import LexicalMatcher, Mention
 from dakp_pipeline.ner.model_cache import NERDependencyError, ensure_model
@@ -279,12 +281,16 @@ class DiseaseNER:
     # -- production model (lazy) -----------------------------------------------
     def _load_model(self) -> Any:
         if self._model is None:
+            stats(logger, "ner_model_load", model_id=self._model_id)
             try:
                 from gliner import GLiNER  # lazy: no torch at module load  # type: ignore[import-not-found]
             except ImportError as exc:
                 raise NERDependencyError(_install_message("gliner")) from exc
             ref = ensure_model(self._model_id, cache_dir=self._cache_dir, workdir=self._workdir)
-            self._model = GLiNER.from_pretrained(str(ref.path), map_location=_model_device())
+            device = _model_device()
+            started = time.monotonic()
+            self._model = GLiNER.from_pretrained(str(ref.path), map_location=device)
+            stats(logger, "ner_model_load", model_id=self._model_id, device=device, b3=ref.b3, elapsed_s=round(time.monotonic() - started, 3))
         return self._model
 
     def _merge_model_spans(self, text: str, gazetteer_mentions: list[Mention]) -> list[Mention]:

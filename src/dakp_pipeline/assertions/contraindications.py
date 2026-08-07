@@ -48,12 +48,15 @@ from typing import Any
 from dakp_pipeline.assertions import INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, row_for
 from dakp_pipeline.assertions.evidence import build_dailymed_evidence, sorted_pipe, write_assertion_table
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
+from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
 from dakp_pipeline.ner.ner import DiseaseNER, Mention, extract_contraindication_diseases
 
 _TABLE = "contraindication_assertions"
 _PREDICATE = "biolink:contraindicated_in"
 _ONTOLOGY_FIXTURE = Path("ontology") / "disease_map.tsv"
+#: One INFO progress line per this many mined contraindication sections (GLiNER is the slow step).
+_MINING_PROGRESS_EVERY = 500
 
 #: Agent type for text-mined contraindications (matches the DAKP RIG ``contraindicated_in``).
 AT_TEXT_MINING = "text_mining_agent"
@@ -75,10 +78,11 @@ def default_ner(fixture_root: Path | str | None) -> DiseaseNER:
 
 class ContraindicationsShaper:
     def transform(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
-        ner_param = ctx.params.get("ner")
-        ner = ner_param if isinstance(ner_param, DiseaseNER) else default_ner(ctx.fixture_root)
-        rows = build_contraindication_rows(inputs, ner)
-        return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_contraindications")
+        with step(logger, "shape_contraindications"):
+            ner_param = ctx.params.get("ner")
+            ner = ner_param if isinstance(ner_param, DiseaseNER) else default_ner(ctx.fixture_root)
+            rows = build_contraindication_rows(inputs, ner)
+            return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_contraindications")
 
 
 def build_contraindication_rows(inputs: Iterable[ArtifactRef], ner: DiseaseNER) -> list[dict[str, str]]:
@@ -91,21 +95,31 @@ def build_contraindication_rows(inputs: Iterable[ArtifactRef], ner: DiseaseNER) 
     """
     evidence = build_dailymed_evidence(inputs)
 
-    aggregated: dict[tuple[str, str], dict[str, Any]] = {}
+    # Flatten to mineable work items up front so progress can be narrated against a known total.
+    work_items: list[tuple[str, str, str, list[tuple[str, str]]]] = []
     for set_id in sorted(evidence.contraindication_docs):
         ingredients = evidence.active_ingredients_by_set.get(set_id, [])
         if not ingredients:
             continue
         for doc_id, text in evidence.contraindication_docs[set_id]:
-            for mention in extract_contraindication_diseases(text, ner):
-                # Canonicalize the mined mention (lowercase / strip punctuation) so case variants
-                # (asthma / Asthma / ASTHMA) aggregate to one object instead of fragmenting the rows.
-                object_text = normalize_text(mention.text)
-                if not object_text:
-                    continue
-                for ingredient_name, ingredient_unii in ingredients:
-                    _accumulate(aggregated, set_id, doc_id, ingredient_name, ingredient_unii, object_text, mention)
+            work_items.append((set_id, doc_id, text, ingredients))
+    stats(logger, "shape_contraindications", contraindication_sets=len(evidence.contraindication_docs), sections_to_mine=len(work_items))
 
+    aggregated: dict[tuple[str, str], dict[str, Any]] = {}
+    mentions_mined = 0
+    for done, (set_id, doc_id, text, ingredients) in enumerate(work_items, start=1):
+        for mention in extract_contraindication_diseases(text, ner):
+            mentions_mined += 1
+            # Canonicalize the mined mention (lowercase / strip punctuation) so case variants
+            # (asthma / Asthma / ASTHMA) aggregate to one object instead of fragmenting the rows.
+            object_text = normalize_text(mention.text)
+            if not object_text:
+                continue
+            for ingredient_name, ingredient_unii in ingredients:
+                _accumulate(aggregated, set_id, doc_id, ingredient_name, ingredient_unii, object_text, mention)
+        progress(logger, "shape_contraindications", done, len(work_items), every=_MINING_PROGRESS_EVERY)
+
+    stats(logger, "shape_contraindications", mentions_mined=mentions_mined, assertions=len(aggregated))
     return [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]
 
 
