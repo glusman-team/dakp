@@ -30,6 +30,7 @@ from dakp_pipeline.paths import Workdir
 from dakp_pipeline.tablassert import (
     TABLASERT_DIR_ENV,
     DeferredTablassertRunner,
+    TablassertError,
     TablassertRunner,
     _resolve_tablassert_dir,
     qc_runtime_available,
@@ -397,6 +398,7 @@ def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
 
 def test_real_runner_records_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A non-zero exit writes the report (status=failed) AND raises TablassertError."""
     workdir = Workdir(tmp_path / "work")
     workdir.create()
     assertion_refs = _assertion_refs(workdir)
@@ -407,8 +409,10 @@ def test_real_runner_records_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "run_subprocess", fake_subprocess)
-    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="data/fullmap"))
+    with pytest.raises(TablassertError, match="exited 2"):
+        TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="data/fullmap"))
 
+    # The report must still be on disk (written before the exception was raised).
     report = _read_report(workdir)
     assert report["mode"] == "real"
     assert report["status"] == "failed"

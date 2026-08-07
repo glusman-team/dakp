@@ -364,6 +364,15 @@ def generate(assertion_refs: list[ArtifactRef], ctx: TaskContext) -> list[Artifa
 
 # --- runner ------------------------------------------------------------------------
 
+
+class TablassertError(RuntimeError):
+    """Raised when the ``tablassert`` subprocess exits non-zero.
+
+    The handoff report (with ``status: failed`` and full stdout/stderr) is written to disk
+    *before* this exception is raised, so it remains available for post-mortem debugging.
+    """
+
+
 DEFAULT_TABLASERT_DIR = "../Tablassert"
 TABLASERT_DIR_ENV = "DAKP_TABLASERT_DIR"
 REPORT_NAME = "tablassert_handoff.json"
@@ -451,8 +460,9 @@ class TablassertRunner:
 
     Builds ``tablassert build-kg <graph.yaml> --fullmap <path> [--qc] [--release]`` and records
     stdout / stderr / exit code in the handoff report. A non-zero exit is captured as
-    ``status: failed`` (logged loudly), not raised — the report is the artifact the pipeline
-    surfaces. Raises ``RuntimeError`` when ``tablassert`` is unavailable and no editable-checkout
+    ``status: failed`` in the report (written to disk before raising) and then raises
+    :class:`TablassertError` so the calling task (Airflow or stage harness) fails correctly.
+    Raises ``RuntimeError`` when ``tablassert`` is unavailable and no editable-checkout
     override is configured (reinstall with ``uv sync``).
     """
 
@@ -501,7 +511,7 @@ class TablassertRunner:
         completed = run_subprocess(command, cwd=cwd)
         status = "ok" if completed.returncode == 0 else "failed"
         if completed.returncode != 0:
-            logger.error("Tablassert exited {}: {}", completed.returncode, (completed.stderr or "").strip()[:2000])
+            logger.error("Tablassert exited {}: {}", completed.returncode, (completed.stderr or "").strip())
 
         report = _base_report("real", assertion_refs, config_refs)
         report.update(
@@ -518,7 +528,13 @@ class TablassertRunner:
                 "release": release,
             }
         )
-        return [_write_report(report, assertion_refs, ctx)]
+        refs = [_write_report(report, assertion_refs, ctx)]
+        if completed.returncode != 0:
+            raise TablassertError(
+                f"Tablassert exited {completed.returncode}; see handoff report: {refs[0].uri}\n"
+                f"{(completed.stderr or '').strip()[:500]}"
+            )
+        return refs
 
 
 @dataclass(frozen=True)
@@ -560,6 +576,7 @@ __all__ = [
     "REPORT_NAME",
     "TABLASERT_DIR_ENV",
     "DeferredTablassertRunner",
+    "TablassertError",
     "TablassertRunner",
     "column_letter",
     "excel_column",
