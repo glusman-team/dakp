@@ -49,7 +49,7 @@ from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.content_hash import hash_bytes
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import OperationBlock, TableBlock
-from dakp_pipeline.logging_setup import bind
+from dakp_pipeline.logging_setup import bind, stats
 from dakp_pipeline.paths import Workdir
 
 # LOINC section codes DAKP consumes, with stable output names (sharded DailyMed
@@ -203,8 +203,9 @@ class SPLXMLExtractor:
             )
         )
 
-        log.info(
-            "extracted dailyMed SPL",
+        stats(
+            log,
+            "extract_dailymed_spl",
             documents=len(doc_rows),
             sets=len(set_rows),
             approvals=len(approval_rows),
