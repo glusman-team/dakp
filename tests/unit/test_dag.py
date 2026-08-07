@@ -1,8 +1,9 @@
 """DAG wiring tests for the Airflow-native ``dakp_build`` DAG (Airflow 3 is a hard dependency).
 
 The DAG always imports and constructs (no optional-extra guard). These tests assert the module
-constants, the 13-task graph, that the three ``extract_*`` tasks are native Go SDK stubs routed to
-the ``golang`` queue, and that acquisition runs on the download pool.
+constants, the 13-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
+three ``extract_*`` tasks are native Go SDK stubs routed to the ``golang`` queue, and that
+acquisition/extraction resource pools are configured for the 50 GB RAM budget.
 """
 
 from __future__ import annotations
@@ -28,6 +29,14 @@ _EXPECTED_TASK_IDS = {
 
 _GO_STUB_IDS = {"extract_dailymed", "extract_faers", "extract_drugsfda"}
 _ACQUIRE_IDS = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ner_models"}
+_EXPECTED_GROUP_MEMBERS = {
+    "acquire": _ACQUIRE_IDS,
+    "extract": _GO_STUB_IDS,
+    "shape": {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"},
+    "tablassert": {"generate_tablassert_configs", "run_tablassert"},
+    "summary": {"write_build_summary"},
+}
+_EXPECTED_EXTRACT_POOL_SLOTS = {"extract_dailymed": 3, "extract_faers": 3, "extract_drugsfda": 1}
 
 
 def test_module_constants(dakp_build) -> None:
@@ -35,6 +44,9 @@ def test_module_constants(dakp_build) -> None:
     assert dakp_build.GO_QUEUE == "golang"
     assert dakp_build.DOWNLOAD_POOL == "dakp_download"
     assert dakp_build.EXTRACT_POOL == "dakp_extract"
+    assert dakp_build.DAILYMED_EXTRACT_POOL_SLOTS == 3
+    assert dakp_build.FAERS_EXTRACT_POOL_SLOTS == 3
+    assert dakp_build.DRUGSFDA_EXTRACT_POOL_SLOTS == 1
     assert dakp_build.CONFIG_VARIABLE == "dakp_config"
 
 
@@ -44,12 +56,23 @@ def test_dag_object_and_task_ids(dakp_build) -> None:
     assert {t.task_id for t in dag.tasks} == _EXPECTED_TASK_IDS
 
 
+def test_task_groups_preserve_stable_task_ids(dakp_build) -> None:
+    dag = dakp_build.dag_obj
+    assert set(dag.task_group.children) == set(_EXPECTED_GROUP_MEMBERS)
+    for group_id, members in _EXPECTED_GROUP_MEMBERS.items():
+        grouped = {task.task_id for task in dag.tasks if task.task_group.group_id == group_id}
+        assert grouped == members
+    # prefix_group_id=False keeps Airflow history/log task IDs unchanged.
+    assert all("." not in task.task_id for task in dag.tasks)
+
+
 def test_extract_tasks_are_go_stubs_on_golang_queue(dakp_build) -> None:
     dag = dakp_build.dag_obj
     for task_id in _GO_STUB_IDS:
         task = dag.get_task(task_id)
         assert task.queue == dakp_build.GO_QUEUE
         assert task.pool == dakp_build.EXTRACT_POOL
+        assert task.pool_slots == _EXPECTED_EXTRACT_POOL_SLOTS[task_id]
         assert type(task).__name__ == "_StubOperator"
 
 

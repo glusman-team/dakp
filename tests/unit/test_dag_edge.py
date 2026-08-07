@@ -46,6 +46,21 @@ def test_build_context_from_config_forwards_drugsfda_url(tmp_path: Path) -> None
     assert ctx.params["drugsfda_url"] == "https://example.invalid/x.zip"
 
 
+def test_build_context_from_config_resolves_relative_fullmap(tmp_path: Path) -> None:
+    """A relative fullmap path is resolved to absolute (anchored to the caller's CWD)."""
+    ctx = build_context_from_config(_cfg(tmp_path, fullmap="some/relative/fullmap"))
+    resolved = ctx.params["fullmap"]
+    assert Path(resolved).is_absolute()
+    assert resolved.endswith("some/relative/fullmap")
+
+
+def test_build_context_from_config_keeps_absolute_fullmap(tmp_path: Path) -> None:
+    """An absolute fullmap path is passed through unchanged."""
+    abs_path = str((tmp_path / "deep" / "fullmap").resolve())
+    ctx = build_context_from_config(_cfg(tmp_path, fullmap=abs_path))
+    assert ctx.params["fullmap"] == abs_path
+
+
 def test_get_dag_returns_dag_object(dakp_build) -> None:
     assert dags_pkg.get_dag() is dakp_build.dag_obj
 
