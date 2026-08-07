@@ -227,6 +227,9 @@ class DiseaseNER:
             ``None`` = the loaded model's ``config.max_len``, fallback 384. GLiNER silently
             truncates anything longer, so longer texts are predicted window by window.
         cache_dir / workdir: model-cache location (see :func:`dakp_pipeline.ner.model_cache.ensure_model`).
+        device: explicit CUDA device for multi-GPU dispatch (e.g. ``"cuda:2"``). ``None``
+            (default) auto-detects via :func:`_model_device` (CUDA when available, else CPU).
+            Set by multi-GPU workers to pin the GLiNER model to a specific GPU.
     """
 
     def __init__(
@@ -239,6 +242,7 @@ class DiseaseNER:
         chunk_words: int | None = None,
         cache_dir: Path | str | None = None,
         workdir: Path | str | None = None,
+        device: str | None = None,
     ) -> None:
         if isinstance(gazetteer, Gazetteer):
             resolved = gazetteer
@@ -254,6 +258,7 @@ class DiseaseNER:
         self._chunk_words = chunk_words
         self._cache_dir = cache_dir
         self._workdir = workdir
+        self._device = device
         self._model: Any = None
 
     # -- builders --------------------------------------------------------------
@@ -284,8 +289,26 @@ class DiseaseNER:
             except ImportError as exc:
                 raise NERDependencyError(_install_message("gliner")) from exc
             ref = ensure_model(self._model_id, cache_dir=self._cache_dir, workdir=self._workdir)
-            self._model = GLiNER.from_pretrained(str(ref.path), map_location=_model_device())
+            self._model = GLiNER.from_pretrained(str(ref.path), map_location=self._device or _model_device())
         return self._model
+
+    def _config(self) -> dict[str, Any]:
+        """Serializable construction kwargs (for multi-process GPU worker reconstruction).
+
+        Returns the ``DiseaseNER`` init kwargs as plain JSON-picklable values so a
+        :class:`~concurrent.futures.ProcessPoolExecutor` worker can reconstruct an
+        equivalent backend pinned to a specific device via ``DiseaseNER(device=..., **config)``.
+        The ``device`` kwarg itself is deliberately excluded — the caller sets it per-worker.
+        """
+        return {
+            "offline": self._offline,
+            "gazetteer": self._gazetteer,
+            "model_id": self._model_id,
+            "threshold": self._threshold,
+            "chunk_words": self._chunk_words,
+            "cache_dir": self._cache_dir,
+            "workdir": self._workdir,
+        }
 
     def _merge_model_spans(self, text: str, gazetteer_mentions: list[Mention]) -> list[Mention]:
         """Add non-overlapping GLiNER disease/phenotype spans; gazetteer spans win on overlap.

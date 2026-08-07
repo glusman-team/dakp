@@ -3,19 +3,47 @@
 Targets: ``default_ner`` fallback when the fixture lacks an ontology (and when fixture_root is
 None); a contraindication set with no active ingredient; a blank mined span; ingredient rows with
 missing fields / duplicates in the shared evidence cache; a second observation of the same
-(subject, object) pair unioning support; the empty-scores ``_max_score`` guard; and the shaper honoring / ignoring an injected
-``params["ner"]``. Inputs are tiny parquet tables built in tmp so no heavy NER deps are needed.
+(subject, object) pair unioning support; the empty-scores ``_max_score`` guard; the shaper honoring / ignoring an injected
+``params["ner"]``; multi-GPU dispatch (LPT sharding, ``_mine_shard`` worker, ``_mine_multi_gpu``
+orchestrator, ``_resolve_devices`` CUDA guard, and the ``devices`` param on
+``build_contraindication_rows``). Inputs are tiny parquet tables built in tmp so no heavy NER deps
+are needed.
+
+**Pass 2 tests** cover: the sentence keyword filter (``_split_sentences`` / ``_contraindication_sentences``);
+embedded contraindication provenance from indication sections (``SETID#34067-9``); false-positive
+prevention (indication-only diseases are NOT mined); no-regression on contraindication-only sets;
+a fake monkeypatched GLiNER mock for the production path; and ``_mine_two_passes_multi_gpu``
+2+2 parallel dispatch.
 """
 
 from __future__ import annotations
 
+import re
+import sys
+import types
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import polars as pl
+import pytest
 
-from dakp_pipeline.assertions.contraindications import ContraindicationsShaper, _max_score, build_contraindication_rows, default_ner
+from dakp_pipeline.assertions.contraindications import (
+    CONTRAINDICATION_GPUS,
+    DEFAULT_CONTRA_KEYWORDS,
+    ContraindicationsShaper,
+    _contraindication_sentences,
+    _max_score,
+    _mine_multi_gpu,
+    _mine_shard,
+    _mine_two_passes_multi_gpu,
+    _resolve_devices,
+    _resolve_keywords,
+    _shard_by_text_length,
+    _split_sentences,
+    build_contraindication_rows,
+    default_ner,
+)
 from dakp_pipeline.assertions.evidence import build_dailymed_evidence
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
@@ -23,6 +51,7 @@ from dakp_pipeline.ner.ner import DiseaseNER, Mention
 from dakp_pipeline.paths import Workdir
 
 CONTRA_LOINC = "34070-3"
+INDICATION_LOINC = "34067-9"
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
 
@@ -38,6 +67,25 @@ def _sections(tmp_path: Path, rows: list[tuple[str, str, str]]) -> ArtifactRef:
             "spl_document_id": [r[1] for r in rows],
             "clean_text": [r[2] for r in rows],
             "loinc_code": [CONTRA_LOINC for _ in rows],
+        }
+    )
+    path = tmp_path / "spl_sections.parquet"
+    frame.write_parquet(path)
+    return _ref(path)
+
+
+def _mixed_sections(tmp_path: Path, rows: list[tuple[str, str, str, str]]) -> ArtifactRef:
+    """spl_sections.parquet from (spl_set_id, spl_document_id, loinc_code, text) rows.
+
+    Unlike :func:`_sections`, each row carries its own LOINC code so a single file can mix
+    indication (34067-9) and contraindication (34070-3) sections.
+    """
+    frame = pl.DataFrame(
+        {
+            "spl_set_id": [r[0] for r in rows],
+            "spl_document_id": [r[1] for r in rows],
+            "loinc_code": [r[2] for r in rows],
+            "clean_text": [r[3] for r in rows],
         }
     )
     path = tmp_path / "spl_sections.parquet"
@@ -213,3 +261,474 @@ def test_shaper_ignores_non_backend_ner_param_and_falls_back(tmp_path: Path) -> 
     frame = schemas.read_table(out[0].uri)
     assert frame.height == 1  # fixture gazetteer -> Ibuprofen -> asthma only
     assert frame.row(0, named=True)["subject_text"] == "Ibuprofen"
+
+
+# --- multi-GPU dispatch: LPT sharding -------------------------------------------
+
+
+def test_shard_by_text_length_balances_by_text_length() -> None:
+    """LPT scheduling distributes items so the total text length per shard is balanced."""
+    items = [(f"S{i}", f"D{i}", "x" * length) for i, length in enumerate([100, 50, 30, 10])]
+    shards = _shard_by_text_length(items, 2)
+    loads = [sum(len(item[2]) for item in shard) for shard in shards]
+    # LPT assigns 100 -> shard 0, 50 -> shard 1, 30 -> shard 1 (80<100), 10 -> shard 1 (90<100).
+    assert loads == [100, 90]
+
+
+def test_shard_by_text_length_returns_n_shards_even_if_empty() -> None:
+    """Always returns exactly n shards (some may be empty when n > len(items))."""
+    shards = _shard_by_text_length([], 3)
+    assert len(shards) == 3
+    assert all(shard == [] for shard in shards)
+
+
+def test_shard_by_text_length_preserves_all_items() -> None:
+    """Every item appears exactly once across all shards."""
+    items = [(f"S{i}", f"D{i}", f"text-{i}") for i in range(6)]
+    shards = _shard_by_text_length(items, 3)
+    all_items = [item for shard in shards for item in shard]
+    assert sorted(all_items) == sorted(items)
+
+
+# --- multi-GPU dispatch: _mine_shard worker -------------------------------------
+
+
+def test_mine_shard_extracts_mentions_from_each_text() -> None:
+    """_mine_shard reconstructs a DiseaseNER from config and extracts mentions for each text."""
+    ner = DiseaseNER(gazetteer={"asthma": "disease"})
+    config = ner._config()
+    shard = [("SET-A", "DOC-A", "patient has asthma"), ("SET-B", "DOC-B", "no disease here")]
+    results = _mine_shard(shard, config, "cpu")
+    assert len(results) == 2
+    assert results[0][0] == "SET-A"  # set_id preserved
+    assert results[0][1] == "DOC-A"  # doc_id preserved
+    assert [m.text for m in results[0][2]] == ["asthma"]
+    assert results[1][2] == []  # no mentions
+
+
+def test_mine_shard_empty_shard_returns_empty_list() -> None:
+    """An empty shard yields an empty result list (no texts to mine)."""
+    ner = DiseaseNER(gazetteer={"asthma": "disease"})
+    assert _mine_shard([], ner._config(), "cpu") == []
+
+
+# --- multi-GPU dispatch: _mine_multi_gpu orchestrator --------------------------
+
+
+def test_mine_multi_gpu_collects_mentions_from_all_workers() -> None:
+    """_mine_multi_gpu shards work and collects mentions from every worker into one map."""
+    ner = DiseaseNER(gazetteer={"asthma": "disease", "diabetes": "disease"})
+    items = [("SET-A", "DOC-A", "asthma"), ("SET-B", "DOC-B", "diabetes")]
+    results = _mine_multi_gpu(items, ner, ("cpu", "cpu"))
+    assert set(results.keys()) == {("SET-A", "DOC-A"), ("SET-B", "DOC-B")}
+    assert [m.text for m in results[("SET-A", "DOC-A")]] == ["asthma"]
+    assert [m.text for m in results[("SET-B", "DOC-B")]] == ["diabetes"]
+
+
+# --- multi-GPU dispatch: build_contraindication_rows devices param ---------------
+
+
+def test_devices_ignored_for_offline_ner(tmp_path: Path) -> None:
+    """The multi-GPU path is skipped for offline NERs even when devices are given — output
+    is identical to sequential."""
+    sections = _sections(tmp_path, [("SET-A", "SET-A#d", "asthma"), ("SET-B", "SET-B#d", "asthma")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X"), ("active", "SET-B", "DrugX", "UNII:X")])
+    ner = DiseaseNER(offline=True, gazetteer={"asthma": "disease"})
+    rows_seq = build_contraindication_rows([sections, ingredients], ner)
+    rows_multi = build_contraindication_rows([sections, ingredients], ner, devices=("cuda:0", "cuda:1"))
+    assert rows_seq == rows_multi  # offline NER -> sequential regardless of devices
+
+
+def test_devices_single_work_item_falls_back_to_sequential(tmp_path: Path) -> None:
+    """Only one work item -> no benefit from multi-GPU, so sequential is used."""
+    sections = _sections(tmp_path, [("SET-A", "SET-A#d", "asthma")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
+    ner = DiseaseNER(gazetteer={"asthma": "disease"})
+    rows = build_contraindication_rows([sections, ingredients], ner, devices=("cuda:0", "cuda:1"))
+    assert len(rows) == 1
+    assert rows[0]["object_text"] == "asthma"
+
+
+# --- _resolve_devices: CUDA guard for multi-GPU ---------------------------------
+
+
+def test_resolve_devices_returns_none_for_offline_ner() -> None:
+    """Offline NER never triggers multi-GPU — the gazetteer is CPU-only."""
+    assert _resolve_devices(DiseaseNER(offline=True)) is None
+
+
+def test_resolve_devices_returns_gpus_when_cuda_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Production NER + CUDA available -> the hardcoded GPU list."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert _resolve_devices(DiseaseNER(offline=False)) == CONTRAINDICATION_GPUS
+
+
+def test_resolve_devices_returns_none_when_cuda_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Production NER but no CUDA -> sequential fallback (CI / non-GPU hosts)."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert _resolve_devices(DiseaseNER(offline=False)) is None
+
+
+def test_resolve_devices_returns_none_when_torch_unimportable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Production NER but torch not importable -> sequential fallback."""
+    monkeypatch.setitem(sys.modules, "torch", None)  # makes `import torch` raise ImportError
+    assert _resolve_devices(DiseaseNER(offline=False)) is None
+
+
+# --- multi-GPU dispatch: production NER + devices -> _mine_multi_gpu is called ------
+
+
+def test_build_rows_dispatches_to_multi_gpu_for_production_ner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Production NER + devices + >1 item: build_contraindication_rows calls _mine_multi_gpu."""
+    sections = _sections(tmp_path, [("SET-A", "SET-A#d", "asthma"), ("SET-B", "SET-B#d", "asthma")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X"), ("active", "SET-B", "DrugY", "UNII:Y")])
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"})
+
+    called: list[tuple[int, tuple[str, ...]]] = []
+
+    def fake_multi_gpu(work_items: list, ner_arg: DiseaseNER, devices: tuple[str, ...]) -> dict:
+        called.append((len(work_items), tuple(devices)))
+        # Use an offline clone to avoid GLiNER loading in tests.
+        offline = DiseaseNER(gazetteer=ner_arg._gazetteer)
+        return {(s, d): offline.extract(t) for s, d, t in work_items}
+
+    import dakp_pipeline.assertions.contraindications as contra_mod
+
+    monkeypatch.setattr(contra_mod, "_mine_multi_gpu", fake_multi_gpu)
+
+    rows = build_contraindication_rows([sections, ingredients], ner, devices=("cuda:0", "cuda:1"))
+    assert called == [(2, ("cuda:0", "cuda:1"))]  # dispatched with 2 items across 2 devices
+    assert len(rows) == 2
+    assert {r["subject_text"] for r in rows} == {"DrugX", "DrugY"}
+
+
+def test_shaper_logs_and_dispatches_when_multi_gpu(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The shaper logs and passes devices to build_contraindication_rows when CUDA is available."""
+    from dakp_pipeline.extract import spl_xml
+    from dakp_pipeline.io import schemas
+
+    ctx = _ctx(tmp_path, {"ner": DiseaseNER(offline=False, gazetteer={"asthma": "disease", "liver disease": "disease"})})
+    refs = spl_xml.extract([_ref(FIXTURE_ROOT / "dailymed" / "dailymed_spl.xml.gz")], ctx)
+
+    # Force the multi-GPU path: _resolve_devices returns GPUs, _mine_multi_gpu avoids GPU work.
+    import dakp_pipeline.assertions.contraindications as contra_mod
+
+    monkeypatch.setattr(contra_mod, "_resolve_devices", lambda _ner: CONTRAINDICATION_GPUS)
+    monkeypatch.setattr(
+        contra_mod, "_mine_multi_gpu", lambda items, ner, devs: {(s, d): DiseaseNER(gazetteer=ner._gazetteer).extract(t) for s, d, t in items}
+    )
+
+    out = ContraindicationsShaper().transform(refs, ctx)
+    assert len(out) == 1
+    subjects = sorted(schemas.read_table(out[0].uri)["subject_text"].to_list())
+    assert subjects == ["Examplestatin", "Ibuprofen"]
+
+
+# --- Pass 2: sentence keyword filter helpers -----------------------------------
+
+
+def test_split_sentences_basic() -> None:
+    """Sentence splitter handles periods and semicolons + whitespace."""
+    assert _split_sentences("Hello. World.") == ["Hello.", "World."]
+    assert _split_sentences("A; B; C") == ["A;", "B;", "C"]
+    assert _split_sentences("No boundaries here") == ["No boundaries here"]
+    assert _split_sentences("") == []
+    assert _split_sentences("Trailing.") == ["Trailing."]
+
+
+def test_contraindication_sentences_keeps_only_keyword_sentences() -> None:
+    """Only sentences matching contraindication keywords survive the filter."""
+    text = "DrugX is indicated for hypertension. It is contraindicated in patients with asthma. DrugX is also indicated for diabetes."
+    result = _contraindication_sentences(text, DEFAULT_CONTRA_KEYWORDS)
+    assert "contraindicated" in result.lower()
+    assert "asthma" in result.lower()
+    assert "hypertension" not in result.lower()
+    assert "diabetes" not in result.lower()
+
+
+def test_contraindication_sentences_empty_when_no_keywords() -> None:
+    """Indication-only text yields empty filtered text (no Pass 2 work)."""
+    text = "DrugX is indicated for hypertension and type 2 diabetes mellitus."
+    assert _contraindication_sentences(text, DEFAULT_CONTRA_KEYWORDS) == ""
+
+
+def test_contraindication_sentences_catches_various_phrasings() -> None:
+    """Multiple contraindication phrasings trigger the filter."""
+    for phrase in [
+        "Should not be used in patients with heart failure.",
+        "Avoid use in severe renal impairment.",
+        "Not recommended in pregnancy.",
+        "Do not use in active bleeding.",
+        "Use is contraindicated in hepatic impairment.",
+    ]:
+        assert _contraindication_sentences(phrase, DEFAULT_CONTRA_KEYWORDS) != "", f"Failed for: {phrase}"
+
+
+# --- Pass 2: contraindication mined from indication section --------------------
+
+
+def test_contraindication_mined_from_indication_section(tmp_path: Path) -> None:
+    """Pass 2: a contraindication embedded in the indication section is mined with #34067-9 provenance."""
+    sections = _mixed_sections(
+        tmp_path,
+        [
+            (
+                "SET-A",
+                "SET-A#34067-9",
+                INDICATION_LOINC,
+                "DrugX is indicated for hypertension. It is contraindicated in patients with asthma. DrugX is also indicated for diabetes.",
+            )
+        ],
+    )
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
+    ner = DiseaseNER(gazetteer={"asthma": "disease", "hypertension": "disease", "diabetes": "disease"})
+
+    rows = build_contraindication_rows([sections, ingredients], ner)
+    by_object = {r["object_text"] for r in rows}
+
+    # asthma is in a contraindication-context sentence -> mined.
+    assert "asthma" in by_object
+    # hypertension and diabetes are in indication-context sentences -> NOT mined.
+    assert "hypertension" not in by_object
+    assert "diabetes" not in by_object
+
+    # Provenance: the indication section document (34067-9).
+    asthma_row = next(r for r in rows if r["object_text"] == "asthma")
+    assert asthma_row["supporting_spl_documents"] == "SET-A#34067-9"
+    assert asthma_row["supporting_spl_sets"] == "SET-A"
+
+
+def test_indication_only_diseases_not_mined_as_contraindications(tmp_path: Path) -> None:
+    """Pass 2: indication text with no contraindication keywords yields no rows."""
+    sections = _mixed_sections(
+        tmp_path, [("SET-A", "SET-A#34067-9", INDICATION_LOINC, "DrugX is indicated for hypertension and type 2 diabetes mellitus.")]
+    )
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
+    ner = DiseaseNER(gazetteer={"hypertension": "disease", "type 2 diabetes mellitus": "disease"})
+
+    assert build_contraindication_rows([sections, ingredients], ner) == []
+
+
+def test_both_passes_mine_different_sections_of_same_set(tmp_path: Path) -> None:
+    """Pass 1 (contraindication section) and Pass 2 (indication section) both contribute."""
+    sections = _mixed_sections(
+        tmp_path,
+        [
+            ("SET-A", "SET-A#34070-3", CONTRA_LOINC, "Contraindicated in patients with asthma."),
+            ("SET-A", "SET-A#34067-9", INDICATION_LOINC, "DrugX is indicated for hypertension. It is contraindicated in patients with diabetes."),
+        ],
+    )
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
+    ner = DiseaseNER(gazetteer={"asthma": "disease", "diabetes": "disease", "hypertension": "disease"})
+
+    rows = build_contraindication_rows([sections, ingredients], ner)
+    by_object = {r["object_text"] for r in rows}
+    assert by_object == {"asthma", "diabetes"}  # both passes contribute
+    assert "hypertension" not in by_object  # indication-only -> excluded
+
+    # Provenance: asthma from 34070-3 (Pass 1), diabetes from 34067-9 (Pass 2).
+    by_obj = {r["object_text"]: r for r in rows}
+    assert by_obj["asthma"]["supporting_spl_documents"] == "SET-A#34070-3"
+    assert by_obj["diabetes"]["supporting_spl_documents"] == "SET-A#34067-9"
+
+
+def test_no_regression_contraindication_only_sections(tmp_path: Path) -> None:
+    """A set with only contraindication sections (no indication section) is unaffected by Pass 2."""
+    sections = _sections(tmp_path, [("SET-A", "SET-A#34070-3", "asthma")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
+    ner = DiseaseNER(gazetteer={"asthma": "disease"})
+
+    rows = build_contraindication_rows([sections, ingredients], ner)
+    assert len(rows) == 1
+    assert rows[0]["object_text"] == "asthma"
+    assert rows[0]["supporting_spl_documents"] == "SET-A#34070-3"
+
+
+# --- Pass 2: configurable keywords ---------------------------------------------
+
+
+def test_custom_keywords_filter_indication_section(tmp_path: Path) -> None:
+    """A custom keyword pattern (via the ``keywords`` param) controls which sentences are mined."""
+    import re
+
+    custom = re.compile(r"\bnever\s+give\b", re.IGNORECASE)
+    sections = _mixed_sections(
+        tmp_path, [("SET-A", "SET-A#34067-9", INDICATION_LOINC, "DrugX is indicated for asthma. Never give to patients with diabetes.")]
+    )
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
+    ner = DiseaseNER(gazetteer={"asthma": "disease", "diabetes": "disease"})
+
+    rows = build_contraindication_rows([sections, ingredients], ner, keywords=custom)
+    by_object = {r["object_text"] for r in rows}
+    assert "diabetes" in by_object  # custom keyword matched
+    assert "asthma" not in by_object  # default keywords would NOT have matched, custom didn't either
+
+
+# --- Fake GLiNER mock for the production path -----------------------------------
+
+
+class _TermScanningGLiNERModel:
+    """Fake GLiNER model that returns entities for known disease terms found in text.
+
+    Unlike a fixed-prediction mock, this model scans the input text for known disease terms
+    and returns them as entities. This lets tests verify that the sentence filter prevents
+    indication-context diseases from ever reaching the model.
+    """
+
+    def __init__(self, terms: dict[str, str]) -> None:
+        self._terms = terms  # lowercase term -> entity type
+        self.calls: list[str] = []
+
+    def predict_entities(self, text: str, labels: list[str], threshold: float = 0.5) -> list[dict[str, Any]]:
+        self.calls.append(text)
+        preds: list[dict[str, Any]] = []
+        lower = text.lower()
+        for term, etype in sorted(self._terms.items(), key=lambda x: -len(x[0])):  # longest first
+            idx = 0
+            while True:
+                found = lower.find(term, idx)
+                if found == -1:
+                    break
+                preds.append({"text": text[found : found + len(term)], "start": found, "end": found + len(term), "label": etype, "score": 0.8})
+                idx = found + len(term)
+        return preds
+
+
+def _install_term_scanning_gliner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, terms: dict[str, str]) -> _TermScanningGLiNERModel:
+    """Install a fake gliner module whose ``predict_entities`` scans text for known disease terms.
+
+    Also patches ``ensure_model`` so the production NER backend can load without network access.
+    Returns the fake model so tests can inspect ``.calls`` to verify which texts reached GLiNER.
+    """
+    model = _TermScanningGLiNERModel(terms)
+    module = types.ModuleType("gliner")
+    module.GLiNER = type("GLiNER", (), {"from_pretrained": staticmethod(lambda *a, **kw: model)})  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gliner", module)
+
+    import dakp_pipeline.ner.ner as ner_module
+    from dakp_pipeline.ner.model_cache import ModelRef
+
+    def _fake_ensure_model(model_id: str, **kwargs: Any) -> ModelRef:
+        return ModelRef(model_id=model_id, source="huggingface", path=tmp_path, b3="b3:deadbeef", manifest=tmp_path / "manifest.json")
+
+    monkeypatch.setattr(ner_module, "ensure_model", _fake_ensure_model)
+    return model
+
+
+def test_production_ner_mines_contraindication_from_indication(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Production NER (fake GLiNER) + sentence filter: embedded contraindication is mined,
+    indication-only diseases are NOT (sentence filter prevents them from reaching GLiNER)."""
+    disease_terms = {"asthma": "disease", "hypertension": "disease", "diabetes": "disease"}
+    model = _install_term_scanning_gliner(monkeypatch, tmp_path, disease_terms)
+
+    sections = _mixed_sections(
+        tmp_path,
+        [
+            (
+                "SET-A",
+                "SET-A#34067-9",
+                INDICATION_LOINC,
+                "DrugX is indicated for hypertension. It is contraindicated in patients with asthma. DrugX is also indicated for diabetes.",
+            )
+        ],
+    )
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
+
+    # Production NER with empty gazetteer — relies on GLiNER (fake) for extraction.
+    ner = DiseaseNER(offline=False, gazetteer={}, cache_dir=tmp_path)
+    rows = build_contraindication_rows([sections, ingredients], ner)
+
+    by_object = {r["object_text"] for r in rows}
+    assert "asthma" in by_object  # contraindication context -> mined
+    assert "hypertension" not in by_object  # indication context -> filtered out before GLiNER
+    assert "diabetes" not in by_object  # indication context -> filtered out before GLiNER
+
+    # The fake GLiNER only received the contraindication-context sentence — not the full text.
+    all_glimer_input = " ".join(model.calls)
+    assert "contraindicated" in all_glimer_input.lower()
+    assert "hypertension" not in all_glimer_input.lower()  # sentence filter prevented it
+
+
+# --- _mine_two_passes_multi_gpu: 2+2 parallel dispatch -------------------------
+
+
+def test_mine_two_passes_multi_gpu_splits_devices_and_collects() -> None:
+    """_mine_two_passes_multi_gpu shards both passes across half the GPUs each and collects results."""
+    ner = DiseaseNER(gazetteer={"asthma": "disease", "diabetes": "disease"})
+    work_p1 = [("SET-A", "DOC-A", "asthma")]
+    work_p2 = [("SET-B", "DOC-B", "diabetes")]
+    results = _mine_two_passes_multi_gpu(work_p1, work_p2, ner, ("cpu", "cpu"))
+
+    assert set(results.keys()) == {("SET-A", "DOC-A"), ("SET-B", "DOC-B")}
+    assert [m.text for m in results[("SET-A", "DOC-A")]] == ["asthma"]
+    assert [m.text for m in results[("SET-B", "DOC-B")]] == ["diabetes"]
+
+
+def test_mine_two_passes_no_pass2_falls_back_to_single() -> None:
+    """When Pass 2 has no work items, _mine_two_passes_multi_gpu delegates to _mine_multi_gpu."""
+    ner = DiseaseNER(gazetteer={"asthma": "disease"})
+    work_p1 = [("SET-A", "DOC-A", "asthma")]
+    results = _mine_two_passes_multi_gpu(work_p1, [], ner, ("cpu", "cpu"))
+    assert [m.text for m in results[("SET-A", "DOC-A")]] == ["asthma"]
+
+
+def test_mine_two_passes_no_pass1_falls_back_to_single() -> None:
+    """When Pass 1 has no work items, all GPUs go to Pass 2."""
+    ner = DiseaseNER(gazetteer={"diabetes": "disease"})
+    work_p2 = [("SET-B", "DOC-B", "diabetes")]
+    results = _mine_two_passes_multi_gpu([], work_p2, ner, ("cpu", "cpu"))
+    assert [m.text for m in results[("SET-B", "DOC-B")]] == ["diabetes"]
+
+
+def test_build_rows_dispatches_two_passes_for_production_ner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Production NER + devices + both passes have work: build_contraindication_rows calls _mine_two_passes_multi_gpu."""
+    sections = _mixed_sections(
+        tmp_path,
+        [
+            ("SET-A", "SET-A#34070-3", CONTRA_LOINC, "asthma"),
+            ("SET-B", "SET-B#34067-9", INDICATION_LOINC, "contraindicated in patients with diabetes"),
+        ],
+    )
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X"), ("active", "SET-B", "DrugY", "UNII:Y")])
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease", "diabetes": "disease"})
+
+    called: list[dict[str, Any]] = []
+
+    def fake_two_pass(w1, w2, ner_arg, devs):
+        called.append({"p1": len(w1), "p2": len(w2), "devices": tuple(devs)})
+        offline = DiseaseNER(gazetteer=ner_arg._gazetteer)
+        return {(s, d): offline.extract(t) for s, d, t in w1 + w2}
+
+    import dakp_pipeline.assertions.contraindications as contra_mod
+
+    monkeypatch.setattr(contra_mod, "_mine_two_passes_multi_gpu", fake_two_pass)
+
+    rows = build_contraindication_rows([sections, ingredients], ner, devices=("cuda:0", "cuda:1", "cuda:2", "cuda:3"))
+    assert called == [{"p1": 1, "p2": 1, "devices": ("cuda:0", "cuda:1", "cuda:2", "cuda:3")}]
+    assert {r["subject_text"] for r in rows} == {"DrugX", "DrugY"}
+
+
+# --- gate-closure tests: keyword param resolution + Pass 2 ingredient guard ------
+
+
+def test_resolve_keywords_passes_through_compiled_pattern(tmp_path: Path) -> None:
+    pattern = re.compile(r"never use")
+    assert _resolve_keywords(_ctx(tmp_path, {"contraindication_keywords": pattern})) is pattern
+
+
+def test_resolve_keywords_compiles_string_param_case_insensitive(tmp_path: Path) -> None:
+    pattern = _resolve_keywords(_ctx(tmp_path, {"contraindication_keywords": "never use"}))
+    assert pattern.search("NEVER USE in pregnancy") is not None
+
+
+def test_indication_set_without_active_ingredient_is_skipped_in_pass_2(tmp_path: Path) -> None:
+    """Pass 2: an indication section whose set has no active ingredient is never mined."""
+    sections = _mixed_sections(tmp_path, [("SET-B", "SET-B#34067-9", INDICATION_LOINC, "It is contraindicated in patients with asthma.")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-OTHER", "DrugY", "UNII:Y")])
+    ner = DiseaseNER(gazetteer={"asthma": "disease"})
+
+    assert build_contraindication_rows([sections, ingredients], ner) == []

@@ -17,6 +17,7 @@ from typing import Any, ClassVar
 import pytest
 
 from dakp_pipeline.ner import ner as ner_module
+from dakp_pipeline.ner.dictionary import Gazetteer
 from dakp_pipeline.ner.model_cache import ModelRef
 from dakp_pipeline.ner.ner import (
     _DEFAULT_WORD_BUDGET,
@@ -362,3 +363,59 @@ def test_token_budget_falls_back_to_default() -> None:
             max_len = 0
 
     assert _token_budget(_TooSmall(), None) == _DEFAULT_WORD_BUDGET
+
+
+# --- device parameter: pin GLiNER to a specific GPU for multi-GPU dispatch ---------
+
+
+def test_device_param_pins_model_to_specified_gpu(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """An explicit ``device`` kwarg flows through to ``map_location`` at model load time."""
+    _install_fake_gliner(monkeypatch, tmp_path, [])
+    backend = DiseaseNER(offline=False, device="cuda:2", cache_dir=tmp_path)
+    backend.extract("some text")
+    assert _FakeGLiNER.loaded_map_location == ["cuda:2"]
+
+
+def test_device_none_falls_back_to_model_device(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """When ``device`` is None, ``_load_model`` uses ``_model_device()`` (auto-detect)."""
+    _install_fake_gliner(monkeypatch, tmp_path, [])
+    backend = DiseaseNER(offline=False, cache_dir=tmp_path)  # device=None
+    backend.extract("some text")
+    # _model_device() returns "cpu" in CI (no CUDA) or "cuda" when available.
+    assert _FakeGLiNER.loaded_map_location[0] in ("cpu", "cuda")
+
+
+# --- _config: serializable construction kwargs for multi-process workers ------------
+
+
+def test_config_returns_serializable_construction_kwargs(tmp_path: Path) -> None:
+    gaz = Gazetteer({"asthma": "disease"})
+    backend = DiseaseNER(
+        offline=False,
+        gazetteer=gaz,
+        model_id="acme/ner",
+        threshold=0.42,
+        chunk_words=128,
+        cache_dir=tmp_path,
+        workdir=tmp_path / "work",
+        device="cuda:1",
+    )
+    config = backend._config()
+    assert config["offline"] is False
+    assert config["model_id"] == "acme/ner"
+    assert config["threshold"] == 0.42
+    assert config["chunk_words"] == 128
+    assert config["cache_dir"] == tmp_path
+    assert config["workdir"] == tmp_path / "work"
+    assert config["gazetteer"] is gaz
+    # device is deliberately excluded — the caller sets it per-worker.
+    assert "device" not in config
+
+
+def test_config_can_reconstruct_equivalent_backend(tmp_path: Path) -> None:
+    """A DiseaseNER built from ``_config()`` + a ``device`` produces the same mentions."""
+    original = DiseaseNER(offline=True, gazetteer={"asthma": "disease"}, device="cuda:3")
+    reconstructed = DiseaseNER(device="cuda:0", **original._config())
+    text = "patient has asthma"
+    assert [m.text for m in reconstructed.extract(text)] == [m.text for m in original.extract(text)]
+    assert reconstructed._offline == original._offline
