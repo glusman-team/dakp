@@ -26,6 +26,7 @@ from dakp_pipeline import acquire, runtime, tablassert, translator
 from dakp_pipeline.assertions import approved_treats, contraindications, observed_uses
 from dakp_pipeline.io.contracts import TaskContext
 from dakp_pipeline.io.xcom import refs_from_xcom, refs_to_xcom
+from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.ner.ner import DiseaseNER
 from dakp_pipeline.paths import Workdir
 
@@ -61,19 +62,31 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
     # -- acquisition (Python; download pool) ------------------------------------
     @task(pool=DOWNLOAD_POOL)
     def acquire_dailymed() -> list[dict[str, Any]]:
-        return refs_to_xcom(acquire.acquire_dailymed(_ctx()))
+        with step(logger, "task acquire_dailymed"):
+            refs = acquire.acquire_dailymed(_ctx())
+            stats(logger, "task acquire_dailymed", output_refs=len(refs))
+            return refs_to_xcom(refs)
 
     @task(pool=DOWNLOAD_POOL)
     def acquire_faers() -> list[dict[str, Any]]:
-        return refs_to_xcom(acquire.acquire_faers(_ctx()))
+        with step(logger, "task acquire_faers"):
+            refs = acquire.acquire_faers(_ctx())
+            stats(logger, "task acquire_faers", output_refs=len(refs))
+            return refs_to_xcom(refs)
 
     @task(pool=DOWNLOAD_POOL)
     def acquire_drugsfda() -> list[dict[str, Any]]:
-        return refs_to_xcom(acquire.acquire_drugsfda(_ctx()))
+        with step(logger, "task acquire_drugsfda"):
+            refs = acquire.acquire_drugsfda(_ctx())
+            stats(logger, "task acquire_drugsfda", output_refs=len(refs))
+            return refs_to_xcom(refs)
 
     @task(pool=DOWNLOAD_POOL)
     def acquire_ner_models() -> list[dict[str, Any]]:
-        return refs_to_xcom(acquire.acquire_ner_models(_ctx()))
+        with step(logger, "task acquire_ner_models"):
+            refs = acquire.acquire_ner_models(_ctx())
+            stats(logger, "task acquire_ner_models", output_refs=len(refs))
+            return refs_to_xcom(refs)
 
     # -- extraction (native Go SDK bundle workers) ------------------------------
     # No Python body: the ExecutableCoordinator forks the Go bundle, which reads the upstream
@@ -91,13 +104,25 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
     # -- assertion shaping (Python) ---------------------------------------------
     @task
     def shape_treatment_tables(dm_ext: Any, drugsfda_ext: Any, faers_ext: Any) -> list[dict[str, Any]]:
-        refs = [*refs_from_xcom(dm_ext), *refs_from_xcom(drugsfda_ext), *refs_from_xcom(faers_ext)]
-        return refs_to_xcom(approved_treats.transform(refs, _ctx()))
+        with step(logger, "task shape_treatment_tables"):
+            dailymed_refs, drugsfda_refs, faers_refs = refs_from_xcom(dm_ext), refs_from_xcom(drugsfda_ext), refs_from_xcom(faers_ext)
+            stats(
+                logger, "task shape_treatment_tables", dailymed_refs=len(dailymed_refs), drugsfda_refs=len(drugsfda_refs), faers_refs=len(faers_refs)
+            )
+            refs = [*dailymed_refs, *drugsfda_refs, *faers_refs]
+            out = approved_treats.transform(refs, _ctx())
+            stats(logger, "task shape_treatment_tables", output_refs=len(out))
+            return refs_to_xcom(out)
 
     @task
     def shape_faers_use_tables(faers_ext: Any, dm_ext: Any) -> list[dict[str, Any]]:
-        refs = [*refs_from_xcom(faers_ext), *refs_from_xcom(dm_ext)]
-        return refs_to_xcom(observed_uses.transform(refs, _ctx()))
+        with step(logger, "task shape_faers_use_tables"):
+            faers_refs, dailymed_refs = refs_from_xcom(faers_ext), refs_from_xcom(dm_ext)
+            stats(logger, "task shape_faers_use_tables", faers_refs=len(faers_refs), dailymed_refs=len(dailymed_refs))
+            refs = [*faers_refs, *dailymed_refs]
+            out = observed_uses.transform(refs, _ctx())
+            stats(logger, "task shape_faers_use_tables", output_refs=len(out))
+            return refs_to_xcom(out)
 
     @task
     def shape_contraindication_tables(dm_ext: Any, ner_models: Any) -> list[dict[str, Any]]:
@@ -105,35 +130,53 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
         # weights cached by acquire_ner_models, so mining runs after acquisition (the model refs
         # aren't inputs).
         del ner_models
-        ctx = _ctx()
-        # Production composite NER (curated gazetteer anchors + GLiNER zero-shot recall) mines
-        # contraindication diseases far beyond any fixed gazetteer. It loads the GLiNER checkpoint
-        # acquire_ner_models cached under the workdir. Offline tests inject their own deterministic
-        # backend (or fall back to the gazetteer); this production wiring is DAG-only.
-        ner = DiseaseNER(offline=False, workdir=ctx.workdir)
-        ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
-        return refs_to_xcom(contraindications.transform(refs_from_xcom(dm_ext), ctx))
+        with step(logger, "task shape_contraindication_tables"):
+            ctx = _ctx()
+            # Production composite NER (curated gazetteer anchors + GLiNER zero-shot recall) mines
+            # contraindication diseases far beyond any fixed gazetteer. It loads the GLiNER checkpoint
+            # acquire_ner_models cached under the workdir. Offline tests inject their own deterministic
+            # backend (or fall back to the gazetteer); this production wiring is DAG-only.
+            ner = DiseaseNER(offline=False, workdir=ctx.workdir)
+            ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
+            dailymed_refs = refs_from_xcom(dm_ext)
+            stats(logger, "task shape_contraindication_tables", dailymed_refs=len(dailymed_refs))
+            out = contraindications.transform(dailymed_refs, ctx)
+            stats(logger, "task shape_contraindication_tables", output_refs=len(out))
+            return refs_to_xcom(out)
 
     # -- tablassert handoff (Python) --------------------------------------------
     @task
     def generate_tablassert_configs(approved: Any, uses: Any, contra: Any) -> list[dict[str, Any]]:
-        refs = [*refs_from_xcom(approved), *refs_from_xcom(uses), *refs_from_xcom(contra)]
-        return refs_to_xcom(tablassert.generate(refs, _ctx()))
+        with step(logger, "task generate_tablassert_configs"):
+            refs = [*refs_from_xcom(approved), *refs_from_xcom(uses), *refs_from_xcom(contra)]
+            stats(logger, "task generate_tablassert_configs", assertion_refs=len(refs))
+            out = tablassert.generate(refs, _ctx())
+            stats(logger, "task generate_tablassert_configs", output_refs=len(out))
+            return refs_to_xcom(out)
 
     @task
     def run_tablassert(approved: Any, uses: Any, contra: Any, configs: Any) -> list[dict[str, Any]]:
-        assertion_refs = [*refs_from_xcom(approved), *refs_from_xcom(uses), *refs_from_xcom(contra)]
-        return refs_to_xcom(tablassert.run(assertion_refs, refs_from_xcom(configs), _ctx()))
+        with step(logger, "task run_tablassert"):
+            assertion_refs = [*refs_from_xcom(approved), *refs_from_xcom(uses), *refs_from_xcom(contra)]
+            config_refs = refs_from_xcom(configs)
+            stats(logger, "task run_tablassert", assertion_refs=len(assertion_refs), config_refs=len(config_refs))
+            out = tablassert.run(assertion_refs, config_refs, _ctx())
+            stats(logger, "task run_tablassert", output_refs=len(out))
+            return refs_to_xcom(out)
 
     # -- translator contract + regression + build summary (Python) --------------
     @task
     def write_build_summary(approved: Any, uses: Any, contra: Any, kgx: Any) -> str:
-        ctx = _ctx()
-        assertion_refs = [*refs_from_xcom(approved), *refs_from_xcom(uses), *refs_from_xcom(contra)]
-        report = translator.validate(assertion_refs)
-        regression_report = translator.check_assertion_tables(assertion_refs)
-        summary = runtime.write_build_summary(Workdir(ctx.workdir), assertion_refs, refs_from_xcom(kgx), report, regression_report)
-        return str(summary)
+        with step(logger, "task write_build_summary"):
+            ctx = _ctx()
+            assertion_refs = [*refs_from_xcom(approved), *refs_from_xcom(uses), *refs_from_xcom(contra)]
+            kgx_refs = refs_from_xcom(kgx)
+            stats(logger, "task write_build_summary", assertion_refs=len(assertion_refs), kgx_refs=len(kgx_refs))
+            report = translator.validate(assertion_refs)
+            regression_report = translator.check_assertion_tables(assertion_refs)
+            summary = runtime.write_build_summary(Workdir(ctx.workdir), assertion_refs, kgx_refs, report, regression_report)
+            stats(logger, "task write_build_summary", summary_path=str(summary))
+            return str(summary)
 
     # -- wiring -----------------------------------------------------------------
     dm_raw = acquire_dailymed()
