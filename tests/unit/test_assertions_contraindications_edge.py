@@ -23,6 +23,7 @@ import sys
 import types
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import polars as pl
@@ -40,6 +41,7 @@ from dakp_pipeline.assertions.contraindications import (
     _resolve_devices,
     _resolve_keywords,
     _shard_by_text_length,
+    _spawn_safe_main,
     _split_sentences,
     build_contraindication_rows,
     default_ner,
@@ -732,3 +734,24 @@ def test_indication_set_without_active_ingredient_is_skipped_in_pass_2(tmp_path:
     ner = DiseaseNER(gazetteer={"asthma": "disease"})
 
     assert build_contraindication_rows([sections, ingredients], ner) == []
+
+
+def test_spawn_safe_main_swaps_script_main_and_restores(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Script-style __main__ (no spec, e.g. the airflow CLI): spawn is redirected to a
+    side-effect-free module and the original spec (None) is restored afterwards."""
+    fake_main = SimpleNamespace(__spec__=None)
+    monkeypatch.setitem(sys.modules, "__main__", fake_main)
+    with _spawn_safe_main():
+        assert fake_main.__spec__ is not None
+        assert fake_main.__spec__.name == "dakp_pipeline.logging_setup"
+    assert fake_main.__spec__ is None
+
+
+def test_spawn_safe_main_leaves_module_main_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Module-style __main__ (has a spec): spawn already imports by name — nothing changes."""
+    spec = SimpleNamespace(name="some_module")
+    fake_main = SimpleNamespace(__spec__=spec)
+    monkeypatch.setitem(sys.modules, "__main__", fake_main)
+    with _spawn_safe_main():
+        assert fake_main.__spec__ is spec
+    assert fake_main.__spec__ is spec

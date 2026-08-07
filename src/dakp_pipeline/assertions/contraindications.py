@@ -48,10 +48,13 @@ lists ``text_mining_agent`` for ``contraindicated_in``), ``knowledge_level = kno
 
 from __future__ import annotations
 
+import importlib.machinery
 import multiprocessing as mp
 import re
-from collections.abc import Iterable, Sequence
+import sys
+from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -252,6 +255,37 @@ def build_contraindication_rows(
     return [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]
 
 
+#: Module spawned workers re-import instead of the parent's ``__main__`` script (see
+#: :func:`_spawn_safe_main`). Must import with zero side effects. A plain MODULE, not the
+#: package itself — ``runpy.run_module`` cannot directly execute a package without a
+#: ``__main__.py``.
+_SPAWN_SAFE_MAIN_MODULE = "dakp_pipeline.logging_setup"
+
+
+@contextmanager
+def _spawn_safe_main() -> Iterator[None]:
+    """Keep spawn children from re-executing the parent's ``__main__`` script.
+
+    The spawn start method re-initializes ``__main__`` in every child: when
+    ``__main__.__spec__`` exists it imports that module by name, otherwise it RE-EXECUTES
+    ``__main__.__file__``. Under the Airflow task runtime ``__main__`` is the ``airflow`` CLI
+    script (no ``__spec__``), so each mining worker re-executed the CLI and died initializing
+    Airflow's DB settings there (no parseable ``sql_alchemy_conn`` in the child) — the pool
+    broke before its first task (``BrokenProcessPool``). For the pool's lifetime, point spawn
+    at a side-effect-free module; the worker callable itself is unpickled via its own
+    module, and the original ``__main__`` spec is restored on exit.
+    """
+    main = sys.modules["__main__"]
+    if getattr(main, "__spec__", None) is not None:
+        yield  # module context (python -m / console scripts with a spec): spawn imports by name
+        return
+    main.__spec__ = importlib.machinery.ModuleSpec(_SPAWN_SAFE_MAIN_MODULE, loader=None)
+    try:
+        yield
+    finally:
+        main.__spec__ = None
+
+
 # --- multi-GPU dispatch ---------------------------------------------------------
 
 
@@ -311,7 +345,7 @@ def _mine_multi_gpu(work_items: list[tuple[str, str, str]], ner: DiseaseNER, dev
     ner_config = ner._config()
     ctx = mp.get_context("spawn")
     results: dict[tuple[str, str], list[Mention]] = {}
-    with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
+    with _spawn_safe_main(), ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
         futures = [pool.submit(_mine_shard, shard, ner_config, devices[i]) for i, shard in enumerate(shards)]
         for future in futures:
             for set_id, doc_id, mentions in future.result():
@@ -348,7 +382,7 @@ def _mine_two_passes_multi_gpu(
     ctx = mp.get_context("spawn")
 
     results: dict[tuple[str, str], list[Mention]] = {}
-    with ProcessPoolExecutor(max_workers=n_p1 + n_p2, mp_context=ctx) as pool:
+    with _spawn_safe_main(), ProcessPoolExecutor(max_workers=n_p1 + n_p2, mp_context=ctx) as pool:
         futures = [
             *(pool.submit(_mine_shard, shard, ner_config, devices_p1[i]) for i, shard in enumerate(shards_p1)),
             *(pool.submit(_mine_shard, shard, ner_config, devices_p2[i]) for i, shard in enumerate(shards_p2)),
