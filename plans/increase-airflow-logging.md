@@ -172,21 +172,21 @@ Go:
 
 ## Steps
 
-- [ ] 1. `logging_setup.py`: `stats()` + `step()` + `progress()` helpers + tests
-- [ ] 2. `logging_setup.py`: Airflow-3 bridge fix (real levels, sentinel, no root-handler
+- [x] 1. `logging_setup.py`: `stats()` + `step()` + `progress()` helpers + tests
+- [x] 2. `logging_setup.py`: Airflow-3 bridge fix (real levels, sentinel, no root-handler
       clobber, no duplicate stderr sink) + update `test_logging_setup_edge.py` (current tests
       pin the old broken behavior: `airflow.task` propagate=False assertions, etc.)
-- [ ] 3. Acquisition narration: `sources/*`, `acquire.py`, `ner/model_cache.py`
-- [ ] 4. `io/artifact_store.py` DEBUG ingest/register lines
-- [ ] 5. Assertion shaping narration (+ NER load + multi-GPU progress)
-- [ ] 6. Tablassert generate/run + `stream_subprocess` live streaming (update the 8
+- [x] 3. Acquisition narration: `sources/*`, `acquire.py`, `ner/model_cache.py`
+- [x] 4. `io/artifact_store.py` DEBUG ingest/register lines
+- [x] 5. Assertion shaping narration (+ NER load + multi-GPU progress)
+- [x] 6. Tablassert generate/run + `stream_subprocess` live streaming (update the 8
       `run_subprocess` monkeypatch tests in `test_tablassert_configs.py` to the new seam) +
       translator + build summary
-- [ ] 7. DAG task wrappers start/finish/elapsed
-- [ ] 8. Python reference extractors consistency pass (summary lines → one stat per line)
-- [ ] 9. Go: `log.go` helper + FAERS narration
-- [ ] 10. Go: DailyMed + Drugs@FDA narration + `store.go` DEBUG + bundle main listing
-- [ ] 11. Verification run (`uv run dakp up --small`) + inspect task logs
+- [x] 7. DAG task wrappers start/finish/elapsed
+- [x] 8. Python reference extractors consistency pass (summary lines → one stat per line)
+- [x] 9. Go: `log.go` helper + FAERS narration
+- [x] 10. Go: DailyMed + Drugs@FDA narration + `store.go` DEBUG + bundle main listing
+- [x] 11. Verification run (`uv run dakp up --small`) + inspect task logs
 
 ## Verification
 
