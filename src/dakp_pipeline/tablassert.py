@@ -61,18 +61,18 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
-from loguru import logger
 
 from dakp_pipeline import __version__
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import OperationBlock
+from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.paths import Workdir
 
 # --- Translator provenance constants (match dakp_pipeline.assertions + ../DINGO) ----
@@ -343,6 +343,8 @@ def generate(assertion_refs: list[ArtifactRef], ctx: TaskContext) -> list[Artifa
     input_ids = {ref.uri.stem: ref.blake3 for ref in assertion_refs}
     operation = OperationBlock(name=_GENERATE_OPERATION)
 
+    event = "generate_tablassert_configs"
+    stats(logger, event, configs_dir=str(tables_dir), assertion_inputs=len(assertion_refs))
     table_refs: list[ArtifactRef] = []
     table_paths: list[str] = []
     for table in _TABLE_ORDER:
@@ -358,7 +360,9 @@ def generate(assertion_refs: list[ArtifactRef], ctx: TaskContext) -> list[Artifa
     graph_path.write_text(graph_yaml(table_paths, fullmap=fullmap), encoding="utf-8")
     graph_ref = store.register(graph_path, media_type="application/yaml", inputs=[ref.blake3 for ref in table_refs], operation=operation)
 
-    logger.info("generated Tablassert configs: graph + {} tables -> {}", len(table_refs), tables_dir)
+    for ref in table_refs:
+        stats(logger, event, table_config=str(ref.uri), blake3=ref.blake3)
+    stats(logger, event, graph_config=str(graph_ref.uri), blake3=graph_ref.blake3, fullmap=fullmap)
     return [graph_ref, *table_refs]
 
 
@@ -387,6 +391,60 @@ def run_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.Co
     module (``dakp_pipeline.tablassert``) and no real process is spawned.
     """
     return subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
+
+
+#: Terminal control sequences (colors / cursor moves) stripped from streamed subprocess lines.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def _clean_stream_line(raw: str) -> str | None:
+    """Reduce one raw subprocess line to a loggable message, or ``None`` when it is noise.
+
+    Progress-bar redraws collapse to their LAST non-empty ``\r`` segment (the visible state
+    the writer left on the line); ANSI escapes are stripped; empty leftovers drop out.
+    Tablassert renders its rich progress on stderr, and under a pipe the bar emits its final
+    state rather than every frame — this filter keeps the rare stray redraw out of the task
+    log either way.
+    """
+    segments = [_ANSI_ESCAPE_RE.sub("", segment).strip() for segment in raw.split("\r")]
+    return next((segment for segment in reversed(segments) if segment), None)
+
+
+def stream_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    """Run ``command`` streaming stdout/stderr LIVE into the task log, never raising on exit.
+
+    Each surviving line (see :func:`_clean_stream_line`) is logged as
+    ``tablassert[stdout]: <line>`` / ``tablassert[stderr]: <line>`` while the process runs —
+    a Tablassert build takes 20+ minutes and its stage transitions should be visible as they
+    happen, not only after exit. Consecutive duplicate lines collapse (redraw spam). The full
+    unfiltered output is still accumulated and returned for the handoff report.
+
+    Monkeypatch point for tests: patch ``stream_subprocess`` on this module; fakes keep the
+    same ``(command, cwd=None) -> CompletedProcess[str]`` shape as :func:`run_subprocess`.
+    """
+    proc = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    collected: dict[str, list[str]] = {"stdout": [], "stderr": []}
+    last_line: dict[str, str | None] = {"stdout": None, "stderr": None}
+
+    def _pump(stream: Any, tag: str) -> None:
+        for raw in stream:
+            collected[tag].append(raw)
+            cleaned = _clean_stream_line(raw)
+            if cleaned is None or cleaned == last_line[tag]:
+                continue
+            last_line[tag] = cleaned
+            logger.info("tablassert[{}]: {}", tag, cleaned)
+
+    threads = [
+        threading.Thread(target=_pump, args=(proc.stdout, "stdout"), daemon=True),
+        threading.Thread(target=_pump, args=(proc.stderr, "stderr"), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    returncode = proc.wait()
+    for thread in threads:
+        thread.join()
+    return subprocess.CompletedProcess(args=command, returncode=returncode, stdout="".join(collected["stdout"]), stderr="".join(collected["stderr"]))
 
 
 def tablassert_available() -> bool:
@@ -458,7 +516,8 @@ def _find_graph(config_refs: list[ArtifactRef], ctx: TaskContext) -> Path:
 class TablassertRunner:
     """Run the INSTALLED ``tablassert`` CLI (a core DAKP dependency) as a subprocess.
 
-    Builds ``tablassert build-kg <graph.yaml> --fullmap <path> [--qc] [--release]`` and records
+    Builds ``tablassert build-kg <graph.yaml> --fullmap <path> [--qc] [--release]``, streams the
+    subprocess output live into the task log (:func:`stream_subprocess`), and records the full
     stdout / stderr / exit code in the handoff report. A non-zero exit is captured as
     ``status: failed`` in the report (written to disk before raising) and then raises
     :class:`TablassertError` so the calling task (Airflow or stage harness) fails correctly.
@@ -480,6 +539,7 @@ class TablassertRunner:
         return command
 
     def run(self, assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
+        stats(logger, "run_tablassert", mode="real")
         graph_yaml = _find_graph(config_refs, ctx)
         fullmap_value = ctx.params.get("fullmap")
         if not fullmap_value:
@@ -498,20 +558,24 @@ class TablassertRunner:
             )
             raise RuntimeError(msg)
 
+        event = "run_tablassert"
         qc_requested = bool(ctx.params.get("qc"))
         qc = qc_requested and qc_runtime_available()
         if qc_requested and not qc:
-            logger.warning("tablassert --qc requested but the QC audit runtime (sentence-transformers) is not importable; running without --qc")
+            logger.warning("{}: --qc requested but the QC audit runtime (sentence-transformers) is not importable; running without --qc", event)
         release = bool(ctx.params.get("release"))
 
         command = self.build_command(graph_yaml, fullmap, tablassert_dir=tablassert_dir, qc=qc, release=release)
         cwd = Workdir(ctx.workdir).root
 
-        logger.info("running Tablassert: {}", " ".join(command))
-        completed = run_subprocess(command, cwd=cwd)
+        with step(logger, event):
+            stats(logger, event, graph_config=str(graph_yaml), fullmap=fullmap, qc=qc, release=release, tablassert_dir=tablassert_dir or "-")
+            stats(logger, event, command=" ".join(command))
+            completed = stream_subprocess(command, cwd=cwd)
         status = "ok" if completed.returncode == 0 else "failed"
+        stats(logger, event, status=status, exit_code=completed.returncode)
         if completed.returncode != 0:
-            logger.error("Tablassert exited {}: {}", completed.returncode, (completed.stderr or "").strip())
+            logger.error("{}: exited {} — stderr = {}", event, completed.returncode, (completed.stderr or "").strip())
 
         report = _base_report("real", assertion_refs, config_refs)
         report.update(
@@ -531,8 +595,7 @@ class TablassertRunner:
         refs = [_write_report(report, assertion_refs, ctx)]
         if completed.returncode != 0:
             raise TablassertError(
-                f"Tablassert exited {completed.returncode}; see handoff report: {refs[0].uri}\n"
-                f"{(completed.stderr or '').strip()[:500]}"
+                f"Tablassert exited {completed.returncode}; see handoff report: {refs[0].uri}\n{(completed.stderr or '').strip()[:500]}"
             )
         return refs
 
@@ -542,6 +605,13 @@ class DeferredTablassertRunner:
     """Write a deferred-handoff report; never touch Tablassert (no fullmap trigger + tests)."""
 
     def run(self, assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
+        event = "run_tablassert"
+        stats(logger, event, mode="deferred")
+        stats(
+            logger,
+            event,
+            reason="no fullmap provided (run_tablassert disabled); canonical resolution + KGX compilation delegated to the installed tablassert CLI",
+        )
         report = _base_report("deferred", assertion_refs, config_refs)
         report.update(
             {

@@ -43,7 +43,7 @@ from dakp_pipeline.io import schemas
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import OperationBlock, TableBlock
-from dakp_pipeline.logging_setup import bind
+from dakp_pipeline.logging_setup import bind, stats
 from dakp_pipeline.paths import Workdir
 
 # --- normalized column contracts ------------------------------------------------
@@ -216,7 +216,7 @@ class DrugsFDAProductsExtractor:
         )
 
         rows_total = products_frame.height if products_frame is not None else 0
-        log.info("extracted Drugs@FDA", products=rows_total, warnings=len(warnings), outputs=len(refs))
+        stats(log, "extract_drugsfda", products=rows_total, warnings=len(warnings), outputs=len(refs))
         return refs
 
     # -- registration helpers -------------------------------------------------

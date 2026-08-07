@@ -22,6 +22,8 @@ from typing import Any
 from airflow.sdk import TaskGroup, Variable, dag, task
 from pendulum import datetime
 
+from dakp_pipeline.logging_setup import logger, stats, step
+
 # --- DAG-level constants ---------------------------------------------------------
 
 DAG_ID = "dakp_build"
@@ -137,25 +139,41 @@ def _build_acquire_stage() -> AcquireOutputs:
         def acquire_dailymed() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline import acquire
 
-            return _refs_to_xcom(acquire.acquire_dailymed(_ctx()))
+            ctx = _ctx()
+            with step(logger, "task acquire_dailymed"):
+                refs = acquire.acquire_dailymed(ctx)
+                stats(logger, "task acquire_dailymed", output_refs=len(refs))
+                return _refs_to_xcom(refs)
 
         @task(pool=DOWNLOAD_POOL, doc_md="Download/cache FAERS quarterly ASCII artifacts; returns `ArtifactRef` manifests only.")
         def acquire_faers() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline import acquire
 
-            return _refs_to_xcom(acquire.acquire_faers(_ctx()))
+            ctx = _ctx()
+            with step(logger, "task acquire_faers"):
+                refs = acquire.acquire_faers(ctx)
+                stats(logger, "task acquire_faers", output_refs=len(refs))
+                return _refs_to_xcom(refs)
 
         @task(pool=DOWNLOAD_POOL, doc_md="Download/cache the Drugs@FDA data-files ZIP; returns `ArtifactRef` manifests only.")
         def acquire_drugsfda() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline import acquire
 
-            return _refs_to_xcom(acquire.acquire_drugsfda(_ctx()))
+            ctx = _ctx()
+            with step(logger, "task acquire_drugsfda"):
+                refs = acquire.acquire_drugsfda(ctx)
+                stats(logger, "task acquire_drugsfda", output_refs=len(refs))
+                return _refs_to_xcom(refs)
 
         @task(pool=DOWNLOAD_POOL, doc_md="Ensure the production GLiNER checkpoint is cached before contraindication mining.")
         def acquire_ner_models() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline import acquire
 
-            return _refs_to_xcom(acquire.acquire_ner_models(_ctx()))
+            ctx = _ctx()
+            with step(logger, "task acquire_ner_models"):
+                refs = acquire.acquire_ner_models(ctx)
+                stats(logger, "task acquire_ner_models", output_refs=len(refs))
+                return _refs_to_xcom(refs)
 
         return AcquireOutputs(dailymed=acquire_dailymed(), faers=acquire_faers(), drugsfda=acquire_drugsfda(), ner_models=acquire_ner_models())
 
@@ -183,21 +201,43 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
     with TaskGroup(group_id="shape", prefix_group_id=False, tooltip="Shape assertion tables", doc_md=_SHAPE_DOC_MD):
 
         @task(doc_md="Shape FDA-approved treatment assertions from DailyMed, Drugs@FDA, and FAERS refs.")
-        def shape_treatment_tables(dm_ext: Any, drugsfda_ext: Any, faers_ext: Any) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+        def shape_treatment_tables(
+            dm_ext: Any, drugsfda_ext: Any, faers_ext: Any
+        ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline.assertions import approved_treats
 
-            refs = [*_refs_from_xcom(dm_ext), *_refs_from_xcom(drugsfda_ext), *_refs_from_xcom(faers_ext)]
-            return _refs_to_xcom(approved_treats.transform(refs, _ctx()))
+            ctx = _ctx()
+            with step(logger, "task shape_treatment_tables"):
+                dailymed_refs, drugsfda_refs, faers_refs = _refs_from_xcom(dm_ext), _refs_from_xcom(drugsfda_ext), _refs_from_xcom(faers_ext)
+                stats(
+                    logger,
+                    "task shape_treatment_tables",
+                    dailymed_refs=len(dailymed_refs),
+                    drugsfda_refs=len(drugsfda_refs),
+                    faers_refs=len(faers_refs),
+                )
+                out = approved_treats.transform([*dailymed_refs, *drugsfda_refs, *faers_refs], ctx)
+                stats(logger, "task shape_treatment_tables", output_refs=len(out))
+                return _refs_to_xcom(out)
 
         @task(doc_md="Shape FAERS observed-use assertions from FAERS cases with DailyMed support refs.")
-        def shape_faers_use_tables(faers_ext: Any, dm_ext: Any) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+        def shape_faers_use_tables(
+            faers_ext: Any, dm_ext: Any
+        ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline.assertions import observed_uses
 
-            refs = [*_refs_from_xcom(faers_ext), *_refs_from_xcom(dm_ext)]
-            return _refs_to_xcom(observed_uses.transform(refs, _ctx()))
+            ctx = _ctx()
+            with step(logger, "task shape_faers_use_tables"):
+                faers_refs, dailymed_refs = _refs_from_xcom(faers_ext), _refs_from_xcom(dm_ext)
+                stats(logger, "task shape_faers_use_tables", faers_refs=len(faers_refs), dailymed_refs=len(dailymed_refs))
+                out = observed_uses.transform([*faers_refs, *dailymed_refs], ctx)
+                stats(logger, "task shape_faers_use_tables", output_refs=len(out))
+                return _refs_to_xcom(out)
 
         @task(doc_md="Mine contraindication assertions from DailyMed refs after production NER models are cached.")
-        def shape_contraindication_tables(dm_ext: Any, ner_models_ref: Any) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+        def shape_contraindication_tables(
+            dm_ext: Any, ner_models_ref: Any
+        ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             # ``ner_models_ref`` is an ordering dependency: the production NER lazily loads the
             # GLiNER weights cached by acquire_ner_models, so mining runs after acquisition (the
             # model refs aren't inputs). The shaper owns its internal two-pass indication-section
@@ -214,9 +254,14 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
             # own deterministic backend (or fall back to the gazetteer); this production wiring is
             # DAG-only. Keep ``contraindications.transform`` as a runtime module lookup so tests and
             # concurrent indication-parser work can monkeypatch the module attribute.
-            ner = DiseaseNER(offline=False, workdir=ctx.workdir)
-            ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
-            return _refs_to_xcom(contraindications.transform(_refs_from_xcom(dm_ext), ctx))
+            with step(logger, "task shape_contraindication_tables"):
+                dailymed_refs = _refs_from_xcom(dm_ext)
+                stats(logger, "task shape_contraindication_tables", dailymed_refs=len(dailymed_refs))
+                ner = DiseaseNER(offline=False, workdir=ctx.workdir)
+                ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
+                out = contraindications.transform(dailymed_refs, ctx)
+                stats(logger, "task shape_contraindication_tables", output_refs=len(out))
+                return _refs_to_xcom(out)
 
         return AssertionOutputs(
             approved=shape_treatment_tables(extracts.dailymed, extracts.drugsfda, extracts.faers),
@@ -230,18 +275,33 @@ def _build_tablassert_stage(assertions: AssertionOutputs) -> TablassertOutputs:
     with TaskGroup(group_id="tablassert", prefix_group_id=False, tooltip="Tablassert handoff", doc_md=_TABLASSERT_DOC_MD):
 
         @task(doc_md="Generate Graph/table YAML configs for the assertion TSVs.")
-        def generate_tablassert_configs(approved: Any, uses: Any, contra: Any) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+        def generate_tablassert_configs(
+            approved: Any, uses: Any, contra: Any
+        ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline import tablassert
 
-            refs = [*_refs_from_xcom(approved), *_refs_from_xcom(uses), *_refs_from_xcom(contra)]
-            return _refs_to_xcom(tablassert.generate(refs, _ctx()))
+            ctx = _ctx()
+            with step(logger, "task generate_tablassert_configs"):
+                refs = [*_refs_from_xcom(approved), *_refs_from_xcom(uses), *_refs_from_xcom(contra)]
+                stats(logger, "task generate_tablassert_configs", assertion_refs=len(refs))
+                out = tablassert.generate(refs, ctx)
+                stats(logger, "task generate_tablassert_configs", output_refs=len(out))
+                return _refs_to_xcom(out)
 
         @task(doc_md="Run the installed Tablassert CLI when a fullmap is configured; otherwise emit a deferred handoff report.")
-        def run_tablassert(approved: Any, uses: Any, contra: Any, configs: Any) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+        def run_tablassert(
+            approved: Any, uses: Any, contra: Any, configs: Any
+        ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline import tablassert
 
-            assertion_refs = [*_refs_from_xcom(approved), *_refs_from_xcom(uses), *_refs_from_xcom(contra)]
-            return _refs_to_xcom(tablassert.run(assertion_refs, _refs_from_xcom(configs), _ctx()))
+            ctx = _ctx()
+            with step(logger, "task run_tablassert"):
+                assertion_refs = [*_refs_from_xcom(approved), *_refs_from_xcom(uses), *_refs_from_xcom(contra)]
+                config_refs = _refs_from_xcom(configs)
+                stats(logger, "task run_tablassert", assertion_refs=len(assertion_refs), config_refs=len(config_refs))
+                out = tablassert.run(assertion_refs, config_refs, ctx)
+                stats(logger, "task run_tablassert", output_refs=len(out))
+                return _refs_to_xcom(out)
 
         configs = generate_tablassert_configs(assertions.approved, assertions.uses, assertions.contraindications)
         kgx = run_tablassert(assertions.approved, assertions.uses, assertions.contraindications, configs)
@@ -253,16 +313,22 @@ def _build_summary_stage(assertions: AssertionOutputs, kgx: Any) -> Any:
     with TaskGroup(group_id="summary", prefix_group_id=False, tooltip="Build summary", doc_md=_SUMMARY_DOC_MD):
 
         @task(doc_md="Terminal task: validate assertion tables, run regression guards, and write build_summary.json.")
-        def write_build_summary(approved: Any, uses: Any, contra: Any, kgx_refs: Any) -> str:  # pragma: no cover - body executes only under the Airflow task runtime
+        def write_build_summary(
+            approved: Any, uses: Any, contra: Any, kgx_refs: Any
+        ) -> str:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline import runtime, translator
             from dakp_pipeline.paths import Workdir
 
             ctx = _ctx()
-            assertion_refs = [*_refs_from_xcom(approved), *_refs_from_xcom(uses), *_refs_from_xcom(contra)]
-            report = translator.validate(assertion_refs)
-            regression_report = translator.check_assertion_tables(assertion_refs)
-            summary = runtime.write_build_summary(Workdir(ctx.workdir), assertion_refs, _refs_from_xcom(kgx_refs), report, regression_report)
-            return str(summary)
+            with step(logger, "task write_build_summary"):
+                assertion_refs = [*_refs_from_xcom(approved), *_refs_from_xcom(uses), *_refs_from_xcom(contra)]
+                kgx_ref_list = _refs_from_xcom(kgx_refs)
+                stats(logger, "task write_build_summary", assertion_refs=len(assertion_refs), kgx_refs=len(kgx_ref_list))
+                report = translator.validate(assertion_refs)
+                regression_report = translator.check_assertion_tables(assertion_refs)
+                summary = runtime.write_build_summary(Workdir(ctx.workdir), assertion_refs, kgx_ref_list, report, regression_report)
+                stats(logger, "task write_build_summary", summary_path=str(summary))
+                return str(summary)
 
         return write_build_summary(assertions.approved, assertions.uses, assertions.contraindications, kgx)
 

@@ -49,13 +49,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import polars as pl
-from loguru import logger
 
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.content_hash import hash_bytes
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import OperationBlock, TableBlock
+from dakp_pipeline.logging_setup import logger, stats
 from dakp_pipeline.paths import Workdir
 
 _DELIMITER = "$"
@@ -244,8 +244,9 @@ class FAERSASCIIExtractor:
             warnings.frame(), wd.interim / "faers" / "warnings.parquet", "warnings", input_ids, warnings.total, store, fingerprint=_WARNINGS_COLUMNS
         )
 
-        logger.info(
-            "faers extract complete",
+        stats(
+            logger,
+            "extract_faers",
             quarters=len(by_quarter_family),
             cases=global_cases.height,
             deleted=delete_audit.height,

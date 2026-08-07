@@ -13,7 +13,7 @@ The artifacts are derived from the "downloaded" bytes through the REAL code path
 release-ZIP expansion, ``$``-delimited FAERS ZIP parsing, SPL XML extraction, Drugs@FDA ZIP
 parsing, content-addressed ingest). The Tablassert *handoff* runs its real runner (``run_tablassert``
 set via the fullmap param); only the ``../Tablassert`` subprocess is faked (the documented
-``run_subprocess`` seam). Stays fully offline so it passes in CI.
+``stream_subprocess`` seam). Stays fully offline so it passes in CI.
 """
 
 from __future__ import annotations
@@ -152,7 +152,7 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
     # availability probe too so this smoke run stays offline and tablassert-independent, exactly
     # like the faked subprocess below.
     monkeypatch.setattr(run_module, "tablassert_available", lambda: True)
-    monkeypatch.setattr(run_module, "run_subprocess", _fake_tablassert_subprocess)
+    monkeypatch.setattr(run_module, "stream_subprocess", _fake_tablassert_subprocess)
 
     workdir = tmp_path / "work"
     result = run_stages(

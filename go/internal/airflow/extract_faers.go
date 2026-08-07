@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/glusman-team/dakp/go/internal/blake3store"
 	"github.com/glusman-team/dakp/go/internal/faers"
@@ -30,6 +31,9 @@ var faersCaseColumns = []string{
 
 var faersWarningsColumns = []string{"quarter", "family", "code", "message", "count"}
 
+// faersEvent prefixes every stat line the FAERS extractor emits (one stat per line).
+const faersEvent = "extract_faers"
+
 // ExtractFAERS is the native Go implementation of the DAG's extract_faers stage. It mirrors
 // faers_ascii.FAERSASCIIExtractor semantics (DELETE-filtered, cross-quarter-deduped case join)
 // but runs as a **bounded-memory streaming pipeline** (plans/fix-faers-memory.md): quarters are
@@ -42,6 +46,7 @@ var faersWarningsColumns = []string{"quarter", "family", "code", "message", "cou
 func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]ArtifactRef, error) {
 	if cfg.MemoryBudgetGB > 0 {
 		debug.SetMemoryLimit(int64(cfg.MemoryBudgetGB) << 30)
+		Stat(ctx, faersEvent, "memory_budget_gb", cfg.MemoryBudgetGB)
 	}
 
 	store := Store{Workdir: cfg.Workdir}
@@ -59,6 +64,11 @@ func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]Arti
 	if err := StageInputs(inputs, inDir); err != nil {
 		return nil, err
 	}
+	Stat(ctx, faersEvent, "staged_inputs", len(inputs))
+	for i, ref := range inputs {
+		StatDebug(ctx, faersEvent, fmt.Sprintf("input[%d].uri", i), ref.URI)
+		StatDebug(ctx, faersEvent, fmt.Sprintf("input[%d].blake3", i), ref.Blake3)
+	}
 
 	quarters, err := inventoryFAERSQuarters(inDir)
 	if err != nil {
@@ -74,6 +84,10 @@ func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]Arti
 	// Most-recent-first: the streaming dedup relies on newer quarters arriving first, and it
 	// mirrors sorted(by_quarter_family, reverse=True) in the Python reference.
 	sort.Slice(quarterList, func(i, j int) bool { return quarterList[i] > quarterList[j] })
+	Stat(ctx, faersEvent, "quarters_discovered", len(quarterList))
+	for _, q := range quarterList {
+		StatDebug(ctx, faersEvent, "quarter", q)
+	}
 
 	warn := &faers.Warnings{}
 	deduper := faers.NewDeduper()
@@ -88,9 +102,15 @@ func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]Arti
 		deleteTables []*faers.Table
 	)
 	for _, q := range quarterList {
+		quarterStart := time.Now()
 		families, err := parseFAERSQuarter(ctx, q, quarters[q], warn)
 		if err != nil {
 			return nil, fmt.Errorf("extract_faers: quarter %s: %w", q, err)
+		}
+		parsedRows := 0
+		for family, tbl := range families {
+			parsedRows += len(tbl.Rows)
+			StatDebug(ctx, faersEvent, q+"."+family+"_rows", len(tbl.Rows))
 		}
 		if del := families["DELETE"]; del != nil && len(del.Rows) > 0 {
 			deleteTables = append(deleteTables, del)
@@ -106,8 +126,14 @@ func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]Arti
 			}
 			runs = append(runs, run)
 		}
+		Stat(ctx, faersEvent, q+".parsed_rows", parsedRows)
+		Stat(ctx, faersEvent, q+".cases", len(cases))
+		Stat(ctx, faersEvent, q+".kept", len(kept))
+		Stat(ctx, faersEvent, q+".superseded", len(superseded))
+		Stat(ctx, faersEvent, q+".elapsed_s", fmt.Sprintf("%.3f", time.Since(quarterStart).Seconds()))
 	}
 	faers.SortDedupAudit(dedupAudit)
+	Stat(ctx, faersEvent, "warnings_total", int64(warn.Total()))
 
 	inputIDs := make([]string, len(inputs))
 	for i, ref := range inputs {
@@ -118,10 +144,13 @@ func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]Arti
 	// 1+2. Global cases.parquet and public faers_cases.tsv, emitted in ONE merged pass.
 	casesPath := filepath.Join(faersDir, "cases.parquet")
 	tsvPath := filepath.Join(faersDir, "faers_cases.tsv")
+	mergeStart := time.Now()
 	casesN, err := mergeFAERSOutputs(runs, casesPath, tsvPath)
 	if err != nil {
 		return nil, fmt.Errorf("extract_faers: merge cases: %w", err)
 	}
+	Stat(ctx, faersEvent, "merged_rows", casesN)
+	Stat(ctx, faersEvent, "merge_elapsed_s", fmt.Sprintf("%.3f", time.Since(mergeStart).Seconds()))
 	casesRef, err := store.Register(RegisterInput{
 		Path: casesPath, MediaType: ParquetMediaType, Rows: int64(casesN),
 		SchemaFingerprint: SchemaFingerprint(faersCaseColumns), Inputs: inputIDs,
@@ -130,6 +159,7 @@ func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]Arti
 	if err != nil {
 		return nil, err
 	}
+	StatOutput(ctx, faersEvent, "cases.parquet", casesRef)
 	tsvRef, err := store.Register(RegisterInput{
 		Path: tsvPath, MediaType: TSVMediaType, Rows: int64(casesN),
 		SchemaFingerprint: SchemaFingerprint(faers.CasesTSVColumns), Inputs: inputIDs,
@@ -138,6 +168,7 @@ func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]Arti
 	if err != nil {
 		return nil, err
 	}
+	StatOutput(ctx, faersEvent, "faers_cases.tsv", tsvRef)
 
 	// 3. delete_audit.parquet.
 	deleteRows := make([][]string, 0)
@@ -148,6 +179,7 @@ func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]Arti
 	if err != nil {
 		return nil, err
 	}
+	StatOutput(ctx, faersEvent, "delete_audit.parquet", deleteRef)
 
 	// 4. dedup_audit.parquet.
 	dedupRows := make([][]string, 0, len(dedupAudit))
@@ -158,6 +190,7 @@ func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]Arti
 	if err != nil {
 		return nil, err
 	}
+	StatOutput(ctx, faersEvent, "dedup_audit.parquet", dedupRef)
 
 	// 5. warnings.parquet (empty; the Go task records warnings in its log stream, not rows).
 	warningsPath := filepath.Join(faersDir, "warnings.parquet")
@@ -172,7 +205,9 @@ func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]Arti
 	if err != nil {
 		return nil, err
 	}
+	StatOutput(ctx, faersEvent, "warnings.parquet", warningsRef)
 
+	Stat(ctx, faersEvent, "output_refs", 5)
 	return []ArtifactRef{casesRef, tsvRef, deleteRef, dedupRef, warningsRef}, nil
 }
 

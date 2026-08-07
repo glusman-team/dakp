@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.logging_setup import bind
+from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.ner import model_cache
 from dakp_pipeline.ner.ner import DEFAULT_MODEL
 from dakp_pipeline.sources import dailymed, drugsfda, faers
@@ -81,16 +81,19 @@ def acquire_ner_models(
     (:func:`default_ner_models`); ``downloader`` is injectable for offline tests (defaults to the
     Hugging Face Hub downloader, which needs the NER dependencies).
     """
-    log = bind(task_id="acquire_ner_models")
-    model_ids = list(models) if models is not None else default_ner_models(ctx)
-    force = bool(ctx.params.get("force", False))
-    resolved_cache = Path(cache_dir) if cache_dir is not None else model_cache.default_model_cache_dir(ctx.workdir)
-    refs: list[ArtifactRef] = []
-    for model_id in model_ids:
-        cached = model_cache.ensure_model(model_id, cache_dir=resolved_cache, downloader=downloader, force=force)
-        refs.append(model_ref_to_artifact(cached))
-        log.info("ner model cached", model_id=model_id, artifact_id=cached.b3, source=cached.source)
-    return refs
+    with step(logger, "acquire_ner_models"):
+        model_ids = list(models) if models is not None else default_ner_models(ctx)
+        force = bool(ctx.params.get("force", False))
+        stats(logger, "acquire_ner_models", models=model_ids, force=force)
+        resolved_cache = Path(cache_dir) if cache_dir is not None else model_cache.default_model_cache_dir(ctx.workdir)
+        stats(logger, "acquire_ner_models", cache_dir=str(resolved_cache))
+        refs: list[ArtifactRef] = []
+        for model_id in model_ids:
+            cached = model_cache.ensure_model(model_id, cache_dir=resolved_cache, downloader=downloader, force=force)
+            refs.append(model_ref_to_artifact(cached))
+            stats(logger, "acquire_ner_models", model_id=model_id, artifact_id=cached.b3, source=cached.source)
+        stats(logger, "acquire_ner_models", models_cached=len(refs))
+        return refs
 
 
 # --- aggregate acquisition ------------------------------------------------------

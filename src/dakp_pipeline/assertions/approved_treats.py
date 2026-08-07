@@ -45,6 +45,7 @@ from dakp_pipeline.assertions.evidence import (
 )
 from dakp_pipeline.assertions.observed_uses import is_non_disease_indication
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
+from dakp_pipeline.logging_setup import logger, stats, step
 
 _TABLE = "approved_treats_assertions"
 _PREDICATE = "biolink:treats"
@@ -56,12 +57,14 @@ _FAERS_CASE_COLUMNS = ("nda", "nda_raw", "indication", "ingredient", "drugname")
 
 class ApprovedTreatsShaper:
     def transform(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
-        disease_map: dict[str, dict[str, str]] = ctx.params.get("disease_map", {})  # type: ignore[assignment]
-        dailymed = build_dailymed_evidence(inputs)
-        drugsfda_map = build_drugsfda_ingredient_map(inputs)
-        faers_cases = find_faers_cases(inputs, columns=_FAERS_CASE_COLUMNS)
-        rows = build_approved_treats_rows(faers_cases, dailymed, drugsfda_map, disease_map)
-        return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_approved_treats")
+        with step(logger, "shape_approved_treats"):
+            disease_map: dict[str, dict[str, str]] = ctx.params.get("disease_map", {})  # type: ignore[assignment]
+            stats(logger, "shape_approved_treats", inputs=len(inputs), disease_map_terms=len(disease_map))
+            dailymed = build_dailymed_evidence(inputs)
+            drugsfda_map = build_drugsfda_ingredient_map(inputs)
+            faers_cases = find_faers_cases(inputs, columns=_FAERS_CASE_COLUMNS)
+            rows = build_approved_treats_rows(faers_cases, dailymed, drugsfda_map, disease_map)
+            return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_approved_treats")
 
 
 def build_approved_treats_rows(
@@ -71,15 +74,23 @@ def build_approved_treats_rows(
     candidates = _faers_candidates(faers_cases, disease_map) if faers_cases is not None else _dailymed_candidates(dailymed, disease_map)
 
     aggregated: dict[tuple[str, str], dict[str, Any]] = {}
+    candidates_seen = 0
+    dropped_no_ingredient_map = 0
+    dropped_no_spl_support = 0
+    dropped_no_subject = 0
     for cand in candidates:
+        candidates_seen += 1
         norm = cand["norm_nda"]
         if norm not in drugsfda_map:  # (1) NDA must map (Drugs@FDA) to an ingredient
+            dropped_no_ingredient_map += 1
             continue
         sets, docs = dailymed.indication_support(norm)
         if not sets:  # (2)+(3) DailyMed approval AND SPL indication-section support
+            dropped_no_spl_support += 1
             continue
         subject_text, subject_curie = _subject_for_sets(dailymed, sets, cand["fallback_subject"])
         if not subject_text:
+            dropped_no_subject += 1
             continue
         key = (subject_text, cand["object_text"])
         agg = aggregated.setdefault(
@@ -104,6 +115,15 @@ def build_approved_treats_rows(
         # object_curie needs no back-fill: it is a deterministic function of object_text (the
         # aggregation key), so every candidate for a key carries the same value already set above.
 
+    stats(
+        logger,
+        "shape_approved_treats",
+        candidates=candidates_seen,
+        dropped_no_ingredient_map=dropped_no_ingredient_map,
+        dropped_no_spl_support=dropped_no_spl_support,
+        dropped_no_subject=dropped_no_subject,
+        assertions=len(aggregated),
+    )
     return [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]
 
 

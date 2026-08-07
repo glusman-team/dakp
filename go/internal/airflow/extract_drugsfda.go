@@ -15,6 +15,9 @@ import (
 
 const drugsfdaWarningsMediaType = "application/x-ndjson"
 
+// drugsfdaEvent prefixes every stat line the Drugs@FDA extractor emits (one stat per line).
+const drugsfdaEvent = "extract_drugsfda"
+
 // drugsfdaInput is one recognized input file plus its classified table key.
 type drugsfdaInput struct {
 	path string
@@ -46,6 +49,7 @@ func ExtractDrugsFDA(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 	if err := StageInputs(inputs, inDir); err != nil {
 		return nil, err
 	}
+	Stat(ctx, drugsfdaEvent, "staged_inputs", len(inputs))
 	if err := unpackDrugsFDAZips(inDir); err != nil {
 		return nil, err
 	}
@@ -54,11 +58,16 @@ func ExtractDrugsFDA(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 	if err != nil {
 		return nil, err
 	}
+	Stat(ctx, drugsfdaEvent, "inputs_discovered", len(discovered))
+	for _, in := range discovered {
+		StatDebug(ctx, drugsfdaEvent, "input", in.key+" <- "+filepath.Base(in.path))
+	}
 	tables, err := parseDrugsFDAInputs(discovered)
 	if err != nil {
 		return nil, err
 	}
 	res := drugsfda.Extract(tables)
+	Stat(ctx, drugsfdaEvent, "parse_warnings", len(res.Warnings))
 	warnings := int64(len(res.Warnings))
 	inputIDs := make([]string, len(inputs))
 	for i, ref := range inputs {
@@ -67,10 +76,12 @@ func ExtractDrugsFDA(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 
 	var refs []ArtifactRef
 	if res.HaveProducts {
+		Stat(ctx, drugsfdaEvent, "parsed_products_rows", len(res.Products))
 		ref, err := writeDrugsFDAParquet(store, drugsfdaDir, "products", drugsfda.ProductsColumns, res.Products, inputIDs, warnings)
 		if err != nil {
 			return nil, err
 		}
+		StatOutput(ctx, drugsfdaEvent, "products.parquet", ref)
 		refs = append(refs, ref)
 
 		// Public drugsfda_products.tsv (Tablassert source-section handoff).
@@ -87,27 +98,34 @@ func ExtractDrugsFDA(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 		if err != nil {
 			return nil, err
 		}
+		StatOutput(ctx, drugsfdaEvent, "drugsfda_products.tsv", tsvRef)
 		refs = append(refs, tsvRef)
 	}
 	if res.HaveApplications {
+		Stat(ctx, drugsfdaEvent, "parsed_applications_rows", len(res.Applications))
 		ref, err := writeDrugsFDAParquet(store, drugsfdaDir, "applications", drugsfda.ApplicationsColumns, res.Applications, inputIDs, warnings)
 		if err != nil {
 			return nil, err
 		}
+		StatOutput(ctx, drugsfdaEvent, "applications.parquet", ref)
 		refs = append(refs, ref)
 	}
 	if res.HaveSubmissions {
+		Stat(ctx, drugsfdaEvent, "parsed_submissions_rows", len(res.Submissions))
 		ref, err := writeDrugsFDAParquet(store, drugsfdaDir, "submissions", drugsfda.SubmissionsColumns, res.Submissions, inputIDs, warnings)
 		if err != nil {
 			return nil, err
 		}
+		StatOutput(ctx, drugsfdaEvent, "submissions.parquet", ref)
 		refs = append(refs, ref)
 	}
 	if res.HaveProducts { // lookups derive from products
+		Stat(ctx, drugsfdaEvent, "derived_lookups_rows", len(res.Lookups))
 		ref, err := writeDrugsFDAParquet(store, drugsfdaDir, "lookups", drugsfda.LookupsColumns, res.Lookups, inputIDs, 0)
 		if err != nil {
 			return nil, err
 		}
+		StatOutput(ctx, drugsfdaEvent, "lookups.parquet", ref)
 		refs = append(refs, ref)
 	}
 
@@ -123,6 +141,9 @@ func ExtractDrugsFDA(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 	if err != nil {
 		return nil, err
 	}
+	StatOutput(ctx, drugsfdaEvent, "extract_warnings.jsonl", warningsRef)
+
+	Stat(ctx, drugsfdaEvent, "output_refs", len(refs)+1)
 	return append(refs, warningsRef), nil
 }
 

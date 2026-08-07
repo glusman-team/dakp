@@ -1,6 +1,8 @@
 package airflow
 
 import (
+	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -86,6 +88,10 @@ func (s Store) Register(in RegisterInput) (ArtifactRef, error) {
 	if err := blake3store.WriteManifest(mpath, m); err != nil {
 		return ArtifactRef{}, err
 	}
+	// Per-artifact detail stays DEBUG; the extractors narrate their own outputs at INFO.
+	slog.Debug("store register: path = " + in.Path)
+	slog.Debug("store register: blake3 = " + id)
+	slog.Debug(fmt.Sprintf("store register: rows = %d", in.Rows))
 	return ArtifactRef{
 		URI:               in.Path,
 		Blake3:            id,

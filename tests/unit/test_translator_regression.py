@@ -7,7 +7,12 @@ tests confirm each broken invariant is reported specifically, aggregated per (fa
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import polars as pl
+
 from dakp_pipeline.assertions import approved_treats, contraindications, observed_uses
+from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.translator import EXPECTED_FAMILIES, RegressionReport, check_assertion_tables, check_rows
 
@@ -117,3 +122,37 @@ def test_violations_aggregated_with_offending_count() -> None:
     report = check_rows(rows)
     assert len(report.violations) == 1
     assert report.violations[0].message.startswith("3 row(s):")
+
+
+def test_check_assertion_tables_reports_violations_read_from_disk(tmp_path: Path) -> None:
+    # A treats row with a broken clinical_approval_status invariant, written as a real TSV.
+    columns = schemas.columns_for("approved_treats_assertions")
+    row = dict.fromkeys(columns, "")
+    row.update(
+        {
+            "predicate": "biolink:treats",
+            "clinical_approval_status": "wrong_status",
+            "knowledge_level": "knowledge_assertion",
+            "primary_knowledge_source": _DAKP,
+            "upstream_resource_ids": "infores:dailymed|infores:faers",
+        }
+    )
+    bad_path = tmp_path / "approved_treats_assertions.tsv"
+    schemas.write_tsv(pl.DataFrame([row], schema=columns), bad_path)
+    bad_ref = ArtifactRef(uri=bad_path, blake3="b3:" + "2" * 64, media_type=schemas.TSV_MEDIA_TYPE)
+
+    report = check_assertion_tables([bad_ref])
+    assert report.ok is False
+    assert ("biolink:treats", "clinical_approval_status") in _violations(report)
+
+
+def test_check_assertion_tables_without_family_rows_reports_empty_families(tmp_path: Path) -> None:
+    columns = schemas.columns_for("faers_applied_to_treat_assertions")
+    empty_path = tmp_path / "faers_applied_to_treat_assertions.tsv"
+    schemas.write_tsv(pl.DataFrame(schema=columns), empty_path)
+    ref = ArtifactRef(uri=empty_path, blake3="b3:" + "3" * 64, media_type=schemas.TSV_MEDIA_TYPE)
+
+    report = check_assertion_tables([ref])
+    assert report.ok is True
+    assert report.families_seen == []
+    assert report.row_count == 0

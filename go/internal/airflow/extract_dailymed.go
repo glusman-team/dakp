@@ -6,11 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/glusman-team/dakp/go/internal/dailymed"
 )
 
 const dailymedOperation = "extract_dailymed_spl"
+
+// dailymedEvent prefixes every stat line the DailyMed extractor emits (one stat per line).
+const dailymedEvent = "extract_dailymed"
 
 // dailymedInterimOrder is the interim-table registration order; spl_documents is FIRST (the locked
 // public contract — downstream shapers resolve "the dailymed parquet" via the first matching ref),
@@ -43,6 +47,7 @@ func ExtractDailyMed(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 	if err := StageInputs(inputs, inDir); err != nil {
 		return nil, err
 	}
+	Stat(ctx, dailymedEvent, "staged_inputs", len(inputs))
 
 	paths, err := dailymed.ListSPLFiles(inDir)
 	if err != nil {
@@ -51,20 +56,28 @@ func ExtractDailyMed(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("extract_dailymed: no SPL files (.xml/.xml.gz) staged in %s", inDir)
 	}
+	Stat(ctx, dailymedEvent, "spl_files", len(paths))
 
 	limit := cfg.Threads
 	if limit <= 0 {
 		limit = 4
 	}
+	Stat(ctx, dailymedEvent, "workers", limit)
+	parseStart := time.Now()
 	tables, err := dailymed.Extract(ctx, paths, limit)
 	if err != nil {
 		return nil, err
 	}
+	Stat(ctx, dailymedEvent, "parse_elapsed_s", fmt.Sprintf("%.3f", time.Since(parseStart).Seconds()))
+	Stat(ctx, dailymedEvent, "parse_warnings", tables.Warnings)
 
 	// Index the produced tables by base name (sans .tsv) for column/row lookup.
 	byName := make(map[string]dailymed.TableFile, 5)
 	for _, tf := range tables.TableFiles() {
 		byName[strings.TrimSuffix(tf.Name, ".tsv")] = tf
+	}
+	for _, name := range dailymedInterimOrder {
+		Stat(ctx, dailymedEvent, "parsed_"+name+"_rows", len(byName[name].Rows))
 	}
 
 	inputIDs := tables.InputIDs
@@ -90,6 +103,7 @@ func ExtractDailyMed(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 		if err != nil {
 			return nil, err
 		}
+		StatOutput(ctx, dailymedEvent, name+".parquet", ref)
 		refs = append(refs, ref)
 	}
 
@@ -111,6 +125,9 @@ func ExtractDailyMed(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 	if err != nil {
 		return nil, err
 	}
+	StatOutput(ctx, dailymedEvent, "dailymed_spl_sections.tsv", tsvRef)
+
+	Stat(ctx, dailymedEvent, "output_refs", len(refs)+1)
 	return append(refs, tsvRef), nil
 }
 

@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"time"
 
 	v1 "github.com/apache/airflow/go-sdk/bundle/bundlev1"
 	"github.com/apache/airflow/go-sdk/bundle/bundlev1/bundlev1server"
@@ -106,20 +107,44 @@ func extractDrugsFDA(ctx sdk.TIRunContext, client sdk.Client, log *slog.Logger) 
 // task's ArtifactRefs (XCom), run the pure extractor, and return the produced ArtifactRefs (pushed
 // as this task's return_value XCom). Honors ctx cancellation via the extractor's context.
 func runExtract(ctx sdk.TIRunContext, client sdk.Client, log *slog.Logger, taskID, upstream string, fn extractFn) (any, error) {
+	start := time.Now()
 	cfg, err := readConfig(ctx, client)
 	if err != nil {
 		return nil, err
 	}
+	airflow.Started(ctx, taskID)
+	airflow.Stat(ctx, taskID, "workdir", cfg.Workdir)
+	airflow.Stat(ctx, taskID, "profile", cfg.Profile)
+	airflow.Stat(ctx, taskID, "threads", cfg.Threads)
+	airflow.Stat(ctx, taskID, "quarter_limit", cfg.QuarterLimit)
+	airflow.Stat(ctx, taskID, "release_limit", cfg.ReleaseLimit)
+	airflow.Stat(ctx, taskID, "force", cfg.Force)
+	airflow.Stat(ctx, taskID, "upstream_task", upstream)
 	inputs, err := readUpstreamRefs(ctx, client, upstream)
 	if err != nil {
 		return nil, err
 	}
-	log.InfoContext(ctx, "extract start", "task_id", taskID, "workdir", cfg.Workdir, "profile", cfg.Profile, "inputs", len(inputs))
+	airflow.Stat(ctx, taskID, "input_refs", len(inputs))
+	for i, ref := range inputs {
+		airflow.Stat(ctx, taskID, fmt.Sprintf("input[%d].uri", i), ref.URI)
+		airflow.Stat(ctx, taskID, fmt.Sprintf("input[%d].blake3", i), ref.Blake3)
+		if ref.Rows != nil {
+			airflow.Stat(ctx, taskID, fmt.Sprintf("input[%d].rows", i), *ref.Rows)
+		}
+	}
 	refs, err := fn(ctx, cfg, inputs)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", taskID, err)
 	}
-	log.InfoContext(ctx, "extract done", "task_id", taskID, "refs", len(refs))
+	airflow.Stat(ctx, taskID, "output_refs", len(refs))
+	totalRows := int64(0)
+	for _, ref := range refs {
+		if ref.Rows != nil {
+			totalRows += *ref.Rows
+		}
+	}
+	airflow.Stat(ctx, taskID, "output_rows_total", totalRows)
+	airflow.Finished(ctx, taskID, start)
 	return airflow.EncodeArtifactRefs(refs), nil
 }
 

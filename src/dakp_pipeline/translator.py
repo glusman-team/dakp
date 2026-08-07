@@ -52,10 +52,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from loguru import logger
-
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef
+from dakp_pipeline.logging_setup import logger, stats
 
 # --- Translator provenance constants (match dakp_pipeline.assertions + ../DINGO) ----
 
@@ -160,9 +159,13 @@ def validate(assertion_refs: list[ArtifactRef]) -> ContractReport:
             continue
         missing = [c for c in expected if c not in frame.columns]
         report.tables[table] = {"rows": frame.height, "missing_columns": missing}
+        stats(logger, "translator_contract", table=table, rows=frame.height, missing_columns=",".join(missing) if missing else "-")
         if missing:
             report.ok = False
             report.problems.append(f"{table} missing columns: {missing}")
+    for problem in report.problems:
+        logger.warning("translator_contract: problem = {}", problem)
+    stats(logger, "translator_contract", ok=report.ok, problems=len(report.problems))
     return report
 
 
@@ -362,7 +365,7 @@ def validate_kgx(nodes: Iterable[Mapping[str, Any]], edges: Iterable[Mapping[str
         _check_edge(edge, index, node_index, seen_edge_ids, problems)
 
     report = ContractReport(ok=not problems, kgx_problems=problems, problems=[problem.render() for problem in problems])
-    logger.debug("kgx contract validated", nodes=len(node_list), edges=len(edge_list), problems=len(problems), ok=report.ok)
+    stats(logger, "kgx_contract", level="DEBUG", nodes=len(node_list), edges=len(edge_list), problems=len(problems), ok=report.ok)
     return report
 
 
@@ -477,7 +480,18 @@ def check_assertion_tables(refs: list[ArtifactRef]) -> RegressionReport:
         if ref.uri.stem not in schemas.ASSERTION_TABLES:
             continue
         rows.extend(schemas.read_table(ref.uri).iter_rows(named=True))
-    return check_rows(rows)
+    report = check_rows(rows)
+    stats(
+        logger,
+        "translator_regression",
+        rows_checked=report.row_count,
+        families_seen=",".join(report.families_seen) if report.families_seen else "-",
+        violations=len(report.violations),
+        ok=report.ok,
+    )
+    for violation in report.violations:
+        logger.warning("translator_regression: violation = {} / {}", violation.family, violation.invariant)
+    return report
 
 
 __all__ = [

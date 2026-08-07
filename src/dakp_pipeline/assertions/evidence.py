@@ -28,12 +28,12 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
-from loguru import logger
 
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import OperationBlock, TableBlock
+from dakp_pipeline.logging_setup import logger, stats
 from dakp_pipeline.paths import Workdir
 
 # LOINC section codes DAKP consumes for SPL support (mirrors extract.spl_xml.SECTION_CODE_NAMES).
@@ -133,10 +133,13 @@ def find_faers_cases(inputs: Iterable[ArtifactRef], columns: tuple[str, ...] | N
 
     chosen = global_cases or any_cases or tsv_cases
     if chosen is None:
+        logger.warning("faers_cases: no FAERS case table among the inputs")
         return None
     frame = _read_case_table(chosen.uri, columns)
     if "drugname" not in frame.columns or "indication" not in frame.columns:
+        logger.warning("faers_cases: {} lacks drugname/indication columns; treating as absent", chosen.uri)
         return None
+    stats(logger, "faers_cases", path=str(chosen.uri), rows=frame.height, projected_columns=",".join(frame.columns))
     return frame
 
 
@@ -253,6 +256,14 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
             elif loinc == CONTRAINDICATION_LOINC:
                 evidence.contraindication_docs.setdefault(set_id, []).append((doc_id, text))
 
+    stats(
+        logger,
+        "dailymed_evidence",
+        approvals=len(evidence.approval_sets),
+        sets_with_ingredients=len(evidence.set_ingredient),
+        indication_sets=len(evidence.indication_docs),
+        contraindication_sets=len(evidence.contraindication_docs),
+    )
     return evidence
 
 
@@ -274,6 +285,7 @@ def build_drugsfda_ingredient_map(inputs: Iterable[ArtifactRef]) -> dict[str, se
         ingredient = str(rec.get("active_ingredient") or "").strip()
         if norm and ingredient:
             mapping.setdefault(norm, set()).add(ingredient)
+    stats(logger, "drugsfda_ingredient_map", ndas=len(mapping))
     return mapping
 
 
@@ -304,7 +316,7 @@ def write_assertion_table(
         operation=OperationBlock(name=operation),
         table=TableBlock(rows=rows_written, schema_fingerprint=fingerprint),
     )
-    logger.info("wrote assertion table {} ({} rows)", table, rows_written)
+    stats(logger, "assertion_table", table=table, rows=rows_written, path=str(out), blake3=ref.blake3, schema_fingerprint=fingerprint)
     return [ref]
 
 

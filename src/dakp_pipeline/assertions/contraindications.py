@@ -55,17 +55,18 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from loguru import logger
-
 from dakp_pipeline.assertions import INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, row_for
 from dakp_pipeline.assertions.evidence import build_dailymed_evidence, sorted_pipe, write_assertion_table
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
+from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
 from dakp_pipeline.ner.ner import DiseaseNER, Mention, extract_contraindication_diseases
 
 _TABLE = "contraindication_assertions"
 _PREDICATE = "biolink:contraindicated_in"
 _ONTOLOGY_FIXTURE = Path("ontology") / "disease_map.tsv"
+#: One INFO progress line per this many mined contraindication sections (GLiNER is the slow step).
+_MINING_PROGRESS_EVERY = 500
 
 #: Agent type for text-mined contraindications (matches the DAKP RIG ``contraindicated_in``).
 AT_TEXT_MINING = "text_mining_agent"
@@ -157,14 +158,15 @@ def default_ner(fixture_root: Path | str | None) -> DiseaseNER:
 
 class ContraindicationsShaper:
     def transform(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
-        ner_param = ctx.params.get("ner")
-        ner = ner_param if isinstance(ner_param, DiseaseNER) else default_ner(ctx.fixture_root)
-        devices = _resolve_devices(ner)
-        keywords = _resolve_keywords(ctx)
-        if devices:
-            logger.info("dispatching contraindication NER across {} GPUs", len(devices))
-        rows = build_contraindication_rows(inputs, ner, devices=devices, keywords=keywords)
-        return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_contraindications")
+        with step(logger, "shape_contraindications"):
+            ner_param = ctx.params.get("ner")
+            ner = ner_param if isinstance(ner_param, DiseaseNER) else default_ner(ctx.fixture_root)
+            devices = _resolve_devices(ner)
+            keywords = _resolve_keywords(ctx)
+            if devices:
+                stats(logger, "shape_contraindications", dispatch_gpus=len(devices))
+            rows = build_contraindication_rows(inputs, ner, devices=devices, keywords=keywords)
+            return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_contraindications")
 
 
 def build_contraindication_rows(
@@ -207,9 +209,18 @@ def build_contraindication_rows(
                 work_items_p2.append((set_id, doc_id, filtered))
 
     all_work_items = work_items_p1 + work_items_p2
+    stats(
+        logger,
+        "shape_contraindications",
+        contraindication_sets=len(evidence.contraindication_docs),
+        indication_sets=len(evidence.indication_docs),
+        pass1_sections=len(work_items_p1),
+        pass2_sections=len(work_items_p2),
+        sections_to_mine=len(all_work_items),
+    )
 
     # Extract mentions: two-pass multi-GPU when devices given + production NER + >1 item;
-    # else sequential.
+    # else sequential (with periodic progress narration — GLiNER mining is the slow step).
     if devices and len(all_work_items) > 1 and not ner._offline:
         if work_items_p2 and len(devices) >= 2:
             mined = _mine_two_passes_multi_gpu(work_items_p1, work_items_p2, ner, devices)
@@ -217,13 +228,18 @@ def build_contraindication_rows(
             # No Pass 2 work, or too few devices to split — all GPUs on combined work.
             mined = _mine_multi_gpu(all_work_items, ner, devices)
     else:
-        mined = {(set_id, doc_id): extract_contraindication_diseases(text, ner) for set_id, doc_id, text in all_work_items}
+        mined = {}
+        for done, (set_id, doc_id, text) in enumerate(all_work_items, start=1):
+            mined[(set_id, doc_id)] = extract_contraindication_diseases(text, ner)
+            progress(logger, "shape_contraindications", done, len(all_work_items), every=_MINING_PROGRESS_EVERY)
 
     # Aggregate mentions into assertion rows (unchanged logic).
     aggregated: dict[tuple[str, str], dict[str, Any]] = {}
+    mentions_mined = 0
     for set_id, doc_id, _text in all_work_items:
         ingredients = evidence.active_ingredients_by_set.get(set_id, [])
         for mention in mined.get((set_id, doc_id), []):
+            mentions_mined += 1
             # Canonicalize the mined mention (lowercase / strip punctuation) so case variants
             # (asthma / Asthma / ASTHMA) aggregate to one object instead of fragmenting the rows.
             object_text = normalize_text(mention.text)
@@ -232,6 +248,7 @@ def build_contraindication_rows(
             for ingredient_name, ingredient_unii in ingredients:
                 _accumulate(aggregated, set_id, doc_id, ingredient_name, ingredient_unii, object_text, mention)
 
+    stats(logger, "shape_contraindications", mentions_mined=mentions_mined, assertions=len(aggregated))
     return [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]
 
 
