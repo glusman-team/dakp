@@ -19,17 +19,20 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import SourceBlock
-from dakp_pipeline.logging_setup import bind
+from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.paths import Workdir
 
 # The FDA "Drugs@FDA Data Files" ZIP (legacy ref/legacy/DrugsFDA/bin/download.pl target).
 DRUGSFDA_DATA_FILES_URL = "https://www.fda.gov/media/89850/download"
+#: Narration prefix for every log line this fetcher emits (one stat per line).
+_EVENT = "acquire_drugsfda"
 
 
 class DrugsFDAFetcher:
@@ -38,23 +41,27 @@ class DrugsFDAFetcher:
     url: str = DRUGSFDA_DATA_FILES_URL
 
     def fetch(self, ctx: TaskContext) -> list[ArtifactRef]:
-        store = ArtifactStore(Workdir(ctx.workdir))
-        url = str(ctx.params.get("drugsfda_url", self.url))
-        log = bind(task_id="acquire_drugsfda", url=url)
-        log.info("downloading Drugs@FDA data-files zip")
+        with step(logger, _EVENT):
+            store = ArtifactStore(Workdir(ctx.workdir))
+            url = str(ctx.params.get("drugsfda_url", self.url))
+            stats(logger, _EVENT, url=url)
 
-        # Stage into a temp path so the only persistent write is the content-addressed
-        # store copy. No destructive stashing of prior downloads.
-        with tempfile.NamedTemporaryFile(prefix="drugsfda-", suffix=".zip", delete=False) as handle:
-            dest = Path(handle.name)
-        try:
-            download_drugsfda_zip(url, dest)
-            ref, cache_hit = store.ingest(dest, media_type="application/zip", alias="drugsfda/drugsfda_data_files.zip", source=SourceBlock(url=url))
-        finally:
-            dest.unlink(missing_ok=True)
+            # Stage into a temp path so the only persistent write is the content-addressed
+            # store copy. No destructive stashing of prior downloads.
+            with tempfile.NamedTemporaryFile(prefix="drugsfda-", suffix=".zip", delete=False) as handle:
+                dest = Path(handle.name)
+            try:
+                started = time.monotonic()
+                download_drugsfda_zip(url, dest)
+                stats(logger, _EVENT, bytes=dest.stat().st_size, elapsed_s=round(time.monotonic() - started, 3))
+                ref, cache_hit = store.ingest(
+                    dest, media_type="application/zip", alias="drugsfda/drugsfda_data_files.zip", source=SourceBlock(url=url)
+                )
+            finally:
+                dest.unlink(missing_ok=True)
 
-        log.info("acquired Drugs@FDA zip", artifact_id=ref.blake3, cache_hit=cache_hit)
-        return [ref]
+            stats(logger, _EVENT, blake3=ref.blake3, cache_hit=cache_hit)
+            return [ref]
 
 
 def download_drugsfda_zip(url: str, dest: Path, *, timeout: float = 120.0) -> Path:

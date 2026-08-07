@@ -22,16 +22,16 @@ from __future__ import annotations
 
 import re
 import shutil
+import time
 import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from loguru import logger
-
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import SourceBlock
+from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.paths import Workdir
 
 # FDA quarterly-data-extract listing page (anchors discovery of the ASCII zips). The old
@@ -43,6 +43,8 @@ FDA_FAERS_INDEX_URL = "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAER
 FDA_FAERS_DOWNLOAD_BASE = "https://fis.fda.gov/content/Exports"
 _FAERS_ZIP_RE = re.compile(r"faers_ascii_(\d{4})q(\d)\.zip", re.IGNORECASE)
 _DEFAULT_TIMEOUT = 120.0
+#: Narration prefix for every log line this fetcher emits (one stat per line).
+_EVENT = "acquire_faers"
 
 
 @dataclass(frozen=True)
@@ -84,18 +86,28 @@ class FAERSFetcher:
     """Acquire FAERS quarterly ASCII artifacts over the network."""
 
     def fetch(self, ctx: TaskContext) -> list[ArtifactRef]:
-        index_html = self.fetch_index(ctx)
-        quarters = _apply_quarter_limit(discover_quarters(index_html), ctx)
-        if not quarters:
-            logger.warning("no FAERS quarters discovered from index")
-            return []
-        refs = [self.download_quarter(ctx, source) for source in quarters]
-        logger.info("faers acquisition complete", artifacts=len(refs))
-        return refs
+        with step(logger, _EVENT):
+            index_html = self.fetch_index(ctx)
+            discovered = discover_quarters(index_html)
+            stats(logger, _EVENT, quarters_discovered=len(discovered))
+            for source in discovered:
+                stats(logger, _EVENT, level="DEBUG", quarter=source.quarter, url=source.url)
+            quarters = _apply_quarter_limit(discovered, ctx)
+            stats(logger, _EVENT, quarters_to_acquire=len(quarters))
+            if not quarters:
+                logger.warning("{}: no FAERS quarters discovered from index", _EVENT)
+                return []
+            refs = [self.download_quarter(ctx, source) for source in quarters]
+            stats(logger, _EVENT, artifacts=len(refs))
+            return refs
 
     def fetch_index(self, ctx: TaskContext) -> str:
         """Fetch the FDA exports index HTML. Network boundary; monkeypatchable."""
-        return _http_get_text(FDA_FAERS_INDEX_URL, timeout=_DEFAULT_TIMEOUT)
+        stats(logger, f"{_EVENT} index", url=FDA_FAERS_INDEX_URL)
+        started = time.monotonic()
+        index_html = _http_get_text(FDA_FAERS_INDEX_URL, timeout=_DEFAULT_TIMEOUT)
+        stats(logger, f"{_EVENT} index", bytes=len(index_html), elapsed_s=round(time.monotonic() - started, 3))
+        return index_html
 
     def download_quarter(self, ctx: TaskContext, source: QuarterSource) -> ArtifactRef:
         """Acquire one quarter zip into the content-addressed store (cache-first).
@@ -109,17 +121,22 @@ class FAERSFetcher:
         wd = Workdir(ctx.workdir)
         store = ArtifactStore(wd)
         alias = f"faers/faers_ascii_{source.quarter}.zip"
+        quarter_event = f"{_EVENT} quarter"
         if not bool(ctx.params.get("force", False)):
             cached = store.cached_ref(alias)
             if cached is not None and cached.uri.exists():
-                logger.info("faers quarter cached", quarter=source.quarter, artifact_id=cached.blake3)
+                stats(logger, quarter_event, quarter=source.quarter, cache_hit=True, blake3=cached.blake3)
                 return cached
+        stats(logger, quarter_event, quarter=source.quarter)
+        stats(logger, quarter_event, level="DEBUG", url=source.url)
         dest = wd.raw / "downloads" / f"faers_ascii_{source.quarter}.zip"
         dest.parent.mkdir(parents=True, exist_ok=True)
+        started = time.monotonic()
         _http_download(source.url, dest, timeout=_DEFAULT_TIMEOUT)
+        stats(logger, quarter_event, bytes=dest.stat().st_size, elapsed_s=round(time.monotonic() - started, 3))
         ref, cache_hit = store.ingest(dest, alias=alias, source=SourceBlock(url=source.url, retrieved_at=datetime.now(UTC).isoformat()))
         dest.unlink(missing_ok=True)  # staged copy no longer needed once content-addressed
-        logger.info("faers quarter acquired", quarter=source.quarter, cache_hit=cache_hit, artifact_id=ref.blake3)
+        stats(logger, quarter_event, blake3=ref.blake3, cache_hit=cache_hit)
         return ref
 
 

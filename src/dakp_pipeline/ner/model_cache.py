@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from dakp_pipeline.io.content_hash import hash_tree
-from dakp_pipeline.logging_setup import bind
+from dakp_pipeline.logging_setup import logger, stats
 
 MANIFEST_NAME = "manifest.json"
 CONTENT_DIRNAME = "content"
@@ -172,7 +172,7 @@ def ensure_model(
         force: Re-download even on a cache hit.
         verify: On a would-be hit, re-hash ``content/`` and re-download if it drifted.
     """
-    log = bind(task_id="ner_model_cache", model_id=model_id, source=source)
+    event = "ner_model_cache"
     resolved_cache = Path(cache_dir) if cache_dir is not None else default_model_cache_dir(Path(workdir) if workdir is not None else None)
     root = model_root(resolved_cache, model_id, source)
     content = content_dir(root)
@@ -183,17 +183,21 @@ def ensure_model(
         if data is not None and data.get("model_id") == model_id and data.get("source") == source:
             cached_b3 = str(data.get("b3", ""))
             if not verify or (content.exists() and hash_tree(content) == cached_b3):
-                log.info("model cache hit", b3=cached_b3, cache_hit=True)
+                stats(logger, event, model_id=model_id, source=source, cache_hit=True, b3=cached_b3)
                 return ModelRef(model_id=model_id, source=source, path=content, b3=cached_b3, manifest=manifest)
-            log.warning("cached model content drifted from manifest; re-downloading", b3=cached_b3)
+            logger.warning("{}: cached model content drifted from manifest; re-downloading", event)
+            stats(logger, event, model_id=model_id, drifted_b3=cached_b3)
 
+    stats(logger, event, model_id=model_id, source=source, downloading=True)
     content.mkdir(parents=True, exist_ok=True)
     (downloader or default_downloader)(model_id, content)
     b3 = hash_tree(content)
     write_manifest(
         manifest, {"schema_version": SCHEMA_VERSION, "model_id": model_id, "source": source, "b3": b3, "retrieved_at": datetime.now(UTC).isoformat()}
     )
-    log.info("cached model", b3=b3, cache_hit=False)
+    file_count = sum(1 for path in content.rglob("*") if path.is_file())
+    total_bytes = sum(path.stat().st_size for path in content.rglob("*") if path.is_file())
+    stats(logger, event, model_id=model_id, cache_hit=False, b3=b3, files=file_count, bytes=total_bytes)
     return ModelRef(model_id=model_id, source=source, path=content, b3=b3, manifest=manifest)
 
 
