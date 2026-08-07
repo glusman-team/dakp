@@ -360,11 +360,30 @@ def test_resolve_devices_returns_none_for_offline_ner() -> None:
 
 
 def test_resolve_devices_returns_gpus_when_cuda_available(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Production NER + CUDA available -> the hardcoded GPU list."""
+    """Production NER + 4 visible CUDA devices -> the full hardcoded GPU list."""
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 4)
     assert _resolve_devices(DiseaseNER(offline=False)) == CONTRAINDICATION_GPUS
+
+
+def test_resolve_devices_caps_at_visible_device_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single-GPU host (e.g. the laptop) gets only cuda:0 — never a missing cuda:N."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    assert _resolve_devices(DiseaseNER(offline=False)) == ("cuda:0",)
+
+
+def test_resolve_devices_returns_none_when_cuda_reports_zero_devices(monkeypatch: pytest.MonkeyPatch) -> None:
+    """is_available() True but device_count() == 0 (driver edge) falls back to sequential."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    assert _resolve_devices(DiseaseNER(offline=False)) is None
 
 
 def test_resolve_devices_returns_none_when_cuda_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:

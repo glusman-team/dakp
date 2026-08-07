@@ -290,11 +290,14 @@ def _spawn_safe_main() -> Iterator[None]:
 
 
 def _resolve_devices(ner: DiseaseNER) -> Sequence[str] | None:
-    """The hardcoded GPU list when the NER is production mode and CUDA is available; else None.
+    """The hardcoded GPU list capped to the VISIBLE device count; None when unusable.
 
     Only the production (GLiNER) backend benefits from multi-GPU dispatch — the offline
     gazetteer is CPU-only and deterministic. ``torch.cuda.is_available()`` guards against
-    CI / test hosts with no CUDA (the lazy import never fires at module load).
+    CI / test hosts with no CUDA (the lazy import never fires at module load). The list is
+    capped at ``torch.cuda.device_count()`` because hosts vary: the build server has the full
+    4x P100 set, laptops often expose a single GPU — dispatching a worker to a nonexistent
+    ``cuda:N`` crashes the whole pool (torch refuses to deserialize onto a missing device).
     """
     if ner._offline:
         return None
@@ -302,7 +305,12 @@ def _resolve_devices(ner: DiseaseNER) -> Sequence[str] | None:
         import torch  # lazy: no torch at module load
     except ImportError:
         return None
-    return CONTRAINDICATION_GPUS if torch.cuda.is_available() else None
+    if not torch.cuda.is_available():
+        return None
+    visible = torch.cuda.device_count()
+    if visible <= 0:
+        return None
+    return CONTRAINDICATION_GPUS[:visible]
 
 
 def _shard_by_text_length(items: list[tuple[str, str, str]], n: int) -> list[list[tuple[str, str, str]]]:
