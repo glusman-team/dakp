@@ -7,7 +7,9 @@ annotations), with column letters derived from the assertion-table contracts and
 matching the DINGO translator-ingest conventions. Also covers the runner: the mock runner's
 handoff report and the real runner's monkeypatchable subprocess boundary.
 
-These tests never import or require ``../Tablassert`` to be installed.
+These tests require the INSTALLED ``tablassert`` package (a core DAKP dependency): config
+generation derives the hard category allow-lists from its Biolink ``Categories`` enum. The
+sibling ``../Tablassert`` checkout is never imported or required.
 """
 
 from __future__ import annotations
@@ -28,15 +30,21 @@ from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.tablassert import (
+    OBJECT_PRIORITIZE,
+    SUBJECT_PRIORITIZE,
     TABLASERT_DIR_ENV,
     DeferredTablassertRunner,
     TablassertError,
     TablassertRunner,
     _resolve_tablassert_dir,
+    category_avoid_list,
     qc_runtime_available,
     tablassert_available,
 )
 from dakp_pipeline.tablassert import run as run_tablassert
+
+# Config generation computes its category guards from the installed package's Biolink enum.
+pytest.importorskip("tablassert", reason="tablassert is a core DAKP dependency; run `uv sync`")
 
 # The flat ``dakp_pipeline.tablassert`` module IS the runner module: patch the subprocess hook
 # and availability probes on the module object (import_module always returns the module) so the
@@ -159,15 +167,17 @@ def test_table_config_structure(table: str) -> None:
     assert source["delimiter"] == "\t"
     assert source["url"].startswith("https://")
 
-    # column-encoded subject/object with drug / disease prioritization.
+    # column-encoded subject/object with drug / disease prioritization + hard allow-list guards.
     statement = config["statement"]
     assert statement["predicate"] == predicate
     assert statement["subject"]["method"] == "column"
     assert statement["subject"]["encoding"] == tablassert_configs.column_letter(table, "subject_text")
     assert statement["subject"]["prioritize"] == ["Drug", "SmallMolecule", "ChemicalEntity"]
+    assert statement["subject"]["avoid"] == category_avoid_list(SUBJECT_PRIORITIZE)
     assert statement["object"]["method"] == "column"
     assert statement["object"]["encoding"] == tablassert_configs.column_letter(table, "object_text")
     assert statement["object"]["prioritize"] == ["Disease", "PhenotypicFeature"]
+    assert statement["object"]["avoid"] == category_avoid_list(OBJECT_PRIORITIZE)
 
     # ManualProvenance override matching the DINGO conventions (no publication alongside override).
     override = config["provenance"]["override"]
@@ -189,6 +199,54 @@ def test_table_config_annotations_encode_expected_columns(table: str) -> None:
         # The encoding letter must address the expected assertion column.
         assert _column_at(table, entry["encoding"]) == column
         assert entry["encoding"] == tablassert_configs.column_letter(table, column)
+
+
+# --- category guard (hard allow-lists via Tablassert ``avoid``) -------------------
+
+# Canonical wacky categories present in the production fullmap that must never resolve into a
+# drug↔disease graph. None is in either side's allow-list, so all must be on every avoid list.
+WACKY_CATEGORIES = ("OrganismTaxon", "Publication", "Gene", "Protein", "CellLine", "GeographicLocation", "NamedThing")
+
+
+def test_category_avoid_list_is_sorted_complement_of_allowed() -> None:
+    from tablassert.biolink import Categories
+
+    universe = {category.value for category in Categories}
+    for allowed in (SUBJECT_PRIORITIZE, OBJECT_PRIORITIZE):
+        avoid = category_avoid_list(allowed)
+        assert avoid == sorted(avoid)  # deterministic YAML emission
+        assert set(avoid).isdisjoint(allowed)
+        # Exact partition of the installed Biolink universe: nothing off-list can ever resolve.
+        assert set(avoid) | set(allowed) == universe
+
+
+@pytest.mark.parametrize("table", TABLES)
+def test_table_config_category_guards(table: str) -> None:
+    statement = tablassert_configs.table_config(table)["statement"]
+    for node, allowed in ((statement["subject"], SUBJECT_PRIORITIZE), (statement["object"], OBJECT_PRIORITIZE)):
+        assert node["avoid"] == category_avoid_list(allowed)
+        for wacky in WACKY_CATEGORIES:
+            assert wacky in node["avoid"]
+    # Cross-side exclusion: drug-side categories are avoided on the disease side and vice versa.
+    for drug in SUBJECT_PRIORITIZE:
+        assert drug in statement["object"]["avoid"]
+    for disease in OBJECT_PRIORITIZE:
+        assert disease in statement["subject"]["avoid"]
+
+
+def test_category_avoid_list_unknown_allowed_category_raises() -> None:
+    with pytest.raises(ValueError, match="not in the installed Tablassert Biolink model"):
+        category_avoid_list(["Drug", "DefinitelyNotACategory"])
+
+
+@pytest.mark.parametrize("table", TABLES)
+def test_table_yaml_validates_against_tablassert_section_model(table: str) -> None:
+    # The emitted config must load cleanly into Tablassert's own Section model — this proves every
+    # avoid entry is a real Categories member of the INSTALLED tablassert (unknown names would
+    # raise a TablassertValidationError here).
+    from tablassert.models import Section
+
+    Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
 
 
 # --- graph config structure -------------------------------------------------------

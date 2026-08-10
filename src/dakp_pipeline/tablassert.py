@@ -17,7 +17,10 @@ The configs match the ACTUAL current Tablassert 8.x schema (verified against
 * ``source.kind: text`` with a tab ``delimiter`` and the uncompressed assertion ``.tsv``
   as ``source.local`` (a ``url`` is required by the model and recorded as provenance);
 * column-encoded ``statement.subject`` / ``statement.object`` / ``statement.predicate``
-  with drug / disease ``prioritize`` categories;
+  with drug / disease ``prioritize`` categories plus a HARD category allow-list each:
+  ``avoid`` is emitted as the sorted complement of the side's allow-list over the installed
+  Tablassert's full Biolink ``Categories`` enum, so no off-allow-list category can ever
+  resolve into the graph (``prioritize`` alone is only a soft ranking boost);
 * a ``provenance.override`` (:class:`~tablassert.models.ManualProvenance`) block carrying
   the DINGO-conventional upstream infores chain, ``knowledge_level`` and ``agent_type``
   (the DAKP ``infores`` is graph-level only since Tablassert 8.0.1 forbids it in the override;
@@ -62,6 +65,7 @@ import re
 import shutil
 import subprocess
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -138,10 +142,50 @@ _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str], ...]] = {
 
 SUBJECT_COLUMN = "subject_text"
 OBJECT_COLUMN = "object_text"
+# Per-side category allow-lists. Tablassert ``prioritize`` is a soft ranking boost only, so each
+# side ALSO emits a hard ``avoid`` guard — the sorted complement of its allow-list over the
+# installed Tablassert's full Biolink ``Categories`` enum (see :func:`category_avoid_list`) —
+# keeping wacky fullmap categories (genes, taxa, publications, devices, ...) out of the graph.
+# The allow-list IS the ``prioritize`` tuple on each side; widen both together.
 SUBJECT_PRIORITIZE = ("Drug", "SmallMolecule", "ChemicalEntity")
 OBJECT_PRIORITIZE = ("Disease", "PhenotypicFeature")
 
 _GENERATE_OPERATION = "generate_tablassert_configs"
+
+
+def _biolink_categories() -> tuple[str, ...]:
+    """All entity category names of the installed Tablassert's Biolink model, sorted.
+
+    Tablassert builds its ``Categories`` enum dynamically from the Biolink Model it ships, so
+    deriving the universe from the installed package (instead of freezing a copy here) keeps the
+    emitted ``avoid`` lists exactly consistent with the enum that validates them at config load —
+    across Tablassert/Biolink upgrades and fullmap rebuilds alike.
+    """
+    from tablassert.biolink import Categories  # lazy: keep this module's own import light
+
+    return tuple(sorted(category.value for category in Categories))
+
+
+def category_avoid_list(allowed: Sequence[str]) -> list[str]:
+    """Hard category allow-list for one node encoding, expressed as Tablassert's ``avoid`` list.
+
+    Tablassert has no allow-list knob: ``NodeEncoding.avoid`` is the only hard category filter
+    (``prioritize`` merely re-ranks), so the allow-list is emitted as the SORTED complement of
+    ``allowed`` over every category in the installed Biolink model. Candidates carrying an avoided
+    category are dropped during entity resolution; a mention whose only candidates are avoided
+    stays unresolved (its row emits no edge, logged by Tablassert) — recall is deliberately traded
+    for the guarantee that no off-allow-list category reaches the graph.
+
+    Raises ``ValueError`` when an ``allowed`` entry is not a category the installed Tablassert
+    knows (it would fail Tablassert config validation anyway — fail loudly at generation time).
+    """
+    universe = _biolink_categories()
+    unknown = sorted(set(allowed) - set(universe))
+    if unknown:
+        msg = f"allowed categories not in the installed Tablassert Biolink model: {unknown}"
+        raise ValueError(msg)
+    allowed_set = set(allowed)
+    return [category for category in universe if category not in allowed_set]
 
 
 # --- Excel-style column letters ---------------------------------------------------
@@ -181,7 +225,9 @@ def table_config(table: str) -> dict[str, Any]:
 
     Shape verified against ``tablassert.models.Section``: ``source`` (text), ``statement``
     (column-encoded subject/predicate/object), ``provenance.override`` (ManualProvenance),
-    and column-encoded ``annotations`` for the table's evidence columns.
+    and column-encoded ``annotations`` for the table's evidence columns. Subject/object carry
+    ``prioritize`` (soft ranking) plus ``avoid`` — the hard allow-list guard computed by
+    :func:`category_avoid_list` from the side's ``prioritize`` tuple.
     """
     _basename, predicate, upstream, knowledge_level, agent_type = _TABLE_SPECS[table]  # KeyError for unknown tables
     annotations = [
@@ -190,9 +236,19 @@ def table_config(table: str) -> dict[str, Any]:
     return {
         "source": {"kind": "text", "local": f"data/tabular/{table}.tsv", "url": f"{SOURCE_URL_BASE}/{table}.tsv", "delimiter": "\t"},
         "statement": {
-            "subject": {"method": "column", "encoding": column_letter(table, SUBJECT_COLUMN), "prioritize": list(SUBJECT_PRIORITIZE)},
+            "subject": {
+                "method": "column",
+                "encoding": column_letter(table, SUBJECT_COLUMN),
+                "prioritize": list(SUBJECT_PRIORITIZE),
+                "avoid": category_avoid_list(SUBJECT_PRIORITIZE),
+            },
             "predicate": predicate,
-            "object": {"method": "column", "encoding": column_letter(table, OBJECT_COLUMN), "prioritize": list(OBJECT_PRIORITIZE)},
+            "object": {
+                "method": "column",
+                "encoding": column_letter(table, OBJECT_COLUMN),
+                "prioritize": list(OBJECT_PRIORITIZE),
+                "avoid": category_avoid_list(OBJECT_PRIORITIZE),
+            },
         },
         "provenance": {"override": {"upstream_resource_ids": list(upstream), "knowledge_level": knowledge_level, "agent_type": agent_type}},
         "annotations": annotations,
@@ -651,6 +707,7 @@ __all__ = [
     "DeferredTablassertRunner",
     "TablassertError",
     "TablassertRunner",
+    "category_avoid_list",
     "column_letter",
     "excel_column",
     "generate",

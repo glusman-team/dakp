@@ -67,6 +67,13 @@ EXPECTED_EDGES: frozenset[tuple[str, str, str]] = frozenset(
 )
 EXPECTED_NODE_IDS: frozenset[str] = frozenset({"CHEBI:5855", "CHEBI:1000001", "MONDO:0005154", "HP:0002315", "MONDO:0004979"})
 
+# The DAKP category allow-lists (the generated table configs emit ``avoid`` as the complement of
+# these per side): only drug-side and disease-side categories may survive fullmap resolution into
+# the graph — no taxa, genes, publications, devices, or other wacky fullmap categories.
+ALLOWED_NODE_CATEGORIES: frozenset[str] = frozenset(
+    {"biolink:Drug", "biolink:SmallMolecule", "biolink:ChemicalEntity", "biolink:Disease", "biolink:PhenotypicFeature"}
+)
+
 
 @dataclass(frozen=True)
 class KgxBuild:
@@ -155,7 +162,7 @@ def test_build_kg_handoff_succeeds(kgx_build: KgxBuild) -> None:
 
 
 def test_nodes_have_required_fields(kgx_build: KgxBuild) -> None:
-    """Every KGX node carries id/name/category with biolink-prefixed categories."""
+    """Every KGX node carries id/name/category with biolink-prefixed, allow-listed categories."""
     assert kgx_build.nodes, "build-kg produced no nodes"
     for node in kgx_build.nodes:
         node_id = node.get("id")
@@ -168,6 +175,9 @@ def test_nodes_have_required_fields(kgx_build: KgxBuild) -> None:
         assert isinstance(category, list)
         assert category
         assert all(isinstance(entry, str) and entry.startswith("biolink:") for entry in category)
+        # Hard allow-list guard: the generated configs ``avoid`` every off-list category, so
+        # nothing outside the drug/disease side allow-lists may reach the graph.
+        assert set(category) <= ALLOWED_NODE_CATEGORIES, f"node {node_id} carries off-allow-list categories: {category}"
     assert {node["id"] for node in kgx_build.nodes} == EXPECTED_NODE_IDS
 
 

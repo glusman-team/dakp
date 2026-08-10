@@ -85,7 +85,7 @@ Reuse: `table_config()` already builds annotations from `_TABLE_ANNOTATIONS` via
 - [x] Update `EXPECTED_ANNOTATIONS` in `tests/unit/test_tablassert_configs.py`.
 - [x] Run unit tests; regenerate configs and confirm `tables/*.yaml` carry `has_evidence` /
       `supporting_documents`.
-- [ ] (If tablassert is importable) run the KGX end-to-end test and confirm `has_evidence` /
+- [x] (If tablassert is importable) run the KGX end-to-end test and confirm `has_evidence` /
       `supporting_documents` are first-class edge fields, not inside `supporting_text`.
 
 ## Verification
