@@ -488,3 +488,24 @@ def test_up_command_surfaces_failure_code(monkeypatch: pytest.MonkeyPatch, sandb
     with pytest.raises(SystemExit) as excinfo:
         cli.up()  # the Go bundle pack fails -> run_up returns 1, surfaced as the exit code
     assert excinfo.value.code == 1
+
+
+# --- env: UI customization (plans/airflow-ui-optimizations.md) -------------------
+
+
+def test_airflow_env_carries_ui_customization(sandbox: Path) -> None:
+    """The Airflow env brands the UI and wraps task logs by default."""
+    env = cli._airflow_env(sandbox / "home", sandbox / "home" / "executable-bundles", port=8090)
+
+    assert env["AIRFLOW__API__INSTANCE_NAME"] == "DAKP"
+    assert env["AIRFLOW__API__DEFAULT_WRAP"] == "True"
+    theme = json.loads(env["AIRFLOW__API__THEME"])
+    brand = theme["tokens"]["colors"]["brand"]
+    # Airflow's Chakra theme schema requires the complete 50-950 ramp, every stop an OKLCH value
+    # with l in [0, 1], c in [0, 0.5], h in [0, 360] (out-of-range values break the UI).
+    assert set(brand) == {str(n) for n in (50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950)}
+    for stop in brand.values():
+        lightness, chroma, hue = (float(part) for part in stop["value"].removeprefix("oklch(").rstrip(")").split())
+        assert 0 <= lightness <= 1
+        assert 0 <= chroma <= 0.5
+        assert 0 <= hue <= 360

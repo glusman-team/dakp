@@ -71,6 +71,29 @@ _RUN_WAIT_SECONDS = 3
 #: would stall ``dakp up`` silently while nothing is healed.
 _UV_HEAL_LOCK_TIMEOUT_SECONDS = 60
 
+#: UI theme (Airflow 3 ``AIRFLOW__API__THEME`` JSON): a biomedical teal brand ramp. Values are
+#: OKLCH ``oklch(l c h)`` — l in [0, 1], c in [0, 0.5], h in [0, 360]; all 11 stops 50-950 are
+#: required by Airflow's Chakra theme schema. See ``plans/airflow-ui-optimizations.md``.
+_DAKP_UI_THEME: dict[str, Any] = {
+    "tokens": {
+        "colors": {
+            "brand": {
+                "50": {"value": "oklch(0.970 0.015 190)"},
+                "100": {"value": "oklch(0.930 0.035 190)"},
+                "200": {"value": "oklch(0.870 0.065 190)"},
+                "300": {"value": "oklch(0.800 0.095 190)"},
+                "400": {"value": "oklch(0.710 0.115 190)"},
+                "500": {"value": "oklch(0.630 0.120 192)"},
+                "600": {"value": "oklch(0.570 0.110 194)"},
+                "700": {"value": "oklch(0.500 0.090 196)"},
+                "800": {"value": "oklch(0.440 0.070 198)"},
+                "900": {"value": "oklch(0.390 0.055 200)"},
+                "950": {"value": "oklch(0.260 0.040 200)"},
+            }
+        }
+    }
+}
+
 
 # --- side-effect boundary (monkeypatch points for tests) --------------------------
 
@@ -186,6 +209,13 @@ def _airflow_env(airflow_home: Path, bundle_dir: Path, port: int) -> dict[str, s
                 {"go": {"classpath": "airflow.sdk.coordinators.executable.ExecutableCoordinator", "kwargs": {"executables_root": [str(bundle_dir)]}}}
             ),
             "AIRFLOW__SDK__QUEUE_TO_COORDINATOR": json.dumps({"golang": "go"}),
+            # --- UI customization (plans/airflow-ui-optimizations.md) ---------------
+            # Brand the UI so this orchestrator is distinguishable from any other local Airflow...
+            "AIRFLOW__API__INSTANCE_NAME": "DAKP",
+            "AIRFLOW__API__THEME": json.dumps(_DAKP_UI_THEME),
+            # ...and wrap task logs by default: the native Go workers log one wide slog JSON
+            # record per line, and without wrap the task-log view horizontal-scrolls instead.
+            "AIRFLOW__API__DEFAULT_WRAP": "True",
         }
     )
     return env
