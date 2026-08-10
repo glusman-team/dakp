@@ -12,11 +12,13 @@ Composite design (gazetteer-first, GLiNER-augmented)
   0.955 on the benchmark fixture, zero heavy dependencies, fully deterministic. Used by tests
   and offline runs.
 * **Production mode (``offline=False``):** the same gazetteer anchors high-precision spans and
-  GLiNER zero-shot (``urchade/gliner_small-v2.1``, laptop-safe) fills out-of-gazetteer gaps.
-  Gazetteer spans win on overlap; non-overlapping GLiNER spans add recall. GLiNER silently
-  truncates inputs past ``config.max_len`` word tokens (384 on the shipped checkpoint), so long
-  sections are predicted in exact-substring windows (:func:`_windows`) whose spans are remapped
-  back into full-text offsets before the merge. ``gliner`` is a core
+  GLiNER zero-shot (``gliner-community/gliner_large-v2.5``) fills out-of-gazetteer gaps.
+  Gazetteer spans win on overlap; non-overlapping GLiNER spans add recall. GLiNER is natively
+  multi-entity: one ``predict_entities`` call scores every requested label (disease + phenotype
+  here) and returns any number of spans per label. GLiNER silently truncates inputs past
+  ``config.max_len`` word tokens (768 on the shipped v2.5 checkpoint), so long sections are
+  predicted in exact-substring windows (:func:`_windows`) whose spans are remapped back into
+  full-text offsets before the merge. ``gliner`` is a core
   DAKP dependency but is imported lazily on first use (no torch at module load), raising
   :class:`~dakp_pipeline.ner.model_cache.NERDependencyError` ("reinstall with `uv sync`") if it is
   somehow not importable.
@@ -42,8 +44,13 @@ from dakp_pipeline.ner.dictionary import CONTRAINDICATION_DISEASE_TYPES, TYPE_DI
 from dakp_pipeline.ner.lexical import LexicalMatcher, Mention
 from dakp_pipeline.ner.model_cache import NERDependencyError, ensure_model
 
-# Laptop-safe small zero-shot model; override for a larger / biomedical-tuned checkpoint.
-DEFAULT_MODEL = "urchade/gliner_small-v2.1"
+# GLiNER v2.5 large (deberta-v3-large encoder, max_len 768 word tokens, multi-entity: up to
+# ``max_types`` labels per call). Override for a smaller / biomedical-tuned checkpoint.
+DEFAULT_MODEL = "gliner-community/gliner_large-v2.5"
+#: Confidence operating point. Kept at 0.5 — the recall-safe default for a drug-safety KG. A
+#: sweep on the gold fixture (``ner/BENCHMARK.md``) shows composite recall is 1.0 at both 0.5
+#: and 0.65; tightening to 0.65 only trims one boundary false positive, at the (unmeasured)
+#: cost of real-world OOV recall. Tighten deliberately, not by default.
 DEFAULT_THRESHOLD = 0.5
 
 # GLiNER counts input in word tokens from its whitespace splitter and silently truncates anything
@@ -58,7 +65,7 @@ _GLINER_TOKEN = re.compile(r"\w+(?:[-_]\w+)*|\S")
 _SENTENCE_PIECE = re.compile(r"[^.!?;]+[.!?;]*\s*")
 
 #: Window-budget fallback (GLiNER word tokens) when a model exposes no ``config.max_len``; the
-#: shipped ``urchade/gliner_small-v2.1`` checkpoint sets ``max_len: 384``.
+#: shipped ``gliner-community/gliner_large-v2.5`` checkpoint sets ``max_len: 768``.
 _DEFAULT_WORD_BUDGET = 384
 
 # Curated high-precision disease/phenotype gazetteer — the offline mode's embedded vocabulary

@@ -78,7 +78,8 @@ AT_TEXT_MINING = "text_mining_agent"
 #: section text, only sentences matching this pattern are sent to the NER backend — this
 #: prevents indication-context diseases ("indicated for X") from being mined as contraindications
 #: while still catching embedded contraindication statements ("contraindicated in patients with Y").
-#: Tuned empirically against ``urchade/gliner_small-v2.1`` on real DailyMed label patterns.
+#: Tuned empirically against real DailyMed label patterns (the filter is model-agnostic; it
+#: predates the ``gliner-community/gliner_large-v2.5`` upgrade and still applies).
 #: Configurable at runtime via ``ctx.params["contraindication_keywords"]`` (str or compiled Pattern).
 DEFAULT_CONTRA_KEYWORDS: re.Pattern[str] = re.compile(
     r"\b(contraindicat\w*|should\s+not\s+be\s+used|must\s+not\s+(?:be\s+)?used|"

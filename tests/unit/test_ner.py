@@ -30,7 +30,7 @@ _ONTOLOGY_TSV = _FIXTURE_ROOT / "ontology" / "disease_map.tsv"
 
 
 def test_defaults_and_contraindication_types() -> None:
-    assert DEFAULT_MODEL == "urchade/gliner_small-v2.1"
+    assert DEFAULT_MODEL == "gliner-community/gliner_large-v2.5"
     assert DEFAULT_THRESHOLD == 0.5
     assert CONTRAINDICATION_DISEASE_TYPES == (TYPE_DISEASE, TYPE_PHENOTYPE)
     # The embedded gazetteer is non-empty and every term is typed disease/phenotype.

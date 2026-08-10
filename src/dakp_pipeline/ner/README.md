@@ -14,18 +14,21 @@ Benchmarked on a hand-labeled fixture (27 cases / 35 gold spans, `tests/eval/`):
 | approach  | precision | recall | F1    | notes                                   |
 | --------- | --------- | ------ | ----- | --------------------------------------- |
 | gazetteer | **1.000** | 0.914  | **0.955** | deterministic; no heavy deps; FN = 3 rare OOV |
-| gliner    | 0.864     | 0.543  | 0.667 | zero-shot; catches all 3 OOV exactly     |
+| gliner    | 0.692     | 0.514  | 0.590 | zero-shot (`gliner_large-v2.5`); catches all 3 OOV exactly |
 | scispacy  | 0.571     | 0.457  | 0.508 | dropped: no phenotype label, coarse spans |
 
 * **Offline mode (default):** curated gazetteer + deterministic lexical matcher. Precision
   1.000 / F1 0.955, zero heavy deps, fully deterministic. Used by tests + offline runs.
 * **Production mode (`offline=False`):** the same gazetteer anchors high-precision spans and
-  GLiNER zero-shot (`urchade/gliner_small-v2.1`) fills out-of-gazetteer gaps (gazetteer wins on
-  overlap) → near-perfect recall at gazetteer precision. GLiNER is a core, lazy-imported dependency.
-  GLiNER silently truncates inputs past `config.max_len` word tokens (384 on the shipped
-  checkpoint), so long sections (some run to ~3000 words) are predicted in sentence-aware,
-  exact-substring windows of ≤ that budget (`chunk_words` kwarg overrides it) and span offsets are
-  remapped back into full-text coordinates — no mention past the truncation point is lost.
+  GLiNER zero-shot (`gliner-community/gliner_large-v2.5`) fills out-of-gazetteer gaps (gazetteer
+  wins on overlap) → near-perfect recall at gazetteer precision. GLiNER is natively
+  **multi-entity**: one call scores every requested label (disease + phenotype) and returns any
+  number of spans per label (up to 30 labels per call in v2.5). GLiNER is a core, lazy-imported
+  dependency. GLiNER silently truncates inputs past `config.max_len` word tokens (768 on the
+  shipped v2.5 checkpoint), so long sections (some run to ~3000 words) are predicted in
+  sentence-aware, exact-substring windows of ≤ that budget (`chunk_words` kwarg overrides it) and
+  span offsets are remapped back into full-text coordinates — no mention past the truncation
+  point is lost.
 
 ## Modules
 
@@ -77,6 +80,7 @@ The NER deps are intentionally heavy (pull torch/transformers) but are part of t
 
 - NER deps are core (installed by `uv sync`) but lazy-imported (no torch at module load).
 - One backend / one entry point; offline (deterministic) vs production (model) is a mode toggle.
-- Lazy imports for the model; laptop-safe (small model, cached).
+- Lazy imports for the model; weights cached once (`gliner_large-v2.5` ≈ 1.8 GB fp32 fits
+  comfortably on a 12 GB GPU; CPU fallback works).
 - `loguru` for logging; deterministic offline mode; no absolute paths.
 - Mentions are text + type only; ontology CURIE resolution is Tablassert-only.

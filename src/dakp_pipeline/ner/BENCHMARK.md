@@ -15,7 +15,7 @@ that a gazetteer alone cannot provide. Annotation policy is documented in the fi
 | approach  | precision | recall | F1    | TP | FP | FN | notes                                   |
 | --------- | --------- | ------ | ----- | -- | -- | -- | --------------------------------------- |
 | gazetteer | **1.000** | 0.914  | 0.955 | 32 | 0  | 3  | deterministic; no heavy deps; FN = the 3 OOV |
-| gliner    | 0.864     | 0.543  | 0.667 | 19 | 3  | 16 | zero-shot alone; catches **all 3 OOV** exactly |
+| gliner    | 0.692     | 0.514  | 0.590 | 18 | 8  | 17 | zero-shot alone (`gliner_large-v2.5`); catches **all 3 OOV** exactly |
 | **composite** | 0.972 | **1.000** | **0.986** | 35 | 1 | 0 | **settled backend** (gazetteer + GLiNER merge) |
 | scispacy  | 0.571     | 0.457  | 0.508 | 16 | 12 | 19 | BC5CDR: no phenotype label, coarse spans |
 
@@ -25,16 +25,32 @@ near-perfect precision (one false positive). The gazetteer anchors high-precisio
 fills the coverage gaps without inheriting the model's standalone boundary/type noise because
 gazetteer spans win on overlap.
 
-GLiNER standalone F1 is dragged down by boundary/type disagreement on common multiword
-terms, but it extracts every rare OOV disease with the correct span and type — exactly the
-recall a fixed gazetteer lacks. SciSpacy's BC5CDR model labels only `DISEASE`/`CHEMICAL`
-(no phenotype) and its boundaries are coarse, so it is strictly worse here.
+GLiNER standalone F1 is dragged down by boundary/type disagreement on common multiword terms
+(the v2.5 large checkpoint is more aggressive than the old small one: more extra spans, mostly
+disease↔phenotype type confusion), but it extracts every rare OOV disease with the correct span
+and type — exactly the recall a fixed gazetteer lacks. SciSpacy's BC5CDR model labels only
+`DISEASE`/`CHEMICAL` (no phenotype) and its boundaries are coarse, so it is strictly worse here.
 
-Environment notes (reproducibility): GLiNER (`urchade/gliner_small-v2.1`) loads in ~21s on
-CPU and is fully laptop-safe. SciSpacy required two workarounds in this environment — the
+Environment notes (reproducibility): GLiNER (`gliner-community/gliner_large-v2.5`, ~1.8 GB
+fp32 weights, deberta-v3-large encoder, `max_len: 768` word tokens) loads in ~3 s from the
+BLAKE3-keyed cache on CPU and runs on GPU on the build host; it is natively multi-entity (one
+`predict_entities` call scores every label — disease and phenotype here — and returns any
+number of spans per label). SciSpacy required two workarounds in this environment — the
 resolved `typer` no longer pulls `click` (which `spacy` hard-imports) and `spacy download`
 has no 3.8-compatible `en_ner_bc5cdr_md` (installed the v0.5.4 S3 wheel directly) — and still
 underperformed; it is dropped from the shipped extra.
+
+## v2.5 upgrade (2026-08-10)
+
+The production checkpoint moved from `urchade/gliner_small-v2.1` to
+`gliner-community/gliner_large-v2.5`: a larger encoder (deberta-v3-large vs deberta-v3-small)
+trained on more data, with double the word-token context (`max_len` 768 vs 384, so fewer
+prediction windows over ~3000-word DailyMed sections). On this fixture the **composite backend
+is unchanged** (P 0.972 / R 1.000 / F1 0.986; same single boundary FP) and all three rare OOV
+diseases are still caught exactly — the upgrade's payoff is better OOV generalization on real
+label text, which a 35-span fixture cannot measure. A threshold sweep (0.40–0.70) shows
+composite recall stays 1.0 throughout and 0.65 removes the lone FP (F1 1.000);
+`DEFAULT_THRESHOLD` stays 0.5 as the recall-safe default for a safety KG.
 
 ## Decision: gazetteer-first, GLiNER-augmented composite (ONE backend)
 
