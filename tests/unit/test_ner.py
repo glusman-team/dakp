@@ -70,6 +70,14 @@ def test_offline_empty_and_blank_text_yield_nothing() -> None:
     assert ner.extract("nothing relevant here") == []
 
 
+def test_offline_gazetteer_covers_high_frequency_contraindications() -> None:
+    """Gazetteer growth (see ner/BENCHMARK.md): maximal-span matches for recurring diseases."""
+    ner = DiseaseNER()
+    for term in ("congestive heart failure", "cirrhosis", "hepatic encephalopathy", "acute kidney injury", "hepatocellular carcinoma"):
+        mentions = ner.extract(f"Contraindicated in patients with {term}.")
+        assert [(m.text, m.type) for m in mentions] == [(term, TYPE_DISEASE)]
+
+
 def test_gazetteer_accepts_mapping_or_gazetteer_instance() -> None:
     from_mapping = DiseaseNER(gazetteer={"fever": "phenotype"})
     assert [m.text for m in from_mapping.extract("fever")] == ["fever"]

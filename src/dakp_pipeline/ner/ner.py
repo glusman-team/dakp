@@ -13,7 +13,10 @@ Composite design (gazetteer-first, GLiNER-augmented)
   and offline runs.
 * **Production mode (``offline=False``):** the same gazetteer anchors high-precision spans and
   GLiNER zero-shot (``gliner-community/gliner_large-v2.5``) fills out-of-gazetteer gaps.
-  Gazetteer spans win on overlap; non-overlapping GLiNER spans add recall. GLiNER is natively
+  Gazetteer spans win on overlap; non-overlapping GLiNER spans add recall. Model spans whose
+  normalized surface is a population descriptor (``_POPULATION_PHRASES``, e.g. "women of
+  childbearing potential") are dropped, and spans a hard window split cuts across a phrase
+  boundary are re-joined. GLiNER is natively
   multi-entity: one ``predict_entities`` call scores every requested label (disease + phenotype
   here) and returns any number of spans per label. GLiNER silently truncates inputs past
   ``config.max_len`` word tokens (768 on the shipped v2.5 checkpoint), so long sections are
@@ -36,6 +39,7 @@ import itertools
 import re
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +109,14 @@ EMBEDDED_GAZETTEER: dict[str, str] = {
     "rheumatoid arthritis": TYPE_DISEASE,
     "depression": TYPE_DISEASE,
     "migraine": TYPE_DISEASE,
+    # High-frequency contraindication diseases observed in hand-checked label/FAERS snippets
+    # (see ner/BENCHMARK.md "Small-example checks"): gazetteer growth keeps the maximal-span
+    # policy ("congestive heart failure", not just "heart failure") and speeds offline recall.
+    "congestive heart failure": TYPE_DISEASE,
+    "cirrhosis": TYPE_DISEASE,
+    "hepatic encephalopathy": TYPE_DISEASE,
+    "acute kidney injury": TYPE_DISEASE,
+    "hepatocellular carcinoma": TYPE_DISEASE,
     # phenotype (clinical findings / symptoms / condition-states)
     "hypersensitivity": TYPE_PHENOTYPE,
     "transaminase elevations": TYPE_PHENOTYPE,
@@ -123,6 +135,26 @@ EMBEDDED_GAZETTEER: dict[str, str] = {
     "fatigue": TYPE_PHENOTYPE,
 }
 
+# Population/demographic descriptors GLiNER likes to tag as phenotypes in contraindication text
+# ("Contraindicated in women of childbearing potential." — observed false positive, score ~0.5-0.6).
+# These are subject populations, not disease/phenotype mentions, so model spans whose normalized
+# surface equals one are dropped. The curated gazetteer never matches them, so offline mode is
+# unaffected. Normalized exact match only — deterministic and precision-safe.
+_POPULATION_PHRASES: frozenset[str] = frozenset(
+    (
+        "women",
+        "men",
+        "children",
+        "patients",
+        "individuals",
+        "subjects",
+        "women of childbearing potential",
+        "childbearing potential",
+        "women of childbearing age",
+        "pregnant women",
+    )
+)
+
 
 def _install_message(module: str) -> str:
     return f"NER production mode requires the '{module}' package (a core DAKP dependency) but it is not importable. Install all dependencies with: uv sync"
@@ -134,6 +166,44 @@ def _sort_key(mention: Mention) -> tuple[int, int, str, str]:
 
 def _overlaps_any(start: int, end: int, covered: list[tuple[int, int]]) -> bool:
     return any(start < cov_end and cov_start < end for cov_start, cov_end in covered)
+
+
+@dataclass(frozen=True)
+class _ModelSpan:
+    """A GLiNER span candidate (full-text offsets) awaiting the gazetteer merge."""
+
+    start: int
+    end: int
+    type: str
+    score: float
+
+
+def _merge_straddling_spans(windows: list[tuple[int, str]], spans_by_window: list[list[_ModelSpan]]) -> None:
+    """Rejoin model spans a hard window split cut across a phrase boundary.
+
+    Sentence-piece windows tile the text exactly (gap-free), so a mention cannot straddle those
+    boundaries — only budget hard splits drop the whitespace between one window's last token and
+    the next window's first token, which can cut a multiword mention into two partial spans
+    (``myasthenia | gravis`` → ``myasthenia`` + ``gravis``, observed on a run-on sentence). When
+    one window's last span ends flush at its end and the next window's first span begins flush at
+    its start, the pair is re-unified into a single span; type and score come from the
+    higher-scoring side (ties go left, deterministically). A lone edge span is kept as-is. Merged
+    spans re-enter the next window pair, so a mention cut across two boundaries chains too.
+    """
+    for window_pair, span_pair in zip(itertools.pairwise(windows), itertools.pairwise(spans_by_window), strict=True):
+        (prev_start, prev_window), (curr_start, _curr_window) = window_pair
+        prev_spans, curr_spans = span_pair
+        prev_end = prev_start + len(prev_window)
+        if curr_start == prev_end:
+            continue  # contiguous (sentence-piece) boundary: mentions cannot span punctuation
+        left = next((span for span in reversed(prev_spans) if span.end == prev_end), None)
+        right = next((span for span in curr_spans if span.start == curr_start), None)
+        if left is None or right is None:
+            continue
+        anchor = left if left.score >= right.score else right
+        prev_spans.remove(left)
+        curr_spans.remove(right)
+        curr_spans.append(_ModelSpan(start=left.start, end=right.end, type=anchor.type, score=max(left.score, right.score)))
 
 
 def _sentence_piece_spans(text: str) -> list[tuple[int, int]]:
@@ -355,31 +425,43 @@ class DiseaseNER:
 
         GLiNER silently truncates inputs past ``config.max_len`` word tokens, so long text is
         predicted in exact-substring windows (:func:`_windows`) and each span's offsets are
-        shifted back into full-text coordinates before the merge.
+        shifted back into full-text coordinates before the merge. Model spans whose normalized
+        surface is a population descriptor (:data:`_POPULATION_PHRASES`) are dropped, and spans a
+        hard split cut across a phrase boundary are re-joined (:func:`_merge_straddling_spans`).
         """
         model = self._load_model()
         budget = _token_budget(model, self._chunk_words)
         covered: list[tuple[int, int]] = [(mention.start, mention.end) for mention in gazetteer_mentions]
         merged = list(gazetteer_mentions)
         labels = list(CONTRAINDICATION_DISEASE_TYPES)
-        for window_start, window in _windows(text, budget):
+        windows = _windows(text, budget)
+        spans_by_window: list[list[_ModelSpan]] = []
+        for window_start, window in windows:
             raw = model.predict_entities(window, labels, threshold=self._threshold)
+            spans: list[_ModelSpan] = []
             for entity in raw:
                 etype = canonical_type(str(entity["label"]))
                 if etype not in CONTRAINDICATION_DISEASE_TYPES:
                     continue
                 start, end = window_start + int(entity["start"]), window_start + int(entity["end"])
+                if normalize_text(text[start:end]) in _POPULATION_PHRASES:
+                    continue
                 if _overlaps_any(start, end, covered):
                     continue
-                covered.append((start, end))
-                surface = text[start:end]
+                spans.append(_ModelSpan(start=start, end=end, type=etype, score=float(entity["score"])))
+            spans_by_window.append(spans)
+        _merge_straddling_spans(windows, spans_by_window)
+        for spans in spans_by_window:
+            for span in spans:
+                covered.append((span.start, span.end))
+                surface = text[span.start : span.end]
                 merged.append(
                     Mention(
                         text=surface,
-                        start=start,
-                        end=end,
-                        type=etype,
-                        score=float(entity["score"]),
+                        start=span.start,
+                        end=span.end,
+                        type=span.type,
+                        score=span.score,
                         normalized=normalize_text(surface),
                         notes="gliner",
                     )
