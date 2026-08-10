@@ -31,7 +31,7 @@ template:
     - annotation: approval_ids
       method: column
       encoding: J
-    - annotation: supporting_spl_sets
+    - annotation: has_evidence
       method: column
       encoding: K
     - annotation: clinical_approval_status

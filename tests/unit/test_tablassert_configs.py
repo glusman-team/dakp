@@ -64,17 +64,19 @@ EXPECTED_PROVENANCE = {
 }
 
 # assertion table -> {annotation name: assertion column it must encode}. case_count maps to the
-# Translator ``number_of_cases`` slot; the rest keep their column name.
+# Translator ``number_of_cases`` slot; the SPL-evidence columns map to names on Tablassert's edge-field
+# allow-list (``has_evidence`` / ``supporting_documents``) so they stay first-class KGX fields; the rest
+# keep their column name.
 EXPECTED_ANNOTATIONS = {
     "approved_treats_assertions": {
         "approval_ids": "approval_ids",
-        "supporting_spl_sets": "supporting_spl_sets",
+        "has_evidence": "supporting_spl_sets",
         "clinical_approval_status": "clinical_approval_status",
     },
     "faers_applied_to_treat_assertions": {"number_of_cases": "case_count", "clinical_approval_status": "clinical_approval_status"},
     "contraindication_assertions": {
-        "supporting_spl_sets": "supporting_spl_sets",
-        "supporting_spl_documents": "supporting_spl_documents",
+        "has_evidence": "supporting_spl_sets",
+        "supporting_documents": "supporting_spl_documents",
         "source_score": "source_score",
     },
 }

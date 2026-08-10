@@ -115,20 +115,23 @@ _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
     "contraindication_assertions": ("contraindications", "contraindicated_in", ("infores:dailymed",), "knowledge_assertion", "text_mining_agent"),
 }
 
-# assertion column -> annotation name, per table. Names equal the assertion column except
-# where DINGO establishes a Translator slot: ``case_count`` -> ``number_of_cases`` (DINGO
-# maps FAERS case counts to the Biolink ``number_of_cases`` edge slot). ``clinical_approval_status``
-# is itself a Biolink slot (written verbatim); the remaining names fold into ``supporting_text``.
+# assertion column -> annotation name, per table. Names equal the assertion column except where
+# DINGO establishes a Translator slot (``case_count`` -> ``number_of_cases``) or where renaming to a
+# name on Tablassert's edge-field allow-list keeps the evidence a first-class KGX edge field instead
+# of folding it into ``supporting_text``: ``supporting_spl_sets`` -> ``has_evidence`` (the legacy DAKP
+# evidence field) and ``supporting_spl_documents`` -> ``supporting_documents``. The remaining names
+# (``clinical_approval_status``, ``number_of_cases``, ``approval_ids``, ``source_score``) are NOT on the
+# allow-list, so Tablassert folds them into ``supporting_text`` today.
 _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "approved_treats_assertions": (
         ("approval_ids", "approval_ids"),
-        ("supporting_spl_sets", "supporting_spl_sets"),
+        ("supporting_spl_sets", "has_evidence"),
         ("clinical_approval_status", "clinical_approval_status"),
     ),
     "faers_applied_to_treat_assertions": (("case_count", "number_of_cases"), ("clinical_approval_status", "clinical_approval_status")),
     "contraindication_assertions": (
-        ("supporting_spl_sets", "supporting_spl_sets"),
-        ("supporting_spl_documents", "supporting_spl_documents"),
+        ("supporting_spl_sets", "has_evidence"),
+        ("supporting_spl_documents", "supporting_documents"),
         ("source_score", "source_score"),
     ),
 }
