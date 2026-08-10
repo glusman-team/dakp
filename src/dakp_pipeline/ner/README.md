@@ -9,19 +9,22 @@ resolves the CURIEs.
 
 ## The settled composite (see `BENCHMARK.md`)
 
-Benchmarked on a hand-labeled fixture (27 cases / 35 gold spans, `tests/eval/`):
+Benchmarked on a hand-labeled fixture (31 cases / 39 gold spans, `tests/eval/`):
 
 | approach  | precision | recall | F1    | notes                                   |
 | --------- | --------- | ------ | ----- | --------------------------------------- |
-| gazetteer | **1.000** | 0.914  | **0.955** | deterministic; no heavy deps; FN = 3 rare OOV |
-| gliner    | 0.692     | 0.514  | 0.590 | zero-shot (`gliner_large-v2.5`); catches all 3 OOV exactly |
+| gazetteer | **1.000** | 0.923  | **0.960** | deterministic; no heavy deps; FN = 3 rare OOV |
+| gliner    | 0.759     | 0.564  | 0.647 | zero-shot (`gliner_large-v2.5`); catches all 3 OOV exactly |
+| composite | **1.000** | **1.000** | **1.000** | **settled backend** (gazetteer + GLiNER merge) |
 | scispacy  | 0.571     | 0.457  | 0.508 | dropped: no phenotype label, coarse spans |
 
 * **Offline mode (default):** curated gazetteer + deterministic lexical matcher. Precision
   1.000 / F1 0.955, zero heavy deps, fully deterministic. Used by tests + offline runs.
 * **Production mode (`offline=False`):** the same gazetteer anchors high-precision spans and
   GLiNER zero-shot (`gliner-community/gliner_large-v2.5`) fills out-of-gazetteer gaps (gazetteer
-  wins on overlap) → near-perfect recall at gazetteer precision. GLiNER is natively
+  wins on overlap) → perfect recall at gazetteer precision. Model spans whose normalized surface
+  is a population descriptor (e.g. `women of childbearing potential`) are dropped, and spans a
+  hard window split cuts across a phrase boundary are re-joined. GLiNER is natively
   **multi-entity**: one call scores every requested label (disease + phenotype) and returns any
   number of spans per label (up to 30 labels per call in v2.5). GLiNER is a core, lazy-imported
   dependency. GLiNER silently truncates inputs past `config.max_len` word tokens (768 on the
@@ -37,7 +40,6 @@ Benchmarked on a hand-labeled fixture (27 cases / 35 gold spans, `tests/eval/`):
 - `dictionary.py` — normalization (`normalize_text` / `normalize_with_map`) + the
   span-detection `Gazetteer` (term → type; **no** CURIE/name/category).
 - `lexical.py` — the deterministic `LexicalMatcher` + `Mention` (text span + type only).
-- `candidates.py` — unique mention-string inventory emission (`mention_candidates.tsv`).
 - `model_cache.py` — idempotent model download/cache (production mode weights).
 
 ## Usage

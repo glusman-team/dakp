@@ -229,6 +229,141 @@ def test_default_model_id_is_used(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     assert seen == [DEFAULT_MODEL]
 
 
+# --- population-descriptor filter: subject populations are not mentions ---------
+
+
+def test_production_population_descriptor_spans_are_filtered(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """GLiNER loves to tag 'women of childbearing potential' as a phenotype; the blocklist drops it."""
+    text = "Contraindicated in women of childbearing potential."
+    start, end = text.index("women"), len(text) - 1  # 'women of childbearing potential'
+    _install_fake_gliner(monkeypatch, tmp_path, [{"start": start, "end": end, "label": "phenotype", "score": 0.9}])
+    backend = DiseaseNER(offline=False, gazetteer={})
+    assert backend.extract(text) == []
+
+
+def test_population_filter_only_drops_exact_population_phrases(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_fake_gliner(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "disease", "score": 0.9}])
+    backend = DiseaseNER(offline=False, gazetteer={})
+    assert [m.text for m in backend.extract("porphyria cases")] == ["porphyria"]
+
+
+# --- cross-window rejoin: hard splits can cut a multiword mention in two --------
+
+
+_SPLIT_FILLER = " ".join(f"word{i}" for i in range(39))  # puts 'myasthenia' flush at a hard-split boundary
+_SPLIT_PROBE = f"{_SPLIT_FILLER} myasthenia gravis must be excluded"
+
+
+class _WindowRoutedFakeModel:
+    """Fake GLiNER whose predictions depend on which window it is given (window-relative
+    offsets, like the real model). The first route whose key occurs in the window wins."""
+
+    def __init__(self, routes: dict[str, list[dict[str, Any]]]) -> None:
+        self.routes = routes
+        self.calls: list[str] = []
+
+    def predict_entities(self, text: str, labels: list[str], threshold: float = 0.0) -> list[dict[str, Any]]:
+        self.calls.append(text)
+        for key, predictions in self.routes.items():
+            if key in text:
+                return predictions
+        return []
+
+
+def _split_probe_span(window: str, phrase: str) -> tuple[int, int]:
+    start = window.index(phrase)
+    return start, start + len(phrase)
+
+
+def test_production_straddling_spans_rejoin_across_hard_split(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """'myasthenia | gravis' cut by a hard split comes back as ONE 'myasthenia gravis' span."""
+    windows = _windows(_SPLIT_PROBE, 20)
+    assert len(windows) == 3
+    assert windows[2][0] > windows[1][0] + len(windows[1][1])  # hard-split gap
+    left_start, left_end = _split_probe_span(windows[1][1], "myasthenia")
+    assert left_end == len(windows[1][1])  # flush at the window end
+    right_start, right_end = _split_probe_span(windows[2][1], "gravis")
+    assert right_start == 0  # flush at the next window start
+
+    model = _WindowRoutedFakeModel(
+        {
+            "myasthenia": [{"start": left_start, "end": left_end, "label": "disease", "score": 0.9}],
+            "gravis": [{"start": right_start, "end": right_end, "label": "phenotype", "score": 0.6}],
+        }
+    )
+    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+
+    mentions = DiseaseNER(offline=False, gazetteer={}, chunk_words=20).extract(_SPLIT_PROBE)
+    assert [(m.text, m.type) for m in mentions] == [("myasthenia gravis", "disease")]  # higher-scoring side's type
+    assert mentions[0].score == pytest.approx(0.9)
+    assert _SPLIT_PROBE[mentions[0].start : mentions[0].end] == "myasthenia gravis"
+
+
+def test_production_straddling_rejoin_takes_higher_scoring_type(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    windows = _windows(_SPLIT_PROBE, 20)
+    left_start, left_end = _split_probe_span(windows[1][1], "myasthenia")
+    right_start, right_end = _split_probe_span(windows[2][1], "gravis")
+    model = _WindowRoutedFakeModel(
+        {
+            "myasthenia": [{"start": left_start, "end": left_end, "label": "disease", "score": 0.6}],
+            "gravis": [{"start": right_start, "end": right_end, "label": "phenotype", "score": 0.95}],
+        }
+    )
+    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    mentions = DiseaseNER(offline=False, gazetteer={}, chunk_words=20).extract(_SPLIT_PROBE)
+    assert [(m.text, m.type) for m in mentions] == [("myasthenia gravis", "phenotype")]
+    assert mentions[0].score == pytest.approx(0.95)
+
+
+def test_production_straddling_rejoin_tie_keeps_left_type(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    windows = _windows(_SPLIT_PROBE, 20)
+    left_start, left_end = _split_probe_span(windows[1][1], "myasthenia")
+    right_start, right_end = _split_probe_span(windows[2][1], "gravis")
+    model = _WindowRoutedFakeModel(
+        {
+            "myasthenia": [{"start": left_start, "end": left_end, "label": "disease", "score": 0.8}],
+            "gravis": [{"start": right_start, "end": right_end, "label": "phenotype", "score": 0.8}],
+        }
+    )
+    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    mentions = DiseaseNER(offline=False, gazetteer={}, chunk_words=20).extract(_SPLIT_PROBE)
+    assert [(m.text, m.type) for m in mentions] == [("myasthenia gravis", "disease")]
+
+
+def test_production_single_edge_span_is_kept_without_merge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Only one side of a hard-split boundary predicted -> no merge, the span survives as-is."""
+    windows = _windows(_SPLIT_PROBE, 20)
+    left_start, left_end = _split_probe_span(windows[1][1], "myasthenia")
+    right_start, right_end = _split_probe_span(windows[2][1], "gravis")
+
+    left_only = _WindowRoutedFakeModel({"myasthenia": [{"start": left_start, "end": left_end, "label": "disease", "score": 0.9}]})
+    _install_fake_gliner(monkeypatch, tmp_path, [], model=left_only)
+    mentions = DiseaseNER(offline=False, gazetteer={}, chunk_words=20).extract(_SPLIT_PROBE)
+    assert [(m.text, m.type) for m in mentions] == [("myasthenia", "disease")]
+
+    right_only = _WindowRoutedFakeModel({"gravis": [{"start": right_start, "end": right_end, "label": "phenotype", "score": 0.6}]})
+    _install_fake_gliner(monkeypatch, tmp_path, [], model=right_only)
+    mentions = DiseaseNER(offline=False, gazetteer={}, chunk_words=20).extract(_SPLIT_PROBE)
+    assert [(m.text, m.type) for m in mentions] == [("gravis", "phenotype")]
+
+
+def test_production_no_merge_across_contiguous_sentence_boundary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Sentence-piece windows tile gap-free, so flush spans on both sides stay separate mentions."""
+    text = "Asthma attack. Porphyria noted."
+    windows = _windows(text, 3)
+    assert len(windows) == 2
+    assert windows[1][0] == windows[0][0] + len(windows[0][1])  # contiguous boundary
+    model = _WindowRoutedFakeModel(
+        {
+            "Asthma": [{"start": 0, "end": len(windows[0][1]), "label": "disease", "score": 0.9}],
+            "Porphyria": [{"start": 0, "end": 9, "label": "disease", "score": 0.9}],
+        }
+    )
+    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    mentions = DiseaseNER(offline=False, gazetteer={}, chunk_words=3).extract(text)
+    assert [(m.text, m.type) for m in mentions] == [("Asthma attack. ", "disease"), ("Porphyria", "disease")]
+
+
 # --- windowing: GLiNER truncates long inputs, so long texts are predicted per window ---
 
 

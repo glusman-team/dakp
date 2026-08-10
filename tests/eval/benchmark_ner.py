@@ -31,65 +31,17 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from dakp_pipeline.ner.ner import EMBEDDED_GAZETTEER
+
 HERE = Path(__file__).resolve().parent
 GOLD_PATH = HERE / "ner_gold.json"
 
 # --- the curated disease/phenotype gazetteer (the offline baseline under test) -----
-# term -> canonical type. This is the high-precision anchor of the settled composite backend
-# (mirrors dakp_pipeline.ner.ner.EMBEDDED_GAZETTEER); it is intentionally NOT exhaustive — the
-# three out-of-gazetteer gold cases (porphyria / myasthenia gravis / pheochromocytoma) measure
-# model generalization that a gazetteer alone cannot provide.
-GAZETTEER: dict[str, str] = {
-    # disease (named disorders / syndromes)
-    "asthma": "disease",
-    "liver disease": "disease",
-    "active liver disease": "disease",
-    "heart failure": "disease",
-    "severe heart failure": "disease",
-    "myocardial infarction": "disease",
-    "peptic ulcer": "disease",
-    "peptic ulcer disease": "disease",
-    "renal impairment": "disease",
-    "severe renal impairment": "disease",
-    "renal disease": "disease",
-    "end stage renal disease": "disease",
-    "hypertension": "disease",
-    "uncontrolled hypertension": "disease",
-    "arrhythmia": "disease",
-    "ventricular arrhythmias": "disease",
-    "stroke": "disease",
-    "hemorrhagic stroke": "disease",
-    "hepatic impairment": "disease",
-    "severe hepatic impairment": "disease",
-    "epilepsy": "disease",
-    "glaucoma": "disease",
-    "narrow angle glaucoma": "disease",
-    "hypercholesterolemia": "disease",
-    "diabetes mellitus": "disease",
-    "type 2 diabetes mellitus": "disease",
-    "chronic obstructive pulmonary disease": "disease",
-    "atrial fibrillation": "disease",
-    "arthritis": "disease",
-    "rheumatoid arthritis": "disease",
-    "depression": "disease",
-    "migraine": "disease",
-    # phenotype (clinical findings / symptoms / condition-states)
-    "hypersensitivity": "phenotype",
-    "transaminase elevations": "phenotype",
-    "bleeding": "phenotype",
-    "active bleeding": "phenotype",
-    "gastrointestinal bleeding": "phenotype",
-    "pregnancy": "phenotype",
-    "qt prolongation": "phenotype",
-    "seizure": "phenotype",
-    "seizures": "phenotype",
-    "headache": "phenotype",
-    "pain": "phenotype",
-    "back pain": "phenotype",
-    "nausea": "phenotype",
-    "vomiting": "phenotype",
-    "fatigue": "phenotype",
-}
+# The shipped composite backend's embedded gazetteer itself — imported, not duplicated, so the
+# benchmark always measures the terms the backend ships. It is intentionally NOT exhaustive:
+# the three out-of-gazetteer gold cases (porphyria / myasthenia gravis / pheochromocytoma)
+# measure model generalization that a gazetteer alone cannot provide.
+GAZETTEER: dict[str, str] = EMBEDDED_GAZETTEER
 
 
 @dataclass(frozen=True)

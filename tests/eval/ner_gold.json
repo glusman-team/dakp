@@ -1,6 +1,6 @@
 {
   "schema_version": "dakp.ner.gold.v1",
-  "annotation_policy": "Gold spans are the maximal disease/phenotype mention spans a contraindication or indication targets. type is 'disease' (a diagnosed condition) or 'phenotype' (a clinical finding/symptom/condition-state). Borderline condition-states (hypersensitivity, pregnancy, bleeding, seizures, elevations, pain, nausea, vomiting, fatigue) are labeled 'phenotype'; named disorders/syndromes are 'disease'. Each surface occurs exactly once in its text so offsets resolve unambiguously.",
+  "annotation_policy": "Gold spans are the maximal disease/phenotype mention spans a contraindication or indication targets. type is 'disease' (a diagnosed condition) or 'phenotype' (a clinical finding/symptom/condition-state). Borderline condition-states (hypersensitivity, pregnancy, bleeding, seizures, elevations, pain, nausea, vomiting, fatigue) are labeled 'phenotype'; named disorders/syndromes are 'disease'. Population descriptors (e.g. 'women of childbearing potential') are subject populations, NOT disease/phenotype mentions, and get no span. Each surface occurs exactly once in its text so offsets resolve unambiguously.",
   "cases": [
     {
       "id": "dailymed-ibuprofen",
@@ -237,6 +237,40 @@
       "text": "pheochromocytoma",
       "mentions": [
         {"surface": "pheochromocytoma", "type": "disease"}
+      ]
+    },
+    {
+      "id": "dailymed-childbearing",
+      "source": "dailymed",
+      "loinc": "34070-3",
+      "text": "Contraindicated in women of childbearing potential.",
+      "mentions": []
+    },
+    {
+      "id": "dailymed-chf",
+      "source": "dailymed",
+      "loinc": "34070-3",
+      "text": "Contraindicated in patients with congestive heart failure.",
+      "mentions": [
+        {"surface": "congestive heart failure", "type": "disease"}
+      ]
+    },
+    {
+      "id": "dailymed-cirrhosis",
+      "source": "dailymed",
+      "loinc": "34070-3",
+      "text": "Do not administer to patients with cirrhosis or hepatic encephalopathy.",
+      "mentions": [
+        {"surface": "cirrhosis", "type": "disease"},
+        {"surface": "hepatic encephalopathy", "type": "disease"}
+      ]
+    },
+    {
+      "id": "faers-aki",
+      "source": "faers",
+      "text": "acute kidney injury",
+      "mentions": [
+        {"surface": "acute kidney injury", "type": "disease"}
       ]
     }
   ]
