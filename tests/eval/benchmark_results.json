@@ -1,25 +1,25 @@
 {
   "schema_version": "dakp.ner.benchmark.v1",
-  "cases": 27,
-  "gold_mentions": 35,
+  "cases": 31,
+  "gold_mentions": 39,
   "results": {
     "gazetteer": {
       "precision": 1.0,
-      "recall": 0.9142857142857143,
-      "f1": 0.955223880597015,
-      "lenient_f1": 0.955223880597015
+      "recall": 0.9230769230769231,
+      "f1": 0.9600000000000001,
+      "lenient_f1": 0.9600000000000001
     },
     "gliner": {
-      "precision": 0.6923076923076923,
-      "recall": 0.5142857142857142,
-      "f1": 0.5901639344262295,
-      "lenient_f1": 0.6885245901639345
+      "precision": 0.7586206896551724,
+      "recall": 0.5641025641025641,
+      "f1": 0.6470588235294118,
+      "lenient_f1": 0.7352941176470588
     },
     "composite": {
-      "precision": 0.9722222222222222,
+      "precision": 1.0,
       "recall": 1.0,
-      "f1": 0.9859154929577464,
-      "lenient_f1": 0.9859154929577464
+      "f1": 1.0,
+      "lenient_f1": 1.0
     }
   }
 }
