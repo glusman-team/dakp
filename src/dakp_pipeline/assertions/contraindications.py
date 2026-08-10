@@ -63,7 +63,7 @@ from dakp_pipeline.assertions.evidence import build_dailymed_evidence, sorted_pi
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
-from dakp_pipeline.ner.ner import DiseaseNER, Mention, extract_contraindication_diseases
+from dakp_pipeline.ner.ner import DiseaseNER, Mention, _cuda_device_supported, extract_contraindication_diseases
 
 _TABLE = "contraindication_assertions"
 _PREDICATE = "biolink:contraindicated_in"
@@ -290,7 +290,8 @@ def _spawn_safe_main() -> Iterator[None]:
 
 
 def _resolve_devices(ner: DiseaseNER) -> Sequence[str] | None:
-    """The hardcoded GPU list capped to the VISIBLE device count; None when unusable.
+    """The hardcoded GPU list capped to the VISIBLE device count and filtered to devices the
+    installed torch can actually run on; None when unusable.
 
     Only the production (GLiNER) backend benefits from multi-GPU dispatch — the offline
     gazetteer is CPU-only and deterministic. ``torch.cuda.is_available()`` guards against
@@ -298,6 +299,10 @@ def _resolve_devices(ner: DiseaseNER) -> Sequence[str] | None:
     capped at ``torch.cuda.device_count()`` because hosts vary: the build server has the full
     4x P100 set, laptops often expose a single GPU — dispatching a worker to a nonexistent
     ``cuda:N`` crashes the whole pool (torch refuses to deserialize onto a missing device).
+    Devices whose arch the torch build lacks kernels for (e.g. sm_60 P100s against a cu128
+    wheel line) are filtered out via :func:`~dakp_pipeline.ner.ner._cuda_device_supported` —
+    ``is_available()`` alone lies there (True, but the first CUDA call raises), so with no
+    supported device the shaper falls back to sequential CPU mining with a warning.
     """
     if ner._offline:
         return None
@@ -310,7 +315,16 @@ def _resolve_devices(ner: DiseaseNER) -> Sequence[str] | None:
     visible = torch.cuda.device_count()
     if visible <= 0:
         return None
-    return CONTRAINDICATION_GPUS[:visible]
+    supported = tuple(
+        CONTRAINDICATION_GPUS[index] for index in range(min(visible, len(CONTRAINDICATION_GPUS))) if _cuda_device_supported(torch, index)
+    )
+    if not supported:
+        logger.warning(
+            "contraindication_gpus_unsupported: no visible CUDA device arch is in the torch build arch list = {}; falling back to sequential CPU mining",
+            torch.cuda.get_arch_list(),
+        )
+        return None
+    return supported
 
 
 def _shard_by_text_length(items: list[tuple[str, str, str]], n: int) -> list[list[tuple[str, str, str]]]:

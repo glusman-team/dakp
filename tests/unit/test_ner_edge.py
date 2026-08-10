@@ -25,6 +25,7 @@ from dakp_pipeline.ner.ner import (
     DEFAULT_MODEL,
     DiseaseNER,
     Mention,
+    _cuda_device_supported,
     _install_message,
     _model_device,
     _overlaps_any,
@@ -49,6 +50,8 @@ def test_model_device_selects_cuda_when_available(monkeypatch: pytest.MonkeyPatc
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (6, 0))
+    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_50", "sm_60", "sm_75"])
     assert _model_device() == "cuda"
 
 
@@ -62,6 +65,41 @@ def test_model_device_falls_back_to_cpu_without_cuda(monkeypatch: pytest.MonkeyP
 def test_model_device_cpu_when_torch_unimportable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "torch", None)  # makes `import torch` raise ImportError
     assert _model_device() == "cpu"
+
+
+def test_model_device_falls_back_to_cpu_when_arch_unsupported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CUDA visible but torch has no kernels for the GPU arch (e.g. a cu128 build on a
+    P100/sm_60) — CPU instead of crashing on the first CUDA call."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (6, 0))
+    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_75", "sm_80"])
+    assert _model_device() == "cpu"
+
+
+# --- _cuda_device_supported: arch-list gate for one device ----------------------
+
+
+def test_cuda_device_supported_matches_compiled_arch_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (6, 0))
+    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_60", "sm_75"])
+    assert _cuda_device_supported(torch, 0) is True
+    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_75", "sm_80"])
+    assert _cuda_device_supported(torch, 0) is False
+
+
+def test_cuda_device_supported_false_when_capability_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A device that errors on capability query counts as unsupported, not a crash."""
+    import torch
+
+    def _raise(index: int) -> tuple[int, int]:
+        raise RuntimeError("CUDA driver error")
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", _raise)
+    assert _cuda_device_supported(torch, 0) is False
 
 
 def test_sort_key_and_overlaps_helpers() -> None:

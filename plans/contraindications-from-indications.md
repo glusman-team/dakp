@@ -71,6 +71,7 @@ DEFAULT_CONTRA_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+
 def _contraindication_sentences(text: str, keywords: re.Pattern) -> str:
     """Return only the contraindication-context sentences from ``text`` (joined)."""
     sentences = _split_sentences(text)
@@ -107,10 +108,9 @@ def _mine_two_passes_multi_gpu(work_items_p1, work_items_p2, ner, devices):
     shards_p2 = _shard_by_text_length(work_items_p2, min(len(dev_p2), len(work_items_p2) or 1))
     ctx = mp.get_context("spawn")
     with ProcessPoolExecutor(max_workers=len(shards_p1) + len(shards_p2), mp_context=ctx) as pool:
-        futures = (
-            [pool.submit(_mine_shard, s, ner._config(), dev_p1[i]) for i, s in enumerate(shards_p1)]
-            + [pool.submit(_mine_shard, s, ner._config(), dev_p2[i]) for i, s in enumerate(shards_p2)]
-        )
+        futures = [pool.submit(_mine_shard, s, ner._config(), dev_p1[i]) for i, s in enumerate(shards_p1)] + [
+            pool.submit(_mine_shard, s, ner._config(), dev_p2[i]) for i, s in enumerate(shards_p2)
+        ]
         results = {}
         for fut in futures:
             for set_id, doc_id, mentions in fut.result():

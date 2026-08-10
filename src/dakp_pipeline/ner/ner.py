@@ -200,14 +200,41 @@ def _token_budget(model: Any, override: int | None) -> int:
     return _DEFAULT_WORD_BUDGET
 
 
+def _cuda_device_supported(torch_mod: Any, device_index: int) -> bool:
+    """True when the installed torch has kernels compiled for ``cuda:device_index``.
+
+    ``torch.cuda.is_available()`` only checks driver + runtime — it lies when torch was built
+    without kernels for the present GPU arch (torch >=2.8 cu128 wheels have no sm_60 code, so
+    the P100s pass ``is_available()`` but raise on first use). A device is usable iff its
+    compute capability appears in the arch list torch was compiled for.
+    """
+    try:
+        major, minor = torch_mod.cuda.get_device_capability(device_index)
+    except Exception:  # defensive: driver/runtime errors surface as unusable, not a crash
+        return False
+    return f"sm_{major}{minor}" in torch_mod.cuda.get_arch_list()
+
+
 def _model_device() -> str:
-    """Device the GLiNER model runs on: CUDA when available (orders of magnitude faster than the
-    CPU fallback, which saturates every core), else CPU."""
+    """Device the GLiNER model runs on: CUDA when available AND supported by the installed
+    torch build (orders of magnitude faster than the CPU fallback, which saturates every
+    core), else CPU.
+
+    The :func:`_cuda_device_supported` gate covers hosts whose GPUs predate the torch build's
+    compiled architectures (e.g. the P100/sm_60 build server against a cu128 wheel line):
+    there, ``is_available()`` is True but the first CUDA call raises, so mining silently
+    downgrades to CPU instead (see ``plans/fix-p100-torch-sm60.md``).
+    """
     try:
         import torch  # lazy: no torch at module load
     except ImportError:
         return "cpu"
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    if not torch.cuda.is_available():
+        return "cpu"
+    if not _cuda_device_supported(torch, 0):
+        logger.warning("ner_device_unsupported: cuda:0 arch not in torch build arch list = {}; falling back to CPU", torch.cuda.get_arch_list())
+        return "cpu"
+    return "cuda"
 
 
 class DiseaseNER:

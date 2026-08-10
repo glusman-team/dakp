@@ -40,11 +40,17 @@ dependencies = [
     "pydantic>=2.12.0",
     "tablassert[qc]>=8.0.1",
     # torch is transitive (gliner, sentence-transformers via tablassert[qc]) but pinned here so
-    # the CUDA wheel selection is explicit: the default PyPI wheels are built for CUDA 13
-    # (+cu130) and refuse to initialize on our CUDA 12.8 driver ("driver too old, found
-    # version 12080"). The cu128 index ships driver-12.x-compatible wheels only up to 2.11,
-    # hence the cap. See [tool.uv.sources] / [[tool.uv.index]] below.
-    "torch>=2.9,<2.12",
+    # the CUDA wheel selection is explicit. Two hardware constraints of the build host
+    # (wenceslaus: 4x Tesla P100-PCIE-16GB, compute capability 6.0, CUDA 12.8 driver) force it:
+    # (1) the default PyPI wheels are built for CUDA 13 (+cu130) and refuse to initialize on a
+    # CUDA 12.8 driver ("driver too old, found version 12080"); (2) PyTorch removed Maxwell and
+    # Pascal kernels from its CUDA 12.8/12.9 binaries starting with release 2.8 (July 2025
+    # packaging policy), so every torch >=2.8 from the cu128 index — and cuDNN >=9.19 in
+    # general — hard-fails on the P100s ("sm_60 is not compatible", "cuDNN ... SM < 7.5").
+    # Only the cu126 wheel line still ships sm_60 kernels with a P100-compatible cuDNN (9.10);
+    # a CUDA 12.6 runtime runs fine on the 12.8 driver. Hence torch 2.8.x from the cu126 index.
+    # See [tool.uv.sources] / [[tool.uv.index]] below.
+    "torch>=2.8,<2.9",
 ]
 
 [dependency-groups]
@@ -60,15 +66,17 @@ dev = [
 [project.scripts]
 dakp = "dakp_pipeline.cli:app"
 
-# Pull torch from the official PyTorch cu128 wheel index (CUDA 12.8 builds) instead of PyPI,
-# whose torch wheels are +cu130 and require a CUDA >= 13 driver. `explicit = true` keeps this
-# index scoped to torch only; everything else still resolves from PyPI.
+# Pull torch from the official PyTorch cu126 wheel index (CUDA 12.6 builds) instead of PyPI,
+# whose torch wheels are +cu130 and require a CUDA >= 13 driver. The cu126 line is the LAST
+# wheel line with kernels for our Tesla P100s (sm_60): PyTorch dropped Maxwell/Pascal from its
+# cu128/cu129 binaries starting with release 2.8. `explicit = true` keeps this index scoped to
+# torch only; everything else still resolves from PyPI.
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
+torch = { index = "pytorch-cu126" }
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
 explicit = true
 
 [build-system]

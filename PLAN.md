@@ -47,10 +47,7 @@ Airflow so the task fails correctly.
 # tablassert.py, in TablassertRunner.run(), after report.update({...}):
 refs = [_write_report(report, assertion_refs, ctx)]
 if completed.returncode != 0:
-    raise TablassertError(
-        f"Tablassert exited {completed.returncode}; see handoff report: {refs[0].uri}\n"
-        f"{(completed.stderr or '').strip()[:500]}"
-    )
+    raise TablassertError(f"Tablassert exited {completed.returncode}; see handoff report: {refs[0].uri}\n{(completed.stderr or '').strip()[:500]}")
 return refs
 ```
 
