@@ -25,6 +25,11 @@ The configs match the ACTUAL current Tablassert 8.x schema (verified against
   the DINGO-conventional upstream infores chain, ``knowledge_level`` and ``agent_type``
   (the DAKP ``infores`` is graph-level only since Tablassert 8.0.1 forbids it in the override;
   no ``publication`` — the override replaces repo/publication provenance);
+* column-encoded ``statement.qualifiers`` where an assertion column carries the qualifier's entity
+  (per-table :data:`_TABLE_QUALIFIERS`). A Tablassert qualifier is a node encoding resolved through
+  the fullmap alongside subject/object (an unmatched qualifier value drops the whole edge), so a
+  qualifier is only emitted where a dense, resolvable column backs it, and it mirrors the backing
+  side's category allow-list so it resolves to exactly the same CURIE as the node it qualifies;
 * column-encoded evidence ``annotations``.
 
 Column letters are DERIVED from the assertion-table column contracts in
@@ -150,6 +155,33 @@ OBJECT_COLUMN = "object_text"
 SUBJECT_PRIORITIZE = ("Drug", "SmallMolecule", "ChemicalEntity")
 OBJECT_PRIORITIZE = ("Disease", "PhenotypicFeature")
 
+# Per-table biolink statement qualifiers: (qualifier slot, backing assertion column). Emitted as
+# ``statement.qualifiers`` entries ONLY where a column actually carries the qualifier's entity.
+# Validity is two-layered: the slot must be a member of the installed Tablassert's Biolink
+# ``Qualifiers`` enum (the biolink qualifier slot hierarchy), and — because every DAKP edge lands in
+# ``biolink:ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` (drug subject ->
+# disease/phenotype object per ``lib.edge_tables``) — only the qualifier slots that class can hold
+# are biolink-valid on DAKP edges: ``anatomical_context_qualifier`` / ``disease_context_qualifier``
+# (``species_context_qualifier`` is auto-derived from the taxon constraint and rejected when
+# declared; the mechanistic aspect/direction/part/... slots belong to regulatory association
+# classes, frequency/onset/sex/stage/... to other clinical classes). Qualifier values are
+# entity-resolved through the fullmap and an unmatched value drops the whole edge, so a table whose
+# columns back no qualifier entity gets NO qualifiers (an empty tuple), never a fabricated constant.
+_TABLE_QUALIFIERS: dict[str, tuple[tuple[str, str], ...]] = {
+    # ``clinical_approval_status`` ("approved_for_condition") is the Biolink ClinicalApprovalStatusEnum
+    # ASSOCIATION slot, not a qualifier slot — no ``Qualifiers`` member expresses approval status, so
+    # it stays an annotation; ``approval_ids`` / SPL ids are provenance strings, not entities.
+    "approved_treats_assertions": (),
+    # FAERS rows are adverse-event case reports: the applied-to-treat use was observed in the disease
+    # context of the reported indication, so the edge carries ``disease_context_qualifier`` encoded
+    # from the object column (the adverse event itself — FAERS ``effects`` — is aggregated away and
+    # not part of the assertion contract; re-point this qualifier at it if that ever lands).
+    "faers_applied_to_treat_assertions": (("disease_context_qualifier", OBJECT_COLUMN),),
+    # DailyMed section provenance (SPL set / document ids) and a numeric NER ``source_score`` back no
+    # qualifier entity.
+    "contraindication_assertions": (),
+}
+
 _GENERATE_OPERATION = "generate_tablassert_configs"
 
 
@@ -224,32 +256,49 @@ def table_config(table: str) -> dict[str, Any]:
     """Build the Tablassert ``Section`` body (the ``template:`` value) for an assertion table.
 
     Shape verified against ``tablassert.models.Section``: ``source`` (text), ``statement``
-    (column-encoded subject/predicate/object), ``provenance.override`` (ManualProvenance),
-    and column-encoded ``annotations`` for the table's evidence columns. Subject/object carry
-    ``prioritize`` (soft ranking) plus ``avoid`` — the hard allow-list guard computed by
-    :func:`category_avoid_list` from the side's ``prioritize`` tuple.
+    (column-encoded subject/predicate/object plus the table's ``qualifiers`` when a column backs
+    them), ``provenance.override`` (ManualProvenance), and column-encoded ``annotations`` for the
+    table's evidence columns. Subject/object carry ``prioritize`` (soft ranking) plus ``avoid`` —
+    the hard allow-list guard computed by :func:`category_avoid_list` from the side's ``prioritize``
+    tuple. Each qualifier re-resolves its backing column, so it mirrors the object side's
+    ``prioritize``/``avoid`` — identical constraints give identical candidate ranking, so the
+    qualifier CURIE always equals the node it qualifies (never a divergent resolution or an extra
+    row drop).
     """
     _basename, predicate, upstream, knowledge_level, agent_type = _TABLE_SPECS[table]  # KeyError for unknown tables
     annotations = [
         {"annotation": annotation, "method": "column", "encoding": column_letter(table, column)} for column, annotation in _TABLE_ANNOTATIONS[table]
     ]
+    qualifiers = [
+        {
+            "qualifier": qualifier,
+            "method": "column",
+            "encoding": column_letter(table, column),
+            "prioritize": list(OBJECT_PRIORITIZE),
+            "avoid": category_avoid_list(OBJECT_PRIORITIZE),
+        }
+        for qualifier, column in _TABLE_QUALIFIERS[table]
+    ]
+    statement: dict[str, Any] = {
+        "subject": {
+            "method": "column",
+            "encoding": column_letter(table, SUBJECT_COLUMN),
+            "prioritize": list(SUBJECT_PRIORITIZE),
+            "avoid": category_avoid_list(SUBJECT_PRIORITIZE),
+        },
+        "predicate": predicate,
+        "object": {
+            "method": "column",
+            "encoding": column_letter(table, OBJECT_COLUMN),
+            "prioritize": list(OBJECT_PRIORITIZE),
+            "avoid": category_avoid_list(OBJECT_PRIORITIZE),
+        },
+    }
+    if qualifiers:  # no backing column => no ``qualifiers`` key (Tablassert treats absent and empty alike; keep configs minimal)
+        statement["qualifiers"] = qualifiers
     return {
         "source": {"kind": "text", "local": f"data/tabular/{table}.tsv", "url": f"{SOURCE_URL_BASE}/{table}.tsv", "delimiter": "\t"},
-        "statement": {
-            "subject": {
-                "method": "column",
-                "encoding": column_letter(table, SUBJECT_COLUMN),
-                "prioritize": list(SUBJECT_PRIORITIZE),
-                "avoid": category_avoid_list(SUBJECT_PRIORITIZE),
-            },
-            "predicate": predicate,
-            "object": {
-                "method": "column",
-                "encoding": column_letter(table, OBJECT_COLUMN),
-                "prioritize": list(OBJECT_PRIORITIZE),
-                "avoid": category_avoid_list(OBJECT_PRIORITIZE),
-            },
-        },
+        "statement": statement,
         "provenance": {"override": {"upstream_resource_ids": list(upstream), "knowledge_level": knowledge_level, "agent_type": agent_type}},
         "annotations": annotations,
     }

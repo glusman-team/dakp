@@ -2,9 +2,10 @@
 
 Asserts the generated Graph + per-table configs are valid YAML matching the ACTUAL current
 Tablassert 8.x schema (``template:``-wrapped ``Section``: ``source.kind=text``, column-encoded
-subject/object/predicate, ``provenance.override`` ManualProvenance, column-encoded evidence
-annotations), with column letters derived from the assertion-table contracts and provenance
-matching the DINGO translator-ingest conventions. Also covers the runner: the mock runner's
+subject/object/predicate, column-encoded ``statement.qualifiers`` where a column backs them,
+``provenance.override`` ManualProvenance, column-encoded evidence annotations), with column
+letters derived from the assertion-table contracts and provenance matching the DINGO
+translator-ingest conventions. Also covers the runner: the mock runner's
 handoff report and the real runner's monkeypatchable subprocess boundary.
 
 These tests require the INSTALLED ``tablassert`` package (a core DAKP dependency): config
@@ -30,6 +31,7 @@ from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.tablassert import (
+    OBJECT_COLUMN,
     OBJECT_PRIORITIZE,
     SUBJECT_PRIORITIZE,
     TABLASERT_DIR_ENV,
@@ -75,6 +77,15 @@ EXPECTED_PROVENANCE = {
 # Translator ``number_of_cases`` slot; the SPL-evidence columns map to names on Tablassert's edge-field
 # allow-list (``has_evidence`` / ``supporting_documents``) so they stay first-class KGX fields; the rest
 # keep their column name.
+# assertion table -> {qualifier slot: assertion column backing it}. Only tables whose columns carry
+# a qualifier entity get entries (see ``_TABLE_QUALIFIERS`` for the per-table justification): FAERS
+# adverse-event case reports carry their disease context; the other tables' columns back none.
+EXPECTED_QUALIFIERS = {
+    "approved_treats_assertions": {},
+    "faers_applied_to_treat_assertions": {"disease_context_qualifier": OBJECT_COLUMN},
+    "contraindication_assertions": {},
+}
+
 EXPECTED_ANNOTATIONS = {
     "approved_treats_assertions": {
         "approval_ids": "approval_ids",
@@ -189,6 +200,41 @@ def test_table_config_structure(table: str) -> None:
 
 
 @pytest.mark.parametrize("table", TABLES)
+def test_table_config_qualifiers(table: str) -> None:
+    statement = tablassert_configs.table_config(table)["statement"]
+    expected = EXPECTED_QUALIFIERS[table]
+    if not expected:
+        # Nothing backs a qualifier on this table => no ``qualifiers`` key at all (never an empty list).
+        assert "qualifiers" not in statement
+        return
+    qualifiers = statement["qualifiers"]
+    assert [entry["qualifier"] for entry in qualifiers] == list(expected)
+    for entry in qualifiers:
+        backing = expected[entry["qualifier"]]
+        assert entry["method"] == "column"
+        # The encoding letter must address the backing assertion column.
+        assert _column_at(table, entry["encoding"]) == backing
+        assert entry["encoding"] == tablassert_configs.column_letter(table, backing)
+        # The qualifier re-resolves its backing column with the object side's allow-list, so it
+        # lands on exactly the same CURIE as the node it qualifies.
+        assert entry["prioritize"] == list(OBJECT_PRIORITIZE)
+        assert entry["avoid"] == category_avoid_list(OBJECT_PRIORITIZE)
+
+
+def test_qualifier_slots_are_valid_biolink_qualifiers() -> None:
+    # Every emitted qualifier slot must be a real member of the installed Tablassert's Biolink
+    # ``Qualifiers`` enum — and never ``species_context_qualifier`` (Tablassert auto-derives that
+    # one from the taxon constraint and rejects manual declarations at config load).
+    from tablassert.biolink import Qualifiers
+
+    valid = {qualifier.value for qualifier in Qualifiers}
+    for table in TABLES:
+        for qualifier, _column in tablassert_configs._TABLE_QUALIFIERS[table]:
+            assert qualifier in valid
+            assert qualifier != "species_context_qualifier"
+
+
+@pytest.mark.parametrize("table", TABLES)
 def test_table_config_annotations_encode_expected_columns(table: str) -> None:
     annotations = tablassert_configs.table_config(table)["annotations"]
     by_name = {a["annotation"]: a for a in annotations}
@@ -242,11 +288,24 @@ def test_category_avoid_list_unknown_allowed_category_raises() -> None:
 @pytest.mark.parametrize("table", TABLES)
 def test_table_yaml_validates_against_tablassert_section_model(table: str) -> None:
     # The emitted config must load cleanly into Tablassert's own Section model — this proves every
-    # avoid entry is a real Categories member of the INSTALLED tablassert (unknown names would
-    # raise a TablassertValidationError here).
+    # avoid entry is a real Categories member and every qualifier a real Qualifiers member of the
+    # INSTALLED tablassert (unknown names would raise a TablassertValidationError here).
     from tablassert.models import Section
 
-    Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
+    section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
+    # Qualifier entries survive model validation as Qualifier objects, in emission order.
+    model_qualifiers = section.statement.qualifiers or []
+    assert [str(qualifier.qualifier) for qualifier in model_qualifiers] == list(EXPECTED_QUALIFIERS[table])
+
+
+def test_committed_table_configs_match_generator_output() -> None:
+    # The committed ``tables/*.yaml`` must byte-equal the generator output (regenerate, never
+    # hand-diverge).
+    repo_tables = Path(__file__).resolve().parents[2] / "tables"
+    for table in TABLES:
+        basename = tablassert_configs._TABLE_SPECS[table][0]
+        assert (repo_tables / f"{basename}.yaml").read_text(encoding="utf-8") == tablassert_configs.table_yaml(table)
+    assert (repo_tables / "graph.yaml").read_text(encoding="utf-8") == tablassert_configs.graph_yaml()
 
 
 # --- graph config structure -------------------------------------------------------
