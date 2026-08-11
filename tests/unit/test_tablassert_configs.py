@@ -73,10 +73,6 @@ EXPECTED_PROVENANCE = {
     "contraindication_assertions": ("contraindications", "contraindicated_in", ["infores:dailymed"], "knowledge_assertion", "text_mining_agent"),
 }
 
-# assertion table -> {annotation name: assertion column it must encode}. case_count maps to the
-# Translator ``number_of_cases`` slot; the SPL-evidence columns map to names on Tablassert's edge-field
-# allow-list (``has_evidence`` / ``supporting_documents``) so they stay first-class KGX fields; the rest
-# keep their column name.
 # assertion table -> {qualifier slot: assertion column backing it}. Only tables whose columns carry
 # a qualifier entity get entries (see ``_TABLE_QUALIFIERS`` for the per-table justification): FAERS
 # adverse-event case reports carry their disease context; the other tables' columns back none.
@@ -86,18 +82,33 @@ EXPECTED_QUALIFIERS = {
     "contraindication_assertions": {},
 }
 
+# assertion table -> {annotation name: (assertion column it encodes, multivalued delimiter)}.
+# case_count maps to the Translator ``number_of_cases`` slot; the SPL-evidence columns map to names
+# on Tablassert's edge-field allow-list (``has_evidence`` / ``supporting_documents``) so they stay
+# first-class KGX fields, with ``delimiter: "|"`` so the pipe-joined cells emit as real JSON arrays;
+# the rest keep their column name and fold into ``supporting_text`` (no Biolink slot on DAKP's
+# association class).
 EXPECTED_ANNOTATIONS = {
     "approved_treats_assertions": {
-        "approval_ids": "approval_ids",
-        "has_evidence": "supporting_spl_sets",
-        "clinical_approval_status": "clinical_approval_status",
+        "approval_ids": ("approval_ids", None),
+        "has_evidence": ("supporting_spl_sets", "|"),
+        "supporting_documents": ("supporting_spl_documents", "|"),
+        "clinical_approval_status": ("clinical_approval_status", None),
     },
-    "faers_applied_to_treat_assertions": {"number_of_cases": "case_count", "clinical_approval_status": "clinical_approval_status"},
+    "faers_applied_to_treat_assertions": {"number_of_cases": ("case_count", None), "clinical_approval_status": ("clinical_approval_status", None)},
     "contraindication_assertions": {
-        "has_evidence": "supporting_spl_sets",
-        "supporting_documents": "supporting_spl_documents",
-        "source_score": "source_score",
+        "has_evidence": ("supporting_spl_sets", "|"),
+        "supporting_documents": ("supporting_spl_documents", "|"),
+        "source_score": ("source_score", None),
     },
+}
+
+# assertion table -> the REAL upstream dataset URL recorded as ``source.url`` (never a placeholder;
+# Tablassert emits it as the edge ``sources[].source_record_urls``).
+EXPECTED_SOURCE_URLS = {
+    "approved_treats_assertions": "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm",
+    "faers_applied_to_treat_assertions": "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html",
+    "contraindication_assertions": "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm",
 }
 
 
@@ -176,7 +187,9 @@ def test_table_config_structure(table: str) -> None:
     assert source["kind"] == "text"
     assert source["local"] == f"data/tabular/{table}.tsv"
     assert source["delimiter"] == "\t"
-    assert source["url"].startswith("https://")
+    # The real upstream dataset URL — never the example.invalid placeholder.
+    assert source["url"] == EXPECTED_SOURCE_URLS[table]
+    assert "example.invalid" not in source["url"]
 
     # column-encoded subject/object with drug / disease prioritization + hard allow-list guards.
     statement = config["statement"]
@@ -192,7 +205,7 @@ def test_table_config_structure(table: str) -> None:
 
     # ManualProvenance override matching the DINGO conventions (no publication alongside override).
     override = config["provenance"]["override"]
-    assert "infores" not in override  # the DAKP infores is graph-level only (Tablassert 8.0.1 forbids it here)
+    assert "infores" not in override  # the DAKP infores is graph-level only (Tablassert >= 8.0.1 forbids it here)
     assert override["upstream_resource_ids"] == upstream
     assert override["knowledge_level"] == knowledge_level
     assert override["agent_type"] == agent_type
@@ -239,12 +252,17 @@ def test_table_config_annotations_encode_expected_columns(table: str) -> None:
     annotations = tablassert_configs.table_config(table)["annotations"]
     by_name = {a["annotation"]: a for a in annotations}
     assert set(by_name) == set(EXPECTED_ANNOTATIONS[table])
-    for annotation, column in EXPECTED_ANNOTATIONS[table].items():
+    for annotation, (column, delimiter) in EXPECTED_ANNOTATIONS[table].items():
         entry = by_name[annotation]
         assert entry["method"] == "column"
         # The encoding letter must address the expected assertion column.
         assert _column_at(table, entry["encoding"]) == column
         assert entry["encoding"] == tablassert_configs.column_letter(table, column)
+        # Multivalued Biolink slots split the pipe-joined cell into a real JSON array.
+        if delimiter is None:
+            assert "delimiter" not in entry
+        else:
+            assert entry["delimiter"] == delimiter
 
 
 # --- category guard (hard allow-lists via Tablassert ``avoid``) -------------------
@@ -433,26 +451,26 @@ def test_qc_runtime_available_reflects_importability(monkeypatch: pytest.MonkeyP
 
 
 def test_build_command_editable_override_prefix() -> None:
-    command = TablassertRunner().build_command(Path("tables/graph.yaml"), ".fullmap", tablassert_dir="../Tablassert")
-    assert command == ["uv", "run", "--with-editable", "../Tablassert", "tablassert", "build-kg", "tables/graph.yaml", "--fullmap", ".fullmap"]
+    command = TablassertRunner().build_command(Path("tables/graph.yaml"), tablassert_dir="../Tablassert")
+    assert command == ["uv", "run", "--with-editable", "../Tablassert", "tablassert", "build-kg", "tables/graph.yaml"]
 
 
 def test_build_command_prefers_installed_binary(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: "/venv/bin/tablassert")
-    command = TablassertRunner().build_command(Path("tables/graph.yaml"), ".fullmap")
-    assert command == ["/venv/bin/tablassert", "build-kg", "tables/graph.yaml", "--fullmap", ".fullmap"]
+    command = TablassertRunner().build_command(Path("tables/graph.yaml"))
+    assert command == ["/venv/bin/tablassert", "build-kg", "tables/graph.yaml"]
 
 
 def test_build_command_falls_back_to_uv_run_tablassert(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)
-    command = TablassertRunner().build_command(Path("tables/graph.yaml"), ".fullmap")
-    assert command == ["uv", "run", "tablassert", "build-kg", "tables/graph.yaml", "--fullmap", ".fullmap"]
+    command = TablassertRunner().build_command(Path("tables/graph.yaml"))
+    assert command == ["uv", "run", "tablassert", "build-kg", "tables/graph.yaml"]
 
 
 def test_build_command_appends_qc_and_release_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)
-    command = TablassertRunner().build_command(Path("graph.yaml"), ".fullmap", qc=True, release=True)
-    assert command == ["uv", "run", "tablassert", "build-kg", "graph.yaml", "--fullmap", ".fullmap", "--qc", "--release"]
+    command = TablassertRunner().build_command(Path("graph.yaml"), qc=True, release=True)
+    assert command == ["uv", "run", "tablassert", "build-kg", "graph.yaml", "--qc", "--release"]
 
 
 def test_resolve_tablassert_dir_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -502,8 +520,9 @@ def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
     command, cwd = calls[0]
     assert cwd == workdir.root
     assert command[:4] == ["uv", "run", "tablassert", "build-kg"]
-    assert command[-2:] == ["--fullmap", "data/fullmap"]
     assert command[4] == str(workdir.root / "tables" / "graph.yaml")
+    # Tablassert >= 8.1 removed the build-kg --fullmap flag; graph.yaml carries the fullmap path.
+    assert "--fullmap" not in command
 
     report = _read_report(workdir)
     assert report["mode"] == "real"
@@ -558,7 +577,7 @@ def test_real_runner_honors_ctx_overrides(monkeypatch: pytest.MonkeyPatch, tmp_p
     TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, tablassert_dir="/opt/tablassert", fullmap="data/fullmap"))
 
     assert seen[0][:5] == ["uv", "run", "--with-editable", "/opt/tablassert", "tablassert"]
-    assert seen[0][-1] == "data/fullmap"  # --fullmap <path>
+    assert seen[0][-1] == str(workdir.root / "tables" / "graph.yaml")  # no --fullmap flag (removed in Tablassert 8.1)
 
 
 def test_real_runner_raises_when_tablassert_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

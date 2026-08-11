@@ -39,7 +39,7 @@ def _row(
 def _valid_rows() -> list[dict[str, str]]:
     return [
         _row("biolink:treats", status="approved_for_condition", upstream="infores:dailymed|infores:faers"),
-        _row("biolink:applied_to_treat", status="observed_use", knowledge_level="statistical_association", upstream="infores:faers|infores:dailymed"),
+        _row("biolink:applied_to_treat", status="not_provided", knowledge_level="statistical_association", upstream="infores:faers|infores:dailymed"),
         _row("biolink:contraindicated_in", upstream="infores:dailymed"),
     ]
 
@@ -102,7 +102,7 @@ def test_missing_faers_upstream_reported() -> None:
 
 
 def test_wrong_primary_source_reported() -> None:
-    report = check_rows([_row("biolink:applied_to_treat", status="observed_use", knowledge_level="statistical_association", primary="infores:faers")])
+    report = check_rows([_row("biolink:applied_to_treat", status="not_provided", knowledge_level="statistical_association", primary="infores:faers")])
     assert _violations(report) == {("biolink:applied_to_treat", "primary_knowledge_source")}
 
 
@@ -113,7 +113,7 @@ def test_contra_missing_dailymed_reported() -> None:
 
 
 def test_wrong_knowledge_level_reported() -> None:
-    report = check_rows([_row("biolink:applied_to_treat", status="observed_use", knowledge_level="knowledge_assertion")])
+    report = check_rows([_row("biolink:applied_to_treat", status="not_provided", knowledge_level="knowledge_assertion")])
     assert _violations(report) == {("biolink:applied_to_treat", "knowledge_level")}
 
 

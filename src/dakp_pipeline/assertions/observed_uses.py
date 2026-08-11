@@ -7,12 +7,19 @@ Aggregation rule (explicit and tested)
 ---------------------------------------
 FAERS case rows (``cases.parquet``) are aggregated by ``(drugname, indication)``; ``case_count``
 is the number of **distinct cases** (``primaryid``) reporting that pair (falls back to row count
-when ``primaryid`` is absent). The FAERS ``clinical_approval_status``/``knowledge_level`` labels
-are preserved from the first rebuild (``observed_use`` / ``statistical_association``).
+when ``primaryid`` is absent). The FAERS ``knowledge_level`` label is preserved from the first
+rebuild (``statistical_association``); ``clinical_approval_status`` is the biolink-valid
+``not_provided`` (see below).
 
 Provenance: DAKP aggregates FAERS primary observations with DailyMed support; FAERS is the
 primary upstream source, DailyMed the supporting one. Object CURIEs come from the lexical disease
 baseline; subjects carry no CURIE (FAERS gives no drug id here). Canonical mapping is later.
+
+``clinical_approval_status`` is ``not_provided``: a FAERS observed use makes no approval claim,
+and under Tablassert >= 8.2 the field is a first-class ``ClinicalApprovalStatusEnum`` edge field,
+so the legacy ``observed_use`` label (never an enum member — the DINGO ingest already coerced it
+to ``not_provided``) would emit biolink-invalid edges. The observed-use meaning stays on the edge
+via ``predicate = applied_to_treat`` + ``knowledge_level = observation`` (config override).
 """
 
 from __future__ import annotations
@@ -29,8 +36,9 @@ from dakp_pipeline.logging_setup import logger, stats, step
 
 _TABLE = "faers_applied_to_treat_assertions"
 _PREDICATE = "biolink:applied_to_treat"
-# Stable FAERS applied-to-treat labels (resolved planning decision: keep current behavior).
-_STATUS = "observed_use"
+#: FAERS carries no approval claim; ``observed_use`` is not a ClinicalApprovalStatusEnum member
+#: and would fail biolink validation now that Tablassert >= 8.2 emits the field first-class.
+_STATUS = "not_provided"
 _KNOWLEDGE_LEVEL = "statistical_association"
 
 # FAERS ``indi_pt`` is free text and carries non-disease usage-context values that name no real

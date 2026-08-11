@@ -2,7 +2,7 @@ template:
   source:
     kind: text
     local: data/tabular/approved_treats_assertions.tsv
-    url: "https://example.invalid/dakp/generated/approved_treats_assertions.tsv"
+    url: "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
     delimiter: "\t"
   statement:
     subject:
@@ -348,6 +348,11 @@ template:
     - annotation: has_evidence
       method: column
       encoding: K
+      delimiter: "|"
+    - annotation: supporting_documents
+      method: column
+      encoding: L
+      delimiter: "|"
     - annotation: clinical_approval_status
       method: column
       encoding: M
