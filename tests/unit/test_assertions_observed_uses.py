@@ -66,7 +66,10 @@ def test_faers_label_and_status_behavior_preserved(faers_refs: list[ArtifactRef]
     rows = build_observed_use_rows(find_faers_cases(faers_refs), disease_map)
     assert rows
     for row in rows:
-        assert row["clinical_approval_status"] == "observed_use"
+        # biolink-valid ClinicalApprovalStatusEnum member: FAERS makes no approval claim
+        # (the legacy ``observed_use`` label is not an enum member and would fail validation
+        # now that Tablassert >= 8.2 emits the field first-class).
+        assert row["clinical_approval_status"] == "not_provided"
         assert row["knowledge_level"] == "statistical_association"
         assert row["agent_type"] == "manual_validation_of_automated_agent"
         assert row["primary_knowledge_source"] == "infores:multiomics-drugapprovals"

@@ -2,7 +2,7 @@ template:
   source:
     kind: text
     local: data/tabular/contraindication_assertions.tsv
-    url: "https://example.invalid/dakp/generated/contraindication_assertions.tsv"
+    url: "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
     delimiter: "\t"
   statement:
     subject:
@@ -344,9 +344,11 @@ template:
     - annotation: has_evidence
       method: column
       encoding: J
+      delimiter: "|"
     - annotation: supporting_documents
       method: column
       encoding: K
+      delimiter: "|"
     - annotation: source_score
       method: column
       encoding: L

@@ -32,9 +32,10 @@ import-safe and monkeypatchable. Three public entry points:
 
   * ``biolink:treats`` — FDA-approved condition assertions: ``clinical_approval_status`` is
     ``approved_for_condition`` with DailyMed **and** FAERS upstream.
-  * ``biolink:applied_to_treat`` — FAERS-observed use without approval: keeps the current FAERS
-    label/status (``observed_use`` / ``statistical_association``) with FAERS as the primary
-    upstream source.
+  * ``biolink:applied_to_treat`` — FAERS-observed use without approval: ``clinical_approval_status``
+    is the biolink-valid ``not_provided`` (FAERS makes no approval claim; the legacy
+    ``observed_use`` label is not a ``ClinicalApprovalStatusEnum`` member) with FAERS as the
+    primary upstream source.
   * ``biolink:contraindicated_in`` — contraindication assertions text-mined from DailyMed SPL
     contraindication sections, with DailyMed upstream.
 
@@ -387,7 +388,7 @@ FAMILY_INVARIANTS: dict[str, FamilyInvariant] = {
     PREDICATE_TREATS: FamilyInvariant(
         PREDICATE_TREATS, frozenset({INFORES_DAILYMED, INFORES_FAERS}), "approved_for_condition", "knowledge_assertion"
     ),
-    PREDICATE_APPLIED_TO_TREAT: FamilyInvariant(PREDICATE_APPLIED_TO_TREAT, frozenset({INFORES_FAERS}), "observed_use", "statistical_association"),
+    PREDICATE_APPLIED_TO_TREAT: FamilyInvariant(PREDICATE_APPLIED_TO_TREAT, frozenset({INFORES_FAERS}), "not_provided", "statistical_association"),
     PREDICATE_CONTRAINDICATED_IN: FamilyInvariant(PREDICATE_CONTRAINDICATED_IN, frozenset({INFORES_DAILYMED}), None, "knowledge_assertion"),
 }
 

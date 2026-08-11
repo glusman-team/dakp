@@ -15,7 +15,13 @@ The configs match the ACTUAL current Tablassert 8.x schema (verified against
   top-level ``template`` / ``sections`` keys — a bare ``source:``/``statement:`` shape is
   silently dropped, so the ``template:`` wrapper is mandatory;
 * ``source.kind: text`` with a tab ``delimiter`` and the uncompressed assertion ``.tsv``
-  as ``source.local`` (a ``url`` is required by the model and recorded as provenance);
+  as ``source.local``. ``source.url`` is required by the model and becomes the edge
+  ``sources[].source_record_urls`` provenance, so each table records its REAL upstream
+  dataset URL (:data:`_TABLE_SOURCE_URLS`) — never a placeholder. Tablassert models one
+  ``source.url`` per section and DAKP assertion rows aggregate across quarters, releases,
+  and applications, so no per-row URL is truthful at row granularity; the dataset-level URL
+  is the honest record, and per-row precision stays on the edge via ``has_evidence`` (SPL
+  set ids) and ``approval_ids`` (FDA application numbers);
 * column-encoded ``statement.subject`` / ``statement.object`` / ``statement.predicate``
   with drug / disease ``prioritize`` categories plus a HARD category allow-list each:
   ``avoid`` is emitted as the sorted complement of the side's allow-list over the installed
@@ -23,14 +29,15 @@ The configs match the ACTUAL current Tablassert 8.x schema (verified against
   resolve into the graph (``prioritize`` alone is only a soft ranking boost);
 * a ``provenance.override`` (:class:`~tablassert.models.ManualProvenance`) block carrying
   the DINGO-conventional upstream infores chain, ``knowledge_level`` and ``agent_type``
-  (the DAKP ``infores`` is graph-level only since Tablassert 8.0.1 forbids it in the override;
+  (the DAKP ``infores`` is graph-level only since Tablassert >= 8.0.1 forbids it in the override;
   no ``publication`` — the override replaces repo/publication provenance);
 * column-encoded ``statement.qualifiers`` where an assertion column carries the qualifier's entity
   (per-table :data:`_TABLE_QUALIFIERS`). A Tablassert qualifier is a node encoding resolved through
   the fullmap alongside subject/object (an unmatched qualifier value drops the whole edge), so a
   qualifier is only emitted where a dense, resolvable column backs it, and it mirrors the backing
   side's category allow-list so it resolves to exactly the same CURIE as the node it qualifies;
-* column-encoded evidence ``annotations``.
+* column-encoded evidence ``annotations`` (multivalued Biolink slots carry ``delimiter: "|"``
+  so pipe-joined assertion cells emit as real JSON arrays, not joined scalars).
 
 Column letters are DERIVED from the assertion-table column contracts in
 :mod:`dakp_pipeline.io.schemas` (never hardcoded). YAML is emitted by a tiny stdlib
@@ -41,7 +48,10 @@ The real runner (:class:`TablassertRunner`) shells out to the installed ``tablas
 (a CORE dependency installed by the single ``uv sync``) and captures stdout / exit code into
 a handoff report; the deferred runner (:class:`DeferredTablassertRunner`) writes a
 deferred-handoff report without ever touching Tablassert (used when no fullmap triggers the
-real handoff, and in tests).
+real handoff, and in tests). DAKP requires Tablassert >= 8.2: the graph config carries the
+fullmap path (the ``build-kg --fullmap`` flag was removed in Tablassert 8.1), and the 8.2
+Biolink-valid KGX modeling (``sources[]`` retrieval provenance, first-class evidence slots)
+is what the emitted configs target.
 
 The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it is
 on ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout override (the
@@ -83,6 +93,8 @@ from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import OperationBlock
 from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.paths import Workdir
+from dakp_pipeline.sources import dailymed as dailymed_source
+from dakp_pipeline.sources import faers as faers_source
 
 # --- Translator provenance constants (match dakp_pipeline.assertions + ../DINGO) ----
 
@@ -92,11 +104,22 @@ AGENT_TYPE = "manual_validation_of_automated_agent"
 GRAPH_NAME = "dakp"
 #: Fallback ``fullmap`` written into ``graph.yaml`` when no real fullmap is configured (deferred
 #: runs, which never invoke ``build-kg``). Tablassert's ``Graph`` model REQUIRES a ``fullmap``
-#: field, and for a graph build Tablassert reads the fullmap path FROM this field (it ignores the
-#: ``--fullmap`` CLI arg unless ``--table-config`` wraps a single table) — so :func:`generate`
+#: field, and Tablassert reads the fullmap path FROM this field on a graph build (the
+#: ``build-kg --fullmap`` flag was removed in Tablassert 8.1) — so :func:`generate`
 #: writes the real ``ctx.params["fullmap"]`` here for real runs. DAKP never downloads a fullmap.
 FULLMAP_DEFAULT = ".fullmap"
-SOURCE_URL_BASE = "https://example.invalid/dakp/generated"
+
+#: Real upstream dataset URL recorded as each table's ``source.url`` — the constants the
+#: acquisition layer itself uses, so provenance can never drift from what was downloaded.
+#: Tablassert turns ``source.url`` into the primary ``sources[]`` entry's
+#: ``source_record_urls`` on every edge of the table. Approved-treats and contraindication
+#: rows are extracted from DailyMed SPL releases (the DailyMed full-release index); FAERS
+#: observed-use rows from the FAERS quarterly ASCII extracts (the FDA quarterly-data listing).
+_TABLE_SOURCE_URLS: dict[str, str] = {
+    "approved_treats_assertions": dailymed_source.FULL_RELEASE_INDEX_URL,
+    "faers_applied_to_treat_assertions": faers_source.FDA_FAERS_INDEX_URL,
+    "contraindication_assertions": dailymed_source.FULL_RELEASE_INDEX_URL,
+}
 GRAPH_DESCRIPTION = (
     "Drug Approvals Knowledge Provider: FDA-approved treatment relationships, "
     "FAERS-observed applied-to-treat uses, and contraindications text-mined from "
@@ -124,24 +147,32 @@ _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
     "contraindication_assertions": ("contraindications", "contraindicated_in", ("infores:dailymed",), "knowledge_assertion", "text_mining_agent"),
 }
 
-# assertion column -> annotation name, per table. Names equal the assertion column except where
-# DINGO establishes a Translator slot (``case_count`` -> ``number_of_cases``) or where renaming to a
-# name on Tablassert's edge-field allow-list keeps the evidence a first-class KGX edge field instead
-# of folding it into ``supporting_text``: ``supporting_spl_sets`` -> ``has_evidence`` (the legacy DAKP
-# evidence field) and ``supporting_spl_documents`` -> ``supporting_documents``. The remaining names
-# (``clinical_approval_status``, ``number_of_cases``, ``approval_ids``, ``source_score``) are NOT on the
-# allow-list, so Tablassert folds them into ``supporting_text`` today.
-_TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str], ...]] = {
+# assertion column -> (annotation name, multivalued delimiter), per table. Under Tablassert >= 8.2
+# every DAKP edge is a ``biolink:ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` and the
+# annotation lands where that class can hold it:
+# * ``has_evidence`` (SPL set ids) and ``supporting_documents`` (SPL document ids) are first-class
+#   multivalued edge fields — ``delimiter: "|"`` splits the pipe-joined cell into a real JSON array
+#   (a joined scalar would be iterated character-by-character downstream);
+# * ``clinical_approval_status`` is a first-class enum-typed field on the association class, so its
+#   values must be ``ClinicalApprovalStatusEnum`` members (see the FAERS ``not_provided`` note in
+#   ``assertions/observed_uses.py``);
+# * ``number_of_cases`` is a real Biolink slot but lives on ``EntityToDiseaseAssociation``, not on
+#   DAKP's class — Tablassert routes it onto the inlined supporting study (value preserved);
+# * ``approval_ids`` (FDA application numbers) and ``source_score`` (NER confidence) have no Biolink
+#   slot reachable from a lowercased annotation name, so Tablassert folds them into
+#   ``supporting_text`` as ``"name: value"`` strings — visible provenance, deliberately kept.
+_TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
     "approved_treats_assertions": (
-        ("approval_ids", "approval_ids"),
-        ("supporting_spl_sets", "has_evidence"),
-        ("clinical_approval_status", "clinical_approval_status"),
+        ("approval_ids", "approval_ids", None),
+        ("supporting_spl_sets", "has_evidence", "|"),
+        ("supporting_spl_documents", "supporting_documents", "|"),
+        ("clinical_approval_status", "clinical_approval_status", None),
     ),
-    "faers_applied_to_treat_assertions": (("case_count", "number_of_cases"), ("clinical_approval_status", "clinical_approval_status")),
+    "faers_applied_to_treat_assertions": (("case_count", "number_of_cases", None), ("clinical_approval_status", "clinical_approval_status", None)),
     "contraindication_assertions": (
-        ("supporting_spl_sets", "has_evidence"),
-        ("supporting_spl_documents", "supporting_documents"),
-        ("source_score", "source_score"),
+        ("supporting_spl_sets", "has_evidence", "|"),
+        ("supporting_spl_documents", "supporting_documents", "|"),
+        ("source_score", "source_score", None),
     ),
 }
 
@@ -266,9 +297,12 @@ def table_config(table: str) -> dict[str, Any]:
     row drop).
     """
     _basename, predicate, upstream, knowledge_level, agent_type = _TABLE_SPECS[table]  # KeyError for unknown tables
-    annotations = [
-        {"annotation": annotation, "method": "column", "encoding": column_letter(table, column)} for column, annotation in _TABLE_ANNOTATIONS[table]
-    ]
+    annotations: list[dict[str, Any]] = []
+    for column, annotation, delimiter in _TABLE_ANNOTATIONS[table]:
+        entry: dict[str, Any] = {"annotation": annotation, "method": "column", "encoding": column_letter(table, column)}
+        if delimiter is not None:  # multivalued Biolink slot: split the pipe-joined cell into a JSON array
+            entry["delimiter"] = delimiter
+        annotations.append(entry)
     qualifiers = [
         {
             "qualifier": qualifier,
@@ -297,7 +331,7 @@ def table_config(table: str) -> dict[str, Any]:
     if qualifiers:  # no backing column => no ``qualifiers`` key (Tablassert treats absent and empty alike; keep configs minimal)
         statement["qualifiers"] = qualifiers
     return {
-        "source": {"kind": "text", "local": f"data/tabular/{table}.tsv", "url": f"{SOURCE_URL_BASE}/{table}.tsv", "delimiter": "\t"},
+        "source": {"kind": "text", "local": f"data/tabular/{table}.tsv", "url": _TABLE_SOURCE_URLS[table], "delimiter": "\t"},
         "statement": statement,
         "provenance": {"override": {"upstream_resource_ids": list(upstream), "knowledge_level": knowledge_level, "agent_type": agent_type}},
         "annotations": annotations,
@@ -309,9 +343,8 @@ def graph_config(tables: list[str] | None = None, version: str | None = None, fu
 
     ``tables`` defaults to the three committed table configs (``tables/<basename>.yaml``);
     ``version`` defaults to the DAKP package version. ``fullmap`` is the fullmap redb path the
-    ``build-kg`` resolve step reads from the Graph config (Tablassert ignores the ``--fullmap`` CLI
-    arg for graph builds); it defaults to :data:`FULLMAP_DEFAULT` for deferred runs that never
-    invoke ``build-kg``.
+    ``build-kg`` resolve step reads from the Graph config (Tablassert >= 8.1 has no ``--fullmap``
+    flag); it defaults to :data:`FULLMAP_DEFAULT` for deferred runs that never invoke ``build-kg``.
     """
     if tables is None:
         tables = [f"tables/{_TABLE_SPECS[table][0]}.yaml" for table in _TABLE_ORDER]
@@ -438,8 +471,8 @@ def generate(assertion_refs: list[ArtifactRef], ctx: TaskContext) -> list[Artifa
     Configs land in ``<workdir>/tables/`` so their workdir-relative references
     (``tables/<name>.yaml``, ``data/tabular/<table>.tsv``) resolve when Tablassert runs from the
     workdir root. ``graph.yaml`` carries the fullmap redb path the ``build-kg`` resolve step reads
-    (Tablassert reads it from the Graph config, ignoring the ``--fullmap`` CLI arg for graph
-    builds): the real ``ctx.params["fullmap"]`` when present, else the :data:`FULLMAP_DEFAULT`
+    (Tablassert reads it from the Graph config; the ``--fullmap`` flag is gone in >= 8.1):
+    the real ``ctx.params["fullmap"]`` when present, else the :data:`FULLMAP_DEFAULT`
     placeholder (deferred runs never invoke ``build-kg``). Returns ``[graph_ref, *table_refs]`` in
     the canonical table order; assertion refs are linked as input provenance by table stem.
     """
@@ -624,7 +657,8 @@ def _find_graph(config_refs: list[ArtifactRef], ctx: TaskContext) -> Path:
 class TablassertRunner:
     """Run the INSTALLED ``tablassert`` CLI (a core DAKP dependency) as a subprocess.
 
-    Builds ``tablassert build-kg <graph.yaml> --fullmap <path> [--qc] [--release]``, streams the
+    Builds ``tablassert build-kg <graph.yaml> [--qc] [--release]`` (the graph config carries the
+    fullmap path — Tablassert 8.1 removed the ``build-kg --fullmap`` flag), streams the
     subprocess output live into the task log (:func:`stream_subprocess`), and records the full
     stdout / stderr / exit code in the handoff report. A non-zero exit is captured as
     ``status: failed`` in the report (written to disk before raising) and then raises
@@ -635,11 +669,9 @@ class TablassertRunner:
 
     tablassert_dir: str | None = None
 
-    def build_command(
-        self, graph_yaml: Path, fullmap: str, *, tablassert_dir: str | None = None, qc: bool = False, release: bool = False
-    ) -> list[str]:
+    def build_command(self, graph_yaml: Path, *, tablassert_dir: str | None = None, qc: bool = False, release: bool = False) -> list[str]:
         """The exact Tablassert invocation (pure; testable without spawning a process)."""
-        command = [*_command_prefix(tablassert_dir), "build-kg", str(graph_yaml), "--fullmap", fullmap]
+        command = [*_command_prefix(tablassert_dir), "build-kg", str(graph_yaml)]
         if qc:
             command.append("--qc")
         if release:
@@ -673,7 +705,7 @@ class TablassertRunner:
             logger.warning("{}: --qc requested but the QC audit runtime (sentence-transformers) is not importable; running without --qc", event)
         release = bool(ctx.params.get("release"))
 
-        command = self.build_command(graph_yaml, fullmap, tablassert_dir=tablassert_dir, qc=qc, release=release)
+        command = self.build_command(graph_yaml, tablassert_dir=tablassert_dir, qc=qc, release=release)
         cwd = Workdir(ctx.workdir).root
 
         with step(logger, event):

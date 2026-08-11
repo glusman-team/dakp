@@ -15,8 +15,10 @@ the DINGO reference ingest (``../DINGO/src/translator_ingest/ingests/dakp/dakp_r
 The guardrails live in :mod:`dakp_pipeline.translator`.
 
 The deliberate, documented *differences* (contraindications NER-mined from DailyMed instead of the
-MEDI/Matrix xlsx; the preserved FAERS ``observed_use``/``statistical_association`` label instead of
-the legacy heuristic ``off_label_use``; ontology mapping delegated to Tablassert/fullmap) are
+MEDI/Matrix xlsx; the biolink-valid FAERS ``not_provided`` approval status instead of the legacy
+``observed_use`` label — never a ``ClinicalApprovalStatusEnum`` member, and invalid now that
+Tablassert >= 8.2 emits ``clinical_approval_status`` as a first-class enum-typed edge field;
+ontology mapping delegated to Tablassert/fullmap) are
 asserted here as the NEW behavior and explained in ``docs/semantic-equivalence.md``.
 """
 
@@ -197,13 +199,15 @@ def test_treats_clinical_approval_status_is_approved_for_condition(built: dict[s
 
 
 def test_applied_to_treat_preserves_the_faers_label(built: dict[str, Any]) -> None:
-    """applied_to_treat keeps the FAERS label/status (observed_use / statistical_association).
+    """applied_to_treat carries a biolink-valid approval status (not_provided / statistical_association).
 
-    Documented refinement of the legacy heuristic ``off_label_use`` (see docs/semantic-equivalence.md):
-    the rebuild preserves the FAERS-derived label rather than inferring off-label use.
+    The legacy FAERS ``observed_use`` label is not a ``ClinicalApprovalStatusEnum`` member, so the
+    rebuild records ``not_provided`` (the value the DINGO ingest already coerced it to): a FAERS
+    observed use makes no approval claim. The observed-use semantics stay on the edge via the
+    ``applied_to_treat`` predicate and ``observation`` knowledge level (config override).
     """
     for rec in _family_rows(built["tables"], APPLIED_TO_TREAT):
-        assert str(rec.get("clinical_approval_status")) == "observed_use"
+        assert str(rec.get("clinical_approval_status")) == "not_provided"
         assert str(rec.get("knowledge_level")) == "statistical_association"
         assert str(rec.get("agent_type")) == "manual_validation_of_automated_agent"
 

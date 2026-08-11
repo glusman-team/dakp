@@ -18,13 +18,11 @@ The whole module SKIPS when ``tablassert`` is not importable (dependencies not y
 runs once ``uv sync`` has materialized the runtime. ``tests/`` is outside the coverage ``source``,
 so the skip does not affect the 100% ``src/`` coverage gate.
 
-Known gap (NOTE, not fixed here — ``src/`` is owned elsewhere): Tablassert 8.0.0 emits edge provenance
-as a LIST ``primary_knowledge_source`` (``["infores:multiomics-drugapprovals"]``) plus a top-level
-``upstream_resource_ids`` field and NO ``sources`` list, whereas ``validate_kgx`` expects a SCALAR
-``primary_knowledge_source`` plus a ``sources`` list (the shape in ``tests/fixtures/kgx/edges.jsonl``).
-So ``validate_kgx`` reports ``missing_provenance`` on RAW Tablassert edges. :func:`_canonicalize_edge`
-is the test-side adapter from Tablassert's raw shape to the canonical Translator contract; the
-recommended ``src/`` reconciliation is to accept Tablassert's shape (or canonicalize in the pipeline).
+Provenance shape (Tablassert >= 8.2): edges carry a SCALAR ``primary_knowledge_source`` plus a
+``sources`` list of RetrievalSource entries — the primary entry carries ``upstream_resource_ids``
+and the table's real ``source_record_urls``, each upstream infores appears as a
+``supporting_data_source`` entry — exactly the canonical Translator contract ``validate_kgx``
+checks (the 8.0.x list-shaped ``primary_knowledge_source`` gap is gone).
 """
 
 from __future__ import annotations
@@ -87,30 +85,6 @@ class KgxBuild:
 
 def _ref(path: Path, media_type: str) -> ArtifactRef:
     return ArtifactRef(uri=path, blake3=hash_file(path), media_type=media_type)
-
-
-def _canonicalize_edge(edge: dict[str, Any]) -> dict[str, Any]:
-    """Adapt a RAW Tablassert edge to the canonical Translator KGX shape ``validate_kgx`` checks.
-
-    Tablassert 8.0.0: ``primary_knowledge_source`` is a LIST and the upstream infores live in a
-    top-level ``upstream_resource_ids`` field (no ``sources``). Canonical contract (see
-    ``tests/fixtures/kgx/edges.jsonl``): SCALAR ``primary_knowledge_source`` + a ``sources`` list whose
-    primary entry carries ``upstream_resource_ids``. See the module docstring "Known gap" note.
-    """
-    raw_primary = edge.get("primary_knowledge_source")
-    if isinstance(raw_primary, list):
-        primary = raw_primary[0] if raw_primary else ""
-    elif isinstance(raw_primary, str):
-        primary = raw_primary
-    else:
-        primary = ""
-    upstream = [entry for entry in (edge.get("upstream_resource_ids") or []) if isinstance(entry, str)]
-    sources: list[dict[str, Any]] = [{"resource_id": primary, "resource_role": "primary_knowledge_source", "upstream_resource_ids": upstream}]
-    sources.extend({"resource_id": infores, "resource_role": "supporting_data_source"} for infores in upstream)
-    canonical = dict(edge)
-    canonical["primary_knowledge_source"] = primary
-    canonical["sources"] = sources
-    return canonical
 
 
 @pytest.fixture(scope="module")
@@ -190,11 +164,12 @@ def test_three_edge_families_present(kgx_build: KgxBuild) -> None:
 
 
 def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
-    """RAW Tablassert edges carry the DAKP primary infores + the per-family upstream infores.
+    """RAW Tablassert >= 8.2 edges carry the canonical Translator provenance shape directly.
 
-    Pins Tablassert 8.0.0's actual provenance shape: ``primary_knowledge_source`` is a LIST and the
-    upstream infores are a top-level ``upstream_resource_ids`` field (NOT a ``sources`` list) — the
-    shape ``validate_kgx`` does not accept raw (see module docstring + ``_canonicalize_edge``).
+    Scalar ``primary_knowledge_source`` + a ``sources`` RetrievalSource list: the primary entry
+    carries the edge family's upstream infores and the table's REAL ``source_record_urls``
+    (never the retired ``example.invalid`` placeholder); each upstream infores also appears as
+    its own ``supporting_data_source`` entry.
     """
     assert kgx_build.edges, "build-kg produced no edges"
     for edge in kgx_build.edges:
@@ -203,20 +178,30 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
             value = edge.get(field_name)
             assert isinstance(value, str)
             assert value
-        # Primary provenance: the DAKP infores (Tablassert emits it as a list).
-        primary = edge.get("primary_knowledge_source")
-        assert isinstance(primary, list)
-        assert INFORES_DAKP in primary
-        # Upstream provenance matches the edge family's required upstream infores.
+        # Primary provenance: the DAKP infores, scalar (Tablassert >= 8.2 shape).
+        assert edge.get("primary_knowledge_source") == INFORES_DAKP
+        # Retrieval provenance: primary entry carries the family's upstream infores + real URLs.
+        sources = edge.get("sources")
+        assert isinstance(sources, list)
+        assert sources
+        primary_entry = next(entry for entry in sources if entry.get("resource_role") == "primary_knowledge_source")
+        assert primary_entry.get("resource_id") == INFORES_DAKP
         family = EDGE_FAMILIES[edge["predicate"]]
-        upstream = frozenset(edge.get("upstream_resource_ids") or [])
-        assert upstream == family.required_upstream
+        assert frozenset(primary_entry.get("upstream_resource_ids") or []) == family.required_upstream
+        record_urls = primary_entry.get("source_record_urls")
+        assert isinstance(record_urls, list)
+        assert record_urls
+        for url in record_urls:
+            assert url.startswith("https://")
+            assert "example.invalid" not in url
+        # Each upstream infores is its own supporting entry.
+        supporting = {entry.get("resource_id") for entry in sources if entry.get("resource_role") == "supporting_data_source"}
+        assert supporting == set(family.required_upstream)
 
 
-def test_validate_kgx_passes_on_canonical_kgx(kgx_build: KgxBuild) -> None:
-    """validate_kgx passes once RAW Tablassert edges are canonicalized to the Translator contract."""
-    canonical_edges = [_canonicalize_edge(edge) for edge in kgx_build.edges]
-    report = validate_kgx(kgx_build.nodes, canonical_edges)
+def test_validate_kgx_passes_on_raw_kgx(kgx_build: KgxBuild) -> None:
+    """validate_kgx passes on the RAW Tablassert >= 8.2 edges (no canonicalization needed)."""
+    report = validate_kgx(kgx_build.nodes, kgx_build.edges)
     assert report.ok, f"validate_kgx reported problems: {report.problems}"
     assert report.problems == []
     assert report.kgx_problems == []
