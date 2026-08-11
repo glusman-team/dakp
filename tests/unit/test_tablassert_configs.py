@@ -187,9 +187,9 @@ def test_table_config_structure(table: str) -> None:
     assert source["kind"] == "text"
     assert source["local"] == f"data/tabular/{table}.tsv"
     assert source["delimiter"] == "\t"
-    # The real upstream dataset URL — never the example.invalid placeholder.
-    assert source["url"] == EXPECTED_SOURCE_URLS[table]
-    assert "example.invalid" not in source["url"]
+    # The real upstream dataset URL (a list since Tablassert 8.2.1) — never the example.invalid placeholder.
+    assert source["url"] == [EXPECTED_SOURCE_URLS[table]]
+    assert all("example.invalid" not in url for url in source["url"])
 
     # column-encoded subject/object with drug / disease prioritization + hard allow-list guards.
     statement = config["statement"]

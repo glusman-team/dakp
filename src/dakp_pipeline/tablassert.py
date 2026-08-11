@@ -17,11 +17,12 @@ The configs match the ACTUAL current Tablassert 8.x schema (verified against
 * ``source.kind: text`` with a tab ``delimiter`` and the uncompressed assertion ``.tsv``
   as ``source.local``. ``source.url`` is required by the model and becomes the edge
   ``sources[].source_record_urls`` provenance, so each table records its REAL upstream
-  dataset URL (:data:`_TABLE_SOURCE_URLS`) — never a placeholder. Tablassert models one
-  ``source.url`` per section and DAKP assertion rows aggregate across quarters, releases,
-  and applications, so no per-row URL is truthful at row granularity; the dataset-level URL
-  is the honest record, and per-row precision stays on the edge via ``has_evidence`` (SPL
-  set ids) and ``approval_ids`` (FDA application numbers);
+  dataset URL (:data:`_TABLE_SOURCE_URLS`) — never a placeholder. Tablassert 8.2.1+ models
+  ``source.url`` as a ``list`` of one or more URLs per section and DAKP assertion rows
+  aggregate across quarters, releases, and applications, so no per-row URL is truthful at
+  row granularity; the single dataset-level URL is the honest record, and per-row precision
+  stays on the edge via ``has_evidence`` (SPL set ids) and ``approval_ids`` (FDA application
+  numbers);
 * column-encoded ``statement.subject`` / ``statement.object`` / ``statement.predicate``
   with drug / disease ``prioritize`` categories plus a HARD category allow-list each:
   ``avoid`` is emitted as the sorted complement of the side's allow-list over the installed
@@ -331,7 +332,7 @@ def table_config(table: str) -> dict[str, Any]:
     if qualifiers:  # no backing column => no ``qualifiers`` key (Tablassert treats absent and empty alike; keep configs minimal)
         statement["qualifiers"] = qualifiers
     return {
-        "source": {"kind": "text", "local": f"data/tabular/{table}.tsv", "url": _TABLE_SOURCE_URLS[table], "delimiter": "\t"},
+        "source": {"kind": "text", "local": f"data/tabular/{table}.tsv", "url": [_TABLE_SOURCE_URLS[table]], "delimiter": "\t"},
         "statement": statement,
         "provenance": {"override": {"upstream_resource_ids": list(upstream), "knowledge_level": knowledge_level, "agent_type": agent_type}},
         "annotations": annotations,
