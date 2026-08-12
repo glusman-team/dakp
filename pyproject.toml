@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Drug Approvals Knowledge Provider (DAKP) rebuild: reproducible, content-addressed pipeline producing DailyMed / Drugs@FDA / FAERS / MEDI treatment and contraindication assertion tables for Tablassert."
 readme = "README.md"
 requires-python = ">=3.12"
-authors = [{ name = "ISB", email = "software@isbscience.org" }]
+authors = [{ name = "ISB" }]
 license = { text = "Apache-2.0" }
 keywords = [
     "knowledge graph",
