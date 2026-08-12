@@ -60,6 +60,17 @@ def normalize_nda(value: Any) -> str:
 # --- provenance column assembly -------------------------------------------------
 
 
+DAILYMED_SET_PREFIX = "dailymed:"
+
+
+def dailymed_set_curie(set_id: Any) -> str:
+    """Return the Translator CURIE used for one DailyMed SPL set evidence value."""
+    value = "" if set_id is None else str(set_id).strip()
+    if not value or value.startswith(DAILYMED_SET_PREFIX):
+        return value
+    return f"{DAILYMED_SET_PREFIX}{value}"
+
+
 def merge_unique(*value_lists: Iterable[Any]) -> list[str]:
     """Flatten, stringify, drop empties, and return a deterministically sorted unique list."""
     seen: set[str] = set()
@@ -322,10 +333,12 @@ def write_assertion_table(
 
 __all__ = [
     "CONTRAINDICATION_LOINC",
+    "DAILYMED_SET_PREFIX",
     "INDICATION_LOINC",
     "DailyMedEvidence",
     "build_dailymed_evidence",
     "build_drugsfda_ingredient_map",
+    "dailymed_set_curie",
     "find_faers_cases",
     "find_table",
     "merge_unique",

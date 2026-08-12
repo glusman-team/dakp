@@ -7,7 +7,7 @@ DAKP does everything up to the shape Tablassert consumes, then emits ONE Graph c
 Canonical entity resolution, KGX compilation, dedup, deterministic IDs, and RIG generation
 are delegated to ``../Tablassert`` — DAKP ships **no** local fallback KGX compiler.
 
-The configs match the ACTUAL current Tablassert 8.x schema (verified against
+The configs match the ACTUAL current Tablassert schema (verified against
 ``../Tablassert/src/tablassert/models.py`` and its ``ingests.to_sections`` loader):
 
 * a table config is a ``template:``-wrapped :class:`~tablassert.models.Section`
@@ -37,7 +37,7 @@ The configs match the ACTUAL current Tablassert 8.x schema (verified against
   the fullmap alongside subject/object (an unmatched qualifier value drops the whole edge), so a
   qualifier is only emitted where a dense, resolvable column backs it, and it mirrors the backing
   side's category allow-list so it resolves to exactly the same CURIE as the node it qualifies;
-* column-encoded evidence ``annotations`` (multivalued Biolink slots carry ``delimiter: "|"``
+* column-encoded evidence ``annotations`` (aggregated evidence columns carry ``split_by: "|"``
   so pipe-joined assertion cells emit as real JSON arrays, not joined scalars).
 
 Column letters are DERIVED from the assertion-table column contracts in
@@ -49,10 +49,13 @@ The real runner (:class:`TablassertRunner`) shells out to the installed ``tablas
 (a CORE dependency installed by the single ``uv sync``) and captures stdout / exit code into
 a handoff report; the deferred runner (:class:`DeferredTablassertRunner`) writes a
 deferred-handoff report without ever touching Tablassert (used when no fullmap triggers the
-real handoff, and in tests). DAKP requires Tablassert >= 8.2: the graph config carries the
-fullmap path (the ``build-kg --fullmap`` flag was removed in Tablassert 8.1), and the 8.2
+real handoff, and in tests). DAKP requires Tablassert >= 9.1: the graph config carries the
+fullmap path (the ``build-kg --fullmap`` flag was removed in Tablassert 8.1), the 8.2
 Biolink-valid KGX modeling (``sources[]`` retrieval provenance, first-class evidence slots)
-is what the emitted configs target.
+is what the emitted configs target, and 9.x is a hard floor for the two breaking config
+changes released in 8.2.1 — ``source.url`` became a list, and the annotation ``delimiter``
+was replaced (by ``method: list`` for literals, and by ``split_by`` in 9.1 for the per-row
+column splits DAKP's pipe-joined evidence cells need).
 
 The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it is
 on ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout override (the
@@ -148,12 +151,22 @@ _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
     "contraindication_assertions": ("contraindications", "contraindicated_in", ("infores:dailymed",), "knowledge_assertion", "text_mining_agent"),
 }
 
-# assertion column -> (annotation name, multivalued delimiter), per table. Under Tablassert >= 8.2
+# assertion column -> (annotation name, multivalued separator), per table. Under Tablassert >= 8.2
 # every DAKP edge is a ``biolink:ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` and the
 # annotation lands where that class can hold it:
-# * ``has_evidence`` (SPL set ids) and ``supporting_documents`` (SPL document ids) are first-class
-#   multivalued edge fields — ``delimiter: "|"`` splits the pipe-joined cell into a real JSON array
-#   (a joined scalar would be iterated character-by-character downstream);
+# * ``has_evidence`` (SPL set ids) is a genuinely multivalued slot ON that class
+#   (``list[str]``), and DAKP aggregates every supporting SPL set into ONE pipe-joined cell, so
+#   ``split_by: "|"`` (Tablassert >= 9.1) is what makes it a real JSON array. Without the split
+#   Tablassert wraps the joined scalar into a USELESS one-element list (``["id1|id2"]``) that still
+#   passes Biolink validation — a silent-corruption guard, not a hard-failure one. Tablassert 8.2.1
+#   removed the old ``delimiter`` spelling and its ``method: list`` replacement is a config-time
+#   literal (the same array on every row), so 9.1's ``split_by`` is the ONLY encoding that can
+#   express a per-row array — hence the >= 9.1 floor in ``pyproject.toml``;
+# * ``supporting_documents`` (SPL document ids) is on Tablassert's edge-field allow-list — so it is
+#   never folded into ``supporting_text`` — but the association class above does not declare the
+#   slot, so ``prune_to_class`` moves it onto the inlined supporting study, same as
+#   ``number_of_cases`` below (value preserved; ``split_by`` only changes its rendering there from
+#   ``"a|b"`` to ``"a, b"``);
 # * ``clinical_approval_status`` is a first-class enum-typed field on the association class, so its
 #   values must be ``ClinicalApprovalStatusEnum`` members (see the FAERS ``not_provided`` note in
 #   ``assertions/observed_uses.py``);
@@ -299,10 +312,10 @@ def table_config(table: str) -> dict[str, Any]:
     """
     _basename, predicate, upstream, knowledge_level, agent_type = _TABLE_SPECS[table]  # KeyError for unknown tables
     annotations: list[dict[str, Any]] = []
-    for column, annotation, delimiter in _TABLE_ANNOTATIONS[table]:
+    for column, annotation, split_by in _TABLE_ANNOTATIONS[table]:
         entry: dict[str, Any] = {"annotation": annotation, "method": "column", "encoding": column_letter(table, column)}
-        if delimiter is not None:  # multivalued Biolink slot: split the pipe-joined cell into a JSON array
-            entry["delimiter"] = delimiter
+        if split_by is not None:  # multivalued Biolink slot: split the pipe-joined cell into a JSON array
+            entry["split_by"] = split_by
         annotations.append(entry)
     qualifiers = [
         {

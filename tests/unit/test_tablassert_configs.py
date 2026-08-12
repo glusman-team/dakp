@@ -82,10 +82,10 @@ EXPECTED_QUALIFIERS = {
     "contraindication_assertions": {},
 }
 
-# assertion table -> {annotation name: (assertion column it encodes, multivalued delimiter)}.
+# assertion table -> {annotation name: (assertion column it encodes, multivalued separator)}.
 # case_count maps to the Translator ``number_of_cases`` slot; the SPL-evidence columns map to names
 # on Tablassert's edge-field allow-list (``has_evidence`` / ``supporting_documents``) so they stay
-# first-class KGX fields, with ``delimiter: "|"`` so the pipe-joined cells emit as real JSON arrays;
+# first-class KGX fields, with ``split_by: "|"`` so the pipe-joined cells emit as real JSON arrays;
 # the rest keep their column name and fold into ``supporting_text`` (no Biolink slot on DAKP's
 # association class).
 EXPECTED_ANNOTATIONS = {
@@ -252,17 +252,20 @@ def test_table_config_annotations_encode_expected_columns(table: str) -> None:
     annotations = tablassert_configs.table_config(table)["annotations"]
     by_name = {a["annotation"]: a for a in annotations}
     assert set(by_name) == set(EXPECTED_ANNOTATIONS[table])
-    for annotation, (column, delimiter) in EXPECTED_ANNOTATIONS[table].items():
+    for annotation, (column, split_by) in EXPECTED_ANNOTATIONS[table].items():
         entry = by_name[annotation]
         assert entry["method"] == "column"
         # The encoding letter must address the expected assertion column.
         assert _column_at(table, entry["encoding"]) == column
         assert entry["encoding"] == tablassert_configs.column_letter(table, column)
         # Multivalued Biolink slots split the pipe-joined cell into a real JSON array.
-        if delimiter is None:
-            assert "delimiter" not in entry
+        # ``delimiter`` was the Tablassert <= 8.2.0 spelling and is REJECTED from 8.2.1 on
+        # (extra="forbid"), so assert its absence too -- a regression would fail the build.
+        assert "delimiter" not in entry
+        if split_by is None:
+            assert "split_by" not in entry
         else:
-            assert entry["delimiter"] == delimiter
+            assert entry["split_by"] == split_by
 
 
 # --- category guard (hard allow-lists via Tablassert ``avoid``) -------------------

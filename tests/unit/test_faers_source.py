@@ -92,7 +92,8 @@ def test_real_fetch_uses_monkeypatched_index_and_download(tmp_path: Path, monkey
 
     refs = fetcher.fetch(_ctx(tmp_path))
     assert len(refs) == 2  # both discovered quarters
-    assert captured == ["24Q3", "24Q1"]  # most-recent first
+    assert set(captured) == {"24Q3", "24Q1"}  # workers may finish out of order
+    assert [ref.uri.name for ref in refs] == ["faers_ascii_24Q3.zip", "faers_ascii_24Q1.zip"]  # result order stays most-recent first
     assert all(ref.uri.suffix == ".zip" for ref in refs)
 
 

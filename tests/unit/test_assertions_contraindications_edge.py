@@ -222,7 +222,7 @@ def test_second_observation_of_same_pair_unions_support(tmp_path: Path) -> None:
     assert row["subject_text"] == "DrugX"
     assert row["object_text"] == "asthma"
     assert row["object_curie"] == ""
-    assert row["supporting_spl_sets"] == "SET-A|SET-B"  # both observations unioned
+    assert row["supporting_spl_sets"] == "dailymed:SET-A|dailymed:SET-B"  # both observations unioned
     assert row["source_score"] == "1"
 
 
@@ -563,7 +563,7 @@ def test_contraindication_mined_from_indication_section(tmp_path: Path) -> None:
     # Provenance: the indication section document (34067-9).
     asthma_row = next(r for r in rows if r["object_text"] == "asthma")
     assert asthma_row["supporting_spl_documents"] == "SET-A#34067-9"
-    assert asthma_row["supporting_spl_sets"] == "SET-A"
+    assert asthma_row["supporting_spl_sets"] == "dailymed:SET-A"
 
 
 def test_indication_only_diseases_not_mined_as_contraindications(tmp_path: Path) -> None:

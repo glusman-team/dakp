@@ -29,6 +29,12 @@ classifiers = [
 # Tablassert is pinned to the `[qc]` variant because the KG build needs the embedding-based
 # `tablassert build-kg --qc` audit (sentence-transformers).
 dependencies = [
+    # Bundles a statically-linked aria2c binary (PyPI dist `aria2`, import name `aria2c`) so the
+    # FAERS + Drugs@FDA fetchers get multi-connection downloads with no separate system install.
+    # Only 0.0.1b0 is published, hence the explicit pre-release pin. aria2c is GPLv2 but runs as a
+    # separate subprocess (not linked), so it does not affect this project's Apache-2.0 license;
+    # disable at runtime with DAKP_ARIA2=0 to fall back to stdlib urllib downloads.
+    "aria2>=0.0.1b0",
     "apache-airflow>=3,<4",
     "blake3>=1.0.0",
     "cyclopts>=4",
@@ -38,7 +44,7 @@ dependencies = [
     "pendulum>=3",
     "polars>=1.30.0",
     "pydantic>=2.12.0",
-    "tablassert[qc]>=8.2.1",
+    "tablassert[qc]>=9.1.0,<10",
     # torch is transitive (gliner, sentence-transformers via tablassert[qc]) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host
     # (wenceslaus: 4x Tesla P100-PCIE-16GB, compute capability 6.0, CUDA 12.8 driver) force it:

@@ -12,6 +12,7 @@ import polars as pl
 from dakp_pipeline.assertions.evidence import (
     build_dailymed_evidence,
     build_drugsfda_ingredient_map,
+    dailymed_set_curie,
     find_faers_cases,
     merge_unique,
     normalize_nda,
@@ -57,6 +58,12 @@ def test_sorted_pipe_is_deterministic_list_encoding() -> None:
     # Order-independent => deterministic regardless of insertion order.
     assert sorted_pipe(["SET-A", "SET-B"]) == sorted_pipe(["SET-B", "SET-A"])
     assert sorted_pipe([]) == ""
+
+
+def test_dailymed_set_curie_matches_translator_evidence_shape() -> None:
+    assert sorted_pipe(dailymed_set_curie(value) for value in ["SET-B", "SET-A", "SET-B"]) == "dailymed:SET-A|dailymed:SET-B"
+    assert dailymed_set_curie("dailymed:SET-A") == "dailymed:SET-A"
+    assert dailymed_set_curie("") == ""
 
 
 # --- DailyMed SPL-support index -------------------------------------------------

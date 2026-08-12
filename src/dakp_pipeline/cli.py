@@ -338,8 +338,8 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
     # --- 4. set the per-run config Variable (shared by Python tasks + Go bundle) -
     # `--small` bounds the acquisition scope (quarter/release limit = _SMALL_SCOPE); otherwise null
     # limits => unbounded full build. threads = all cores either way (Go all-cores contract).
-    # dailymed_max_age_days keeps a stored release fresh for a week (no re-download of unchanged
-    # snapshots); see sources/dailymed.py.
+    # Source max-age settings keep fixed-name snapshots fresh without repeating unchanged downloads.
+    # See sources/dailymed.py and sources/drugsfda.py.
     scope_limit = _SMALL_SCOPE if small else None
     config: dict[str, Any] = {
         "workdir": str(workdir),
@@ -348,6 +348,7 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
         "quarter_limit": scope_limit,
         "release_limit": scope_limit,
         "dailymed_max_age_days": _DAILYMED_MAX_AGE_DAYS,
+        "drugsfda_max_age_days": _DAILYMED_MAX_AGE_DAYS,
         "force": False,
         "log_level": log_level,
         "fullmap": fullmap,

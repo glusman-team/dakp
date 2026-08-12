@@ -199,6 +199,43 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
         assert supporting == set(family.required_upstream)
 
 
+def test_dailymed_evidence_lands_where_tablassert_9_1_puts_it(kgx_build: KgxBuild) -> None:
+    """The two DailyMed evidence columns land in their VERIFIED Tablassert >= 9.1 destinations.
+
+    ``has_evidence`` is a real multivalued slot of the association class every DAKP edge resolves to
+    (``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``), and the generated configs encode it
+    with ``split_by: "|"`` — so DAKP's aggregated, pipe-joined SPL-set cell arrives as a real JSON
+    array of ``dailymed:`` CURIEs, never a one-element list holding a joined ``"a|b"`` blob (the
+    silent corruption ``split_by`` exists to prevent). The tiny fixtures carry ONE SPL set per
+    assertion row, so the arrays here are single-element; the pipe guard is what fails loudly if
+    ``split_by`` is ever dropped from the emitted configs.
+
+    ``supporting_documents`` is on Tablassert's edge-field allow-list (so it is never folded into
+    ``supporting_text``) but is NOT a slot of that association class, so ``prune_to_class`` routes it
+    onto the inlined supporting study instead of the edge.
+    """
+    dailymed_backed = [edge for edge in kgx_build.edges if edge["predicate"] in {_TREATS, _CONTRA}]
+    assert dailymed_backed, "expected DailyMed-backed edges in the build"
+    for edge in dailymed_backed:
+        evidence = edge.get("has_evidence")
+        assert isinstance(evidence, list), f"has_evidence must be a JSON array, got {evidence!r}"
+        assert evidence
+        for value in evidence:
+            assert isinstance(value, str)
+            assert value.startswith("dailymed:"), f"has_evidence value is not a DailyMed CURIE: {value!r}"
+            assert "|" not in value, f"has_evidence kept a joined cell instead of splitting it: {value!r}"
+        # Routed off the edge onto the inlined study, values intact.
+        assert "supporting_documents" not in edge
+        results = next(iter(edge["has_supporting_studies"].values()))["has_study_results"]
+        descriptions = [result.get("description", "") for result in results]
+        assert any("supporting_documents=" in description for description in descriptions), descriptions
+
+    # FAERS edges have no SPL evidence at all (the assertion table carries no such column).
+    for edge in kgx_build.edges:
+        if edge["predicate"] == _APPLIED:
+            assert "has_evidence" not in edge
+
+
 def test_validate_kgx_passes_on_raw_kgx(kgx_build: KgxBuild) -> None:
     """validate_kgx passes on the RAW Tablassert >= 8.2 edges (no canonicalization needed)."""
     report = validate_kgx(kgx_build.nodes, kgx_build.edges)

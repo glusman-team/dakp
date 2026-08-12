@@ -21,15 +21,16 @@ Monkeypatchable boundaries:
 from __future__ import annotations
 
 import re
-import shutil
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
+from dakp_pipeline.io.downloader import download
 from dakp_pipeline.io.manifests import SourceBlock
 from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.paths import Workdir
@@ -43,6 +44,8 @@ FDA_FAERS_INDEX_URL = "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAER
 FDA_FAERS_DOWNLOAD_BASE = "https://fis.fda.gov/content/Exports"
 _FAERS_ZIP_RE = re.compile(r"faers_ascii_(\d{4})q(\d)\.zip", re.IGNORECASE)
 _DEFAULT_TIMEOUT = 120.0
+#: Max concurrent quarter downloads/cache checks within one FAERS acquisition.
+_DOWNLOAD_CONCURRENCY = 4
 #: Narration prefix for every log line this fetcher emits (one stat per line).
 _EVENT = "acquire_faers"
 
@@ -97,7 +100,10 @@ class FAERSFetcher:
             if not quarters:
                 logger.warning("{}: no FAERS quarters discovered from index", _EVENT)
                 return []
-            refs = [self.download_quarter(ctx, source) for source in quarters]
+            with ThreadPoolExecutor(max_workers=min(_DOWNLOAD_CONCURRENCY, len(quarters))) as pool:
+                futures = [pool.submit(self.download_quarter, ctx, source) for source in quarters]
+                # Collect in discovery order even though downloads complete out of order.
+                refs = [future.result() for future in futures]
             stats(logger, _EVENT, artifacts=len(refs))
             return refs
 
@@ -140,7 +146,7 @@ class FAERSFetcher:
         return ref
 
 
-# --- stdlib HTTP helpers (no new deps; downloads.py stays untouched) --------------
+# --- HTTP helpers (index HTML via stdlib urllib; bulk downloads via io.downloader) -----
 
 
 def _http_get_text(url: str, *, timeout: float) -> str:
@@ -149,11 +155,13 @@ def _http_get_text(url: str, *, timeout: float) -> str:
 
 
 def _http_download(url: str, dest: Path, *, timeout: float) -> Path:
-    """Stream ``url`` to ``dest`` in 1 MiB chunks (a whole quarter zip never sits in memory).
-    HTTP/URL errors propagate (fail loudly)."""
-    with urllib.request.urlopen(url, timeout=timeout) as response, dest.open("wb") as handle:
-        shutil.copyfileobj(response, handle, length=1 << 20)
-    return dest
+    """Download ``url`` to ``dest`` (aria2c-accelerated, stdlib fallback). Network boundary; monkeypatchable.
+
+    FAERS quarterly zips are immutable multi-hundred-MB snapshots — exactly what aria2c's
+    multi-connection downloads speed up. Tests replace this module-level seam to serve a fixture
+    zip without network; the real HTTP path is covered by the offline prod-smoke test.
+    """
+    return download(url, dest, timeout=timeout)
 
 
 fetch = FAERSFetcher().fetch

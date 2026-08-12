@@ -71,13 +71,16 @@ Reuse: `table_config()` already builds annotations from `_TABLE_ANNOTATIONS` via
 
 ### Notes / caveats
 
-* The renamed fields still emit as **pipe-joined scalar strings** (Tablassert annotations are scalar),
-  whereas legacy emitted JSON arrays. Full list output needs a later Tablassert change; today they at
-  least appear as first-class `has_evidence` / `supporting_documents` instead of being buried in
-  `supporting_text`.
-* Optionally (matches legacy CURIE form): legacy `has_evidence` values were `dailymed:<spl_set_id>`;
-  Tablassert `Encoding.prefix` could add `"dailymed:"` to the `has_evidence` annotation. Skipped by
-  default — confirm before adding.
+* ~~The renamed fields still emit as **pipe-joined scalar strings**~~ — closed by Tablassert 9.1's
+  annotation `split_by`, which DAKP now emits on both evidence columns. `has_evidence` reaches the
+  edge as a real JSON array (legacy parity), matching what legacy emitted. `supporting_documents` is
+  on Tablassert's edge-field allow-list but is not a slot of DAKP's association class, so
+  `prune_to_class` routes it onto the inlined supporting study instead of the edge — the values are
+  preserved, but as a `supporting_documents=a, b` entry in the study-result description, not an array.
+* DAKP now prefixes each SPL set before joining the assertion cell, so every emitted
+  `has_evidence` value is the deployed `dailymed:<spl_set_id>` CURIE form. This is done in the
+  assertion shapers rather than with Tablassert `Encoding.prefix`, because prefixing the joined
+  cell would affect only the first value after `split_by: "|"`.
 
 ## Steps
 

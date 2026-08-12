@@ -54,7 +54,10 @@ def _write_fake_zip(path: Path) -> None:
 
 
 def test_drugsfda_real_fetch_success_and_cache_hit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
     def fake_download(url: str, dest: Path, *, timeout: float = 120.0) -> Path:
+        calls.append(url)
         _write_fake_zip(dest)
         return dest
 
@@ -66,9 +69,25 @@ def test_drugsfda_real_fetch_success_and_cache_hit(tmp_path: Path, monkeypatch: 
     assert refs[0].media_type == "application/zip"
     first_id = refs[0].blake3
 
-    # Identical bytes -> cache hit on re-fetch (same artifact id).
+    # The alias is checked before opening a network connection on re-fetch.
     refs2 = fetcher.fetch(_ctx(tmp_path))
     assert refs2[0].blake3 == first_id
+    assert calls == [drugsfda.DRUGSFDA_DATA_FILES_URL]
+
+
+def test_drugsfda_force_bypasses_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def fake_download(url: str, dest: Path, *, timeout: float = 120.0) -> Path:
+        calls.append(url)
+        _write_fake_zip(dest)
+        return dest
+
+    monkeypatch.setattr(drugsfda, "download_drugsfda_zip", fake_download)
+    fetcher = drugsfda.DrugsFDAFetcher()
+    fetcher.fetch(_ctx(tmp_path))
+    fetcher.fetch(_ctx(tmp_path, force=True))
+    assert calls == [drugsfda.DRUGSFDA_DATA_FILES_URL, drugsfda.DRUGSFDA_DATA_FILES_URL]
 
 
 def test_drugsfda_real_fetch_honors_url_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -80,8 +99,93 @@ def test_drugsfda_real_fetch_honors_url_override(tmp_path: Path, monkeypatch: py
         return dest
 
     monkeypatch.setattr(drugsfda, "download_drugsfda_zip", fake_download)
-    drugsfda.DrugsFDAFetcher().fetch(_ctx(tmp_path, drugsfda_url="https://example.invalid/custom.zip"))
-    assert seen == ["https://example.invalid/custom.zip"]
+    fetcher = drugsfda.DrugsFDAFetcher()
+    fetcher.fetch(_ctx(tmp_path))
+    fetcher.fetch(_ctx(tmp_path, drugsfda_url="https://example.invalid/custom.zip"))
+    assert seen == [drugsfda.DRUGSFDA_DATA_FILES_URL, "https://example.invalid/custom.zip"]
+
+
+def test_drugsfda_stale_cache_rechecks_network(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def fake_download(url: str, dest: Path, *, timeout: float = 120.0) -> Path:
+        calls.append(url)
+        _write_fake_zip(dest)
+        return dest
+
+    monkeypatch.setattr(drugsfda, "download_drugsfda_zip", fake_download)
+    fetcher = drugsfda.DrugsFDAFetcher()
+    fetcher.fetch(_ctx(tmp_path))
+    _age_release(_store_for(tmp_path), "drugsfda/drugsfda_data_files.zip", days=8)
+    fetcher.fetch(_ctx(tmp_path))
+    assert calls == [drugsfda.DRUGSFDA_DATA_FILES_URL, drugsfda.DRUGSFDA_DATA_FILES_URL]
+
+
+def test_drugsfda_non_positive_max_age_disables_cache_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def fake_download(url: str, dest: Path, *, timeout: float = 120.0) -> Path:
+        calls.append(url)
+        _write_fake_zip(dest)
+        return dest
+
+    monkeypatch.setattr(drugsfda, "download_drugsfda_zip", fake_download)
+    fetcher = drugsfda.DrugsFDAFetcher()
+    fetcher.fetch(_ctx(tmp_path))
+    fetcher.fetch(_ctx(tmp_path, drugsfda_max_age_days=0))
+    assert calls == [drugsfda.DRUGSFDA_DATA_FILES_URL, drugsfda.DRUGSFDA_DATA_FILES_URL]
+
+
+def test_drugsfda_non_numeric_max_age_falls_back_to_the_default_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A param that is not a real number falls back to the 7-day default — never to 'no gate'.
+
+    Airflow params arrive untyped, so a string ``"14"`` (or a ``True`` that ``isinstance(_, int)``
+    would otherwise accept) must not silently disable or widen the freshness window.
+    """
+    calls: list[str] = []
+
+    def fake_download(url: str, dest: Path, *, timeout: float = 120.0) -> Path:
+        calls.append(url)
+        _write_fake_zip(dest)
+        return dest
+
+    monkeypatch.setattr(drugsfda, "download_drugsfda_zip", fake_download)
+    fetcher = drugsfda.DrugsFDAFetcher()
+    fetcher.fetch(_ctx(tmp_path))
+    # Both bogus values resolve to the default 7 days, so the fresh release is still reused.
+    fetcher.fetch(_ctx(tmp_path, drugsfda_max_age_days="14"))
+    fetcher.fetch(_ctx(tmp_path, drugsfda_max_age_days=True))
+    assert calls == [drugsfda.DRUGSFDA_DATA_FILES_URL]
+
+    # And it really is the DEFAULT window, not an unbounded one: past 7 days the gate reopens.
+    _age_release(_store_for(tmp_path), "drugsfda/drugsfda_data_files.zip", days=8)
+    fetcher.fetch(_ctx(tmp_path, drugsfda_max_age_days="14"))
+    assert calls == [drugsfda.DRUGSFDA_DATA_FILES_URL, drugsfda.DRUGSFDA_DATA_FILES_URL]
+
+
+def test_drugsfda_unparsable_retrieved_at_refetches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A manifest whose ``retrieved_at`` will not parse has no measurable age, so the gate cannot apply."""
+    calls: list[str] = []
+
+    def fake_download(url: str, dest: Path, *, timeout: float = 120.0) -> Path:
+        calls.append(url)
+        _write_fake_zip(dest)
+        return dest
+
+    monkeypatch.setattr(drugsfda, "download_drugsfda_zip", fake_download)
+    fetcher = drugsfda.DrugsFDAFetcher()
+    fetcher.fetch(_ctx(tmp_path))
+
+    store = _store_for(tmp_path)
+    cached = store.cached_ref("drugsfda/drugsfda_data_files.zip")
+    assert cached is not None
+    manifest_path = store.manifest_path(cached.blake3)
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    data["source"]["retrieved_at"] = "whenever"  # provenance present but not a timestamp
+    manifest_path.write_text(json.dumps(data), encoding="utf-8")
+
+    fetcher.fetch(_ctx(tmp_path))
+    assert calls == [drugsfda.DRUGSFDA_DATA_FILES_URL, drugsfda.DRUGSFDA_DATA_FILES_URL]
 
 
 def test_drugsfda_real_fetch_cleans_up_absent_staged_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -353,6 +457,38 @@ def test_dailymed_release_304_reexpands_cached_spl_members(tmp_path: Path, monke
     assert second[0].uri.name.endswith(".xml")
 
 
+def test_dailymed_release_304_reexpands_when_the_member_record_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 304 with no completion record falls back to re-expanding the cached ZIP, not to ``[]``.
+
+    The record is written only after an expansion finishes, so an interrupted run leaves the
+    release ZIP cached with no member set — the recovery path must rebuild the SPL refs the
+    extractor consumes, without re-downloading.
+    """
+    zip_bytes = _release_zip({"drug1.xml": b"<splBatch/>"})
+    state = {"not_modified": False}
+
+    def fake_urlopen(request: Any, *, timeout: float = 60.0) -> _FakeResponse:
+        url = request.full_url
+        if "spl-resources-all-drug-labels.cfm" in url:
+            return _FakeResponse(_INDEX_HTML.encode())
+        if state["not_modified"]:
+            raise _raise_304(url)
+        return _FakeResponse(zip_bytes, {"ETag": "zip-e"})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    ctx = _ctx(tmp_path, dailymed_max_age_days=0)  # freshness gate off, so the 304 path runs
+    first = dailymed.fetch(ctx)
+    assert len(first) == 1
+
+    # Simulate the interrupted expansion: the ZIP is still cached, its member record is not.
+    _store_for(tmp_path).invalidate_cached_refs("dailymed/dm_spl_release_human_rx_part1.zip")
+    state["not_modified"] = True
+    second = dailymed.fetch(ctx)
+
+    assert [ref.blake3 for ref in second] == [ref.blake3 for ref in first]
+    assert second[0].uri.name.endswith(".xml")
+
+
 def test_dailymed_release_304_without_cache_returns_empty(tmp_path: Path) -> None:
     store = _store_for(tmp_path)
     # No alias recorded for this release -> cached_ref None -> [] on a 304.
@@ -411,6 +547,28 @@ def test_dailymed_fresh_release_skips_zip_download(tmp_path: Path, monkeypatch: 
     second = dailymed.fetch(ctx)
     assert [r.full_url for r in requests] == [dailymed.FULL_RELEASE_INDEX_URL]
     assert [r.blake3 for r in second] == [r.blake3 for r in first]
+
+
+def test_dailymed_missing_completion_record_reexpands_without_download(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    spl = b"<splBatch/>"
+    zip_bytes = _release_zip({"drug1.xml": spl})
+    requests: list[urllib.request.Request] = []
+    _patch_urlopen(
+        monkeypatch,
+        {"spl-resources-all-drug-labels.cfm": _FakeResponse(_INDEX_HTML.encode()), "dm_spl_release_human_rx_part1.zip": _FakeResponse(zip_bytes)},
+        requests,
+    )
+    ctx = _ctx(tmp_path)
+    first = dailymed.fetch(ctx)
+    marker = Workdir(ctx.workdir).aliases / "dailymed" / "dm_spl_release_human_rx_part1.zip.members.json"
+    marker.unlink()
+    requests.clear()
+
+    second = dailymed.fetch(ctx)
+
+    assert [r.blake3 for r in second] == [r.blake3 for r in first]
+    assert [r.full_url for r in requests] == [dailymed.FULL_RELEASE_INDEX_URL]
+    assert marker.exists()
 
 
 def test_dailymed_stale_release_redownloads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

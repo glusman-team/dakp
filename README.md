@@ -14,12 +14,15 @@ One pipeline, five stages:
 acquire ─▶ extract ─▶ NER ─▶ aggregate ─▶ Tablassert KGX handoff
 ```
 
-- **acquire** — real stdlib-HTTP downloaders for DailyMed full releases, Drugs@FDA, and FAERS
-  quarterly extracts; content-addressed (BLAKE3), idempotent, manifest-recorded. DailyMed
+- **acquire** — real downloaders for DailyMed full releases, Drugs@FDA, and FAERS quarterly
+  extracts; content-addressed (BLAKE3), idempotent, manifest-recorded. Drugs@FDA and FAERS
+  download via the bundled **aria2c** binary (multi-connection; the PyPI `aria2` wheel — no
+  separate install), falling back to stdlib HTTP when aria2c is unavailable or `DAKP_ARIA2=0`;
+  DailyMed keeps a stdlib conditional-GET path for its 304/ETag freshness semantics. DailyMed
   releases are freshness-gated: a stored release fetched within `dailymed_max_age_days`
   (default **7** days) is reused with zero ZIP downloads — DailyMed replaces its fixed-name
   full-release ZIPs in place, so without the gate every new release re-downloads the whole
-  snapshot (~tens of GB). `force` bypasses the gate; `<= 0` disables it.
+  snapshot (~tens of GB). Drugs@FDA uses the same seven-day cache window via `drugsfda_max_age_days`. `force` bypasses both gates; `<= 0` disables them.
 - **extract** — the heavy parsers run as **native Go bundle workers** (an Airflow Go SDK bundle
   under [`go/`](./go)); the DAG's `extract_*` tasks are `@task.stub(queue="golang")`
   declarations the coordinator forks per task instance.
@@ -61,7 +64,9 @@ uv run dakp up [--fullmap PATH] [--small]
 ## Prerequisites
 
 - `uv sync` — installs every Python dependency (Airflow 3, the NER backend, `tablassert[qc]`)
-  plus the `dakp` CLI.
+  plus the `dakp` CLI. This includes the `aria2` wheel, which bundles a statically-linked
+  **aria2c** binary (GPLv2); it runs as a separate subprocess (not linked), so it does not
+  affect DAKP's Apache-2.0 license. Set `DAKP_ARIA2=0` to force the stdlib HTTP fallback.
 - A Go toolchain — to build and pack the native bundle. `dakp up` does this automatically.
 
 ## Tests

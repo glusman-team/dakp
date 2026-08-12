@@ -345,11 +345,11 @@ template:
     - annotation: has_evidence
       method: column
       encoding: J
-      delimiter: "|"
+      split_by: "|"
     - annotation: supporting_documents
       method: column
       encoding: K
-      delimiter: "|"
+      split_by: "|"
     - annotation: source_score
       method: column
       encoding: L

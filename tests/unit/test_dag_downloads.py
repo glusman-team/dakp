@@ -147,12 +147,16 @@ def test_build_context_forwards_fullmap(tmp_path: Path) -> None:
     assert ctx.params["run_tablassert"] is True
 
 
-def test_build_context_forwards_dailymed_max_age_days(tmp_path: Path) -> None:
-    ctx = runtime.build_context_from_config({"workdir": str(tmp_path), "fixture_root": str(_FIXTURE_ROOT), "dailymed_max_age_days": 14})
+def test_build_context_forwards_source_max_age_days(tmp_path: Path) -> None:
+    ctx = runtime.build_context_from_config(
+        {"workdir": str(tmp_path), "fixture_root": str(_FIXTURE_ROOT), "dailymed_max_age_days": 14, "drugsfda_max_age_days": 3}
+    )
     assert ctx.params["dailymed_max_age_days"] == 14.0
-    # Absent in the config Variable -> None param (the fetcher applies its 7-day default).
+    assert ctx.params["drugsfda_max_age_days"] == 3.0
+    # Absent in the config Variable -> None param (the fetchers apply their 7-day defaults).
     ctx = runtime.build_context_from_config({"workdir": str(tmp_path), "fixture_root": str(_FIXTURE_ROOT)})
     assert ctx.params["dailymed_max_age_days"] is None
+    assert ctx.params["drugsfda_max_age_days"] is None
 
 
 def test_dag_includes_acquisition_tasks_and_pools(dakp_build) -> None:

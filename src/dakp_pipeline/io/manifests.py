@@ -6,6 +6,8 @@ The manifest is the BLAKE3 artifact manifest shape (``schema_version``
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -64,7 +66,14 @@ class ArtifactManifest(BaseModel):
     def write(self, path: Path) -> Path:
         """Atomically-ish write this manifest as indented JSON. Returns ``path``."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.model_dump_json(indent=2), encoding="utf-8")
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        os.close(fd)
+        temporary = Path(temporary_name)
+        try:
+            temporary.write_text(self.model_dump_json(indent=2), encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
         return path
 
 

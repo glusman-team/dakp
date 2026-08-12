@@ -41,7 +41,7 @@ def test_faers_rule_keeps_approved_pairs_and_filters_unmapped(
     assert statin["subject_curie"] == "UNII:QFX8B1R4QF"  # DailyMed-provided UNII
     assert statin["object_curie"] == "MONDO:0005154"
     assert statin["approval_ids"] == "012345"
-    assert statin["supporting_spl_sets"] == "SETID-EXAMPLESTATIN-001"
+    assert statin["supporting_spl_sets"] == "dailymed:SETID-EXAMPLESTATIN-001"
     assert statin["supporting_spl_documents"] == "SETID-EXAMPLESTATIN-001#34067-9"
 
     # FAERS reported the brand 'Advil'; the subject is the canonical DailyMed ingredient.
@@ -103,7 +103,7 @@ def test_multi_nda_for_same_subject_object_aggregates_approval_ids(disease_map: 
     assert len(rows) == 1
     row = rows[0]
     assert row["approval_ids"] == "012345|099998"  # sorted, deduped
-    assert row["supporting_spl_sets"] == "SET-A|SET-B"
+    assert row["supporting_spl_sets"] == "dailymed:SET-A|dailymed:SET-B"
     assert row["supporting_spl_documents"] == "SET-A#34067-9|SET-B#34067-9"
 
 

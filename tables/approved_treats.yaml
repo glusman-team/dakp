@@ -349,11 +349,11 @@ template:
     - annotation: has_evidence
       method: column
       encoding: K
-      delimiter: "|"
+      split_by: "|"
     - annotation: supporting_documents
       method: column
       encoding: L
-      delimiter: "|"
+      split_by: "|"
     - annotation: clinical_approval_status
       method: column
       encoding: M

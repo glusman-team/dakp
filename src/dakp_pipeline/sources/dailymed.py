@@ -40,6 +40,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -60,6 +61,8 @@ _FULL_RELEASES_HEADING = "Full Releases"
 _RELEASE_ZIP_HREF = re.compile(r'href="(?P<url>https?://[^"]+\.zip)"', re.IGNORECASE)
 
 _DOWNLOAD_TIMEOUT = 60.0
+#: Max concurrent release downloads/cache checks within one DailyMed acquisition.
+_DOWNLOAD_CONCURRENCY = 4
 _CHUNK = 1 << 20  # 1 MiB streaming window.
 #: Narration prefix for every log line this fetcher emits (one stat per line).
 _EVENT = "acquire_dailymed"
@@ -99,9 +102,10 @@ def _download_full_release(ctx: TaskContext) -> list[ArtifactRef]:
 
         max_age_days = _max_age_days(ctx)
         force = bool(ctx.params.get("force", False))
-        refs: list[ArtifactRef] = []
-        for url in release_urls:
-            refs.extend(_download_one(url, staging, store, max_age_days=max_age_days, force=force))
+        with ThreadPoolExecutor(max_workers=min(_DOWNLOAD_CONCURRENCY, len(release_urls))) as pool:
+            futures = [pool.submit(_download_one, url, staging, store, max_age_days=max_age_days, force=force) for url in release_urls]
+            # Collect in index order even when releases finish out of order.
+            refs = [ref for future in futures for ref in future.result()]
         stats(logger, _EVENT, spl_artifacts_acquired=len(refs))
         return refs
 
@@ -178,8 +182,21 @@ def _download_one(url: str, staging: Path, store: ArtifactStore, *, max_age_days
         if age is not None and age < max_age_days:
             cached = store.cached_ref(alias)
             if cached is not None and cached.uri.exists():
-                stats(logger, release_event, fresh_skip=True, age_days=round(age, 2), max_age_days=max_age_days)
-                refs = _expand_release_zip(cached.uri, out_dir, store, SourceBlock(url=url, retrieved_at=_now_iso()), release_name=name)
+                refs = store.cached_refs(alias, cached.blake3)
+                if refs is not None:
+                    stats(logger, release_event, fresh_skip=True, cache_hit=True, age_days=round(age, 2), max_age_days=max_age_days)
+                    stats(logger, release_event, spl_documents_ingested=len(refs), elapsed_s=round(time.monotonic() - gate_started, 3))
+                    return refs
+                stats(logger, release_event, fresh_skip=True, cache_members_missing=True)
+                refs = _expand_release_zip(
+                    cached.uri,
+                    out_dir,
+                    store,
+                    SourceBlock(url=url, retrieved_at=_now_iso()),
+                    release_name=name,
+                    release_alias=alias,
+                    release_artifact_id=cached.blake3,
+                )
                 stats(logger, release_event, spl_documents_ingested=len(refs), elapsed_s=round(time.monotonic() - gate_started, 3))
                 return refs
     source = _prior_source(store, alias=alias)
@@ -192,14 +209,24 @@ def _download_one(url: str, staging: Path, store: ArtifactStore, *, max_age_days
         cached = store.cached_ref(alias)
         if cached is None:
             return []
-        refs = _expand_release_zip(cached.uri, out_dir, store, SourceBlock(url=url, retrieved_at=_now_iso()), release_name=name)
+        refs = store.cached_refs(alias, cached.blake3)
+        if refs is None:
+            refs = _expand_release_zip(
+                cached.uri,
+                out_dir,
+                store,
+                SourceBlock(url=url, retrieved_at=_now_iso()),
+                release_name=name,
+                release_alias=alias,
+                release_artifact_id=cached.blake3,
+            )
         stats(logger, release_event, spl_documents_ingested=len(refs), elapsed_s=round(time.monotonic() - started, 3))
         return refs
     stats(logger, release_event, bytes=dest.stat().st_size, elapsed_s=round(time.monotonic() - started, 3))
     src_block = SourceBlock(url=url, etag=etag, last_modified=last_modified, retrieved_at=_now_iso())
     ref, cache_hit = store.ingest(dest, alias=alias, source=src_block)
     stats(logger, release_event, blake3=ref.blake3, cache_hit=cache_hit)
-    refs = _expand_release_zip(dest, out_dir, store, src_block, release_name=name)
+    refs = _expand_release_zip(dest, out_dir, store, src_block, release_name=name, release_alias=alias, release_artifact_id=ref.blake3)
     dest.unlink(missing_ok=True)  # staged zip no longer needed once its XMLs are content-addressed
     stats(logger, release_event, spl_documents_ingested=len(refs), elapsed_s=round(time.monotonic() - started, 3))
     return refs
@@ -217,7 +244,9 @@ def _apply_release_limit(urls: list[str], ctx: TaskContext) -> list[str]:
     return urls[:limit]
 
 
-def _expand_release_zip(zip_path: Path, out_dir: Path, store: ArtifactStore, source: SourceBlock, *, release_name: str) -> list[ArtifactRef]:
+def _expand_release_zip(
+    zip_path: Path, out_dir: Path, store: ArtifactStore, source: SourceBlock, *, release_name: str, release_alias: str, release_artifact_id: str
+) -> list[ArtifactRef]:
     """Ingest the SPL XML documents of a DailyMed release ZIP as individual artifacts.
 
     DailyMed full-release ZIPs are nested: the outer archive holds one ``.zip`` per SPL document
@@ -231,7 +260,9 @@ def _expand_release_zip(zip_path: Path, out_dir: Path, store: ArtifactStore, sou
     """
     expansion_event = f"{_EVENT} expansion"
     out_dir.mkdir(parents=True, exist_ok=True)
+    store.invalidate_cached_refs(release_alias)
     refs: list[ArtifactRef] = []
+    member_aliases: list[str] = []
     with zipfile.ZipFile(zip_path) as archive:
         members = [info for info in archive.infolist() if not info.is_dir()]
         total = sum(1 for info in members if _looks_like_spl_target(Path(info.filename).name))
@@ -241,19 +272,24 @@ def _expand_release_zip(zip_path: Path, out_dir: Path, store: ArtifactStore, sou
             name = Path(info.filename).name
             if name.lower().endswith(".zip"):
                 # Nested per-document archive: ingest the SPL XML it contains.
-                ingested = _expand_doc_zip(archive.read(info), out_dir, store, source, release_name=release_name)
+                ingested = _expand_doc_zip(archive.read(info), out_dir, store, source, release_name=release_name, member_aliases=member_aliases)
                 refs.extend(ingested)
                 done += len(ingested)
             elif _looks_like_spl_name(name):
-                refs.append(_ingest_spl_bytes(archive.read(info), name, out_dir, store, source, release_name=release_name))
+                refs.append(
+                    _ingest_spl_bytes(archive.read(info), name, out_dir, store, source, release_name=release_name, member_aliases=member_aliases)
+                )
                 done += 1
             progress(logger, expansion_event, done, total, every=_SPL_PROGRESS_EVERY)
+    store.write_cached_refs(release_alias, release_artifact_id, member_aliases)
     if not refs:
         logger.warning("{}: release {} contained no SPL XML members", _EVENT, release_name)
     return refs
 
 
-def _expand_doc_zip(doc_bytes: bytes, out_dir: Path, store: ArtifactStore, source: SourceBlock, *, release_name: str) -> list[ArtifactRef]:
+def _expand_doc_zip(
+    doc_bytes: bytes, out_dir: Path, store: ArtifactStore, source: SourceBlock, *, release_name: str, member_aliases: list[str]
+) -> list[ArtifactRef]:
     """Ingest the SPL XML member(s) of one nested per-document DailyMed ZIP (held in memory)."""
     refs: list[ArtifactRef] = []
     with zipfile.ZipFile(io.BytesIO(doc_bytes)) as doc_archive:
@@ -262,11 +298,17 @@ def _expand_doc_zip(doc_bytes: bytes, out_dir: Path, store: ArtifactStore, sourc
                 continue
             member = Path(info.filename).name
             if _looks_like_spl_name(member):
-                refs.append(_ingest_spl_bytes(doc_archive.read(info), member, out_dir, store, source, release_name=release_name))
+                refs.append(
+                    _ingest_spl_bytes(
+                        doc_archive.read(info), member, out_dir, store, source, release_name=release_name, member_aliases=member_aliases
+                    )
+                )
     return refs
 
 
-def _ingest_spl_bytes(data: bytes, member: str, out_dir: Path, store: ArtifactStore, source: SourceBlock, *, release_name: str) -> ArtifactRef:
+def _ingest_spl_bytes(
+    data: bytes, member: str, out_dir: Path, store: ArtifactStore, source: SourceBlock, *, release_name: str, member_aliases: list[str]
+) -> ArtifactRef:
     """Write one SPL member to staging and content-address it under the release alias.
 
     A flat ``::<member>`` alias (not nested under the release) never collides with the release
@@ -275,7 +317,9 @@ def _ingest_spl_bytes(data: bytes, member: str, out_dir: Path, store: ArtifactSt
     """
     target = out_dir / member
     target.write_bytes(data)
-    ref, _ = store.ingest(target, alias=f"dailymed/{release_name}::{member}", source=source)
+    alias = f"dailymed/{release_name}::{member}"
+    ref, _ = store.ingest(target, alias=alias, source=source)
+    member_aliases.append(alias)
     target.unlink(missing_ok=True)
     return ref
 
@@ -296,6 +340,11 @@ def _conditional_download(url: str, dest: Path, source: SourceBlock | None) -> t
     On HTTP 304 the destination is left absent and ``(None, None)`` is returned so the
     caller treats the artifact as cache-fresh. Any other HTTP error is raised. A stale
     staging file is removed before the request so it can never masquerade as fresh.
+
+    Deliberately NOT routed through the aria2c downloader (unlike FAERS / Drugs@FDA): this path
+    needs fine-grained 304 / ETag / Last-Modified handling the 7-day freshness gate depends on,
+    and aria2c would both double the request count and discard the provenance headers recorded
+    back into the manifest.
     """
     headers: dict[str, str] = {}
     if source is not None:
