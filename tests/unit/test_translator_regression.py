@@ -95,6 +95,24 @@ def test_wrong_approval_status_reported() -> None:
     assert _violations(report) == {("biolink:treats", "clinical_approval_status")}
 
 
+def test_applied_to_treat_allows_the_three_approval_statuses() -> None:
+    # approved_for_condition (treats counterpart) / off_label_use (none) / not_provided (degraded
+    # no-approved-table mode) are all valid on applied_to_treat rows.
+    rows = [
+        _row("biolink:applied_to_treat", status=status, knowledge_level="statistical_association")
+        for status in ("approved_for_condition", "off_label_use", "not_provided")
+    ]
+    report = check_rows(rows)
+    assert report.ok is True
+    assert report.violations == []
+
+
+def test_applied_to_treat_legacy_observed_use_status_reported() -> None:
+    # The legacy ``observed_use`` label is not a ClinicalApprovalStatusEnum member -> violation.
+    report = check_rows([_row("biolink:applied_to_treat", status="observed_use", knowledge_level="statistical_association")])
+    assert _violations(report) == {("biolink:applied_to_treat", "clinical_approval_status")}
+
+
 def test_missing_faers_upstream_reported() -> None:
     report = check_rows([_row("biolink:treats", status="approved_for_condition", upstream="infores:dailymed")])
     assert _violations(report) == {("biolink:treats", "upstream_provenance")}

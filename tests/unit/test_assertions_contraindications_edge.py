@@ -1,7 +1,8 @@
 """Edge-case tests for ``dakp_pipeline.assertions.contraindications`` (drive to 100% branch coverage).
 
 Targets: ``default_ner`` fallback when the fixture lacks an ontology (and when fixture_root is
-None); a contraindication set with no active ingredient; a blank mined span; ingredient rows with
+None); a contraindication set with no active ingredient; multi-ingredient (combination-product)
+sets skipped by the singleton-ingredient discipline in both mining passes; a blank mined span; ingredient rows with
 missing fields / duplicates in the shared evidence cache; a second observation of the same
 (subject, object) pair unioning support; the empty-scores ``_max_score`` guard; the shaper honoring / ignoring an injected
 ``params["ner"]``; multi-GPU dispatch (LPT sharding, ``_mine_shard`` worker, ``_mine_multi_gpu``
@@ -153,6 +154,34 @@ def test_contraindication_set_without_active_ingredient_is_skipped(tmp_path: Pat
     assert [r["subject_text"] for r in rows] == ["DrugY"]
     assert rows[0]["object_text"] == "asthma"
     assert rows[0]["object_curie"] == ""
+
+
+# --- singleton-ingredient discipline (legacy selectActiveIngredientSingletons.pl) ------------
+
+
+def test_multi_ingredient_contraindication_set_is_skipped(tmp_path: Path) -> None:
+    # SET-COMBO has TWO actives (a combination product): pairing the mention with each component
+    # would over-attribute the contraindication, so the set is never mined. The singleton SET-S
+    # still mines its row.
+    sections = _sections(tmp_path, [("SET-COMBO", "SET-COMBO#d", "asthma"), ("SET-S", "SET-S#d", "asthma")])
+    ingredients = _ingredients(
+        tmp_path,
+        [("active", "SET-COMBO", "ComponentA", "UNII:A"), ("active", "SET-COMBO", "ComponentB", "UNII:B"), ("active", "SET-S", "DrugS", "UNII:S")],
+    )
+    ner = DiseaseNER(gazetteer={"asthma": "disease"})
+
+    rows = build_contraindication_rows([sections, ingredients], ner)
+    assert [r["subject_text"] for r in rows] == ["DrugS"]
+    assert rows[0]["supporting_spl_sets"] == "dailymed:SET-S"
+
+
+def test_multi_ingredient_indication_set_is_skipped_in_pass_2(tmp_path: Path) -> None:
+    # Pass 2 obeys the same singleton rule: a combination product's indication section is not mined.
+    sections = _mixed_sections(tmp_path, [("SET-COMBO", "SET-COMBO#34067-9", INDICATION_LOINC, "It is contraindicated in patients with asthma.")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-COMBO", "ComponentA", "UNII:A"), ("active", "SET-COMBO", "ComponentB", "UNII:B")])
+    ner = DiseaseNER(gazetteer={"asthma": "disease"})
+
+    assert build_contraindication_rows([sections, ingredients], ner) == []
 
 
 # --- blank mined span is skipped ------------------------------------------------

@@ -7,10 +7,12 @@ end-to-end shaper TSV output.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import polars as pl
 
 from dakp_pipeline.assertions.evidence import find_faers_cases
-from dakp_pipeline.assertions.observed_uses import ObservedUsesShaper, build_observed_use_rows, is_non_disease_indication
+from dakp_pipeline.assertions.observed_uses import ObservedUsesShaper, _approved_pair_index, build_observed_use_rows, is_non_disease_indication
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 
@@ -63,11 +65,13 @@ def test_observed_uses_from_fixture_cases(faers_refs: list[ArtifactRef], disease
 
 
 def test_faers_label_and_status_behavior_preserved(faers_refs: list[ArtifactRef], disease_map: dict[str, dict[str, str]]) -> None:
+    # No approved-treats table passed (degraded mode) -> every row is ``not_provided``.
     rows = build_observed_use_rows(find_faers_cases(faers_refs), disease_map)
     assert rows
     for row in rows:
-        # biolink-valid ClinicalApprovalStatusEnum member: FAERS makes no approval claim
-        # (the legacy ``observed_use`` label is not an enum member and would fail validation
+        # biolink-valid ClinicalApprovalStatusEnum member: with no approved-treats table to
+        # cross-reference, the pair's approval status is unknown (never the legacy
+        # ``observed_use`` label, which is not an enum member and would fail validation
         # now that Tablassert >= 8.2 emits the field first-class).
         assert row["clinical_approval_status"] == "not_provided"
         assert row["knowledge_level"] == "statistical_association"
@@ -75,6 +79,47 @@ def test_faers_label_and_status_behavior_preserved(faers_refs: list[ArtifactRef]
         assert row["primary_knowledge_source"] == "infores:multiomics-drugapprovals"
         assert row["upstream_resource_ids"] == "infores:faers|infores:dailymed"
         assert row["subject_curie"] == ""  # FAERS provides no drug id here (text-first)
+
+
+# --- clinical_approval_status cross-reference with the approved-treats table -----
+
+
+def test_pair_with_treats_counterpart_is_approved_for_condition(disease_map: dict[str, dict[str, str]]) -> None:
+    cases = pl.DataFrame({"drugname": ["Examplestatin", "Advil"], "indication": ["hypercholesterolemia", "headache"]})
+    rows = build_observed_use_rows(cases, disease_map, {("examplestatin", "hypercholesterolemia")})
+    by_subject = {r["subject_text"]: r for r in rows}
+    assert by_subject["Examplestatin"]["clinical_approval_status"] == "approved_for_condition"
+    # No treats counterpart for (Advil, headache) -> the legacy off-label signal.
+    assert by_subject["Advil"]["clinical_approval_status"] == "off_label_use"
+
+
+def test_pair_matching_is_case_and_punctuation_insensitive() -> None:
+    # FAERS casing/punctuation differs from the approved-treats text; normalized matching still pairs them.
+    cases = pl.DataFrame({"drugname": ["EXAMPLESTATIN"], "indication": ["Type-2 Diabetes"]})
+    rows = build_observed_use_rows(cases, {}, {("examplestatin", "type 2 diabetes")})
+    assert rows[0]["clinical_approval_status"] == "approved_for_condition"
+
+
+def test_approved_pair_index_normalizes_and_skips_incomplete_rows() -> None:
+    frame = pl.DataFrame({"subject_text": ["Examplestatin", "", "DrugY"], "object_text": ["Hypercholesterolemia", "pain", ""]})
+    assert _approved_pair_index(frame) == {("examplestatin", "hypercholesterolemia")}
+
+
+def test_shaper_reads_approved_treats_table_for_status(faers_refs: list[ArtifactRef], ctx: TaskContext, tmp_path: Path) -> None:
+    # The produced approved_treats_assertions.tsv, wired in as an input, drives the status.
+    columns = schemas.columns_for("approved_treats_assertions")
+    approved_row = dict.fromkeys(columns, "")
+    approved_row.update({"subject_text": "Examplestatin", "object_text": "hypercholesterolemia"})
+    approved_path = tmp_path / "approved_treats_assertions.tsv"
+    schemas.write_tsv(pl.DataFrame([approved_row], schema=columns), approved_path)
+    approved_ref = ArtifactRef(uri=approved_path, blake3="b3:" + "4" * 64, media_type=schemas.TSV_MEDIA_TYPE)
+
+    refs = ObservedUsesShaper().transform([*faers_refs, approved_ref], ctx)
+    assert len(refs) == 1
+    status = {rec["subject_text"]: rec["clinical_approval_status"] for rec in schemas.read_table(refs[0].uri).iter_rows(named=True)}
+    # Examplestatin matches the approved pair; Advil (brand name vs the DailyMed ingredient text)
+    # and Placebo (no treats row) read as off-label — the documented name-variant limitation.
+    assert status == {"Examplestatin": "approved_for_condition", "Advil": "off_label_use", "Placebo": "off_label_use"}
 
 
 def test_rows_are_deterministically_ordered(faers_refs: list[ArtifactRef], disease_map: dict[str, dict[str, str]]) -> None:

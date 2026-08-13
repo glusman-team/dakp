@@ -121,9 +121,10 @@ def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: 
     faers_ext = faers_ascii.extract(faers_raw, ctx)
     drugsfda_ext = drugsfda_products.extract(drugsfda_raw, ctx)
 
-    # 3. Shape assertion tables (uncompressed TSV, Tablassert-facing).
+    # 3. Shape assertion tables (uncompressed TSV, Tablassert-facing). Observed-uses consumes the
+    # produced approved-treats table for its approval-status cross-reference (as the DAG wires it).
     approved = approved_treats.transform([*dm_ext, *drugsfda_ext, *faers_ext], ctx)
-    uses = observed_uses.transform([*faers_ext, *dm_ext], ctx)
+    uses = observed_uses.transform([*faers_ext, *dm_ext, *approved], ctx)
     contra = contraindications.transform([*dm_ext], ctx)
     assertion_refs = [*approved, *uses, *contra]
 

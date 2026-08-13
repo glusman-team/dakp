@@ -8,20 +8,29 @@ An approved-treats row requires an **NDA-bearing drug-indication pair** that sat
 
 1. the pair's NDA maps (Drugs@FDA ``products``) to an ingredient — confirming a real FDA
    application;
-2. the NDA has a **DailyMed SPL approval** (``spl_approvals``); and
+2. the NDA has a **DailyMed SPL approval** (``spl_approvals``);
 3. that approved SPL set has an **indications-and-usage section** (LOINC ``34067-9``) — the
-   SPL indication support.
+   SPL indication support; and
+4. the candidate **condition is corroborated by that section's text** — a lexical
+   disease-dictionary match on the section (CURIE match when both sides carry one, else
+   normalized-text equality) or a verbatim word-bounded mention of the candidate indication
+   text in the section (same normalized-space boundaries as
+   :class:`~dakp_pipeline.ner.lexical.LexicalMatcher`). Candidates whose condition appears on
+   no supporting label are dropped (``dropped_no_label_term_support``) — the legacy
+   ``supportInDailyMed`` gate (``ref/legacy/bin/drug2indi2kg.py``).
 
 Candidate drug-indication pairs come from **FAERS** (``cases.parquet`` rows carrying an NDA +
 indication) — the primary source, wired into this stage by the DAG. Placeholder/usage-context
 FAERS indications ("Product used for unknown indication", bare "Prophylaxis", ...) are dropped
 via the shared :func:`~dakp_pipeline.assertions.observed_uses.is_non_disease_indication`
 stop-list. When no FAERS case table is present the candidates fall back to DailyMed SPL
-indication sections whose text names a dictionary condition. Both paths apply the *same*
-three-part filter above.
+indication sections whose text names a dictionary condition (rule 4 holds there by
+construction). Both paths apply the *same* four-part filter above.
 
 Provenance (``approval_ids``, ``supporting_spl_sets``, ``supporting_spl_documents``) is
-aggregated per ``(subject, object)`` as deduplicated, sorted, pipe-joined lists. SPL set evidence
+aggregated per ``(subject, object)`` as deduplicated, sorted, pipe-joined lists, restricted to
+the sets whose indication text actually mentions the condition (the legacy "SPLs containing
+both UNII and CURIE"). SPL set evidence
 is emitted as ``dailymed:<spl_set_id>`` CURIEs to match the deployed Translator ingest contract. Subject CURIEs
 are populated only where DailyMed already gives a UNII; object CURIEs come from the lexical
 disease baseline. Canonical CURIE mapping is a later milestone (text-first).
@@ -41,6 +50,7 @@ from dakp_pipeline.assertions.evidence import (
     build_drugsfda_ingredient_map,
     dailymed_set_curie,
     find_faers_cases,
+    merge_unique,
     normalize_nda,
     sorted_pipe,
     write_assertion_table,
@@ -48,6 +58,7 @@ from dakp_pipeline.assertions.evidence import (
 from dakp_pipeline.assertions.observed_uses import is_non_disease_indication
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, stats, step
+from dakp_pipeline.ner.dictionary import normalize_text
 
 _TABLE = "approved_treats_assertions"
 _PREDICATE = "biolink:treats"
@@ -79,6 +90,7 @@ def build_approved_treats_rows(
     candidates_seen = 0
     dropped_no_ingredient_map = 0
     dropped_no_spl_support = 0
+    dropped_no_label_term_support = 0
     dropped_no_subject = 0
     for cand in candidates:
         candidates_seen += 1
@@ -86,10 +98,15 @@ def build_approved_treats_rows(
         if norm not in drugsfda_map:  # (1) NDA must map (Drugs@FDA) to an ingredient
             dropped_no_ingredient_map += 1
             continue
-        sets, docs = dailymed.indication_support(norm)
+        sets, _docs = dailymed.indication_support(norm)
         if not sets:  # (2)+(3) DailyMed approval AND SPL indication-section support
             dropped_no_spl_support += 1
             continue
+        sets = _condition_corroborated_sets(dailymed, sets, cand, disease_map)
+        if not sets:  # (4) the condition must actually appear on a supporting label
+            dropped_no_label_term_support += 1
+            continue
+        docs = merge_unique(doc_id for set_id in sets for doc_id, _text in dailymed.indication_docs[set_id])
         subject_text, subject_curie = _subject_for_sets(dailymed, sets, cand["fallback_subject"])
         if not subject_text:
             dropped_no_subject += 1
@@ -123,6 +140,7 @@ def build_approved_treats_rows(
         candidates=candidates_seen,
         dropped_no_ingredient_map=dropped_no_ingredient_map,
         dropped_no_spl_support=dropped_no_spl_support,
+        dropped_no_label_term_support=dropped_no_label_term_support,
         dropped_no_subject=dropped_no_subject,
         assertions=len(aggregated),
     )
@@ -152,11 +170,50 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
     )
 
 
+def _condition_corroborated_sets(
+    dailymed: DailyMedEvidence, sets: list[str], cand: Mapping[str, str], disease_map: Mapping[str, Mapping[str, str]]
+) -> list[str]:
+    """The supporting sets whose indication-section text actually mentions the candidate condition."""
+    return [
+        set_id for set_id in sets if any(_section_mentions_condition(text, cand, disease_map) for _doc_id, text in dailymed.indication_docs[set_id])
+    ]
+
+
+def _section_mentions_condition(section_text: str, cand: Mapping[str, str], disease_map: Mapping[str, Mapping[str, str]]) -> bool:
+    """True when the indication section names the candidate condition (dictionary or verbatim).
+
+    A disease-dictionary match on the section counts when it corresponds to the candidate object:
+    CURIE equality when both sides carry one, else normalized-text equality. The production
+    dictionary baseline is small, so a verbatim word-bounded mention of the candidate indication
+    text (normalized space, mirroring :class:`~dakp_pipeline.ner.lexical.LexicalMatcher`) also
+    counts — real FAERS indications quoted on the label are not dropped for lack of a dictionary
+    entry.
+    """
+    needle = normalize_text(cand["object_text"])
+    if not needle:
+        return False
+    for match in match_diseases(section_text, disease_map):
+        if cand["object_curie"] and match["curie"]:
+            if match["curie"] == cand["object_curie"]:
+                return True
+        elif normalize_text(match["text"]) == needle:
+            return True
+    normalized_section = normalize_text(section_text)
+    return f" {needle} " in f" {normalized_section} "
+
+
 def _subject_for_sets(dailymed: DailyMedEvidence, sets: list[str], fallback: str) -> tuple[str, str]:
-    """Subject ingredient (name, UNII) from the first supporting SPL set, else the FAERS fallback."""
+    """Subject ingredient (name, UNII) from the first singleton supporting SPL set, else the FAERS fallback.
+
+    Only single-active-ingredient sets are trusted for drug identity (the legacy
+    ``selectActiveIngredientSingletons.pl`` discipline): a combination product's label applies to
+    the mixture, so adopting one of its several actives would over-attribute the treatment to that
+    component. Multi-ingredient sets fall through to the FAERS-reported subject.
+    """
     for set_id in sets:  # already sorted deterministically
-        if set_id in dailymed.set_ingredient:
-            return dailymed.set_ingredient[set_id]
+        ingredients = dailymed.active_ingredients_by_set.get(set_id, [])
+        if len(ingredients) == 1:
+            return ingredients[0]
     return fallback.strip(), ""
 
 

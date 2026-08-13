@@ -1,24 +1,27 @@
 """Edge-case tests for ``dakp_pipeline.assertions.approved_treats`` (drive to 100% branch coverage).
 
-Targets the uncovered lines: the empty-subject ``continue`` (77), the multi-NDA subject-CURIE
-back-fill (97), ``_subject_for_sets`` loop-fallthrough + fallback (130->129, 132),
-``_object_attrs`` no-match (141), the FAERS-candidate skip on missing NDA/indication (151),
-and the DailyMed-fallback skips for an un-approved set (178) and a duplicate pair (184).
+Targets: ``_subject_for_sets`` singleton adoption + multi-ingredient/missing-ingredient
+fallthrough to the FAERS fallback, ``_object_attrs`` no-match, the FAERS-candidate skips on
+missing NDA/indication, the empty-subject drop, the multi-NDA subject-CURIE back-fill, the
+condition-corroboration gate (dictionary CURIE/text match, verbatim substring, provenance
+restriction, drop counter), and the DailyMed-fallback skips for an un-approved set and a
+duplicate pair.
 """
 
 from __future__ import annotations
 
 import polars as pl
+from loguru import logger
 
 from dakp_pipeline.assertions.approved_treats import _faers_candidates, _object_attrs, _subject_for_sets, build_approved_treats_rows
 from dakp_pipeline.assertions.evidence import DailyMedEvidence
 
-# --- _subject_for_sets: loop fallthrough + fallback -----------------------------
+# --- _subject_for_sets: singleton adoption + fallthrough ------------------------
 
 
 def test_subject_for_sets_skips_sets_without_ingredient_then_matches() -> None:
-    ev = DailyMedEvidence(set_ingredient={"SET-Y": ("DrugY", "UNII:Y")})
-    # SET-X has no ingredient (loop continues -> 130->129), SET-Y does -> returned.
+    ev = DailyMedEvidence(set_ingredient={"SET-Y": ("DrugY", "UNII:Y")}, active_ingredients_by_set={"SET-Y": [("DrugY", "UNII:Y")]})
+    # SET-X has no ingredient (loop continues), SET-Y is a singleton -> its (name, UNII) returned.
     assert _subject_for_sets(ev, ["SET-X", "SET-Y"], "fallback") == ("DrugY", "UNII:Y")
 
 
@@ -27,6 +30,16 @@ def test_subject_for_sets_falls_back_when_no_set_has_ingredient() -> None:
     # No set resolves -> the stripped FAERS fallback subject, with an empty CURIE.
     assert _subject_for_sets(ev, ["SET-X", "SET-Y"], "  FallbackDrug  ") == ("FallbackDrug", "")
     assert _subject_for_sets(ev, [], "OnlyFallback") == ("OnlyFallback", "")
+
+
+def test_subject_for_sets_skips_multi_ingredient_set() -> None:
+    # A combination-product set (two actives) is NOT trusted for drug identity: adopting one
+    # component would over-attribute the treatment -> fall through to the FAERS fallback.
+    ev = DailyMedEvidence(
+        set_ingredient={"SET-COMBO": ("ComponentA", "UNII:A")},
+        active_ingredients_by_set={"SET-COMBO": [("ComponentA", "UNII:A"), ("ComponentB", "UNII:B")]},
+    )
+    assert _subject_for_sets(ev, ["SET-COMBO"], "ComboFallback") == ("ComboFallback", "")
 
 
 # --- _object_attrs: no disease-map match ----------------------------------------
@@ -99,6 +112,7 @@ def test_second_nda_backfills_subject_curie_for_shared_key(disease_map: dict[str
         approval_sets={"11111": {"SET-A"}, "22222": {"SET-B"}},
         approval_display={"11111": "011111", "22222": "022222"},
         set_ingredient={"SET-A": ("DrugX", ""), "SET-B": ("DrugX", "UNII:X")},
+        active_ingredients_by_set={"SET-A": [("DrugX", "")], "SET-B": [("DrugX", "UNII:X")]},
         indication_docs={"SET-A": [("SET-A#34067-9", "condY")], "SET-B": [("SET-B#34067-9", "condY")]},
     )
     mapping = {"11111": {"DRUGX"}, "22222": {"DRUGX"}}
@@ -132,6 +146,7 @@ def test_dailymed_fallback_dedups_repeated_indication_docs(disease_map: dict[str
         approval_sets={"12345": {"SET-A"}},
         approval_display={"12345": "012345"},
         set_ingredient={"SET-A": ("Examplestatin", "UNII:QFX8B1R4QF")},
+        active_ingredients_by_set={"SET-A": [("Examplestatin", "UNII:QFX8B1R4QF")]},
         indication_docs={"SET-A": [("SET-A#doc1", "hypercholesterolemia"), ("SET-A#doc2", "hypercholesterolemia")]},
     )
     mapping = {"12345": {"EXAMPLESTATIN"}}
@@ -145,3 +160,114 @@ def test_empty_faers_frame_yields_no_rows(disease_map: dict[str, dict[str, str]]
     ev = DailyMedEvidence()
     cases = pl.DataFrame({"nda": [], "indication": [], "drugname": [], "ingredient": []})
     assert build_approved_treats_rows(cases, ev, {}, disease_map) == []
+
+
+# --- condition-in-label corroboration (rule 4) ----------------------------------
+
+
+def _supported_evidence(section_text: str, *, second_set_text: str | None = None) -> DailyMedEvidence:
+    """NDA 12345 approved on SET-A (and SET-B when ``second_set_text`` is given)."""
+    approval_sets = {"12345": {"SET-A"}}
+    set_ingredient = {"SET-A": ("Examplestatin", "UNII:QFX8B1R4QF")}
+    active = {"SET-A": [("Examplestatin", "UNII:QFX8B1R4QF")]}
+    docs = {"SET-A": [("SET-A#34067-9", section_text)]}
+    if second_set_text is not None:
+        approval_sets["12345"].add("SET-B")
+        set_ingredient["SET-B"] = ("Examplestatin", "UNII:QFX8B1R4QF")
+        active["SET-B"] = [("Examplestatin", "UNII:QFX8B1R4QF")]
+        docs["SET-B"] = [("SET-B#34067-9", second_set_text)]
+    return DailyMedEvidence(
+        approval_sets=approval_sets,
+        approval_display={"12345": "012345"},
+        set_ingredient=set_ingredient,
+        active_ingredients_by_set=active,
+        indication_docs=docs,
+    )
+
+
+def _cases(indication: str) -> pl.DataFrame:
+    return pl.DataFrame({"nda": ["012345"], "indication": [indication], "drugname": ["Examplestatin"], "ingredient": ["Examplestatin"]})
+
+
+def test_candidate_dropped_when_condition_absent_from_label(disease_map: dict[str, dict[str, str]]) -> None:
+    # Every other gate passes, but the label's indication section names only 'asthma' — the
+    # candidate condition 'hypercholesterolemia' matches NEITHER the dictionary hit (different
+    # CURIE) nor the section text verbatim -> dropped (the legacy supportInDailyMed gate).
+    ev = _supported_evidence("Examplestatin is indicated for asthma.")
+    lines: list[str] = []
+    sink_id = logger.add(lambda message: lines.append(message.record["message"]), level="INFO")
+    try:
+        rows = build_approved_treats_rows(_cases("hypercholesterolemia"), ev, {"12345": {"EXAMPLESTATIN"}}, disease_map)
+    finally:
+        logger.remove(sink_id)
+    assert rows == []
+    assert any("dropped_no_label_term_support = 1" in line for line in lines)
+
+
+def test_candidate_dropped_when_no_dictionary_entry_and_no_verbatim_mention(disease_map: dict[str, dict[str, str]]) -> None:
+    # 'cephalalgia' is not in the dictionary (candidate carries no CURIE): the section's
+    # dictionary hit ('headache') is text-unequal and the verbatim substring check misses too.
+    ev = _supported_evidence("Examplestatin is indicated for headache.")
+    assert build_approved_treats_rows(_cases("cephalalgia"), ev, {"12345": {"EXAMPLESTATIN"}}, disease_map) == []
+
+
+def test_candidate_kept_via_verbatim_substring_match() -> None:
+    # Empty dictionary: corroboration rests on the word-bounded verbatim mention alone
+    # (case/punctuation-insensitive normalized space, mirroring the LexicalMatcher).
+    ev = _supported_evidence("Indicated for the treatment of Diabetic Ketoacidosis in adults.")
+    rows = build_approved_treats_rows(_cases("diabetic ketoacidosis"), ev, {"12345": {"EXAMPLESTATIN"}}, {})
+    assert [row["object_text"] for row in rows] == ["diabetic ketoacidosis"]
+    assert rows[0]["supporting_spl_sets"] == "dailymed:SET-A"
+
+
+def test_candidate_kept_via_dictionary_curie_match_with_different_surface_form() -> None:
+    # The section names the same concept under a different surface form: the CURIE match (not a
+    # verbatim mention) corroborates the candidate.
+    disease_map = {
+        "hypercholesterolemia": {"curie": "MONDO:0005154", "name": "hypercholesterolemia", "category": "Disease"},
+        "high cholesterol": {"curie": "MONDO:0005154", "name": "hypercholesterolemia", "category": "Disease"},
+    }
+    ev = _supported_evidence("Indicated in adults with high cholesterol.")
+    rows = build_approved_treats_rows(_cases("hypercholesterolemia"), ev, {"12345": {"EXAMPLESTATIN"}}, disease_map)
+    assert [row["object_text"] for row in rows] == ["hypercholesterolemia"]
+
+
+def test_candidate_kept_via_normalized_text_equality_without_curie() -> None:
+    # Neither side carries a CURIE (dictionary entry with an empty curie): normalized-text
+    # equality between the section's dictionary hit and the candidate corroborates it.
+    disease_map = {"type 2 diabetes": {"curie": "", "name": "type 2 diabetes", "category": "Disease"}}
+    ev = _supported_evidence("Indicated for TYPE 2 DIABETES.")
+    rows = build_approved_treats_rows(_cases("Type 2 Diabetes"), ev, {"12345": {"EXAMPLESTATIN"}}, disease_map)
+    assert [row["object_text"] for row in rows] == ["Type 2 Diabetes"]
+
+
+def test_provenance_limited_to_condition_mentioning_sets(disease_map: dict[str, dict[str, str]]) -> None:
+    # SET-A's label mentions the condition, SET-B's does not -> the row is kept, but only SET-A
+    # (and its document) is cited as supporting SPL evidence.
+    ev = _supported_evidence("Indicated for hypercholesterolemia.", second_set_text="Indicated for asthma.")
+    rows = build_approved_treats_rows(_cases("hypercholesterolemia"), ev, {"12345": {"EXAMPLESTATIN"}}, disease_map)
+    assert len(rows) == 1
+    assert rows[0]["supporting_spl_sets"] == "dailymed:SET-A"
+    assert rows[0]["supporting_spl_documents"] == "SET-A#34067-9"
+
+
+def test_candidate_with_unnormalizable_condition_text_is_dropped(disease_map: dict[str, dict[str, str]]) -> None:
+    # An indication that normalizes to the empty string can never be corroborated -> dropped.
+    ev = _supported_evidence("Indicated for hypercholesterolemia.")
+    assert build_approved_treats_rows(_cases("!!!"), ev, {"12345": {"EXAMPLESTATIN"}}, disease_map) == []
+
+
+def test_multi_ingredient_supporting_set_yields_faers_fallback_subject(disease_map: dict[str, dict[str, str]]) -> None:
+    # The only corroborating set is a combination product -> no DailyMed (name, UNII) adoption;
+    # the subject is the FAERS-reported ingredient text with an empty CURIE.
+    ev = DailyMedEvidence(
+        approval_sets={"12345": {"SET-COMBO"}},
+        approval_display={"12345": "012345"},
+        set_ingredient={"SET-COMBO": ("ComponentA", "UNII:A")},
+        active_ingredients_by_set={"SET-COMBO": [("ComponentA", "UNII:A"), ("ComponentB", "UNII:B")]},
+        indication_docs={"SET-COMBO": [("SET-COMBO#34067-9", "Indicated for hypercholesterolemia.")]},
+    )
+    rows = build_approved_treats_rows(_cases("hypercholesterolemia"), ev, {"12345": {"COMPONENTA"}}, disease_map)
+    assert len(rows) == 1
+    assert rows[0]["subject_text"] == "Examplestatin"  # FAERS fallback (ingredient column)
+    assert rows[0]["subject_curie"] == ""

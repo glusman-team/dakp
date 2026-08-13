@@ -96,9 +96,10 @@ def test_dag_task_graph(dakp_build) -> None:
     assert upstream("extract_faers") == {"acquire_faers"}
     assert upstream("extract_drugsfda") == {"acquire_drugsfda"}
 
-    # Shapers join the extracts (treatment: dm+drugsfda+faers; uses: faers+dm; contraindication: dm + NER models).
+    # Shapers join the extracts (treatment: dm+drugsfda+faers; uses: faers+dm + the produced
+    # approved-treats table for the approval-status cross-reference; contraindication: dm + NER models).
     assert upstream("shape_treatment_tables") == {"extract_dailymed", "extract_drugsfda", "extract_faers"}
-    assert upstream("shape_faers_use_tables") == {"extract_faers", "extract_dailymed"}
+    assert upstream("shape_faers_use_tables") == {"extract_faers", "extract_dailymed", "shape_treatment_tables"}
     assert upstream("shape_contraindication_tables") == {"extract_dailymed", "acquire_ner_models"}
 
     shapes = {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"}

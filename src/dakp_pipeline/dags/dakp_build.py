@@ -220,17 +220,25 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                 stats(logger, "task shape_treatment_tables", output_refs=len(out))
                 return _refs_to_xcom(out)
 
-        @task(doc_md="Shape FAERS observed-use assertions from FAERS cases with DailyMed support refs.")
+        @task(
+            doc_md="Shape FAERS observed-use assertions from FAERS cases + DailyMed refs, cross-referenced with the approved-treats table for the approval status."
+        )
         def shape_faers_use_tables(
-            faers_ext: Any, dm_ext: Any
+            faers_ext: Any, dm_ext: Any, approved: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline.assertions import observed_uses
 
             ctx = _ctx()
             with step(logger, "task shape_faers_use_tables"):
-                faers_refs, dailymed_refs = _refs_from_xcom(faers_ext), _refs_from_xcom(dm_ext)
-                stats(logger, "task shape_faers_use_tables", faers_refs=len(faers_refs), dailymed_refs=len(dailymed_refs))
-                out = observed_uses.transform([*faers_refs, *dailymed_refs], ctx)
+                faers_refs, dailymed_refs, approved_refs = _refs_from_xcom(faers_ext), _refs_from_xcom(dm_ext), _refs_from_xcom(approved)
+                stats(
+                    logger,
+                    "task shape_faers_use_tables",
+                    faers_refs=len(faers_refs),
+                    dailymed_refs=len(dailymed_refs),
+                    approved_refs=len(approved_refs),
+                )
+                out = observed_uses.transform([*faers_refs, *dailymed_refs, *approved_refs], ctx)
                 stats(logger, "task shape_faers_use_tables", output_refs=len(out))
                 return _refs_to_xcom(out)
 
@@ -263,9 +271,12 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                 stats(logger, "task shape_contraindication_tables", output_refs=len(out))
                 return _refs_to_xcom(out)
 
+        # The observed-uses task consumes the produced approved-treats table (approval-status
+        # cross-reference), so it runs after shape_treatment_tables.
+        approved = shape_treatment_tables(extracts.dailymed, extracts.drugsfda, extracts.faers)
         return AssertionOutputs(
-            approved=shape_treatment_tables(extracts.dailymed, extracts.drugsfda, extracts.faers),
-            uses=shape_faers_use_tables(extracts.faers, extracts.dailymed),
+            approved=approved,
+            uses=shape_faers_use_tables(extracts.faers, extracts.dailymed, approved),
             contraindications=shape_contraindication_tables(extracts.dailymed, ner_models),
         )
 
