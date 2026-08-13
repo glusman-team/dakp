@@ -139,11 +139,15 @@ qualifier pointing at the object adds no disambiguation.
 
 ## Recommendation
 
-### Step 1 (immediate): Remove the tautological FAERS `disease_context_qualifier`
+### Step 1 (immediate): Remove the tautological FAERS `disease_context_qualifier` — DONE
 
 It encodes the object column, adding no information and potentially confusing
 downstream consumers. The `applied_to_treat` predicate + `knowledge_level: observation`
 express the semantics without it.
+
+Landed: `_TABLE_QUALIFIERS` is now empty for every table, and no config emits a
+`qualifiers` block. The generator still supports column-encoded qualifiers (covered by
+`test_declared_qualifier_emits_a_column_encoding`) for Step 3.
 
 **Files to modify:**
 - `src/dakp_pipeline/tablassert.py`: set `_TABLE_QUALIFIERS["faers_applied_to_treat_assertions"] = ()`, update the docstring comment
