@@ -72,7 +72,47 @@ def test_single_inline_valid_edge_passes() -> None:
             "knowledge_level": "knowledge_assertion",
             "agent_type": "manual_validation_of_automated_agent",
             "primary_knowledge_source": "infores:multiomics-drugapprovals",
-            "sources": [{"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:dailymed", "infores:faers"]}],
+            "sources": [
+                {"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:dailymed", "infores:faers", "infores:ema"]}
+            ],
+        }
+    ]
+    assert validate_kgx(nodes, edges).ok is True
+
+
+def test_treats_edge_with_ema_only_upstream_passes() -> None:
+    """An EMA-derived treats edge carries the ``infores:ema`` chain instead of the FDA one."""
+    nodes = [{"id": "CHEBI:1", "name": "drug", "category": ["biolink:Drug"]}, {"id": "MONDO:1", "name": "disease", "category": ["biolink:Disease"]}]
+    edges = [
+        {
+            "id": "e1",
+            "subject": "CHEBI:1",
+            "predicate": "biolink:treats",
+            "object": "MONDO:1",
+            "category": ["biolink:EntityToDiseaseAssociation"],
+            "knowledge_level": "knowledge_assertion",
+            "agent_type": "manual_validation_of_automated_agent",
+            "primary_knowledge_source": "infores:multiomics-drugapprovals",
+            "sources": [{"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:ema"]}],
+        }
+    ]
+    assert validate_kgx(nodes, edges).ok is True
+
+
+def test_treats_edge_with_epar_only_upstream_passes() -> None:
+    """An EPAR indication-mined treats edge carries the ``infores:epar`` chain."""
+    nodes = [{"id": "CHEBI:1", "name": "drug", "category": ["biolink:Drug"]}, {"id": "MONDO:1", "name": "disease", "category": ["biolink:Disease"]}]
+    edges = [
+        {
+            "id": "e1",
+            "subject": "CHEBI:1",
+            "predicate": "biolink:treats",
+            "object": "MONDO:1",
+            "category": ["biolink:EntityToDiseaseAssociation"],
+            "knowledge_level": "knowledge_assertion",
+            "agent_type": "manual_validation_of_automated_agent",
+            "primary_knowledge_source": "infores:multiomics-drugapprovals",
+            "sources": [{"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:epar"]}],
         }
     ]
     assert validate_kgx(nodes, edges).ok is True

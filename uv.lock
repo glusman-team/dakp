@@ -932,13 +932,14 @@ wheels = [
 
 [[package]]
 name = "dakp-pipeline"
-version = "0.1.0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "apache-airflow" },
     { name = "aria2" },
     { name = "blake3" },
     { name = "cyclopts" },
+    { name = "fastexcel" },
     { name = "gliner" },
     { name = "huggingface-hub" },
     { name = "loguru" },
@@ -965,6 +966,7 @@ requires-dist = [
     { name = "aria2", specifier = ">=0.0.1b0" },
     { name = "blake3", specifier = ">=1.0.0" },
     { name = "cyclopts", specifier = ">=4" },
+    { name = "fastexcel", specifier = ">=0.20.2" },
     { name = "gliner", specifier = ">=0.1.15" },
     { name = "huggingface-hub", specifier = ">=0.24" },
     { name = "loguru", specifier = ">=0.7.3" },

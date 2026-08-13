@@ -12,7 +12,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from dakp_pipeline.extract import drugsfda_products, faers_ascii, spl_xml
+from dakp_pipeline.extract import drugsfda_products, ema_registry, faers_ascii, spl_xml
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
@@ -62,6 +62,11 @@ def drugsfda_refs(ctx: TaskContext) -> list[ArtifactRef]:
     return drugsfda_products.extract(
         [_ref(FIXTURE_ROOT / "drugsfda" / "drugsfda_products.tsv"), _ref(FIXTURE_ROOT / "drugsfda" / "drugsfda_applications.tsv")], ctx
     )
+
+
+@pytest.fixture
+def ema_refs(ctx: TaskContext) -> list[ArtifactRef]:
+    return ema_registry.extract([_ref(FIXTURE_ROOT / "ema" / "medicines-output-medicines-report_en.xlsx")], ctx)
 
 
 @pytest.fixture

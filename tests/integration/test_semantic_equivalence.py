@@ -285,6 +285,10 @@ def test_contract_edge_families_match_dingo_predicates() -> None:
     """translator.EDGE_FAMILIES publishes exactly the three DINGO predicates + upstream chains."""
     assert tuple(translator.EDGE_FAMILIES) == (TREATS, APPLIED_TO_TREAT, CONTRAINDICATED_IN)
     assert translator.EDGE_FAMILIES[TREATS].required_upstream == frozenset({"infores:dailymed", "infores:faers"})
+    # EMA centrally-authorised rows union into treats with their own accepted upstream chains
+    # (MeSH-area rows: infores:ema; EPAR indication-mined rows: infores:epar).
+    assert translator.EDGE_FAMILIES[TREATS].alternative_upstream == (frozenset({"infores:ema"}), frozenset({"infores:epar"}))
+    assert translator.EDGE_FAMILIES[TREATS].emitted_upstream == frozenset({"infores:dailymed", "infores:faers", "infores:ema", "infores:epar"})
     assert translator.EDGE_FAMILIES[APPLIED_TO_TREAT].required_upstream == frozenset({"infores:faers", "infores:dailymed"})
     assert translator.EDGE_FAMILIES[CONTRAINDICATED_IN].required_upstream == frozenset({"infores:dailymed"})
 

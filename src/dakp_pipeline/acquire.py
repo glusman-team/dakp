@@ -26,7 +26,7 @@ from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.ner import model_cache
 from dakp_pipeline.ner.ner import DEFAULT_MODEL
-from dakp_pipeline.sources import dailymed, drugsfda, faers
+from dakp_pipeline.sources import dailymed, drugsfda, ema, faers
 
 #: Media type for a cached NER model directory (a tree artifact, not a single file).
 _MODEL_DIR_MEDIA_TYPE = "application/x-directory"
@@ -51,6 +51,11 @@ def acquire_faers(ctx: TaskContext) -> list[ArtifactRef]:
 def acquire_drugsfda(ctx: TaskContext) -> list[ArtifactRef]:
     """Acquire the Drugs@FDA data-files ZIP over the network."""
     return drugsfda.fetch(ctx)
+
+
+def acquire_ema(ctx: TaskContext) -> list[ArtifactRef]:
+    """Acquire the EMA centrally-authorised medicines xlsx over the network."""
+    return ema.fetch(ctx)
 
 
 # --- NER model acquisition ------------------------------------------------------
@@ -102,7 +107,7 @@ def acquire_ner_models(
 def acquire_all(ctx: TaskContext, *, downloader: model_cache.Downloader | None = None) -> dict[str, list[ArtifactRef]]:
     """Run every acquisition, bounded by :data:`_DOWNLOAD_CONCURRENCY`; return keyed manifests.
 
-    The four acquisitions are independent and content-addressed (order-independent hashes), so
+    The five acquisitions are independent and content-addressed (order-independent hashes), so
     running them on a bounded thread pool is deterministic. The ``downloader`` is forwarded to
     the NER-model acquisition (the source fetchers own their own monkeypatchable network
     boundaries). Useful as the single acquisition entry point for the DAG + test harness.
@@ -110,6 +115,7 @@ def acquire_all(ctx: TaskContext, *, downloader: model_cache.Downloader | None =
     jobs: dict[str, Callable[[], list[ArtifactRef]]] = {
         "dailymed": lambda: acquire_dailymed(ctx),
         "drugsfda": lambda: acquire_drugsfda(ctx),
+        "ema": lambda: acquire_ema(ctx),
         "faers": lambda: acquire_faers(ctx),
         "ner_models": lambda: acquire_ner_models(ctx, downloader=downloader),
     }
@@ -125,6 +131,7 @@ __all__ = [
     "acquire_all",
     "acquire_dailymed",
     "acquire_drugsfda",
+    "acquire_ema",
     "acquire_faers",
     "acquire_ner_models",
     "default_ner_models",

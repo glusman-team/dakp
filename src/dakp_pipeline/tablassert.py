@@ -17,12 +17,13 @@ The configs match the ACTUAL current Tablassert schema (verified against
 * ``source.kind: text`` with a tab ``delimiter`` and the uncompressed assertion ``.tsv``
   as ``source.local``. ``source.url`` is required by the model and becomes the edge
   ``sources[].source_record_urls`` provenance, so each table records its REAL upstream
-  dataset URL (:data:`_TABLE_SOURCE_URLS`) — never a placeholder. Tablassert 8.2.1+ models
+  dataset URL(s) (:data:`_TABLE_SOURCE_URLS`) — never a placeholder. Tablassert 8.2.1+ models
   ``source.url`` as a ``list`` of one or more URLs per section and DAKP assertion rows
-  aggregate across quarters, releases, and applications, so no per-row URL is truthful at
-  row granularity; the single dataset-level URL is the honest record, and per-row precision
+  aggregate across quarters, releases, registries, and applications, so no per-row URL is
+  truthful at row granularity; the dataset-level URL list is the honest record (approved-treats
+  lists both the DailyMed full-release index and the EMA medicines xlsx), and per-row precision
   stays on the edge via ``has_evidence`` (SPL set ids) and ``approval_ids`` (FDA application
-  numbers);
+  numbers / EMA product numbers);
 * column-encoded ``statement.subject`` / ``statement.object`` / ``statement.predicate``
   with drug / disease ``prioritize`` categories plus a HARD category allow-list each:
   ``avoid`` is emitted as the sorted complement of the side's allow-list over the installed
@@ -98,6 +99,7 @@ from dakp_pipeline.io.manifests import OperationBlock
 from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.sources import dailymed as dailymed_source
+from dakp_pipeline.sources import ema as ema_source
 from dakp_pipeline.sources import faers as faers_source
 
 # --- Translator provenance constants (match dakp_pipeline.assertions + ../DINGO) ----
@@ -113,21 +115,22 @@ GRAPH_NAME = "dakp"
 #: writes the real ``ctx.params["fullmap"]`` here for real runs. DAKP never downloads a fullmap.
 FULLMAP_DEFAULT = ".fullmap"
 
-#: Real upstream dataset URL recorded as each table's ``source.url`` — the constants the
+#: Real upstream dataset URLs recorded as each table's ``source.url`` — the constants the
 #: acquisition layer itself uses, so provenance can never drift from what was downloaded.
 #: Tablassert turns ``source.url`` into the primary ``sources[]`` entry's
-#: ``source_record_urls`` on every edge of the table. Approved-treats and contraindication
-#: rows are extracted from DailyMed SPL releases (the DailyMed full-release index); FAERS
-#: observed-use rows from the FAERS quarterly ASCII extracts (the FDA quarterly-data listing).
-_TABLE_SOURCE_URLS: dict[str, str] = {
-    "approved_treats_assertions": dailymed_source.FULL_RELEASE_INDEX_URL,
-    "faers_applied_to_treat_assertions": faers_source.FDA_FAERS_INDEX_URL,
-    "contraindication_assertions": dailymed_source.FULL_RELEASE_INDEX_URL,
+#: ``source_record_urls`` on every edge of the table. Approved-treats rows come from DailyMed SPL
+#: releases (the DailyMed full-release index) AND the EMA medicines registry (the fixed-name xlsx
+#: bulk export); contraindication rows from DailyMed; FAERS observed-use rows from the FAERS
+#: quarterly ASCII extracts (the FDA quarterly-data listing).
+_TABLE_SOURCE_URLS: dict[str, tuple[str, ...]] = {
+    "approved_treats_assertions": (dailymed_source.FULL_RELEASE_INDEX_URL, ema_source.EMA_MEDICINES_URL),
+    "faers_applied_to_treat_assertions": (faers_source.FDA_FAERS_INDEX_URL,),
+    "contraindication_assertions": (dailymed_source.FULL_RELEASE_INDEX_URL,),
 }
 GRAPH_DESCRIPTION = (
-    "Drug Approvals Knowledge Provider: FDA-approved treatment relationships, "
+    "Drug Approvals Knowledge Provider: FDA/EMA-approved treatment relationships, "
     "FAERS-observed applied-to-treat uses, and contraindications text-mined from "
-    "DailyMed, modeled from DailyMed, Drugs@FDA, and FAERS."
+    "DailyMed, modeled from DailyMed, Drugs@FDA, FAERS, and the EMA medicines registry."
 )
 
 # Canonical emission order for the three assertion tables.
@@ -136,11 +139,19 @@ _TABLE_ORDER = ("approved_treats_assertions", "faers_applied_to_treat_assertions
 # assertion table -> (config basename, predicate, upstream infores chain, knowledge_level,
 # agent_type). Upstream order + knowledge_level match the DINGO translator-ingest provenance
 # contract (../DINGO/tests/unit/ingests/dakp/test_dakp.py): treats = knowledge_assertion over
-# dailymed|faers; applied_to_treat = observation over faers|dailymed (current FAERS
+# dailymed|faers|ema|epar (EMA centrally-authorised medicines — MeSH-area rows and EPAR
+# indication-mined rows — union into the same table);
+# applied_to_treat = observation over faers|dailymed (current FAERS
 # label/status behavior); contraindicated_in = knowledge_assertion text-mined from DailyMed
 # (dailymed upstream, text_mining_agent — matches the DAKP RIG).
 _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
-    "approved_treats_assertions": ("approved_treats", "treats", ("infores:dailymed", "infores:faers"), "knowledge_assertion", AGENT_TYPE),
+    "approved_treats_assertions": (
+        "approved_treats",
+        "treats",
+        ("infores:dailymed", "infores:faers", "infores:ema", "infores:epar"),
+        "knowledge_assertion",
+        AGENT_TYPE,
+    ),
     "faers_applied_to_treat_assertions": (
         "faers_applied_to_treat",
         "applied_to_treat",
@@ -345,7 +356,7 @@ def table_config(table: str) -> dict[str, Any]:
     if qualifiers:  # no backing column => no ``qualifiers`` key (Tablassert treats absent and empty alike; keep configs minimal)
         statement["qualifiers"] = qualifiers
     return {
-        "source": {"kind": "text", "local": f"data/tabular/{table}.tsv", "url": [_TABLE_SOURCE_URLS[table]], "delimiter": "\t"},
+        "source": {"kind": "text", "local": f"data/tabular/{table}.tsv", "url": list(_TABLE_SOURCE_URLS[table]), "delimiter": "\t"},
         "statement": statement,
         "provenance": {"override": {"upstream_resource_ids": list(upstream), "knowledge_level": knowledge_level, "agent_type": agent_type}},
         "annotations": annotations,

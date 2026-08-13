@@ -187,7 +187,7 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
         primary_entry = next(entry for entry in sources if entry.get("resource_role") == "primary_knowledge_source")
         assert primary_entry.get("resource_id") == INFORES_DAKP
         family = EDGE_FAMILIES[edge["predicate"]]
-        assert frozenset(primary_entry.get("upstream_resource_ids") or []) == family.required_upstream
+        assert frozenset(primary_entry.get("upstream_resource_ids") or []) == family.emitted_upstream
         record_urls = primary_entry.get("source_record_urls")
         assert isinstance(record_urls, list)
         assert record_urls
@@ -196,7 +196,7 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
             assert "example.invalid" not in url
         # Each upstream infores is its own supporting entry.
         supporting = {entry.get("resource_id") for entry in sources if entry.get("resource_role") == "supporting_data_source"}
-        assert supporting == set(family.required_upstream)
+        assert supporting == set(family.emitted_upstream)
 
 
 def test_dailymed_evidence_lands_where_tablassert_9_1_puts_it(kgx_build: KgxBuild) -> None:

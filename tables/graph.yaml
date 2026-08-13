@@ -1,10 +1,10 @@
 name: dakp
 version: "0.1.0"
 description: >-
-  Drug Approvals Knowledge Provider: FDA-approved treatment
+  Drug Approvals Knowledge Provider: FDA/EMA-approved treatment
   relationships, FAERS-observed applied-to-treat uses, and
   contraindications text-mined from DailyMed, modeled from DailyMed,
-  Drugs@FDA, and FAERS.
+  Drugs@FDA, FAERS, and the EMA medicines registry.
 infores: "infores:multiomics-drugapprovals"
 fullmap: ".fullmap"
 tables:

@@ -16,6 +16,8 @@ from dakp_pipeline.io import schemas
 INFORES_DAKP = "infores:multiomics-drugapprovals"
 INFORES_DAILYMED = "infores:dailymed"
 INFORES_FAERS = "infores:faers"
+INFORES_EMA = "infores:ema"
+INFORES_EPAR = "infores:epar"
 
 KL_ASSERTION = "knowledge_assertion"
 AT_MANUAL = "manual_validation_of_automated_agent"
@@ -47,7 +49,18 @@ def join_pipe(*parts: str) -> str:
     return "|".join(p for p in parts if p)
 
 
-__all__ = ["AT_MANUAL", "INFORES_DAILYMED", "INFORES_DAKP", "INFORES_FAERS", "KL_ASSERTION", "join_pipe", "match_diseases", "row_for"]
+__all__ = [
+    "AT_MANUAL",
+    "INFORES_DAILYMED",
+    "INFORES_DAKP",
+    "INFORES_EMA",
+    "INFORES_EPAR",
+    "INFORES_FAERS",
+    "KL_ASSERTION",
+    "join_pipe",
+    "match_diseases",
+    "row_for",
+]
 
 # Shared evidence helpers (NDA normalization, SPL-support joining, provenance assembly) live in
 # :mod:`dakp_pipeline.assertions.evidence`; import them from there directly.

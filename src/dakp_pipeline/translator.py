@@ -20,7 +20,8 @@ import-safe and monkeypatchable. Three public entry points:
      Disease/PhenotypicFeature object categories, matching ``../DINGO`` ``dakp_rig.yaml``
      ``edge_type_info``;
   5. **source provenance** — the ``infores:multiomics-drugapprovals`` chain plus the upstream
-     infores required per family (dailymed/faers).
+     infores required per family (dailymed/faers/ema for treats, which unions FDA- and
+     EMA-derived rows; dailymed/faers elsewhere).
 
   Problems are returned both as structured :class:`ContractProblem` records (``kgx_problems``)
   and as rendered strings (``problems``) so the existing build summary keeps working.
@@ -30,8 +31,9 @@ import-safe and monkeypatchable. Three public entry points:
   (allowing improved coverage and improved mappings). The invariants are the
   family/provenance/label contracts the legacy DAKP established and the rebuild locks in:
 
-  * ``biolink:treats`` — FDA-approved condition assertions: ``clinical_approval_status`` is
-    ``approved_for_condition`` with DailyMed **and** FAERS upstream.
+  * ``biolink:treats`` — FDA/EMA-approved condition assertions: ``clinical_approval_status`` is
+    ``approved_for_condition`` with DailyMed **and** FAERS upstream (FDA-derived rows), EMA
+    upstream (MeSH-area registry rows), or EPAR upstream (indication-mined rows).
   * ``biolink:applied_to_treat`` — FAERS-observed use without approval: ``clinical_approval_status``
     is the biolink-valid ``not_provided`` (FAERS makes no approval claim; the legacy
     ``observed_use`` label is not a ``ClinicalApprovalStatusEnum`` member) with FAERS as the
@@ -62,6 +64,8 @@ from dakp_pipeline.logging_setup import logger, stats
 INFORES_DAKP = "infores:multiomics-drugapprovals"
 INFORES_DAILYMED = "infores:dailymed"
 INFORES_FAERS = "infores:faers"
+INFORES_EMA = "infores:ema"
+INFORES_EPAR = "infores:epar"
 
 BIOLINK_PREFIX = "biolink:"
 
@@ -86,15 +90,30 @@ PREDICATE_CONTRAINDICATED_IN = "biolink:contraindicated_in"
 
 @dataclass(frozen=True)
 class EdgeFamily:
-    """One DAKP edge family: its predicate and the upstream infores it must carry."""
+    """One DAKP edge family: its predicate and the upstream infores it must carry.
+
+    ``alternative_upstream`` lists acceptable per-edge upstream chains BEYOND the canonical
+    ``required_upstream``: the treats family unions EMA centrally-authorised rows, so a treats
+    edge is provenance-valid with the FDA ``dailymed|faers`` chain, the ``infores:ema`` chain
+    (MeSH therapeutic-area rows), or the ``infores:epar`` chain (EPAR indication-mined rows);
+    the Tablassert table-level override stamps the union of all of them on emitted KGX edges.
+    """
 
     predicate: str
     required_upstream: frozenset[str]
+    alternative_upstream: tuple[frozenset[str], ...] = ()
+
+    @property
+    def emitted_upstream(self) -> frozenset[str]:
+        """The full upstream chain the Tablassert override stamps on every edge of the family."""
+        return self.required_upstream | frozenset().union(*self.alternative_upstream or (frozenset(),))
 
 
 # Insertion order is the canonical family order (treats, applied_to_treat, contraindicated_in).
 EDGE_FAMILIES: dict[str, EdgeFamily] = {
-    PREDICATE_TREATS: EdgeFamily(PREDICATE_TREATS, frozenset({INFORES_DAILYMED, INFORES_FAERS})),
+    PREDICATE_TREATS: EdgeFamily(
+        PREDICATE_TREATS, frozenset({INFORES_DAILYMED, INFORES_FAERS}), alternative_upstream=(frozenset({INFORES_EMA}), frozenset({INFORES_EPAR}))
+    ),
     PREDICATE_APPLIED_TO_TREAT: EdgeFamily(PREDICATE_APPLIED_TO_TREAT, frozenset({INFORES_FAERS, INFORES_DAILYMED})),
     PREDICATE_CONTRAINDICATED_IN: EdgeFamily(PREDICATE_CONTRAINDICATED_IN, frozenset({INFORES_DAILYMED})),
 }
@@ -329,7 +348,7 @@ def _check_edge(
         if family is not None:
             required = family.required_upstream | {INFORES_DAKP}
             missing = sorted(required - infores)
-            if missing:
+            if missing and not any(alternative <= infores for alternative in family.alternative_upstream):
                 problems.append(
                     ContractProblem(
                         MISSING_PROVENANCE, "edge", entity_id, "sources", f"edge {entity_id} missing provenance infores for {predicate}: {missing}"
@@ -375,18 +394,29 @@ def validate_kgx(nodes: Iterable[Mapping[str, Any]], edges: Iterable[Mapping[str
 
 @dataclass(frozen=True)
 class FamilyInvariant:
-    """The legacy provenance/label contract one edge family must preserve."""
+    """The legacy provenance/label contract one edge family must preserve.
+
+    ``alternative_upstream`` lists acceptable per-row upstream chains BEYOND the canonical
+    ``required_upstream``: the treats family unions EMA centrally-authorised rows, which carry
+    ``infores:ema`` (MeSH-area rows) or ``infores:epar`` (EPAR indication-mined rows) instead of
+    the FDA ``dailymed|faers`` chain.
+    """
 
     predicate: str
     required_upstream: frozenset[str]
     clinical_approval_status: str | None  # required value, or None when unconstrained
     knowledge_level: str | None
+    alternative_upstream: tuple[frozenset[str], ...] = ()
 
 
 # Insertion order is the canonical family order.
 FAMILY_INVARIANTS: dict[str, FamilyInvariant] = {
     PREDICATE_TREATS: FamilyInvariant(
-        PREDICATE_TREATS, frozenset({INFORES_DAILYMED, INFORES_FAERS}), "approved_for_condition", "knowledge_assertion"
+        PREDICATE_TREATS,
+        frozenset({INFORES_DAILYMED, INFORES_FAERS}),
+        "approved_for_condition",
+        "knowledge_assertion",
+        alternative_upstream=(frozenset({INFORES_EMA}), frozenset({INFORES_EPAR})),
     ),
     PREDICATE_APPLIED_TO_TREAT: FamilyInvariant(PREDICATE_APPLIED_TO_TREAT, frozenset({INFORES_FAERS}), "not_provided", "statistical_association"),
     PREDICATE_CONTRAINDICATED_IN: FamilyInvariant(PREDICATE_CONTRAINDICATED_IN, frozenset({INFORES_DAILYMED}), None, "knowledge_assertion"),
@@ -454,7 +484,7 @@ def check_rows(rows: Iterable[Mapping[str, object]]) -> RegressionReport:
 
         upstream = {token for token in str(row.get("upstream_resource_ids") or "").split("|") if token}
         missing = sorted(invariant.required_upstream - upstream)
-        if missing:
+        if missing and not any(alternative <= upstream for alternative in invariant.alternative_upstream):
             _record(offenders, predicate, "upstream_provenance", f"missing upstream infores {missing}")
 
         if invariant.clinical_approval_status is not None:

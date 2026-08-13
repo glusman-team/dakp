@@ -57,6 +57,7 @@ dependencies = [
     # a CUDA 12.6 runtime runs fine on the 12.8 driver. Hence torch 2.8.x from the cu126 index.
     # See [tool.uv.sources] / [[tool.uv.index]] below.
     "torch>=2.8,<2.9",
+    "fastexcel>=0.20.2",
 ]
 
 [dependency-groups]

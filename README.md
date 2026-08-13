@@ -2,7 +2,8 @@
 
 DAKP is a single, reproducible pipeline that builds three Translator assertion tables —
 **approved-treats**, **observed-use**, and **contraindication** — from DailyMed, Drugs@FDA,
-and FAERS, then hands them to [Tablassert](https://pypi.org/project/tablassert/) for KGX
+FAERS, and the EMA centrally-authorised medicines registry, then hands them to
+[Tablassert](https://pypi.org/project/tablassert/) for KGX
 modeling. Acquisition is always **real**; "offline" is only ever a test concern (the test
 suite monkeypatches the HTTP layer and runs on committed fixtures).
 
@@ -14,7 +15,8 @@ One pipeline, five stages:
 acquire ─▶ extract ─▶ NER ─▶ aggregate ─▶ Tablassert KGX handoff
 ```
 
-- **acquire** — real downloaders for DailyMed full releases, Drugs@FDA, and FAERS quarterly
+- **acquire** — real downloaders for DailyMed full releases, Drugs@FDA, the EMA medicines
+  registry, and FAERS quarterly
   extracts; content-addressed (BLAKE3), idempotent, manifest-recorded. Drugs@FDA and FAERS
   download via the bundled **aria2c** binary (multi-connection; the PyPI `aria2` wheel — no
   separate install), falling back to stdlib HTTP when aria2c is unavailable or `DAKP_ARIA2=0`;
@@ -22,12 +24,19 @@ acquire ─▶ extract ─▶ NER ─▶ aggregate ─▶ Tablassert KGX handoff
   releases are freshness-gated: a stored release fetched within `dailymed_max_age_days`
   (default **7** days) is reused with zero ZIP downloads — DailyMed replaces its fixed-name
   full-release ZIPs in place, so without the gate every new release re-downloads the whole
-  snapshot (~tens of GB). Drugs@FDA uses the same seven-day cache window via `drugsfda_max_age_days`. `force` bypasses both gates; `<= 0` disables them.
+  snapshot (~tens of GB). Drugs@FDA uses the same seven-day cache window via `drugsfda_max_age_days`, and the EMA
+  medicines xlsx (a fixed-name export regenerated nightly) via `ema_max_age_days`. `force` bypasses all gates; `<= 0` disables them.
 - **extract** — the heavy parsers run as **native Go bundle workers** (an Airflow Go SDK bundle
-  under [`go/`](./go)); the DAG's `extract_*` tasks are `@task.stub(queue="golang")`
-  declarations the coordinator forks per task instance.
+  under [`go/`](./go)); the DAG's DailyMed/FAERS/Drugs@FDA `extract_*` tasks are
+  `@task.stub(queue="golang")` declarations the coordinator forks per task instance. The EMA
+  registry parse is a plain Python task (polars reads the ~1 MB xlsx in-process): it locates
+  the real header row below the export's banner lines and keeps only **Authorised**, **Human**
+  medicines.
 - **NER** — one composite DiseaseNER backend (curated gazetteer + GLiNER zero-shot) that mines
-  disease/phenotype mentions from the DailyMed contraindication sections. Emits mentions only —
+  disease/phenotype mentions from the DailyMed contraindication sections and from the EMA
+  registry's free-text "Therapeutic indication" column (the mined rows join approved-treats
+  with `infores:epar` provenance; the registry's MeSH therapeutic-area rows carry
+  `infores:ema`). Emits mentions only —
   never ontology CURIEs.
 - **aggregate** — joins the extracted tables and NER mentions into three uncompressed TSV
   assertion tables.

@@ -60,9 +60,16 @@ AGENT_TYPE = "manual_validation_of_automated_agent"
 
 # assertion table -> (config basename, predicate, upstream chain, knowledge_level, agent_type):
 # the DINGO translator-ingest provenance contract (../DINGO/tests/unit/ingests/dakp/test_dakp.py).
-# Contraindications are text-mined from DailyMed (dailymed upstream, text_mining_agent).
+# Contraindications are text-mined from DailyMed (dailymed upstream, text_mining_agent);
+# approved-treats unions FDA (DailyMed/FAERS) and EMA registry rows.
 EXPECTED_PROVENANCE = {
-    "approved_treats_assertions": ("approved_treats", "treats", ["infores:dailymed", "infores:faers"], "knowledge_assertion", AGENT_TYPE),
+    "approved_treats_assertions": (
+        "approved_treats",
+        "treats",
+        ["infores:dailymed", "infores:faers", "infores:ema", "infores:epar"],
+        "knowledge_assertion",
+        AGENT_TYPE,
+    ),
     "faers_applied_to_treat_assertions": (
         "faers_applied_to_treat",
         "applied_to_treat",
@@ -103,12 +110,15 @@ EXPECTED_ANNOTATIONS = {
     },
 }
 
-# assertion table -> the REAL upstream dataset URL recorded as ``source.url`` (never a placeholder;
-# Tablassert emits it as the edge ``sources[].source_record_urls``).
+# assertion table -> the REAL upstream dataset URLs recorded as ``source.url`` (never placeholders;
+# Tablassert emits them as the edge ``sources[].source_record_urls``).
 EXPECTED_SOURCE_URLS = {
-    "approved_treats_assertions": "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm",
-    "faers_applied_to_treat_assertions": "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html",
-    "contraindication_assertions": "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm",
+    "approved_treats_assertions": [
+        "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm",
+        "https://www.ema.europa.eu/en/documents/report/medicines-output-medicines-report_en.xlsx",
+    ],
+    "faers_applied_to_treat_assertions": ["https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"],
+    "contraindication_assertions": ["https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"],
 }
 
 
@@ -187,8 +197,8 @@ def test_table_config_structure(table: str) -> None:
     assert source["kind"] == "text"
     assert source["local"] == f"data/tabular/{table}.tsv"
     assert source["delimiter"] == "\t"
-    # The real upstream dataset URL (a list since Tablassert 8.2.1) — never the example.invalid placeholder.
-    assert source["url"] == [EXPECTED_SOURCE_URLS[table]]
+    # The real upstream dataset URLs (a list since Tablassert 8.2.1) — never the example.invalid placeholder.
+    assert source["url"] == EXPECTED_SOURCE_URLS[table]
     assert all("example.invalid" not in url for url in source["url"])
 
     # column-encoded subject/object with drug / disease prioritization + hard allow-list guards.
