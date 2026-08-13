@@ -212,16 +212,20 @@ OBJECT_PRIORITIZE = ("Disease", "PhenotypicFeature")
 # classes, frequency/onset/sex/stage/... to other clinical classes). Qualifier values are
 # entity-resolved through the fullmap and an unmatched value drops the whole edge, so a table whose
 # columns back no qualifier entity gets NO qualifiers (an empty tuple), never a fabricated constant.
+# No DAKP table backs one today: a qualifier must carry an entity DISTINCT from the node it
+# qualifies to say anything, and every assertion column that resolves to a disease IS the object.
 _TABLE_QUALIFIERS: dict[str, tuple[tuple[str, str], ...]] = {
     # ``clinical_approval_status`` ("approved_for_condition") is the Biolink ClinicalApprovalStatusEnum
     # ASSOCIATION slot, not a qualifier slot — no ``Qualifiers`` member expresses approval status, so
     # it stays an annotation; ``approval_ids`` / SPL ids are provenance strings, not entities.
     "approved_treats_assertions": (),
-    # FAERS rows are adverse-event case reports: the applied-to-treat use was observed in the disease
-    # context of the reported indication, so the edge carries ``disease_context_qualifier`` encoded
-    # from the object column (the adverse event itself — FAERS ``effects`` — is aggregated away and
-    # not part of the assertion contract; re-point this qualifier at it if that ever lands).
-    "faers_applied_to_treat_assertions": (("disease_context_qualifier", OBJECT_COLUMN),),
+    # The indication (object) is the only disease on a FAERS row, so a ``disease_context_qualifier``
+    # encoded from the object column just restates the object — biolink defines it as the condition
+    # a relationship "took place" in, which only informs when it DIFFERS from the object. The
+    # ``applied_to_treat`` predicate + ``knowledge_level: observation`` already carry the semantics.
+    # The adverse event itself (FAERS ``effects``) is aggregated away and not part of the assertion
+    # contract; it is an adverse reaction rather than a disease context, so it is not a substitute.
+    "faers_applied_to_treat_assertions": (),
     # DailyMed section provenance (SPL set / document ids) and a numeric NER ``source_score`` back no
     # qualifier entity.
     "contraindication_assertions": (),
