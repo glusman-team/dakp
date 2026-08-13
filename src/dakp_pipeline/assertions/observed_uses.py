@@ -8,18 +8,27 @@ Aggregation rule (explicit and tested)
 FAERS case rows (``cases.parquet``) are aggregated by ``(drugname, indication)``; ``case_count``
 is the number of **distinct cases** (``primaryid``) reporting that pair (falls back to row count
 when ``primaryid`` is absent). The FAERS ``knowledge_level`` label is preserved from the first
-rebuild (``statistical_association``); ``clinical_approval_status`` is the biolink-valid
-``not_provided`` (see below).
+rebuild (``statistical_association``).
+
+``clinical_approval_status`` cross-references the pair against the approved-treats table (the
+legacy postprocess rule, ``ref/legacy/bin/dakp-postprocess2jsonlBL.py``): ``approved_for_condition``
+when the same (drug, condition) pair has a ``biolink:treats`` row, else ``off_label_use`` — the
+observed use is real-world but not label-approved. ``not_provided`` is emitted only when no
+approved-treats table was available to check against (degraded mode). All three values are
+biolink-valid ``ClinicalApprovalStatusEnum`` members (the legacy ``observed_use`` label never was
+one — the DINGO ingest already coerced it to ``not_provided`` — and would emit biolink-invalid
+edges now that Tablassert >= 8.2 emits the field first-class). The observed-use meaning stays on
+the edge via ``predicate = applied_to_treat`` + ``knowledge_level = observation`` (config override).
+
+Pair matching is case/punctuation-insensitive normalized text on both sides
+(:func:`~dakp_pipeline.ner.dictionary.normalize_text`). Limitation: observed-uses subjects are raw
+FAERS drugnames while approved-treats subjects are DailyMed ingredient text, so name variants
+("Advil" vs "Ibuprofen") MISS and read as ``off_label_use`` for actually-approved pairs — the
+same caveat the legacy pipeline carried.
 
 Provenance: DAKP aggregates FAERS primary observations with DailyMed support; FAERS is the
 primary upstream source, DailyMed the supporting one. Object CURIEs come from the lexical disease
 baseline; subjects carry no CURIE (FAERS gives no drug id here). Canonical mapping is later.
-
-``clinical_approval_status`` is ``not_provided``: a FAERS observed use makes no approval claim,
-and under Tablassert >= 8.2 the field is a first-class ``ClinicalApprovalStatusEnum`` edge field,
-so the legacy ``observed_use`` label (never an enum member — the DINGO ingest already coerced it
-to ``not_provided``) would emit biolink-invalid edges. The observed-use meaning stays on the edge
-via ``predicate = applied_to_treat`` + ``knowledge_level = observation`` (config override).
 """
 
 from __future__ import annotations
@@ -30,15 +39,21 @@ from collections.abc import Mapping
 import polars as pl
 
 from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_FAERS, join_pipe, match_diseases, row_for
-from dakp_pipeline.assertions.evidence import find_faers_cases, write_assertion_table
+from dakp_pipeline.assertions.evidence import find_faers_cases, find_table, write_assertion_table
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, stats, step
+from dakp_pipeline.ner.dictionary import normalize_text
 
 _TABLE = "faers_applied_to_treat_assertions"
 _PREDICATE = "biolink:applied_to_treat"
-#: FAERS carries no approval claim; ``observed_use`` is not a ClinicalApprovalStatusEnum member
-#: and would fail biolink validation now that Tablassert >= 8.2 emits the field first-class.
-_STATUS = "not_provided"
+#: The (drug, condition) pair has an approved-treats row: the observed use IS the approved use.
+_STATUS_APPROVED = "approved_for_condition"
+#: No approved-treats row for the pair: the FAERS use is observed but not label-approved (the
+#: legacy postprocess off-label signal).
+_STATUS_OFF_LABEL = "off_label_use"
+#: No approved-treats table was available to check against (degraded mode; the only status that
+#: carries no off-label information). All three values are ``ClinicalApprovalStatusEnum`` members.
+_STATUS_NOT_PROVIDED = "not_provided"
 _KNOWLEDGE_LEVEL = "statistical_association"
 
 # FAERS ``indi_pt`` is free text and carries non-disease usage-context values that name no real
@@ -74,11 +89,31 @@ class ObservedUsesShaper:
             # Projection: only the three columns the aggregation needs (the production case table
             # is tens of millions of rows wide; reading all 17 columns wastes gigabytes).
             faers_cases = find_faers_cases(inputs, columns=("drugname", "indication", "primaryid"))
-            rows = build_observed_use_rows(faers_cases, disease_map)
+            approved = find_table(inputs, "approved_treats_assertions.tsv")
+            approved_pairs = _approved_pair_index(approved) if approved is not None else None
+            rows = build_observed_use_rows(faers_cases, disease_map, approved_pairs)
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_faers_applied_to_treat")
 
 
-def build_observed_use_rows(faers_cases: pl.DataFrame | None, disease_map: Mapping[str, Mapping[str, str]]) -> list[dict[str, str]]:
+def _approved_pair_index(approved: pl.DataFrame) -> set[tuple[str, str]]:
+    """Normalized ``(subject_text, object_text)`` pairs of the approved-treats table.
+
+    Matching is normalized text on both sides because the two tables spell drugs differently
+    (observed-uses subjects are raw FAERS drugnames; approved-treats subjects are DailyMed
+    ingredient text), so name variants can still miss — see the module docstring.
+    """
+    pairs: set[tuple[str, str]] = set()
+    for rec in approved.iter_rows(named=True):
+        subject = normalize_text(str(rec.get("subject_text") or ""))
+        obj = normalize_text(str(rec.get("object_text") or ""))
+        if subject and obj:
+            pairs.add((subject, obj))
+    return pairs
+
+
+def build_observed_use_rows(
+    faers_cases: pl.DataFrame | None, disease_map: Mapping[str, Mapping[str, str]], approved_pairs: set[tuple[str, str]] | None = None
+) -> list[dict[str, str]]:
     """Aggregate FAERS drug-indication case counts into applied-to-treat rows (deterministic).
 
     The distinct-case counting runs as a Polars group-by (never Python row iteration), so the
@@ -87,6 +122,10 @@ def build_observed_use_rows(faers_cases: pl.DataFrame | None, disease_map: Mappi
     number of distinct non-empty primaryids plus one per anonymous row (the legacy
     ``_row{index}`` fallback made every primaryid-less row its own observation), and row-count
     when the frame has no primaryid column at all.
+
+    ``approved_pairs`` is the normalized (subject, object) pair set of the approved-treats table
+    (:func:`_approved_pair_index`), or ``None`` when that table is unavailable — in which case
+    every row degrades to ``clinical_approval_status = not_provided``.
     """
     if faers_cases is None:
         return []
@@ -122,6 +161,12 @@ def build_observed_use_rows(faers_cases: pl.DataFrame | None, disease_map: Mappi
             continue  # FAERS placeholder/usage-context indication, not a drug->condition observation
         matches = match_diseases(indication, disease_map)
         obj = matches[0] if matches else {"text": indication, "curie": "", "name": indication, "category": "Disease"}
+        if approved_pairs is None:
+            status = _STATUS_NOT_PROVIDED
+        elif (normalize_text(drug), normalize_text(obj["text"])) in approved_pairs:
+            status = _STATUS_APPROVED
+        else:
+            status = _STATUS_OFF_LABEL
         rows.append(
             row_for(
                 _TABLE,
@@ -135,7 +180,7 @@ def build_observed_use_rows(faers_cases: pl.DataFrame | None, disease_map: Mappi
                 object_name=obj["name"],
                 object_category=obj["category"],
                 case_count=int(rec["distinct_cases"]) + int(rec["anon_rows"]),
-                clinical_approval_status=_STATUS,
+                clinical_approval_status=status,
                 knowledge_level=_KNOWLEDGE_LEVEL,
                 agent_type=AT_MANUAL,
                 primary_knowledge_source=INFORES_DAKP,

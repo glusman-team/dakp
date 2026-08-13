@@ -18,8 +18,13 @@ text. This catches contraindications embedded in the indication section — comm
 DailyMed labels where safety statements appear alongside indication text. The keyword filter
 ensures indication-context diseases (``indicated for X``) are NOT mined as contraindications.
 
-Mentions from both passes are paired with each active ingredient of the set to form a
-``biolink:contraindicated_in`` assertion (ingredient = subject, mention = object). Rows are
+Mentions from both passes are paired with the set's active ingredient to form a
+``biolink:contraindicated_in`` assertion (ingredient = subject, mention = object) — but ONLY for
+**singleton-ingredient sets** (the legacy ``selectActiveIngredientSingletons.pl`` discipline): a
+combination product's contraindication section applies to the mixture, so pairing a mention with
+every one of its actives would over-attribute the contraindication to each component. Sets with
+zero or multiple active ingredients are skipped (``skipped_multi_ingredient_sets`` counts the
+latter). Rows are
 aggregated by ``(subject_text, object_text)``: ``supporting_spl_sets`` and
 ``supporting_spl_documents`` are unioned, ``source_score`` takes the max NER span score.
 
@@ -179,15 +184,16 @@ def build_contraindication_rows(
 ) -> list[dict[str, str]]:
     """Mine DailyMed contraindication + indication sections into assertion rows (deterministic).
 
-    **Pass 1:** For each SPL set with a contraindication section (LOINC ``34070-3``) and ≥1
-    active ingredient, extract disease/phenotype mentions from the full section text.
+    **Pass 1:** For each singleton-ingredient SPL set with a contraindication section (LOINC
+    ``34070-3``), extract disease/phenotype mentions from the full section text.
 
-    **Pass 2:** For each SPL set with an indication section (LOINC ``34067-9``), filter the text
+    **Pass 2:** For each singleton-ingredient SPL set with an indication section (LOINC
+    ``34067-9``), filter the text
     to contraindication-context sentences (via ``keywords`` or :data:`DEFAULT_CONTRA_KEYWORDS`)
     and extract mentions from the filtered text only. This catches contraindications embedded
     in the indication section while avoiding false positives from indication-context diseases.
 
-    Mentions from both passes are paired with active ingredients and aggregated by
+    Mentions from both passes are paired with the set's single active ingredient and aggregated by
     ``(subject_text, object_text)``. When ``devices`` is provided (production multi-GPU), each
     pass is dispatched across half the GPUs concurrently (2+2 split). Output is byte-identical
     regardless of dispatch mode.
@@ -197,17 +203,26 @@ def build_contraindication_rows(
 
     # Pass 1 work items: contraindication sections (all text is relevant).
     work_items_p1: list[tuple[str, str, str]] = []
+    skipped_multi_ingredient = 0
     for set_id in sorted(evidence.contraindication_docs):
-        if not evidence.active_ingredients_by_set.get(set_id):
+        ingredients = evidence.active_ingredients_by_set.get(set_id, [])
+        if not ingredients:
             continue
+        if len(ingredients) > 1:
+            skipped_multi_ingredient += 1
+            continue  # combination product: no single attributable subject (singleton rule)
         for doc_id, text in evidence.contraindication_docs[set_id]:
             work_items_p1.append((set_id, doc_id, text))
 
     # Pass 2 work items: indication sections filtered to contraindication-context sentences.
     work_items_p2: list[tuple[str, str, str]] = []
     for set_id in sorted(evidence.indication_docs):
-        if not evidence.active_ingredients_by_set.get(set_id):
+        ingredients = evidence.active_ingredients_by_set.get(set_id, [])
+        if not ingredients:
             continue
+        if len(ingredients) > 1:
+            skipped_multi_ingredient += 1
+            continue  # combination product: no single attributable subject (singleton rule)
         for doc_id, text in evidence.indication_docs[set_id]:
             filtered = _contraindication_sentences(text, kw)
             if filtered.strip():
@@ -219,6 +234,7 @@ def build_contraindication_rows(
         "shape_contraindications",
         contraindication_sets=len(evidence.contraindication_docs),
         indication_sets=len(evidence.indication_docs),
+        skipped_multi_ingredient_sets=skipped_multi_ingredient,
         pass1_sections=len(work_items_p1),
         pass2_sections=len(work_items_p2),
         sections_to_mine=len(all_work_items),
@@ -238,7 +254,8 @@ def build_contraindication_rows(
             mined[(set_id, doc_id)] = extract_contraindication_diseases(text, ner)
             progress(logger, "shape_contraindications", done, len(all_work_items), every=_MINING_PROGRESS_EVERY)
 
-    # Aggregate mentions into assertion rows (unchanged logic).
+    # Aggregate mentions into assertion rows (unchanged logic; work items are singleton-only,
+    # so each set contributes exactly one subject ingredient).
     aggregated: dict[tuple[str, str], dict[str, Any]] = {}
     mentions_mined = 0
     for set_id, doc_id, _text in all_work_items:

@@ -32,10 +32,11 @@ import-safe and monkeypatchable. Three public entry points:
 
   * ``biolink:treats`` — FDA-approved condition assertions: ``clinical_approval_status`` is
     ``approved_for_condition`` with DailyMed **and** FAERS upstream.
-  * ``biolink:applied_to_treat`` — FAERS-observed use without approval: ``clinical_approval_status``
-    is the biolink-valid ``not_provided`` (FAERS makes no approval claim; the legacy
-    ``observed_use`` label is not a ``ClinicalApprovalStatusEnum`` member) with FAERS as the
-    primary upstream source.
+  * ``biolink:applied_to_treat`` — FAERS-observed use cross-referenced with the approved-treats
+    table: ``clinical_approval_status`` is ``approved_for_condition`` when the pair has a treats
+    counterpart, else ``off_label_use`` (``not_provided`` only in the degraded no-approved-table
+    mode) — all biolink-valid ``ClinicalApprovalStatusEnum`` members (the legacy ``observed_use``
+    label is not one) — with FAERS as the primary upstream source.
   * ``biolink:contraindicated_in`` — contraindication assertions text-mined from DailyMed SPL
     contraindication sections, with DailyMed upstream.
 
@@ -379,16 +380,23 @@ class FamilyInvariant:
 
     predicate: str
     required_upstream: frozenset[str]
-    clinical_approval_status: str | None  # required value, or None when unconstrained
+    clinical_approval_status: frozenset[str] | None  # allowed values, or None when unconstrained
     knowledge_level: str | None
 
 
 # Insertion order is the canonical family order.
 FAMILY_INVARIANTS: dict[str, FamilyInvariant] = {
     PREDICATE_TREATS: FamilyInvariant(
-        PREDICATE_TREATS, frozenset({INFORES_DAILYMED, INFORES_FAERS}), "approved_for_condition", "knowledge_assertion"
+        PREDICATE_TREATS, frozenset({INFORES_DAILYMED, INFORES_FAERS}), frozenset({"approved_for_condition"}), "knowledge_assertion"
     ),
-    PREDICATE_APPLIED_TO_TREAT: FamilyInvariant(PREDICATE_APPLIED_TO_TREAT, frozenset({INFORES_FAERS}), "not_provided", "statistical_association"),
+    # applied_to_treat: approved_for_condition (treats counterpart) / off_label_use (none) /
+    # not_provided (no approved-treats table to check against — degraded mode).
+    PREDICATE_APPLIED_TO_TREAT: FamilyInvariant(
+        PREDICATE_APPLIED_TO_TREAT,
+        frozenset({INFORES_FAERS}),
+        frozenset({"approved_for_condition", "off_label_use", "not_provided"}),
+        "statistical_association",
+    ),
     PREDICATE_CONTRAINDICATED_IN: FamilyInvariant(PREDICATE_CONTRAINDICATED_IN, frozenset({INFORES_DAILYMED}), None, "knowledge_assertion"),
 }
 
@@ -459,8 +467,10 @@ def check_rows(rows: Iterable[Mapping[str, object]]) -> RegressionReport:
 
         if invariant.clinical_approval_status is not None:
             status = str(row.get("clinical_approval_status") or "").strip()
-            if status != invariant.clinical_approval_status:
-                _record(offenders, predicate, "clinical_approval_status", f"expected {invariant.clinical_approval_status!r}, got {status!r}")
+            if status not in invariant.clinical_approval_status:
+                _record(
+                    offenders, predicate, "clinical_approval_status", f"expected one of {sorted(invariant.clinical_approval_status)}, got {status!r}"
+                )
 
         if invariant.knowledge_level is not None:
             knowledge_level = str(row.get("knowledge_level") or "").strip()

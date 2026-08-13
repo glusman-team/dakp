@@ -15,9 +15,10 @@ the DINGO reference ingest (``../DINGO/src/translator_ingest/ingests/dakp/dakp_r
 The guardrails live in :mod:`dakp_pipeline.translator`.
 
 The deliberate, documented *differences* (contraindications NER-mined from DailyMed instead of the
-MEDI/Matrix xlsx; the biolink-valid FAERS ``not_provided`` approval status instead of the legacy
-``observed_use`` label — never a ``ClinicalApprovalStatusEnum`` member, and invalid now that
-Tablassert >= 8.2 emits ``clinical_approval_status`` as a first-class enum-typed edge field;
+MEDI/Matrix xlsx; the FAERS ``clinical_approval_status`` cross-referenced against the
+approved-treats table — ``approved_for_condition`` / ``off_label_use`` — instead of the legacy
+``observed_use`` label, which was never a ``ClinicalApprovalStatusEnum`` member and is invalid now
+that Tablassert >= 8.2 emits ``clinical_approval_status`` as a first-class enum-typed edge field;
 ontology mapping delegated to Tablassert/fullmap) are
 asserted here as the NEW behavior and explained in ``docs/semantic-equivalence.md``.
 """
@@ -198,18 +199,24 @@ def test_treats_clinical_approval_status_is_approved_for_condition(built: dict[s
         assert str(rec.get("agent_type")) == "manual_validation_of_automated_agent"
 
 
-def test_applied_to_treat_preserves_the_faers_label(built: dict[str, Any]) -> None:
-    """applied_to_treat carries a biolink-valid approval status (not_provided / statistical_association).
+def test_applied_to_treat_carries_the_off_label_signal(built: dict[str, Any]) -> None:
+    """applied_to_treat carries the legacy postprocess approval status (approved vs off-label).
 
-    The legacy FAERS ``observed_use`` label is not a ``ClinicalApprovalStatusEnum`` member, so the
-    rebuild records ``not_provided`` (the value the DINGO ingest already coerced it to): a FAERS
-    observed use makes no approval claim. The observed-use semantics stay on the edge via the
-    ``applied_to_treat`` predicate and ``observation`` knowledge level (config override).
+    The legacy postprocess (``dakp-postprocess2jsonlBL.py``) marked each applied_to_treat pair by
+    its treats counterpart: ``approved_for_condition`` when the pair is label-approved, else
+    ``off_label_use`` — both biolink-valid ``ClinicalApprovalStatusEnum`` members (the legacy
+    ``observed_use`` label never was one). Matching is normalized text, so the Advil brand name
+    misses the DailyMed ingredient subject and reads as off-label (the documented name-variant
+    caveat the legacy pipeline carried too).
     """
-    for rec in _family_rows(built["tables"], APPLIED_TO_TREAT):
-        assert str(rec.get("clinical_approval_status")) == "not_provided"
+    rows = _family_rows(built["tables"], APPLIED_TO_TREAT)
+    assert rows
+    for rec in rows:
         assert str(rec.get("knowledge_level")) == "statistical_association"
         assert str(rec.get("agent_type")) == "manual_validation_of_automated_agent"
+    statuses = {(str(rec.get("subject_text")), str(rec.get("object_text"))): str(rec.get("clinical_approval_status")) for rec in rows}
+    assert statuses[("Examplestatin", "hypercholesterolemia")] == "approved_for_condition"
+    assert statuses[("Advil", "headache")] == "off_label_use"  # brand name vs DailyMed ingredient text
 
 
 def test_contraindications_are_knowledge_assertions_text_mined(built: dict[str, Any]) -> None:

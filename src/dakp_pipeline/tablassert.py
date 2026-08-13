@@ -169,7 +169,7 @@ _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
 #   ``number_of_cases`` below (value preserved; ``split_by`` only changes its rendering there from
 #   ``"a|b"`` to ``"a, b"``);
 # * ``clinical_approval_status`` is a first-class enum-typed field on the association class, so its
-#   values must be ``ClinicalApprovalStatusEnum`` members (see the FAERS ``not_provided`` note in
+#   values must be ``ClinicalApprovalStatusEnum`` members (see the enum-membership note in
 #   ``assertions/observed_uses.py``);
 # * ``number_of_cases`` is a real Biolink slot but lives on ``EntityToDiseaseAssociation``, not on
 #   DAKP's class — Tablassert routes it onto the inlined supporting study (value preserved);
