@@ -199,8 +199,8 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
         assert supporting == set(family.required_upstream)
 
 
-def test_dailymed_evidence_lands_where_tablassert_9_1_puts_it(kgx_build: KgxBuild) -> None:
-    """The two DailyMed evidence columns land in their VERIFIED Tablassert >= 9.1 destinations.
+def test_dailymed_evidence_lands_where_tablassert_10_puts_it(kgx_build: KgxBuild) -> None:
+    """The two DailyMed evidence columns land in their VERIFIED Tablassert >= 10 destinations.
 
     ``has_evidence`` is a real multivalued slot of the association class every DAKP edge resolves to
     (``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``), and the generated configs encode it

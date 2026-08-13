@@ -49,13 +49,14 @@ The real runner (:class:`TablassertRunner`) shells out to the installed ``tablas
 (a CORE dependency installed by the single ``uv sync``) and captures stdout / exit code into
 a handoff report; the deferred runner (:class:`DeferredTablassertRunner`) writes a
 deferred-handoff report without ever touching Tablassert (used when no fullmap triggers the
-real handoff, and in tests). DAKP requires Tablassert >= 9.1: the graph config carries the
+real handoff, and in tests). DAKP requires Tablassert >= 10: the graph config carries the
 fullmap path (the ``build-kg --fullmap`` flag was removed in Tablassert 8.1), the 8.2
 Biolink-valid KGX modeling (``sources[]`` retrieval provenance, first-class evidence slots)
-is what the emitted configs target, and 9.x is a hard floor for the two breaking config
-changes released in 8.2.1 — ``source.url`` became a list, and the annotation ``delimiter``
-was replaced (by ``method: list`` for literals, and by ``split_by`` in 9.1 for the per-row
-column splits DAKP's pipe-joined evidence cells need).
+is what the emitted configs target, and 10.x is a hard floor for the multivalued annotation
+encoding DAKP's pipe-joined evidence cells need — 8.2.1 removed the annotation ``delimiter``
+(8.2.1 also made ``source.url`` a list) and 9.1 added its per-row replacement ``split_by``,
+which 10.0 made the ONLY multivalued encoding by removing the intermediate ``method: list``
+literal (DAKP emits ``split_by`` exclusively, so the 10.0 removal costs nothing here).
 
 The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it is
 on ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout override (the
@@ -159,9 +160,9 @@ _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
 #   ``split_by: "|"`` (Tablassert >= 9.1) is what makes it a real JSON array. Without the split
 #   Tablassert wraps the joined scalar into a USELESS one-element list (``["id1|id2"]``) that still
 #   passes Biolink validation — a silent-corruption guard, not a hard-failure one. Tablassert 8.2.1
-#   removed the old ``delimiter`` spelling and its ``method: list`` replacement is a config-time
-#   literal (the same array on every row), so 9.1's ``split_by`` is the ONLY encoding that can
-#   express a per-row array — hence the >= 9.1 floor in ``pyproject.toml``;
+#   removed the old ``delimiter`` spelling, and 10.0 removed its ``method: list`` successor (a
+#   config-time literal — the same array on every row) entirely, so ``split_by`` is the ONLY
+#   encoding that can express a per-row array — hence the >= 10 floor in ``pyproject.toml``;
 # * ``supporting_documents`` (SPL document ids) is on Tablassert's edge-field allow-list — so it is
 #   never folded into ``supporting_text`` — but the association class above does not declare the
 #   slot, so ``prune_to_class`` moves it onto the inlined supporting study, same as
