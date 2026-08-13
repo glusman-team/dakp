@@ -60,9 +60,9 @@ def test_valid_rows_pass_all_invariants() -> None:
 
 
 def test_real_assertion_tables_preserve_invariants(
-    dailymed_refs: list[ArtifactRef], drugsfda_refs: list[ArtifactRef], faers_refs: list[ArtifactRef], ctx: TaskContext
+    dailymed_refs: list[ArtifactRef], drugsfda_refs: list[ArtifactRef], faers_refs: list[ArtifactRef], ema_refs: list[ArtifactRef], ctx: TaskContext
 ) -> None:
-    approved = approved_treats.transform([*dailymed_refs, *drugsfda_refs], ctx)
+    approved = approved_treats.transform([*dailymed_refs, *drugsfda_refs, *ema_refs], ctx)
     uses = observed_uses.transform([*faers_refs, *dailymed_refs], ctx)
     contra = contraindications.transform([*dailymed_refs], ctx)
 
@@ -78,6 +78,20 @@ def test_absent_family_is_not_a_violation() -> None:
     report = check_rows([_row("biolink:treats", status="approved_for_condition")])
     assert report.ok is True
     assert report.families_seen == ["biolink:treats"]
+
+
+def test_ema_upstream_satisfies_the_treats_invariant() -> None:
+    # EMA-derived treats rows carry infores:ema instead of the FDA dailymed|faers chain.
+    report = check_rows([_row("biolink:treats", status="approved_for_condition", upstream="infores:ema")])
+    assert report.ok is True
+    assert report.violations == []
+
+
+def test_epar_upstream_satisfies_the_treats_invariant() -> None:
+    # EPAR indication-mined treats rows carry infores:epar instead of the FDA dailymed|faers chain.
+    report = check_rows([_row("biolink:treats", status="approved_for_condition", upstream="infores:epar")])
+    assert report.ok is True
+    assert report.violations == []
 
 
 def test_non_family_rows_are_ignored_but_counted() -> None:

@@ -130,6 +130,8 @@ def test_up_config_variable_carries_null_limits_and_fullmap(monkeypatch: pytest.
     assert config["quarter_limit"] is None  # null => unbounded full build
     assert config["release_limit"] is None
     assert config["dailymed_max_age_days"] == 7  # a fresh stored release is reused for a week
+    assert config["drugsfda_max_age_days"] == 7
+    assert config["ema_max_age_days"] == 7  # the EMA xlsx gets the same seven-day window
     assert config["force"] is False
     assert config["release"] is True  # `tablassert build-kg --release` (slim significant-only graph)
     assert config["qc"] is True  # `tablassert build-kg --qc` (SapBERT audit + 13.0 stage-7 NDJSON assertions)

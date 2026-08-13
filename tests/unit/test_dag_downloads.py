@@ -15,7 +15,7 @@ import pytest
 from dakp_pipeline import acquire, runtime
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.sources import dailymed, drugsfda, faers
+from dakp_pipeline.sources import dailymed, drugsfda, ema, faers
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -30,8 +30,8 @@ def _ctx(workdir: Path, *, params: dict[str, object] | None = None) -> TaskConte
 
 @pytest.mark.parametrize(
     ("helper", "module"),
-    [(acquire.acquire_dailymed, dailymed), (acquire.acquire_faers, faers), (acquire.acquire_drugsfda, drugsfda)],
-    ids=["dailymed", "faers", "drugsfda"],
+    [(acquire.acquire_dailymed, dailymed), (acquire.acquire_faers, faers), (acquire.acquire_drugsfda, drugsfda), (acquire.acquire_ema, ema)],
+    ids=["dailymed", "faers", "drugsfda", "ema"],
 )
 def test_acquire_source_helpers_delegate_to_fetcher(helper, module, monkeypatch, tmp_path: Path) -> None:
     calls: list[TaskContext] = []
@@ -108,14 +108,16 @@ def test_acquire_all_runs_every_source(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr(dailymed, "fetch", lambda ctx: [sentinel])
     monkeypatch.setattr(faers, "fetch", lambda ctx: [sentinel])
     monkeypatch.setattr(drugsfda, "fetch", lambda ctx: [sentinel])
+    monkeypatch.setattr(ema, "fetch", lambda ctx: [sentinel])
 
     def fake_downloader(model_id: str, dest: Path) -> None:
         (dest / "model.bin").write_bytes(b"weights")
 
     results = acquire.acquire_all(_ctx(tmp_path), downloader=fake_downloader)
-    assert set(results) == {"dailymed", "drugsfda", "faers", "ner_models"}
+    assert set(results) == {"dailymed", "drugsfda", "ema", "faers", "ner_models"}
     assert results["dailymed"] == [sentinel]
     assert results["drugsfda"] == [sentinel]
+    assert results["ema"] == [sentinel]
     assert results["faers"] == [sentinel]
     assert len(results["ner_models"]) == 1  # DEFAULT_MODEL cached via the fake downloader
     assert all(ref.blake3.startswith("b3:") for refs in results.values() for ref in refs)
@@ -149,19 +151,21 @@ def test_build_context_forwards_fullmap(tmp_path: Path) -> None:
 
 def test_build_context_forwards_source_max_age_days(tmp_path: Path) -> None:
     ctx = runtime.build_context_from_config(
-        {"workdir": str(tmp_path), "fixture_root": str(_FIXTURE_ROOT), "dailymed_max_age_days": 14, "drugsfda_max_age_days": 3}
+        {"workdir": str(tmp_path), "fixture_root": str(_FIXTURE_ROOT), "dailymed_max_age_days": 14, "drugsfda_max_age_days": 3, "ema_max_age_days": 5}
     )
     assert ctx.params["dailymed_max_age_days"] == 14.0
     assert ctx.params["drugsfda_max_age_days"] == 3.0
+    assert ctx.params["ema_max_age_days"] == 5.0
     # Absent in the config Variable -> None param (the fetchers apply their 7-day defaults).
     ctx = runtime.build_context_from_config({"workdir": str(tmp_path), "fixture_root": str(_FIXTURE_ROOT)})
     assert ctx.params["dailymed_max_age_days"] is None
     assert ctx.params["drugsfda_max_age_days"] is None
+    assert ctx.params["ema_max_age_days"] is None
 
 
 def test_dag_includes_acquisition_tasks_and_pools(dakp_build) -> None:
     dag = dakp_build.dag_obj
-    acquire_ids = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ner_models"}
+    acquire_ids = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ema", "acquire_ner_models"}
     assert acquire_ids <= {t.task_id for t in dag.tasks}
 
     def upstream(task_id: str) -> set[str]:
