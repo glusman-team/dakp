@@ -77,6 +77,8 @@ CONTRAINDICATION_COLUMNS = [
     "object_curie",
     "object_name",
     "object_category",
+    "disease_context_text",
+    "evidence_text",
     "supporting_spl_sets",
     "supporting_spl_documents",
     "source_score",

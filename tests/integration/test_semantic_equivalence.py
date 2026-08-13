@@ -254,15 +254,17 @@ def test_contraindications_carry_spl_support(built: dict[str, Any]) -> None:
 
 
 def test_rows_uniquely_keyed_by_subject_predicate_object(built: dict[str, Any]) -> None:
-    """No duplicate (subject, predicate, object) triples — the legacy saveEdge dedup invariant.
+    """No duplicate semantic assertion keys, including the optional context qualifier.
 
-    The legacy build deduped edges on (subj, pred, obj) and derived a deterministic uuid3 edge id
-    from that triple (``namespace_uuid('drug_approvals_kp', subj, pred, obj)``). The rebuild keeps
-    the triple unique + deterministically ordered so Tablassert's deterministic id machinery is stable.
+    Unqualified and disease-context-qualified contraindications may share subject/predicate/object
+    but are distinct assertions once nullable qualifiers are enabled.
     """
     for frame in built["tables"].values():
-        triples = [(str(r.get("subject_text")), str(r.get("predicate")), str(r.get("object_text"))) for r in frame.iter_rows(named=True)]
-        assert len(triples) == len(set(triples)), f"duplicate (subject,predicate,object) triple in {frame.columns}"
+        triples = [
+            (str(r.get("subject_text")), str(r.get("predicate")), str(r.get("object_text")), str(r.get("disease_context_text", "")))
+            for r in frame.iter_rows(named=True)
+        ]
+        assert len(triples) == len(set(triples)), f"duplicate semantic assertion key in {frame.columns}"
 
 
 def test_output_is_byte_deterministic_across_runs(built: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -341,25 +343,29 @@ def _synthesize_kgx(tables: dict[str, pl.DataFrame]) -> tuple[list[dict[str, Any
             add_node(object_id, str(rec.get("object_name")) or str(rec.get("object_text")), object_category)
 
             upstream = [token for token in str(rec.get("upstream_resource_ids")).split("|") if token]
-            edges.append(
-                {
-                    "id": f"edge:{subject_id}:{rec.get('predicate')}:{object_id}",
-                    "subject": subject_id,
-                    "predicate": str(rec.get("predicate")),
-                    "object": object_id,
-                    "category": [_edge_category(object_category)],
-                    "knowledge_level": str(rec.get("knowledge_level")),
-                    "agent_type": str(rec.get("agent_type")),
-                    "primary_knowledge_source": str(rec.get("primary_knowledge_source")),
-                    "sources": [
-                        {
-                            "resource_id": str(rec.get("primary_knowledge_source")),
-                            "resource_role": "primary_knowledge_source",
-                            "upstream_resource_ids": upstream,
-                        }
-                    ],
-                }
-            )
+            edge: dict[str, Any] = {
+                "id": f"edge:{subject_id}:{rec.get('predicate')}:{object_id}:{rec.get('disease_context_text', '')}",
+                "subject": subject_id,
+                "predicate": str(rec.get("predicate")),
+                "object": object_id,
+                "category": [_edge_category(object_category)],
+                "knowledge_level": str(rec.get("knowledge_level")),
+                "agent_type": str(rec.get("agent_type")),
+                "primary_knowledge_source": str(rec.get("primary_knowledge_source")),
+                "sources": [
+                    {
+                        "resource_id": str(rec.get("primary_knowledge_source")),
+                        "resource_role": "primary_knowledge_source",
+                        "upstream_resource_ids": upstream,
+                    }
+                ],
+            }
+            context_text = str(rec.get("disease_context_text") or "").strip()
+            if context_text:
+                context_id = _node_id("", context_text)
+                add_node(context_id, context_text, "Disease")
+                edge["disease_context_qualifier"] = context_id
+            edges.append(edge)
     return list(nodes.values()), edges
 
 

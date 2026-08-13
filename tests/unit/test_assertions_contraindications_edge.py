@@ -564,6 +564,29 @@ def test_contraindication_sentences_catches_various_phrasings() -> None:
 # --- Pass 2: contraindication mined from indication section --------------------
 
 
+def test_conditional_contraindication_mined_from_indication_section_keeps_original_evidence(tmp_path: Path) -> None:
+    """Pass 2 maps filtered NER offsets back to the original sentence and context."""
+    sections = _mixed_sections(
+        tmp_path,
+        [
+            (
+                "SET-CONTEXT",
+                "SET-CONTEXT#34067-9",
+                INDICATION_LOINC,
+                "DrugX is indicated for hypertension. It is contraindicated for treatment of hypertension in patients with asthma.",
+            )
+        ],
+    )
+    ingredients = _ingredients(tmp_path, [("active", "SET-CONTEXT", "DrugX", "UNII:X")])
+    ner = DiseaseNER(gazetteer={"asthma": "disease", "hypertension": "disease"})
+    rows = build_contraindication_rows([sections, ingredients], ner)
+    assert len(rows) == 1
+    assert rows[0]["object_text"] == "asthma"
+    assert rows[0]["disease_context_text"] == "hypertension"
+    assert rows[0]["evidence_text"] == "It is contraindicated for treatment of hypertension in patients with asthma."
+    assert rows[0]["supporting_spl_documents"] == "SET-CONTEXT#34067-9"
+
+
 def test_contraindication_mined_from_indication_section(tmp_path: Path) -> None:
     """Pass 2: a contraindication embedded in the indication section is mined with #34067-9 provenance."""
     sections = _mixed_sections(
@@ -639,6 +662,59 @@ def test_no_regression_contraindication_only_sections(tmp_path: Path) -> None:
     assert len(rows) == 1
     assert rows[0]["object_text"] == "asthma"
     assert rows[0]["supporting_spl_documents"] == "SET-A#34070-3"
+
+
+# --- Gold-style semantic fixture matrix ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("label", "terms", "expected_object", "expected_context"),
+    [
+        ("Contraindicated in patients with asthma.", {"asthma": "disease"}, "asthma", ""),
+        (
+            "Contraindicated for treatment of hypertension in patients with asthma.",
+            {"hypertension": "disease", "asthma": "disease"},
+            "asthma",
+            "hypertension",
+        ),
+        ("Contraindicated for asthma.", {"asthma": "disease"}, "asthma", ""),
+        ("Contraindicated for treatment of hypertension in patients receiving warfarin.", {"hypertension": "disease"}, None, None),
+        ("None known for asthma.", {"asthma": "disease"}, None, None),
+        ("Asthma is not contraindicated.", {"asthma": "disease"}, None, None),
+        ("Avoid use in patients with asthma.", {"asthma": "disease"}, None, None),
+        (
+            "Contraindicated for treatment of hypertension in patients with asthma and diabetes.",
+            {"hypertension": "disease", "asthma": "disease", "diabetes": "disease"},
+            None,
+            None,
+        ),
+    ],
+    ids=[
+        "direct",
+        "explicit-disease-context",
+        "blank-context",
+        "medication-context",
+        "none-known",
+        "explicit-negation",
+        "warning-only",
+        "and-context",
+    ],
+)
+def test_gold_semantic_fixture_matrix(
+    tmp_path: Path, label: str, terms: dict[str, str], expected_object: str | None, expected_context: str | None
+) -> None:
+    """Small precision-first matrix for direct, conditional, negative, and medication language."""
+    sections = _sections(tmp_path, [("SET-GOLD", "SET-GOLD#34070-3", label)])
+    ingredients = _ingredients(tmp_path, [("active", "SET-GOLD", "DrugGold", "UNII:GOLD")])
+    rows = build_contraindication_rows([sections, ingredients], DiseaseNER(gazetteer=terms))
+    if expected_object is None:
+        assert rows == []
+        return
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["object_text"] == expected_object
+    assert row["disease_context_text"] == expected_context
+    assert row["evidence_text"] == label
 
 
 # --- Pass 2: configurable keywords ---------------------------------------------

@@ -187,6 +187,7 @@ _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
     "contraindication_assertions": (
         ("supporting_spl_sets", "has_evidence", "|"),
         ("supporting_spl_documents", "supporting_documents", "|"),
+        ("evidence_text", "supporting_text", "|"),
         ("source_score", "source_score", None),
     ),
 }
@@ -204,17 +205,12 @@ OBJECT_PRIORITIZE = ("Disease", "PhenotypicFeature")
 # Per-table biolink statement qualifiers: (qualifier slot, backing assertion column). Emitted as
 # ``statement.qualifiers`` entries ONLY where a column actually carries the qualifier's entity.
 # Validity is two-layered: the slot must be a member of the installed Tablassert's Biolink
-# ``Qualifiers`` enum (the biolink qualifier slot hierarchy), and — because every DAKP edge lands in
-# ``biolink:ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` (drug subject ->
-# disease/phenotype object per ``lib.edge_tables``) — only the qualifier slots that class can hold
-# are biolink-valid on DAKP edges: ``anatomical_context_qualifier`` / ``disease_context_qualifier``
-# (``species_context_qualifier`` is auto-derived from the taxon constraint and rejected when
-# declared; the mechanistic aspect/direction/part/... slots belong to regulatory association
-# classes, frequency/onset/sex/stage/... to other clinical classes). Qualifier values are
-# entity-resolved through the fullmap and an unmatched value drops the whole edge, so a table whose
-# columns back no qualifier entity gets NO qualifiers (an empty tuple), never a fabricated constant.
-# No DAKP table backs one today: a qualifier must carry an entity DISTINCT from the node it
-# qualifies to say anything, and every assertion column that resolves to a disease IS the object.
+# ``Qualifiers`` enum and the association class must support it. DAKP's contraindication context
+# uses the disease-ranged ``disease_context_qualifier``. Its sparse cells are explicitly nullable:
+# unresolved context must not delete an otherwise valid subject/object edge.
+# Contraindication context is sparse and optional: nullable keeps unconditional rows alive while
+# allowing explicit disease-context rows to resolve. The qualifier is intentionally disease-only;
+# medications belong in a future chemical-entity interaction assertion, not this slot.
 _TABLE_QUALIFIERS: dict[str, tuple[tuple[str, str], ...]] = {
     # ``clinical_approval_status`` ("approved_for_condition") is the Biolink ClinicalApprovalStatusEnum
     # ASSOCIATION slot, not a qualifier slot — no ``Qualifiers`` member expresses approval status, so
@@ -227,9 +223,9 @@ _TABLE_QUALIFIERS: dict[str, tuple[tuple[str, str], ...]] = {
     # The adverse event itself (FAERS ``effects``) is aggregated away and not part of the assertion
     # contract; it is an adverse reaction rather than a disease context, so it is not a substitute.
     "faers_applied_to_treat_assertions": (),
-    # DailyMed section provenance (SPL set / document ids) and a numeric NER ``source_score`` back no
-    # qualifier entity.
-    "contraindication_assertions": (),
+    # ``disease_context_text`` is a distinct disease from the contraindicated object only when the
+    # extractor's explicit template classifier populated it; blank cells are valid and nullable.
+    "contraindication_assertions": (("disease_context_qualifier", "disease_context_text"),),
 }
 
 _GENERATE_OPERATION = "generate_tablassert_configs"
@@ -310,10 +306,9 @@ def table_config(table: str) -> dict[str, Any]:
     them), ``provenance.override`` (ManualProvenance), and column-encoded ``annotations`` for the
     table's evidence columns. Subject/object carry ``prioritize`` (soft ranking) plus ``avoid`` —
     the hard allow-list guard computed by :func:`category_avoid_list` from the side's ``prioritize``
-    tuple. Each qualifier re-resolves its backing column, so it mirrors the object side's
-    ``prioritize``/``avoid`` — identical constraints give identical candidate ranking, so the
-    qualifier CURIE always equals the node it qualifies (never a divergent resolution or an extra
-    row drop).
+    tuple. Qualifier values use their own category guard: contraindication context is constrained
+    to ``Disease`` (not the object's broader Disease/PhenotypicFeature list), and is nullable so
+    absent or unresolved context omits only the qualifier rather than deleting the edge.
     """
     _basename, predicate, upstream, knowledge_level, agent_type = _TABLE_SPECS[table]  # KeyError for unknown tables
     annotations: list[dict[str, Any]] = []
@@ -327,8 +322,9 @@ def table_config(table: str) -> dict[str, Any]:
             "qualifier": qualifier,
             "method": "column",
             "encoding": column_letter(table, column),
-            "prioritize": list(OBJECT_PRIORITIZE),
-            "avoid": category_avoid_list(OBJECT_PRIORITIZE),
+            "nullable": table == "contraindication_assertions",
+            "prioritize": ["Disease"],
+            "avoid": category_avoid_list(("Disease",)),
         }
         for qualifier, column in _TABLE_QUALIFIERS[table]
     ]

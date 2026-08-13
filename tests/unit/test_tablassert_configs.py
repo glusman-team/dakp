@@ -73,13 +73,12 @@ EXPECTED_PROVENANCE = {
 }
 
 # assertion table -> {qualifier slot: assertion column backing it}. Only tables whose columns carry
-# a qualifier entity get entries (see ``_TABLE_QUALIFIERS`` for the per-table justification): no
-# table backs one today — the object is the only disease on every row, so any disease qualifier
-# would restate it — so no config may emit a ``qualifiers`` block.
+# a qualifier entity get entries (see ``_TABLE_QUALIFIERS`` for the per-table justification).
+# Contraindication context is sparse and nullable; it is not the same disease as the object.
 EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
     "approved_treats_assertions": {},
     "faers_applied_to_treat_assertions": {},
-    "contraindication_assertions": {},
+    "contraindication_assertions": {"disease_context_qualifier": "disease_context_text"},
 }
 
 # assertion table -> {annotation name: (assertion column it encodes, multivalued separator)}.
@@ -99,6 +98,7 @@ EXPECTED_ANNOTATIONS = {
     "contraindication_assertions": {
         "has_evidence": ("supporting_spl_sets", "|"),
         "supporting_documents": ("supporting_spl_documents", "|"),
+        "supporting_text": ("evidence_text", "|"),
         "source_score": ("source_score", None),
     },
 }
@@ -228,17 +228,18 @@ def test_table_config_qualifiers(table: str) -> None:
         # The encoding letter must address the backing assertion column.
         assert _column_at(table, entry["encoding"]) == backing
         assert entry["encoding"] == tablassert_configs.column_letter(table, backing)
-        # The qualifier re-resolves its backing column with the object side's allow-list, so it
-        # lands on exactly the same CURIE as the node it qualifies.
-        assert entry["prioritize"] == list(OBJECT_PRIORITIZE)
-        assert entry["avoid"] == category_avoid_list(OBJECT_PRIORITIZE)
+        if table == "contraindication_assertions":
+            assert entry["nullable"] is True
+            assert entry["prioritize"] == ["Disease"]
+            assert entry["avoid"] == category_avoid_list(["Disease"])
+        else:
+            assert "nullable" not in entry
+            assert entry["prioritize"] == list(OBJECT_PRIORITIZE)
+            assert entry["avoid"] == category_avoid_list(OBJECT_PRIORITIZE)
 
 
 def test_declared_qualifier_emits_a_column_encoding() -> None:
-    # No table declares a qualifier today (every DAKP disease column IS the object, so a disease
-    # qualifier would only restate it), so exercise the emission path through a declared one: a
-    # future qualifier must come out column-encoded on its backing column, re-resolved with the
-    # object side's allow-list (see ``_TABLE_QUALIFIERS``).
+    # Exercise the emission path independently of the production backing-column choice.
     table = "contraindication_assertions"
     declared = dict(tablassert_configs._TABLE_QUALIFIERS, **{table: (("disease_context_qualifier", "object_text"),)})
     with pytest.MonkeyPatch.context() as patch:
@@ -249,8 +250,9 @@ def test_declared_qualifier_emits_a_column_encoding() -> None:
             "qualifier": "disease_context_qualifier",
             "method": "column",
             "encoding": tablassert_configs.column_letter(table, "object_text"),
-            "prioritize": list(OBJECT_PRIORITIZE),
-            "avoid": category_avoid_list(OBJECT_PRIORITIZE),
+            "nullable": True,
+            "prioritize": ["Disease"],
+            "avoid": category_avoid_list(["Disease"]),
         }
     ]
 

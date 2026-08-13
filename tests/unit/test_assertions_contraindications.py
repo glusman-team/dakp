@@ -136,5 +136,7 @@ def test_shaper_writes_uncompressed_tsv_with_contract_columns(dailymed_refs: lis
     assert row["subject_text"] == "Ibuprofen"
     assert row["object_text"] == "asthma"
     assert row["object_curie"] == ""
+    assert row["disease_context_text"] == ""
+    assert row["evidence_text"] == "Contraindicated in patients with asthma or known hypersensitivity to ibuprofen."
     assert row["agent_type"] == "text_mining_agent"
     assert row["upstream_resource_ids"] == "infores:dailymed"
