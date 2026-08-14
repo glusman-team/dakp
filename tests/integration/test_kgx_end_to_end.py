@@ -236,13 +236,15 @@ def test_dailymed_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild)
         assert any("#" in value for value in evidence), f"no SPL section link in {evidence!r}"
         assert "supporting_documents" not in edge
 
-    # No DAKP value is stringified into a supporting study any more.
+    # No DAKP value is stringified into a supporting study any more. Tablassert >= 12 keeps a
+    # study result's ``description`` only for REAL rescued/routed values; DAKP's contract is
+    # that nothing is ever relocated there, so any study struct present (a bare row-reference
+    # study still appears when prune_to_class's rescue machinery engaged on a column no row
+    # actually lost) must carry NO description at all.
     for edge in kgx_build.edges:
         for study in (edge.get("has_supporting_studies") or {}).values():
             for result in study.get("has_study_results") or []:
-                description = result.get("description", "")
-                assert "supporting_documents=" not in description, description
-                assert "number_of_cases=" not in description, description
+                assert not result.get("description"), f"DAKP value relocated into a study: {result}"
 
     # FAERS edges have no SPL evidence at all (the assertion table carries no such column).
     for edge in kgx_build.edges:
@@ -273,6 +275,24 @@ def test_faers_case_count_rides_the_edge_as_evidence_count(kgx_build: KgxBuild) 
         assert isinstance(count, int | str), f"evidence_count missing or oddly typed: {count!r}"
         assert int(count) > 0
         assert "number_of_cases" not in edge
+
+
+def test_approval_ids_ride_the_edge_as_a_top_level_field(kgx_build: KgxBuild) -> None:
+    """Tablassert >= 12 keeps ``approval_ids`` as a curated top-level edge field.
+
+    No association class declares the slot, and pre-12 Tablassert folded the FDA application
+    numbers into ``supporting_text`` as an ``"approval_ids: <value>"`` string. 12.0 allow-lists
+    the column out of the fold sweep (a known-pending Biolink slot, like ``effect_size``), so the
+    pipe-joined cell is emitted VERBATIM as its own top-level scalar — Tablassert does not split
+    it into a JSON array.
+    """
+    treats = [edge for edge in kgx_build.edges if edge["predicate"] == _TREATS]
+    assert treats, "expected approved_treats edges in the build"
+    for edge in treats:
+        approval_ids = edge.get("approval_ids")
+        assert isinstance(approval_ids, str), f"approval_ids missing or not a scalar: {approval_ids!r}"
+        assert approval_ids.strip(), "treats edge missing FDA approval/NDA ids"
+        assert "approval_ids" not in (edge.get("supporting_text") or "")
 
 
 def test_validate_kgx_passes_on_raw_kgx(kgx_build: KgxBuild) -> None:
