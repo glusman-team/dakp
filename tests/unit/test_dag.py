@@ -3,7 +3,7 @@
 The DAG always imports and constructs (no optional-extra guard). These tests assert the module
 constants, the 13-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
 three ``extract_*`` tasks are native Go SDK stubs routed to the ``golang`` queue, and that
-acquisition/extraction resource pools are configured for the 50 GB RAM budget.
+acquisition/extraction resource pools let every task run concurrently.
 """
 
 from __future__ import annotations
@@ -36,7 +36,6 @@ _EXPECTED_GROUP_MEMBERS = {
     "tablassert": {"generate_tablassert_configs", "run_tablassert"},
     "summary": {"write_build_summary"},
 }
-_EXPECTED_EXTRACT_POOL_SLOTS = {"extract_dailymed": 3, "extract_faers": 3, "extract_drugsfda": 1}
 
 
 def test_module_constants(dakp_build) -> None:
@@ -44,9 +43,6 @@ def test_module_constants(dakp_build) -> None:
     assert dakp_build.GO_QUEUE == "golang"
     assert dakp_build.DOWNLOAD_POOL == "dakp_download"
     assert dakp_build.EXTRACT_POOL == "dakp_extract"
-    assert dakp_build.DAILYMED_EXTRACT_POOL_SLOTS == 3
-    assert dakp_build.FAERS_EXTRACT_POOL_SLOTS == 3
-    assert dakp_build.DRUGSFDA_EXTRACT_POOL_SLOTS == 1
     assert dakp_build.CONFIG_VARIABLE == "dakp_config"
 
 
@@ -72,7 +68,9 @@ def test_extract_tasks_are_go_stubs_on_golang_queue(dakp_build) -> None:
         task = dag.get_task(task_id)
         assert task.queue == dakp_build.GO_QUEUE
         assert task.pool == dakp_build.EXTRACT_POOL
-        assert task.pool_slots == _EXPECTED_EXTRACT_POOL_SLOTS[task_id]
+        # Each extract costs the default 1 slot, so all three run concurrently within the 4-slot
+        # pool (the streaming FAERS rewrite removed the memory pressure that weighted them 3/3/1).
+        assert task.pool_slots == 1
         assert type(task).__name__ == "_StubOperator"
 
 
