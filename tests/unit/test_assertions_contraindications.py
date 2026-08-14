@@ -45,8 +45,8 @@ def test_mines_contraindication_from_dailymed_section(dailymed_refs: list[Artifa
     assert ibu["object_name"] == ""
     assert ibu["object_category"] == ""
     # SPL provenance: the supporting set + the contraindication section document.
-    assert ibu["supporting_spl_sets"] == "dailymed:SETID-IBUPROFEN-002"
-    assert ibu["supporting_spl_documents"] == "SETID-IBUPROFEN-002#34070-3"
+    assert ibu["supporting_spl_sets"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SETID-IBUPROFEN-002"
+    assert ibu["supporting_spl_documents"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SETID-IBUPROFEN-002#34070-3"
     # The offline gazetteer is a high-confidence direct match (score 1.0).
     assert ibu["source_score"] == "1"
 

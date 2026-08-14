@@ -1,12 +1,61 @@
 name: dakp
 version: "0.1.0"
-description: >-
-  Drug Approvals Knowledge Provider: FDA-approved treatment
-  relationships, FAERS-observed applied-to-treat uses, and
-  contraindications text-mined from DailyMed, modeled from DailyMed,
-  Drugs@FDA, and FAERS.
-infores: "infores:multiomics-drugapprovals"
 fullmap: ".fullmap"
+rig:
+  source_info:
+    infores_id: "infores:multiomics-drugapprovals"
+    name: DAKP
+    description: >-
+      Drug Approvals Knowledge Provider: FDA-approved treatment
+      relationships, FAERS-observed applied-to-treat uses, and
+      contraindications text-mined from DailyMed, modeled from DailyMed,
+      Drugs@FDA, and FAERS.
+    terms_of_use_info:
+      terms_of_use_url: "https://www.nlm.nih.gov/terms.html"
+      terms_of_use_description: >-
+        DAKP is derived from DailyMed (NLM), Drugs@FDA, and FAERS (FDA) — US
+        government public-domain data; the NLM and FDA terms of use apply.
+    data_access_locations:
+      - "DailyMed SPL releases - https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
+      - "FAERS quarterly ASCII extracts - https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
+      - "Drugs@FDA data files - https://www.fda.gov/media/89850/download"
+    data_provision_mechanisms:
+      - file_download
+    data_formats:
+      - kgx
+    source_status: maintained_regular_updates
+  ingest_info:
+    utility: >-
+      Provides FDA-approved drug-disease treatment relationships,
+      FAERS-observed applied-to-treat uses, and SPL-mined contraindications
+      for Translator querying.
+    scope: >-
+      Approved-treats edges (DailyMed SPL indications joined to Drugs@FDA
+      applications and FAERS cases), FAERS observed-use edges, and
+      contraindication edges text-mined from DailyMed SPL sections; all
+      other content of the upstream feeds is out of scope.
+    relevant_files:
+      - file_name: "DailyMed full-release SPL zips"
+        location: "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
+        description: >-
+          Structured Product Labeling XML releases;
+          indications/contraindications sections and approval numbers.
+      - file_name: "FAERS quarterly ASCII zips"
+        location: "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
+        description: >-
+          FDA Adverse Event Reporting System quarterly extracts; drug/indication
+          case pairs.
+    included_content:
+      - file_name: "DailyMed SPL sections"
+        included_records: >-
+          indications_and_usage (LOINC 34067-9) and contraindications (LOINC
+          34070-3) sections on SPL sets bearing FDA approval numbers
+  provenance_info:
+    contributions:
+      - "DAKP pipeline (https://github.com/glusman-team/dakp): source acquisition, assertion modeling"
+      - "Tablassert: KGX and RIG generation"
+  artifact_base_url: "https://github.com/glusman-team/dakp"
+  artifact_base_path: data
 tables:
   - tables/approved_treats.yaml
   - tables/faers_applied_to_treat.yaml

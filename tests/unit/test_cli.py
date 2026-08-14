@@ -136,6 +136,7 @@ def test_up_config_variable_carries_null_limits_and_fullmap(monkeypatch: pytest.
     assert config["release_limit"] is None
     assert config["dailymed_max_age_days"] == 7  # a fresh stored release is reused for a week
     assert config["force"] is False
+    assert config["release"] is True  # `tablassert build-kg --release` (slim significant-only graph)
     assert config["threads"] == os.cpu_count()  # Go all-cores contract
     assert config["log_level"] == "DEBUG"
     assert config["fullmap"] == "/maps/fullmap.redb"
@@ -155,6 +156,7 @@ def test_up_small_sets_scope_bounds(monkeypatch: pytest.MonkeyPatch, sandbox: Pa
     assert config["quarter_limit"] == 1  # --small => ~1 FAERS quarter
     assert config["release_limit"] == 1  # --small => ~1 DailyMed release
     assert config["dailymed_max_age_days"] == 7  # freshness window is scope-independent
+    assert config["release"] is True  # release mode is scope-independent too
     assert config["threads"] == os.cpu_count()  # scope bound does NOT touch threads (Go contract)
     assert config["fullmap"] is None
 

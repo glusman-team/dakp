@@ -1,9 +1,10 @@
 """Unit tests for Tablassert config generation + runner (Milestone 7).
 
 Asserts the generated Graph + per-table configs are valid YAML matching the ACTUAL current
-Tablassert 8.x schema (``template:``-wrapped ``Section``: ``source.kind=text``, column-encoded
+Tablassert >= 11 schema (``template:``-wrapped ``Section``: ``source.kind=text``, column-encoded
 subject/object/predicate, column-encoded ``statement.qualifiers`` where a column backs them,
-``provenance.override`` ManualProvenance, column-encoded evidence annotations), with column
+``provenance.override`` ManualProvenance, column-encoded evidence annotations; the graph config
+carries the mandatory ``rig:`` section and no legacy top-level RIG keys), with column
 letters derived from the assertion-table contracts and provenance matching the DINGO
 translator-ingest conventions. Also covers the runner: the mock runner's
 handoff report and the real runner's monkeypatchable subprocess boundary.
@@ -361,10 +362,29 @@ def test_graph_config_structure() -> None:
     assert graph["name"] == "dakp"
     assert isinstance(graph["version"], str)
     assert graph["version"]
-    assert graph["description"]
-    assert graph["infores"] == INFORES_DAKP
     assert graph["fullmap"] == ".fullmap"  # default placeholder; generate() writes the real ctx fullmap path
     assert graph["tables"] == ["tables/approved_treats.yaml", "tables/faers_applied_to_treat.yaml", "tables/contraindications.yaml"]
+    # Tablassert >= 11 rejects the legacy top-level RIG keys; every RIG fact lives under `rig:`.
+    for legacy_key in ("description", "infores", "contributions", "ui_explanation"):
+        assert legacy_key not in graph
+    rig = graph["rig"]
+    assert rig["source_info"]["infores_id"] == INFORES_DAKP
+    assert rig["source_info"]["description"]  # the former top-level graph description moved here
+    assert rig["source_info"]["terms_of_use_info"]
+    assert all("https://" in location for location in rig["source_info"]["data_access_locations"])
+    assert rig["ingest_info"]["utility"]
+    assert rig["ingest_info"]["scope"]
+    assert rig["provenance_info"]["contributions"]
+    assert rig["artifact_base_url"] == tablassert_configs.RIG_ARTIFACT_BASE_URL
+    assert rig["artifact_base_path"] == tablassert_configs.RIG_ARTIFACT_BASE_PATH
+
+
+def test_graph_config_validates_against_installed_tablassert() -> None:
+    """The generated graph.yaml passes the INSTALLED Tablassert's ``Graph`` model (rig included)."""
+    from tablassert.models import Graph
+
+    graph = Graph.model_validate(yaml.safe_load(tablassert_configs.graph_yaml()))
+    assert graph.rig.source_info.infores_id == INFORES_DAKP
 
 
 # --- emitted YAML is valid + faithful (round-trips through yaml.safe_load) --------
