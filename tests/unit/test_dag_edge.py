@@ -30,8 +30,14 @@ def test_build_context_from_config_defaults(tmp_path: Path) -> None:
     assert ctx.fixture_root == FIXTURE_ROOT
     # No fullmap -> the real Tablassert handoff is not triggered; no drugsfda_url forwarded.
     assert ctx.params["run_tablassert"] is False
+    assert ctx.params["release"] is False  # Tablassert --release defaults off unless the config sets it
     assert "drugsfda_url" not in ctx.params
     assert "fullmap" not in ctx.params
+
+
+def test_build_context_from_config_forwards_release(tmp_path: Path) -> None:
+    ctx = build_context_from_config(_cfg(tmp_path, release=True))
+    assert ctx.params["release"] is True
 
 
 def test_build_context_from_config_applies_overrides(tmp_path: Path) -> None:

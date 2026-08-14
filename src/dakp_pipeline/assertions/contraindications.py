@@ -46,8 +46,9 @@ selector. Constructing the backend is import-free, so module import + the test s
 no heavy NER deps imported.
 
 Provenance: contraindications are text-mined from DailyMed, so
-SPL set evidence is emitted as ``dailymed:<spl_set_id>`` CURIEs to match the deployed Translator
-ingest contract. ``primary_knowledge_source = infores:multiomics-drugapprovals``,
+SPL set and document evidence is emitted as DailyMed label URLs
+(``https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=<spl_set_id>[#<loinc>]``).
+``primary_knowledge_source = infores:multiomics-drugapprovals``,
 ``upstream_resource_ids = infores:dailymed``, ``agent_type = text_mining_agent`` (the DAKP RIG
 lists ``text_mining_agent`` for ``contraindicated_in``), ``knowledge_level = knowledge_assertion``.
 """
@@ -66,7 +67,13 @@ from pathlib import Path
 from typing import Any
 
 from dakp_pipeline.assertions import INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, row_for
-from dakp_pipeline.assertions.evidence import build_dailymed_evidence, dailymed_set_curie, sorted_pipe, write_assertion_table
+from dakp_pipeline.assertions.evidence import (
+    build_dailymed_evidence,
+    dailymed_document_url,
+    dailymed_set_url,
+    sorted_pipe,
+    write_assertion_table,
+)
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
@@ -758,8 +765,8 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         object_category=agg["object_category"],
         disease_context_text=agg.get("disease_context_text", ""),
         evidence_text=sorted_pipe(agg.get("evidence_texts", [])),
-        supporting_spl_sets=sorted_pipe(dailymed_set_curie(set_id) for set_id in agg["sets"]),
-        supporting_spl_documents=sorted_pipe(agg["docs"]),
+        supporting_spl_sets=sorted_pipe(dailymed_set_url(set_id) for set_id in agg["sets"]),
+        supporting_spl_documents=sorted_pipe(dailymed_document_url(doc_id) for doc_id in agg["docs"]),
         source_score=_max_score(agg["scores"]),
         knowledge_level=KL_ASSERTION,
         agent_type=AT_TEXT_MINING,

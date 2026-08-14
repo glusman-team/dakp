@@ -350,6 +350,9 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
         "dailymed_max_age_days": _DAILYMED_MAX_AGE_DAYS,
         "drugsfda_max_age_days": _DAILYMED_MAX_AGE_DAYS,
         "force": False,
+        # Release mode: `tablassert build-kg --release` emits the slim, significant-only graph
+        # (drops biolink:not_significant edges before resolution). Always on for DAKP builds.
+        "release": True,
         "log_level": log_level,
         "fullmap": fullmap,
     }

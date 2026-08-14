@@ -60,15 +60,31 @@ def normalize_nda(value: Any) -> str:
 # --- provenance column assembly -------------------------------------------------
 
 
-DAILYMED_SET_PREFIX = "dailymed:"
+#: DailyMed label page URL every SPL set evidence value links to (``<base><spl_set_id>``).
+DAILYMED_SET_URL_BASE = "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid="
 
 
-def dailymed_set_curie(set_id: Any) -> str:
-    """Return the Translator CURIE used for one DailyMed SPL set evidence value."""
+def dailymed_set_url(set_id: Any) -> str:
+    """Return the DailyMed label URL used for one SPL set evidence value (idempotent)."""
     value = "" if set_id is None else str(set_id).strip()
-    if not value or value.startswith(DAILYMED_SET_PREFIX):
+    if not value or value.startswith(DAILYMED_SET_URL_BASE):
         return value
-    return f"{DAILYMED_SET_PREFIX}{value}"
+    return f"{DAILYMED_SET_URL_BASE}{value}"
+
+
+def dailymed_document_url(document_id: Any) -> str:
+    """Return the DailyMed URL for one SPL document evidence value (``<set_id>#<loinc>``).
+
+    The fragment keeps the LOINC section code so the section identity survives in the link
+    (DailyMed ignores unknown fragments and loads the label page). Bare set ids without a
+    ``#`` fragment get the plain set URL. Idempotent.
+    """
+    value = "" if document_id is None else str(document_id).strip()
+    if not value or value.startswith(DAILYMED_SET_URL_BASE):
+        return value
+    set_id, _, fragment = value.partition("#")
+    url = f"{DAILYMED_SET_URL_BASE}{set_id}"
+    return f"{url}#{fragment}" if fragment else url
 
 
 def merge_unique(*value_lists: Iterable[Any]) -> list[str]:
@@ -333,12 +349,13 @@ def write_assertion_table(
 
 __all__ = [
     "CONTRAINDICATION_LOINC",
-    "DAILYMED_SET_PREFIX",
+    "DAILYMED_SET_URL_BASE",
     "INDICATION_LOINC",
     "DailyMedEvidence",
     "build_dailymed_evidence",
     "build_drugsfda_ingredient_map",
-    "dailymed_set_curie",
+    "dailymed_document_url",
+    "dailymed_set_url",
     "find_faers_cases",
     "find_table",
     "merge_unique",

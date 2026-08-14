@@ -30,8 +30,9 @@ construction). Both paths apply the *same* four-part filter above.
 Provenance (``approval_ids``, ``supporting_spl_sets``, ``supporting_spl_documents``) is
 aggregated per ``(subject, object)`` as deduplicated, sorted, pipe-joined lists, restricted to
 the sets whose indication text actually mentions the condition (the legacy "SPLs containing
-both UNII and CURIE"). SPL set evidence
-is emitted as ``dailymed:<spl_set_id>`` CURIEs to match the deployed Translator ingest contract. Subject CURIEs
+both UNII and CURIE"). SPL set and document evidence is emitted as DailyMed label URLs
+(``https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=<spl_set_id>[#<loinc>]``) so the
+values are directly clickable links. Subject CURIEs
 are populated only where DailyMed already gives a UNII; object CURIEs come from the lexical
 disease baseline. Canonical CURIE mapping is a later milestone (text-first).
 """
@@ -48,7 +49,8 @@ from dakp_pipeline.assertions.evidence import (
     DailyMedEvidence,
     build_dailymed_evidence,
     build_drugsfda_ingredient_map,
-    dailymed_set_curie,
+    dailymed_document_url,
+    dailymed_set_url,
     find_faers_cases,
     merge_unique,
     normalize_nda,
@@ -160,8 +162,8 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         object_name=agg["object_name"],
         object_category=agg["object_category"],
         approval_ids=sorted_pipe(agg["approval_ids"]),
-        supporting_spl_sets=sorted_pipe(dailymed_set_curie(set_id) for set_id in agg["sets"]),
-        supporting_spl_documents=sorted_pipe(agg["docs"]),
+        supporting_spl_sets=sorted_pipe(dailymed_set_url(set_id) for set_id in agg["sets"]),
+        supporting_spl_documents=sorted_pipe(dailymed_document_url(doc_id) for doc_id in agg["docs"]),
         clinical_approval_status=_STATUS,
         knowledge_level=KL_ASSERTION,
         agent_type=AT_MANUAL,

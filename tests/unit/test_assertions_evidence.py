@@ -10,9 +10,11 @@ from __future__ import annotations
 import polars as pl
 
 from dakp_pipeline.assertions.evidence import (
+    DAILYMED_SET_URL_BASE,
     build_dailymed_evidence,
     build_drugsfda_ingredient_map,
-    dailymed_set_curie,
+    dailymed_document_url,
+    dailymed_set_url,
     find_faers_cases,
     merge_unique,
     normalize_nda,
@@ -60,10 +62,20 @@ def test_sorted_pipe_is_deterministic_list_encoding() -> None:
     assert sorted_pipe([]) == ""
 
 
-def test_dailymed_set_curie_matches_translator_evidence_shape() -> None:
-    assert sorted_pipe(dailymed_set_curie(value) for value in ["SET-B", "SET-A", "SET-B"]) == "dailymed:SET-A|dailymed:SET-B"
-    assert dailymed_set_curie("dailymed:SET-A") == "dailymed:SET-A"
-    assert dailymed_set_curie("") == ""
+def test_dailymed_set_url_links_to_label_page() -> None:
+    assert (
+        sorted_pipe(dailymed_set_url(value) for value in ["SET-B", "SET-A", "SET-B"])
+        == f"{DAILYMED_SET_URL_BASE}SET-A|{DAILYMED_SET_URL_BASE}SET-B"
+    )
+    assert dailymed_set_url(f"{DAILYMED_SET_URL_BASE}SET-A") == f"{DAILYMED_SET_URL_BASE}SET-A"  # idempotent
+    assert dailymed_set_url("") == ""
+
+
+def test_dailymed_document_url_keeps_the_loinc_fragment() -> None:
+    assert dailymed_document_url("SET-A#34067-9") == f"{DAILYMED_SET_URL_BASE}SET-A#34067-9"
+    assert dailymed_document_url("SET-A") == f"{DAILYMED_SET_URL_BASE}SET-A"
+    assert dailymed_document_url(f"{DAILYMED_SET_URL_BASE}SET-A#34067-9") == f"{DAILYMED_SET_URL_BASE}SET-A#34067-9"  # idempotent
+    assert dailymed_document_url("") == ""
 
 
 # --- DailyMed SPL-support index -------------------------------------------------

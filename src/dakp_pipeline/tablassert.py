@@ -21,7 +21,7 @@ The configs match the ACTUAL current Tablassert schema (verified against
   ``source.url`` as a ``list`` of one or more URLs per section and DAKP assertion rows
   aggregate across quarters, releases, and applications, so no per-row URL is truthful at
   row granularity; the single dataset-level URL is the honest record, and per-row precision
-  stays on the edge via ``has_evidence`` (SPL set ids) and ``approval_ids`` (FDA application
+  stays on the edge via ``has_evidence`` (SPL set links) and ``approval_ids`` (FDA application
   numbers);
 * column-encoded ``statement.subject`` / ``statement.object`` / ``statement.predicate``
   with drug / disease ``prioritize`` categories plus a HARD category allow-list each:
@@ -49,14 +49,14 @@ The real runner (:class:`TablassertRunner`) shells out to the installed ``tablas
 (a CORE dependency installed by the single ``uv sync``) and captures stdout / exit code into
 a handoff report; the deferred runner (:class:`DeferredTablassertRunner`) writes a
 deferred-handoff report without ever touching Tablassert (used when no fullmap triggers the
-real handoff, and in tests). DAKP requires Tablassert >= 10: the graph config carries the
+real handoff, and in tests). DAKP requires Tablassert >= 11: the graph config carries the
 fullmap path (the ``build-kg --fullmap`` flag was removed in Tablassert 8.1), the 8.2
 Biolink-valid KGX modeling (``sources[]`` retrieval provenance, first-class evidence slots)
-is what the emitted configs target, and 10.x is a hard floor for the multivalued annotation
-encoding DAKP's pipe-joined evidence cells need — 8.2.1 removed the annotation ``delimiter``
-(8.2.1 also made ``source.url`` a list) and 9.1 added its per-row replacement ``split_by``,
-which 10.0 made the ONLY multivalued encoding by removing the intermediate ``method: list``
-literal (DAKP emits ``split_by`` exclusively, so the 10.0 removal costs nothing here).
+is what the emitted configs target, 9.1's per-row ``split_by`` (made the ONLY multivalued
+annotation encoding in 10.0) is what DAKP's pipe-joined evidence cells need, and 11.0 makes
+the graph config's ``rig:`` section mandatory while dropping the flat
+``primary_knowledge_source`` edge column (nested ``sources[]`` provenance only — the edge
+primary source now derives from ``rig.source_info.infores_id``).
 
 The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it is
 on ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout override (the
@@ -99,6 +99,7 @@ from dakp_pipeline.io.manifests import OperationBlock
 from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.sources import dailymed as dailymed_source
+from dakp_pipeline.sources import drugsfda as drugsfda_source
 from dakp_pipeline.sources import faers as faers_source
 
 # --- Translator provenance constants (match dakp_pipeline.assertions + ../DINGO) ----
@@ -131,6 +132,104 @@ GRAPH_DESCRIPTION = (
     "DailyMed, modeled from DailyMed, Drugs@FDA, and FAERS."
 )
 
+# --- RIG (Resource Ingest Guide) graph-config section -------------------------------
+#
+# Tablassert >= 11 REQUIRES a ``rig:`` section on every graph config and rejects the legacy
+# top-level ``description`` / ``infores`` keys (``rig-legacy-keys``). The nested shape mirrors
+# the released resource-ingest-guide-schema; Tablassert composes the generated-artifact
+# ``relevant_files`` / ``included_content`` entries and the observed target summaries itself,
+# so only human-authored facts live here. The edge primary knowledge source derives from
+# ``rig.source_info.infores_id`` — it is no longer a graph-level key.
+
+#: Public URL prefix the generated KGX artifacts are published under; Tablassert appends each
+#: ``.nodes.ndjson`` / ``.edges.ndjson`` name to build RIG file locations. The GitHub repo URL
+#: stands in until a dedicated public artifact location exists.
+RIG_ARTIFACT_BASE_URL = "https://github.com/glusman-team/dakp"
+#: Workdir-relative directory ``build-kg`` writes the KGX + RIG artifacts into (the runner's cwd
+#: is the workdir root, so outputs stay in ``./data`` as before).
+RIG_ARTIFACT_BASE_PATH = "data"
+
+
+def _rig_config(tables: list[str]) -> dict[str, Any]:
+    """The required ``rig:`` graph-config section (Tablassert >= 11), all constants.
+
+    Shape verified against ``tablassert.models.RIGConfig``: ``source_info`` (infores id,
+    non-empty terms-of-use assessment, URL-bearing data access locations, source status),
+    ``ingest_info`` (authored utility/scope, upstream relevant files + included content),
+    ``provenance_info`` (contributions), and the artifact base URL/path pair.
+
+    ``relevant_files`` is filtered to the upstream URLs of the tables actually IN this graph:
+    Tablassert's RIG audit fails the build when a configured relevant-file matches no table
+    source (``rig-validation-failed``), so a single-table graph (tests, partial builds) must
+    not list the other tables' upstreams.
+    """
+    included_urls = {_TABLE_SOURCE_URLS[table] for table in _TABLE_ORDER if any(Path(t).name == f"{_TABLE_SPECS[table][0]}.yaml" for t in tables)}
+    relevant_files = [
+        {
+            "file_name": "DailyMed full-release SPL zips",
+            "location": dailymed_source.FULL_RELEASE_INDEX_URL,
+            "description": "Structured Product Labeling XML releases; indications/contraindications sections and approval numbers.",
+        },
+        {
+            "file_name": "FAERS quarterly ASCII zips",
+            "location": faers_source.FDA_FAERS_INDEX_URL,
+            "description": "FDA Adverse Event Reporting System quarterly extracts; drug/indication case pairs.",
+        },
+        # No Drugs@FDA entry: no assertion table declares it as a section source (it is joined
+        # in upstream, at assertion-build time), so the RIG audit would reject it.
+    ]
+    return {
+        "source_info": {
+            "infores_id": INFORES_DAKP,
+            "name": "DAKP",
+            "description": GRAPH_DESCRIPTION,
+            "terms_of_use_info": {
+                "terms_of_use_url": "https://www.nlm.nih.gov/terms.html",
+                "terms_of_use_description": (
+                    "DAKP is derived from DailyMed (NLM), Drugs@FDA, and FAERS (FDA) — US government "
+                    "public-domain data; the NLM and FDA terms of use apply."
+                ),
+            },
+            "data_access_locations": [
+                f"DailyMed SPL releases - {dailymed_source.FULL_RELEASE_INDEX_URL}",
+                f"FAERS quarterly ASCII extracts - {faers_source.FDA_FAERS_INDEX_URL}",
+                f"Drugs@FDA data files - {drugsfda_source.DRUGSFDA_DATA_FILES_URL}",
+            ],
+            "data_provision_mechanisms": ["file_download"],
+            "data_formats": ["kgx"],
+            "source_status": "maintained_regular_updates",
+        },
+        "ingest_info": {
+            "utility": (
+                "Provides FDA-approved drug-disease treatment relationships, FAERS-observed "
+                "applied-to-treat uses, and SPL-mined contraindications for Translator querying."
+            ),
+            "scope": (
+                "Approved-treats edges (DailyMed SPL indications joined to Drugs@FDA applications and "
+                "FAERS cases), FAERS observed-use edges, and contraindication edges text-mined from "
+                "DailyMed SPL sections; all other content of the upstream feeds is out of scope."
+            ),
+            "relevant_files": [entry for entry in relevant_files if entry["location"] in included_urls],
+            "included_content": [
+                {
+                    "file_name": "DailyMed SPL sections",
+                    "included_records": (
+                        "indications_and_usage (LOINC 34067-9) and contraindications (LOINC 34070-3) "
+                        "sections on SPL sets bearing FDA approval numbers"
+                    ),
+                }
+            ],
+        },
+        "provenance_info": {
+            "contributions": [
+                "DAKP pipeline (https://github.com/glusman-team/dakp): source acquisition, assertion modeling",
+                "Tablassert: KGX and RIG generation",
+            ]
+        },
+        "artifact_base_url": RIG_ARTIFACT_BASE_URL,
+        "artifact_base_path": RIG_ARTIFACT_BASE_PATH,
+    }
+
 # Canonical emission order for the three assertion tables.
 _TABLE_ORDER = ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions")
 
@@ -155,7 +254,7 @@ _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
 # assertion column -> (annotation name, multivalued separator), per table. Under Tablassert >= 8.2
 # every DAKP edge is a ``biolink:ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` and the
 # annotation lands where that class can hold it:
-# * ``has_evidence`` (SPL set ids) is a genuinely multivalued slot ON that class
+# * ``has_evidence`` (SPL set links) is a genuinely multivalued slot ON that class
 #   (``list[str]``), and DAKP aggregates every supporting SPL set into ONE pipe-joined cell, so
 #   ``split_by: "|"`` (Tablassert >= 9.1) is what makes it a real JSON array. Without the split
 #   Tablassert wraps the joined scalar into a USELESS one-element list (``["id1|id2"]``) that still
@@ -360,15 +459,15 @@ def graph_config(tables: list[str] | None = None, version: str | None = None, fu
     ``version`` defaults to the DAKP package version. ``fullmap`` is the fullmap redb path the
     ``build-kg`` resolve step reads from the Graph config (Tablassert >= 8.1 has no ``--fullmap``
     flag); it defaults to :data:`FULLMAP_DEFAULT` for deferred runs that never invoke ``build-kg``.
+    The mandatory ``rig:`` section (Tablassert >= 11) is constant — see :func:`_rig_config`.
     """
     if tables is None:
         tables = [f"tables/{_TABLE_SPECS[table][0]}.yaml" for table in _TABLE_ORDER]
     return {
         "name": GRAPH_NAME,
         "version": version if version is not None else __version__,
-        "description": GRAPH_DESCRIPTION,
-        "infores": INFORES_DAKP,
         "fullmap": fullmap,
+        "rig": _rig_config(tables),
         "tables": list(tables),
     }
 

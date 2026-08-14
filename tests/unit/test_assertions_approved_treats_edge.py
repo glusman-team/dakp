@@ -124,7 +124,7 @@ def test_second_nda_backfills_subject_curie_for_shared_key(disease_map: dict[str
     assert rows[0]["subject_text"] == "DrugX"
     assert rows[0]["subject_curie"] == "UNII:X"  # back-filled from the second NDA's set
     assert rows[0]["approval_ids"] == "011111|022222"
-    assert rows[0]["supporting_spl_sets"] == "dailymed:SET-A|dailymed:SET-B"
+    assert rows[0]["supporting_spl_sets"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A|https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-B"
 
 
 # --- DailyMed fallback: un-approved set (178) + duplicate pair (184) ------------
@@ -153,7 +153,10 @@ def test_dailymed_fallback_dedups_repeated_indication_docs(disease_map: dict[str
     rows = build_approved_treats_rows(None, ev, mapping, disease_map)
     assert len(rows) == 1
     assert rows[0]["object_text"] == "hypercholesterolemia"
-    assert rows[0]["supporting_spl_documents"] == "SET-A#doc1|SET-A#doc2"  # both docs still aggregated
+    assert (
+        rows[0]["supporting_spl_documents"]
+        == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A#doc1|https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A#doc2"
+    )  # both docs still aggregated
 
 
 def test_empty_faers_frame_yields_no_rows(disease_map: dict[str, dict[str, str]]) -> None:
@@ -217,7 +220,7 @@ def test_candidate_kept_via_verbatim_substring_match() -> None:
     ev = _supported_evidence("Indicated for the treatment of Diabetic Ketoacidosis in adults.")
     rows = build_approved_treats_rows(_cases("diabetic ketoacidosis"), ev, {"12345": {"EXAMPLESTATIN"}}, {})
     assert [row["object_text"] for row in rows] == ["diabetic ketoacidosis"]
-    assert rows[0]["supporting_spl_sets"] == "dailymed:SET-A"
+    assert rows[0]["supporting_spl_sets"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A"
 
 
 def test_candidate_kept_via_dictionary_curie_match_with_different_surface_form() -> None:
@@ -247,8 +250,8 @@ def test_provenance_limited_to_condition_mentioning_sets(disease_map: dict[str, 
     ev = _supported_evidence("Indicated for hypercholesterolemia.", second_set_text="Indicated for asthma.")
     rows = build_approved_treats_rows(_cases("hypercholesterolemia"), ev, {"12345": {"EXAMPLESTATIN"}}, disease_map)
     assert len(rows) == 1
-    assert rows[0]["supporting_spl_sets"] == "dailymed:SET-A"
-    assert rows[0]["supporting_spl_documents"] == "SET-A#34067-9"
+    assert rows[0]["supporting_spl_sets"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A"
+    assert rows[0]["supporting_spl_documents"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A#34067-9"
 
 
 def test_candidate_with_unnormalizable_condition_text_is_dropped(disease_map: dict[str, dict[str, str]]) -> None:

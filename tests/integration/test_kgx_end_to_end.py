@@ -18,11 +18,11 @@ The whole module SKIPS when ``tablassert`` is not importable (dependencies not y
 runs once ``uv sync`` has materialized the runtime. ``tests/`` is outside the coverage ``source``,
 so the skip does not affect the 100% ``src/`` coverage gate.
 
-Provenance shape (Tablassert >= 8.2): edges carry a SCALAR ``primary_knowledge_source`` plus a
-``sources`` list of RetrievalSource entries — the primary entry carries ``upstream_resource_ids``
-and the table's real ``source_record_urls``, each upstream infores appears as a
-``supporting_data_source`` entry — exactly the canonical Translator contract ``validate_kgx``
-checks (the 8.0.x list-shaped ``primary_knowledge_source`` gap is gone).
+Provenance shape (Tablassert >= 11): edges carry NO flat ``primary_knowledge_source`` scalar —
+retrieval provenance lives only in the ``sources`` list of RetrievalSource entries; the primary
+entry carries ``upstream_resource_ids`` and the table's real ``source_record_urls``, each upstream
+infores appears as a ``supporting_data_source`` entry — exactly the canonical Translator contract
+``validate_kgx`` checks.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ import pytest
 import tiny_fullmap
 from harness import install_fixture_fetchers, run_stages
 
+from dakp_pipeline.assertions.evidence import DAILYMED_SET_URL_BASE
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.tablassert import TablassertRunner
@@ -117,9 +118,10 @@ def kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
     report_refs = TablassertRunner().run(assertion_refs, config_refs, ctx)
     report: dict[str, Any] = json.loads(report_refs[0].uri.read_text(encoding="utf-8"))
 
-    # (4) Load the produced KGX NDJSON (compile_graph writes <name>_<version>.{nodes,edges}.ndjson to cwd).
-    node_files = sorted(work.glob("*.nodes.ndjson"))
-    edge_files = sorted(work.glob("*.edges.ndjson"))
+    # (4) Load the produced KGX NDJSON (compile_graph writes <name>_<version>.{nodes,edges}.ndjson
+    #     into rig.artifact_base_path = "data", relative to the build cwd = <work>).
+    node_files = sorted((work / "data").glob("*.nodes.ndjson"))
+    edge_files = sorted((work / "data").glob("*.edges.ndjson"))
     assert len(node_files) == 1, f"expected exactly one KGX nodes file, found {node_files}"
     assert len(edge_files) == 1, f"expected exactly one KGX edges file, found {edge_files}"
     return KgxBuild(workdir=work, report=report, nodes=read_kgx_jsonl(node_files[0]), edges=read_kgx_jsonl(edge_files[0]))
@@ -164,12 +166,13 @@ def test_three_edge_families_present(kgx_build: KgxBuild) -> None:
 
 
 def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
-    """RAW Tablassert >= 8.2 edges carry the canonical Translator provenance shape directly.
+    """RAW Tablassert >= 11 edges carry the canonical Translator provenance shape directly.
 
-    Scalar ``primary_knowledge_source`` + a ``sources`` RetrievalSource list: the primary entry
-    carries the edge family's upstream infores and the table's REAL ``source_record_urls``
-    (never the retired ``example.invalid`` placeholder); each upstream infores also appears as
-    its own ``supporting_data_source`` entry.
+    NO flat ``primary_knowledge_source`` scalar (removed in Tablassert 11.0): retrieval
+    provenance lives only in the ``sources`` RetrievalSource list — the primary entry carries
+    the edge family's upstream infores and the table's REAL ``source_record_urls`` (never the
+    retired ``example.invalid`` placeholder); each upstream infores also appears as its own
+    ``supporting_data_source`` entry.
     """
     assert kgx_build.edges, "build-kg produced no edges"
     for edge in kgx_build.edges:
@@ -178,8 +181,8 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
             value = edge.get(field_name)
             assert isinstance(value, str)
             assert value
-        # Primary provenance: the DAKP infores, scalar (Tablassert >= 8.2 shape).
-        assert edge.get("primary_knowledge_source") == INFORES_DAKP
+        # The flat scalar is gone (Tablassert >= 11); the primary source is the sources entry.
+        assert "primary_knowledge_source" not in edge
         # Retrieval provenance: primary entry carries the family's upstream infores + real URLs.
         sources = edge.get("sources")
         assert isinstance(sources, list)
@@ -205,14 +208,14 @@ def test_dailymed_evidence_lands_where_tablassert_10_puts_it(kgx_build: KgxBuild
     ``has_evidence`` is a real multivalued slot of the association class every DAKP edge resolves to
     (``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``), and the generated configs encode it
     with ``split_by: "|"`` — so DAKP's aggregated, pipe-joined SPL-set cell arrives as a real JSON
-    array of ``dailymed:`` CURIEs, never a one-element list holding a joined ``"a|b"`` blob (the
+    array of DailyMed label URLs, never a one-element list holding a joined ``"a|b"`` blob (the
     silent corruption ``split_by`` exists to prevent). The tiny fixtures carry ONE SPL set per
     assertion row, so the arrays here are single-element; the pipe guard is what fails loudly if
     ``split_by`` is ever dropped from the emitted configs.
 
     ``supporting_documents`` is on Tablassert's edge-field allow-list (so it is never folded into
     ``supporting_text``) but is NOT a slot of that association class, so ``prune_to_class`` routes it
-    onto the inlined supporting study instead of the edge.
+    onto the inlined supporting study instead of the edge — as per-section DailyMed URLs.
     """
     dailymed_backed = [edge for edge in kgx_build.edges if edge["predicate"] in {_TREATS, _CONTRA}]
     assert dailymed_backed, "expected DailyMed-backed edges in the build"
@@ -222,13 +225,14 @@ def test_dailymed_evidence_lands_where_tablassert_10_puts_it(kgx_build: KgxBuild
         assert evidence
         for value in evidence:
             assert isinstance(value, str)
-            assert value.startswith("dailymed:"), f"has_evidence value is not a DailyMed CURIE: {value!r}"
+            assert value.startswith(DAILYMED_SET_URL_BASE), f"has_evidence value is not a DailyMed link: {value!r}"
             assert "|" not in value, f"has_evidence kept a joined cell instead of splitting it: {value!r}"
         # Routed off the edge onto the inlined study, values intact.
         assert "supporting_documents" not in edge
         results = next(iter(edge["has_supporting_studies"].values()))["has_study_results"]
         descriptions = [result.get("description", "") for result in results]
         assert any("supporting_documents=" in description for description in descriptions), descriptions
+        assert any(DAILYMED_SET_URL_BASE in description for description in descriptions), descriptions
 
     # FAERS edges have no SPL evidence at all (the assertion table carries no such column).
     for edge in kgx_build.edges:
