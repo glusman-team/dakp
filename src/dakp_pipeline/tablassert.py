@@ -230,6 +230,7 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
         "artifact_base_path": RIG_ARTIFACT_BASE_PATH,
     }
 
+
 # Canonical emission order for the three assertion tables.
 _TABLE_ORDER = ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions")
 

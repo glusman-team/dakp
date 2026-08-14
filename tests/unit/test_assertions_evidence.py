@@ -64,8 +64,7 @@ def test_sorted_pipe_is_deterministic_list_encoding() -> None:
 
 def test_dailymed_set_url_links_to_label_page() -> None:
     assert (
-        sorted_pipe(dailymed_set_url(value) for value in ["SET-B", "SET-A", "SET-B"])
-        == f"{DAILYMED_SET_URL_BASE}SET-A|{DAILYMED_SET_URL_BASE}SET-B"
+        sorted_pipe(dailymed_set_url(value) for value in ["SET-B", "SET-A", "SET-B"]) == f"{DAILYMED_SET_URL_BASE}SET-A|{DAILYMED_SET_URL_BASE}SET-B"
     )
     assert dailymed_set_url(f"{DAILYMED_SET_URL_BASE}SET-A") == f"{DAILYMED_SET_URL_BASE}SET-A"  # idempotent
     assert dailymed_set_url("") == ""

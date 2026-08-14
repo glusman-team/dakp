@@ -124,7 +124,10 @@ def test_second_nda_backfills_subject_curie_for_shared_key(disease_map: dict[str
     assert rows[0]["subject_text"] == "DrugX"
     assert rows[0]["subject_curie"] == "UNII:X"  # back-filled from the second NDA's set
     assert rows[0]["approval_ids"] == "011111|022222"
-    assert rows[0]["supporting_spl_sets"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A|https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-B"
+    assert (
+        rows[0]["supporting_spl_sets"]
+        == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A|https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-B"
+    )
 
 
 # --- DailyMed fallback: un-approved set (178) + duplicate pair (184) ------------

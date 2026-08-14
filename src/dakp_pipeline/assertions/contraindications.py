@@ -67,13 +67,7 @@ from pathlib import Path
 from typing import Any
 
 from dakp_pipeline.assertions import INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, row_for
-from dakp_pipeline.assertions.evidence import (
-    build_dailymed_evidence,
-    dailymed_document_url,
-    dailymed_set_url,
-    sorted_pipe,
-    write_assertion_table,
-)
+from dakp_pipeline.assertions.evidence import build_dailymed_evidence, dailymed_document_url, dailymed_set_url, sorted_pipe, write_assertion_table
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text

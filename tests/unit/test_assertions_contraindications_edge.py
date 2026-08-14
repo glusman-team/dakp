@@ -259,7 +259,10 @@ def test_second_observation_of_same_pair_unions_support(tmp_path: Path) -> None:
     assert row["subject_text"] == "DrugX"
     assert row["object_text"] == "asthma"
     assert row["object_curie"] == ""
-    assert row["supporting_spl_sets"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A|https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-B"  # both observations unioned
+    assert (
+        row["supporting_spl_sets"]
+        == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A|https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-B"
+    )  # both observations unioned
     assert row["source_score"] == "1"
 
 

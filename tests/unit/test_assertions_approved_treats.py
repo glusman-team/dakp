@@ -103,7 +103,10 @@ def test_multi_nda_for_same_subject_object_aggregates_approval_ids(disease_map: 
     assert len(rows) == 1
     row = rows[0]
     assert row["approval_ids"] == "012345|099998"  # sorted, deduped
-    assert row["supporting_spl_sets"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A|https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-B"
+    assert (
+        row["supporting_spl_sets"]
+        == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A|https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-B"
+    )
     assert (
         row["supporting_spl_documents"]
         == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A#34067-9|https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-B#34067-9"
