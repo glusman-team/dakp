@@ -19,6 +19,7 @@ from dakp_pipeline.assertions.evidence import (
     merge_unique,
     normalize_nda,
     sorted_pipe,
+    spl_evidence_pipe,
 )
 from dakp_pipeline.io.contracts import ArtifactRef
 
@@ -75,6 +76,20 @@ def test_dailymed_document_url_keeps_the_loinc_fragment() -> None:
     assert dailymed_document_url("SET-A") == f"{DAILYMED_SET_URL_BASE}SET-A"
     assert dailymed_document_url(f"{DAILYMED_SET_URL_BASE}SET-A#34067-9") == f"{DAILYMED_SET_URL_BASE}SET-A#34067-9"  # idempotent
     assert dailymed_document_url("") == ""
+
+
+def test_spl_evidence_pipe_unions_both_dailymed_granularities() -> None:
+    """The ``has_evidence`` column carries SPL sets AND label sections in ONE array.
+
+    Two annotations cannot share a name (a second ``has_evidence`` would silently overwrite
+    the first), so the union is built here rather than by declaring the column twice.
+    """
+    assert spl_evidence_pipe(["SET-B", "SET-A"], ["SET-A#34067-9"]) == (
+        f"{DAILYMED_SET_URL_BASE}SET-A|{DAILYMED_SET_URL_BASE}SET-A#34067-9|{DAILYMED_SET_URL_BASE}SET-B"
+    )
+    # Already-linked input stays single-prefixed, and duplicates collapse.
+    assert spl_evidence_pipe([f"{DAILYMED_SET_URL_BASE}SET-A", "SET-A"], []) == f"{DAILYMED_SET_URL_BASE}SET-A"
+    assert spl_evidence_pipe([], []) == ""
 
 
 # --- DailyMed SPL-support index -------------------------------------------------

@@ -510,11 +510,7 @@ template:
   annotations:
     - annotation: has_evidence
       method: column
-      encoding: L
-      split_by: "|"
-    - annotation: supporting_documents
-      method: column
-      encoding: M
+      encoding: N
       split_by: "|"
     - annotation: supporting_text
       method: column
@@ -522,4 +518,4 @@ template:
       split_by: "|"
     - annotation: source_score
       method: column
-      encoding: N
+      encoding: O

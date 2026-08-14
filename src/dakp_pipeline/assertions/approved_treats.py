@@ -32,7 +32,9 @@ aggregated per ``(subject, object)`` as deduplicated, sorted, pipe-joined lists,
 the sets whose indication text actually mentions the condition (the legacy "SPLs containing
 both UNII and CURIE"). SPL set and document evidence is emitted as DailyMed label URLs
 (``https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=<spl_set_id>[#<loinc>]``) so the
-values are directly clickable links. Subject CURIEs
+values are directly clickable links, and ``supporting_spl_evidence`` unions both granularities
+into the single column Tablassert encodes as Biolink ``has_evidence`` (see
+:func:`~dakp_pipeline.assertions.evidence.spl_evidence_pipe`). Subject CURIEs
 are populated only where DailyMed already gives a UNII; object CURIEs come from the lexical
 disease baseline. Canonical CURIE mapping is a later milestone (text-first).
 """
@@ -55,6 +57,7 @@ from dakp_pipeline.assertions.evidence import (
     merge_unique,
     normalize_nda,
     sorted_pipe,
+    spl_evidence_pipe,
     write_assertion_table,
 )
 from dakp_pipeline.assertions.observed_uses import is_non_disease_indication
@@ -164,6 +167,7 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         approval_ids=sorted_pipe(agg["approval_ids"]),
         supporting_spl_sets=sorted_pipe(dailymed_set_url(set_id) for set_id in agg["sets"]),
         supporting_spl_documents=sorted_pipe(dailymed_document_url(doc_id) for doc_id in agg["docs"]),
+        supporting_spl_evidence=spl_evidence_pipe(agg["sets"], agg["docs"]),
         clinical_approval_status=_STATUS,
         knowledge_level=KL_ASSERTION,
         agent_type=AT_MANUAL,

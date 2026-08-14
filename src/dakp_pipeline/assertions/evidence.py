@@ -7,7 +7,8 @@ Pure, testable building blocks used by every assertion shaper:
   cross-source NDA join goes through :func:`normalize_nda`.
 * **Provenance column assembly** — deduplicated, deterministically sorted, pipe-joined
   lists (the Translator list-encoding convention) for ``approval_ids``,
-  ``supporting_spl_sets`` and ``supporting_spl_documents``.
+  ``supporting_spl_sets``, ``supporting_spl_documents``, and the ``supporting_spl_evidence``
+  union of the latter two that Tablassert encodes as Biolink ``has_evidence``.
 * **SPL-support joining** — index DailyMed SPL approvals/ingredients/sections and
   Drugs@FDA application→ingredient lookups so shapers can ask "which SPL sets support
   this approval?" without re-scanning frames.
@@ -101,6 +102,20 @@ def merge_unique(*value_lists: Iterable[Any]) -> list[str]:
 def sorted_pipe(values: Iterable[Any]) -> str:
     """Deduplicated, sorted, ``|``-joined encoding of ``values`` (Translator list convention)."""
     return "|".join(merge_unique(values))
+
+
+def spl_evidence_pipe(sets: Iterable[Any], documents: Iterable[Any]) -> str:
+    """Pipe-joined DailyMed label URLs for every SPL set AND section backing an assertion.
+
+    This is the column Tablassert encodes as the Biolink ``has_evidence`` slot, and it carries
+    BOTH granularities because it must: two annotations cannot share a name, so a section can
+    declare ``has_evidence`` exactly once (see the routing note in
+    :mod:`dakp_pipeline.tablassert`). They are the same evidence at different resolutions —
+    a document id is its own set id plus a ``#<loinc>`` fragment — so the union is one coherent
+    ``has_evidence`` array rather than two competing ones: the set URL opens the label, the
+    document URL names the section the text was actually read from.
+    """
+    return sorted_pipe([*(dailymed_set_url(value) for value in sets), *(dailymed_document_url(value) for value in documents)])
 
 
 # --- input table resolution -----------------------------------------------------
@@ -361,5 +376,6 @@ __all__ = [
     "merge_unique",
     "normalize_nda",
     "sorted_pipe",
+    "spl_evidence_pipe",
     "write_assertion_table",
 ]
