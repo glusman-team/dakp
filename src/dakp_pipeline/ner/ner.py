@@ -13,10 +13,16 @@ Composite design (gazetteer-first, GLiNER-augmented)
   and offline runs.
 * **Production mode (``offline=False``):** the same gazetteer anchors high-precision spans and
   GLiNER zero-shot (``gliner-community/gliner_large-v2.5``) fills out-of-gazetteer gaps.
-  Gazetteer spans win on overlap; non-overlapping GLiNER spans add recall. Model spans whose
-  normalized surface is a population descriptor (``_POPULATION_PHRASES``, e.g. "women of
-  childbearing potential") are dropped, and spans a hard window split cuts across a phrase
-  boundary are re-joined. GLiNER is natively
+  Non-overlapping GLiNER spans add recall; on overlap the **most specific span wins** — a model
+  span that strictly contains a gazetteer span supersedes it (``pulmonary hypertension`` beats
+  ``hypertension``), taking the model's boundary and the gazetteer's type. Equal spans, partial
+  overlaps and spans covering several gazetteer terms (a conjunction) all go to the gazetteer.
+  Model spans whose normalized surface is a population descriptor (``_POPULATION_PHRASES``, e.g.
+  "women of childbearing potential") are dropped, leading hedge tokens (``recent``, ``a history
+  of``) are trimmed, and spans a hard window split cuts across a phrase boundary are re-joined.
+  Candidates are generated wide (``DEFAULT_THRESHOLD``) and accepted narrow
+  (``DEFAULT_ACCEPT_THRESHOLD``); the backend **abstains** on anything in between rather than
+  asserting a low-confidence mention or falling back to a less specific one. GLiNER is natively
   multi-entity: one ``predict_entities`` call scores every requested label (disease + phenotype
   here) and returns any number of spans per label. GLiNER silently truncates inputs past
   ``config.max_len`` word tokens (768 on the shipped v2.5 checkpoint), so long sections are
@@ -51,11 +57,17 @@ from dakp_pipeline.ner.model_cache import NERDependencyError, ensure_model
 # GLiNER v2.5 large (deberta-v3-large encoder, max_len 768 word tokens, multi-entity: up to
 # ``max_types`` labels per call). Override for a smaller / biomedical-tuned checkpoint.
 DEFAULT_MODEL = "gliner-community/gliner_large-v2.5"
-#: Confidence operating point. Kept at 0.5 — the recall-safe default for a drug-safety KG. A
-#: sweep on the gold fixture (``ner/BENCHMARK.md``) shows composite recall is 1.0 at both 0.5
-#: and 0.65; tightening to 0.65 only trims one boundary false positive, at the (unmeasured)
-#: cost of real-world OOV recall. Tighten deliberately, not by default.
-DEFAULT_THRESHOLD = 0.5
+#: Candidate-**generation** threshold, passed straight to ``predict_entities``. Deliberately
+#: BELOW :data:`DEFAULT_ACCEPT_THRESHOLD`: a specific span often scores lower than its generic
+#: head (``drug hypersensitivity`` 0.35 vs ``hypersensitivity``), so generating at the old 0.5
+#: hid exactly the spans the specificity merge exists to prefer. Generate wide, decide narrow.
+DEFAULT_THRESHOLD = 0.35
+#: DAKP-side **acceptance** floor — the confidence a model span must reach to be emitted at all.
+#: Spans in the ``[DEFAULT_THRESHOLD, DEFAULT_ACCEPT_THRESHOLD)`` band are visible to the merge
+#: (so they can still win a boundary contest) but are abstained on rather than asserted. This is
+#: the recall-safe 0.5 operating point the backend has always shipped, now enforced here instead
+#: of inside GLiNER. Tighten deliberately, not by default.
+DEFAULT_ACCEPT_THRESHOLD = 0.5
 
 # GLiNER counts input in word tokens from its whitespace splitter and silently truncates anything
 # past ``config.max_len`` tokens (only a UserWarning). Mirror that exact token pattern (gliner's
@@ -155,6 +167,69 @@ _POPULATION_PHRASES: frozenset[str] = frozenset(
     )
 )
 
+# Non-clinical tokens trimmed off the LEFT edge of a model span before the specificity merge.
+# This is what makes "the more specific span always wins" safe: it removes the modifier
+# over-extension (``recent myocardial infarction``, ``a history of peptic ulcer disease``) that
+# ``ner/BENCHMARK.md`` cites as the reason overlap-extension was originally skipped, while leaving
+# real qualifiers alone. The list is a CLOSED class (determiners, prepositions, temporal/
+# evidential hedges, population heads) and the polarity matters: anything NOT listed counts as a
+# clinical qualifier and is kept, so ``severe`` / ``active`` / ``congestive`` / ``pulmonary``
+# survive — the gazetteer itself ships ``severe heart failure`` and ``active liver disease``.
+# Left edge only: trimming the right edge would turn the population descriptor "pregnant women"
+# into the emittable "pregnant", defeating _POPULATION_PHRASES.
+_HEDGE_TOKENS: frozenset[str] = frozenset(
+    (
+        # determiners / quantifiers
+        "a",
+        "an",
+        "the",
+        "any",
+        "all",
+        "some",
+        "other",
+        "certain",
+        "this",
+        "these",
+        "those",
+        # prepositions / conjunctions
+        "of",
+        "with",
+        "in",
+        "to",
+        "and",
+        "or",
+        "for",
+        "on",
+        "at",
+        # temporal / evidential hedges
+        "recent",
+        "recently",
+        "prior",
+        "previous",
+        "previously",
+        "history",
+        "known",
+        "suspected",
+        "possible",
+        "potential",
+        "current",
+        "currently",
+        "ongoing",
+        "documented",
+        "existing",
+        "preexisting",
+        "underlying",
+        # population heads (the subject, not the condition)
+        "patient",
+        "patients",
+        "women",
+        "men",
+        "children",
+        "individuals",
+        "subjects",
+    )
+)
+
 
 def _install_message(module: str) -> str:
     return f"NER production mode requires the '{module}' package (a core DAKP dependency) but it is not importable. Install all dependencies with: uv sync"
@@ -164,8 +239,17 @@ def _sort_key(mention: Mention) -> tuple[int, int, str, str]:
     return (mention.start, mention.end, mention.type, mention.text)
 
 
+def _overlaps(start: int, end: int, other: tuple[int, int]) -> bool:
+    return start < other[1] and other[0] < end
+
+
 def _overlaps_any(start: int, end: int, covered: list[tuple[int, int]]) -> bool:
-    return any(start < cov_end and cov_start < end for cov_start, cov_end in covered)
+    return any(_overlaps(start, end, span) for span in covered)
+
+
+def _contains(outer: tuple[int, int], inner: tuple[int, int]) -> bool:
+    """True when ``outer`` covers ``inner`` (equal spans included — callers exclude equality)."""
+    return outer[0] <= inner[0] and inner[1] <= outer[1]
 
 
 @dataclass(frozen=True)
@@ -176,6 +260,80 @@ class _ModelSpan:
     end: int
     type: str
     score: float
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """A trimmed model span that survived the gazetteer contest, plus what it supersedes.
+
+    ``anchor`` is the index of the single gazetteer mention this span strictly contains — the
+    more-specific-boundary case (``pulmonary hypertension`` ⊃ ``hypertension``) — or ``-1`` when
+    the span stands alone with no gazetteer interaction.
+    """
+
+    span: _ModelSpan
+    anchor: int
+
+
+def _trim_hedges(text: str, start: int, end: int) -> tuple[int, int] | None:
+    """Trim leading :data:`_HEDGE_TOKENS` off a model span; ``None`` if nothing survives.
+
+    Offsets move only to :data:`_GLINER_TOKEN` match boundaries, so the half-open invariant
+    ``mention.text == text[start:end]`` still holds. A span with no leading hedge is returned
+    untouched (leading whitespace/punctuation included), so spans the model already got right
+    are byte-identical to the pre-trim behavior.
+    """
+    tokens = list(_GLINER_TOKEN.finditer(text, start, end))
+    if not tokens:
+        return None
+    for position, token in enumerate(tokens):
+        if normalize_text(token.group()) not in _HEDGE_TOKENS:
+            return (token.start(), end) if position else (start, end)
+    return None  # every token was a hedge ("patients with") — not a mention
+
+
+def _candidates_vs_gazetteer(model_spans: list[_ModelSpan], gazetteer_spans: list[tuple[int, int]]) -> list[_Candidate]:
+    """Resolve each model span against the gazetteer; drop the ones the gazetteer wins.
+
+    * strictly contains exactly one gazetteer span -> candidate that **supersedes** it (the model
+      found the more specific boundary);
+    * equal span, or partial overlap in either direction -> gazetteer wins (its span AND its type
+      are the high-precision anchor), model span dropped;
+    * contains **several** gazetteer spans -> a conjunction (``asthma or hypertension``), not a
+      qualifier: the gazetteer spans stand and the model span is dropped;
+    * no overlap at all -> free-standing candidate (``anchor=-1``), the OOV-recall case.
+    """
+    candidates: list[_Candidate] = []
+    for span in model_spans:
+        bounds = (span.start, span.end)
+        contained: list[int] = []
+        blocked = False
+        for index, gazetteer_span in enumerate(gazetteer_spans):
+            if not _overlaps(span.start, span.end, gazetteer_span):
+                continue
+            if gazetteer_span != bounds and _contains(bounds, gazetteer_span):
+                contained.append(index)
+            else:
+                blocked = True
+                break
+        if blocked or len(contained) > 1:
+            continue
+        candidates.append(_Candidate(span=span, anchor=contained[0] if contained else -1))
+    return candidates
+
+
+def _select_candidates(candidates: list[_Candidate]) -> list[_Candidate]:
+    """De-overlap model candidates, most specific first: longest span wins.
+
+    Ties break on score, then ``(start, end, type)`` so the result is deterministic regardless of
+    the order GLiNER returned its entities in.
+    """
+    ordered = sorted(candidates, key=lambda c: (-(c.span.end - c.span.start), -c.span.score, c.span.start, c.span.end, c.span.type))
+    kept: list[_Candidate] = []
+    for candidate in ordered:
+        if not _overlaps_any(candidate.span.start, candidate.span.end, [(k.span.start, k.span.end) for k in kept]):
+            kept.append(candidate)
+    return kept
 
 
 def _merge_straddling_spans(windows: list[tuple[int, str]], spans_by_window: list[list[_ModelSpan]]) -> None:
@@ -328,7 +486,12 @@ class DiseaseNER:
         gazetteer: a :class:`Gazetteer`, a ``{surface: type}`` mapping, or ``None`` to use the
             curated :data:`EMBEDDED_GAZETTEER`.
         model_id: GLiNER checkpoint (production mode).
-        threshold: GLiNER confidence threshold (production mode).
+        threshold: GLiNER candidate-**generation** threshold (production mode). Generate wide:
+            this only decides what the merge gets to look at.
+        accept_threshold: DAKP-side **acceptance** floor (production mode). A model span below it
+            is abstained on — emitted as nothing, never downgraded to the generic gazetteer term
+            it was competing with. Keep ``threshold <= accept_threshold``; an ``accept_threshold``
+            below ``threshold`` is simply a no-op (GLiNER already filtered).
         chunk_words: window budget in GLiNER word tokens for long texts (production mode);
             ``None`` = the loaded model's ``config.max_len``, fallback 384. GLiNER silently
             truncates anything longer, so longer texts are predicted window by window.
@@ -345,6 +508,7 @@ class DiseaseNER:
         gazetteer: Gazetteer | Mapping[str, str] | None = None,
         model_id: str = DEFAULT_MODEL,
         threshold: float = DEFAULT_THRESHOLD,
+        accept_threshold: float = DEFAULT_ACCEPT_THRESHOLD,
         chunk_words: int | None = None,
         cache_dir: Path | str | None = None,
         workdir: Path | str | None = None,
@@ -361,6 +525,7 @@ class DiseaseNER:
         self._offline = offline
         self._model_id = model_id
         self._threshold = threshold
+        self._accept = accept_threshold
         self._chunk_words = chunk_words
         self._cache_dir = cache_dir
         self._workdir = workdir
@@ -377,8 +542,10 @@ class DiseaseNER:
     def extract(self, text: str) -> list[Mention]:
         """Extract disease/phenotype mentions, deterministically ordered.
 
-        Offline: gazetteer spans only. Production: gazetteer spans plus non-overlapping GLiNER
-        spans (gazetteer wins on overlap). Empty/blank text yields no mentions.
+        Offline: gazetteer spans only. Production: gazetteer spans merged with GLiNER spans,
+        most specific span winning on containment (see :meth:`_merge_model_spans`). Empty/blank
+        text yields no mentions — as does text whose only candidates fall below the acceptance
+        floor, so callers must always handle an empty list.
         """
         if not text or not text.strip():
             return []
@@ -415,24 +582,29 @@ class DiseaseNER:
             "gazetteer": self._gazetteer,
             "model_id": self._model_id,
             "threshold": self._threshold,
+            "accept_threshold": self._accept,
             "chunk_words": self._chunk_words,
             "cache_dir": self._cache_dir,
             "workdir": self._workdir,
         }
 
     def _merge_model_spans(self, text: str, gazetteer_mentions: list[Mention]) -> list[Mention]:
-        """Add non-overlapping GLiNER disease/phenotype spans; gazetteer spans win on overlap.
+        """Merge GLiNER spans with the gazetteer, preferring the **most specific** span.
 
         GLiNER silently truncates inputs past ``config.max_len`` word tokens, so long text is
         predicted in exact-substring windows (:func:`_windows`) and each span's offsets are
-        shifted back into full-text coordinates before the merge. Model spans whose normalized
-        surface is a population descriptor (:data:`_POPULATION_PHRASES`) are dropped, and spans a
-        hard split cut across a phrase boundary are re-joined (:func:`_merge_straddling_spans`).
+        shifted back into full-text coordinates first. Model spans whose normalized surface is a
+        population descriptor (:data:`_POPULATION_PHRASES`) are dropped, and spans a hard split
+        cut across a phrase boundary are re-joined (:func:`_merge_straddling_spans`) — the rejoin
+        runs before trimming so window-flush offsets still line up.
+
+        Surviving spans are then hedge-trimmed (:func:`_trim_hedges`), contested against the
+        gazetteer (:func:`_candidates_vs_gazetteer`), de-overlapped longest-first
+        (:func:`_select_candidates`) and finally gated on :data:`DEFAULT_ACCEPT_THRESHOLD` — see
+        :meth:`_emit`.
         """
         model = self._load_model()
         budget = _token_budget(model, self._chunk_words)
-        covered: list[tuple[int, int]] = [(mention.start, mention.end) for mention in gazetteer_mentions]
-        merged = list(gazetteer_mentions)
         labels = list(CONTRAINDICATION_DISEASE_TYPES)
         windows = _windows(text, budget)
         spans_by_window: list[list[_ModelSpan]] = []
@@ -446,27 +618,77 @@ class DiseaseNER:
                 start, end = window_start + int(entity["start"]), window_start + int(entity["end"])
                 if normalize_text(text[start:end]) in _POPULATION_PHRASES:
                     continue
-                if _overlaps_any(start, end, covered):
-                    continue
                 spans.append(_ModelSpan(start=start, end=end, type=etype, score=float(entity["score"])))
             spans_by_window.append(spans)
         _merge_straddling_spans(windows, spans_by_window)
-        for spans in spans_by_window:
-            for span in spans:
-                covered.append((span.start, span.end))
-                surface = text[span.start : span.end]
-                merged.append(
-                    Mention(
-                        text=surface,
-                        start=span.start,
-                        end=span.end,
-                        type=span.type,
-                        score=span.score,
-                        normalized=normalize_text(surface),
-                        notes="gliner",
-                    )
+        trimmed = self._trimmed_spans(text, [span for spans in spans_by_window for span in spans])
+        gazetteer_spans = [(mention.start, mention.end) for mention in gazetteer_mentions]
+        candidates = _select_candidates(_candidates_vs_gazetteer(trimmed, gazetteer_spans))
+        return self._emit(text, gazetteer_mentions, candidates)
+
+    def _trimmed_spans(self, text: str, spans: list[_ModelSpan]) -> list[_ModelSpan]:
+        """Hedge-trim every model span, re-applying the population filter to the trimmed surface.
+
+        The population re-check matters because trimming can *reveal* a descriptor: ``in pregnant
+        women`` trims to ``pregnant women``, which is a subject population, not a phenotype.
+        """
+        trimmed: list[_ModelSpan] = []
+        for span in spans:
+            bounds = _trim_hedges(text, span.start, span.end)
+            if bounds is None:
+                continue
+            start, end = bounds
+            if normalize_text(text[start:end]) in _POPULATION_PHRASES:
+                continue
+            trimmed.append(_ModelSpan(start=start, end=end, type=span.type, score=span.score))
+        return trimmed
+
+    def _emit(self, text: str, gazetteer_mentions: list[Mention], candidates: list[_Candidate]) -> list[Mention]:
+        """Apply the acceptance floor and build the final mention list.
+
+        A candidate that supersedes a gazetteer span takes the model's **boundary** but keeps the
+        **gazetteer's type**: ``ner/BENCHMARK.md`` records GLiNER mistyping exactly these terms
+        (``gastrointestinal bleeding``, ``QT prolongation``, ``seizures``), and type confusion is
+        orthogonal to boundary precision — the gazetteer is still the better authority on type.
+
+        Below the floor the backend **abstains**: a superseded gazetteer mention is not
+        resurrected, because emitting ``hypertension`` for text that reads ``pulmonary
+        hypertension`` asserts a broader contraindication than the label supports. Returning
+        nothing is the honest answer, and ``extract`` already contracts an empty list.
+        """
+        superseded: set[int] = set()
+        accepted: list[Mention] = []
+        for candidate in candidates:
+            span = candidate.span
+            surface = text[span.start : span.end]
+            supersedes = candidate.anchor >= 0
+            if supersedes:
+                superseded.add(candidate.anchor)
+            if span.score < self._accept:
+                self._abstain(surface, span.score, "superseded_unresolved" if supersedes else "below_accept_floor")
+                continue
+            etype = gazetteer_mentions[candidate.anchor].type if supersedes else span.type
+            accepted.append(
+                Mention(
+                    text=surface,
+                    start=span.start,
+                    end=span.end,
+                    type=etype,
+                    score=span.score,
+                    normalized=normalize_text(surface),
+                    notes="gliner:extends" if supersedes else "gliner",
                 )
-        return merged
+            )
+        kept = [mention for index, mention in enumerate(gazetteer_mentions) if index not in superseded]
+        return kept + accepted
+
+    def _abstain(self, surface: str, score: float, reason: str) -> None:
+        """Record a mention the backend declined to assert.
+
+        DEBUG level on purpose: per-span detail is what you need to retune ``accept_threshold``,
+        but a production run mines tens of thousands of sections and this must not flood INFO.
+        """
+        stats(logger, "ner_abstain", level="DEBUG", reason=reason, surface=surface, score=round(score, 4), accept_threshold=self._accept)
 
 
 # --- module-level entry points -------------------------------------------------
@@ -492,6 +714,7 @@ def extract_contraindication_diseases(text: str, ner: DiseaseNER | None = None) 
 
 __all__ = [
     "CONTRAINDICATION_DISEASE_TYPES",
+    "DEFAULT_ACCEPT_THRESHOLD",
     "DEFAULT_MODEL",
     "DEFAULT_THRESHOLD",
     "EMBEDDED_GAZETTEER",
