@@ -32,15 +32,12 @@ DAG_ID = "dakp_build"
 GO_QUEUE = "golang"
 #: Pool bounding concurrent source downloads (network I/O).
 DOWNLOAD_POOL = "dakp_download"
-#: Pool bounding concurrent raw->interim parses (CPU I/O) — the Go extract stubs run here.
+#: Pool bounding concurrent raw->interim parses (CPU I/O) — the Go extract stubs run here. The CLI
+#: sizes it to 4 slots; the three extracts use the default 1 slot each, so DailyMed, FAERS, and
+#: Drugs@FDA all extract concurrently. The streaming FAERS rewrite (plans/fix-faers-memory.md)
+#: dropped extract_faers peak RSS from ≫50 GB to ~6-15 GB, removing the memory pressure that
+#: previously forced the two heavy extracts to serialize via weighted pool slots.
 EXTRACT_POOL = "dakp_extract"
-
-#: Pool-slot weights for the 4-slot ``dakp_extract`` pool on wenceslaus. FAERS and DailyMed are
-#: memory-heavy enough that they should not overlap under the 50 GB pipeline RAM budget, while the
-#: tiny Drugs@FDA parse can run beside either heavy extraction.
-DAILYMED_EXTRACT_POOL_SLOTS = 3
-FAERS_EXTRACT_POOL_SLOTS = 3
-DRUGSFDA_EXTRACT_POOL_SLOTS = 1
 
 #: Airflow Variable (JSON) holding the per-run config (workdir / fixture_root / threads / limits).
 CONFIG_VARIABLE = "dakp_config"
@@ -56,10 +53,10 @@ The DAG is organized into five visual TaskGroups while preserving the historical
 4. **tablassert** — config generation and optional real Tablassert KGX handoff.
 5. **summary** — terminal translator validation/regression/build-summary task.
 
-The `dakp_extract` pool has 4 slots. DailyMed and FAERS extraction each consume 3 slots, and
-Drugs@FDA consumes 1 slot. This allows the small Drugs@FDA extract to overlap with either heavy
-extract while preventing DailyMed and FAERS from extracting concurrently under the 50 GB memory
-budget on wenceslaus.
+The `dakp_extract` pool has 4 slots; each extract consumes the default 1 slot, so DailyMed, FAERS,
+and Drugs@FDA all extract concurrently. (The streaming FAERS rewrite — plans/fix-faers-memory.md —
+dropped `extract_faers` peak RSS from ≫50 GB to ~6-15 GB, so the two heavy extracts no longer need
+to be serialized under the 50 GB memory budget.)
 """
 
 _ACQUIRE_DOC_MD = """Acquire raw source/model artifacts and return small `ArtifactRef` manifests via XCom."""
@@ -184,13 +181,13 @@ def _build_extract_stage(raw: AcquireOutputs) -> ExtractOutputs:
         # No Python body: the ExecutableCoordinator forks the Go bundle, which reads the upstream
         # acquire_* ArtifactRefs from XCom, parses with internal/{dailymed,faers,drugsfda}, writes
         # the interim parquet + TSV handoff into the store, and pushes output ArtifactRefs as XCom.
-        @task.stub(queue=GO_QUEUE, pool=EXTRACT_POOL, pool_slots=DAILYMED_EXTRACT_POOL_SLOTS, doc_md=_EXTRACT_DOC_MD)
+        @task.stub(queue=GO_QUEUE, pool=EXTRACT_POOL, doc_md=_EXTRACT_DOC_MD)
         def extract_dailymed(raw_refs: Any) -> list[dict[str, Any]]: ...
 
-        @task.stub(queue=GO_QUEUE, pool=EXTRACT_POOL, pool_slots=FAERS_EXTRACT_POOL_SLOTS, doc_md=_EXTRACT_DOC_MD)
+        @task.stub(queue=GO_QUEUE, pool=EXTRACT_POOL, doc_md=_EXTRACT_DOC_MD)
         def extract_faers(raw_refs: Any) -> list[dict[str, Any]]: ...
 
-        @task.stub(queue=GO_QUEUE, pool=EXTRACT_POOL, pool_slots=DRUGSFDA_EXTRACT_POOL_SLOTS, doc_md=_EXTRACT_DOC_MD)
+        @task.stub(queue=GO_QUEUE, pool=EXTRACT_POOL, doc_md=_EXTRACT_DOC_MD)
         def extract_drugsfda(raw_refs: Any) -> list[dict[str, Any]]: ...
 
         return ExtractOutputs(dailymed=extract_dailymed(raw.dailymed), faers=extract_faers(raw.faers), drugsfda=extract_drugsfda(raw.drugsfda))
@@ -357,15 +354,4 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
 # Register the DAG (Airflow scans the dags folder for module-level DAGs).
 dag_obj: Any = dakp_build()
 
-__all__ = [
-    "CONFIG_VARIABLE",
-    "DAG_ID",
-    "DAILYMED_EXTRACT_POOL_SLOTS",
-    "DOWNLOAD_POOL",
-    "DRUGSFDA_EXTRACT_POOL_SLOTS",
-    "EXTRACT_POOL",
-    "FAERS_EXTRACT_POOL_SLOTS",
-    "GO_QUEUE",
-    "dag_obj",
-    "dakp_build",
-]
+__all__ = ["CONFIG_VARIABLE", "DAG_ID", "DOWNLOAD_POOL", "EXTRACT_POOL", "GO_QUEUE", "dag_obj", "dakp_build"]
