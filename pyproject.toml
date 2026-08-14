@@ -28,13 +28,14 @@ classifiers = [
 # network or Tablassert, but a single `uv sync` now materializes the whole production runtime.
 # Tablassert is pinned to the `[qc]` variant because the KG build needs the embedding-based
 # `tablassert build-kg --qc` audit (sentence-transformers). The >= 12 floor is required: 12.0
-# reads only `tablassert.fullmap.v5` redb fullmaps (v1-v4 are rejected on read — rebuild with
-# `tablassert build-fullmap`), emits `approval_ids` as a curated top-level edge field instead of
-# folding it into `supporting_text`, no longer fabricates an empty supporting study for
-# publication-less sections, and moves the QC embedding stage to SapBERT (cache:
-# `.tablassert/sapbert/`). 11.0 had already removed the flat `primary_knowledge_source` edge
-# column (nested `sources[]` provenance only) and made the `rig:` graph-config section mandatory
-# (DAKP's graph.yaml carries one).
+# emits `approval_ids` as a curated top-level edge field instead of folding it into
+# `supporting_text`, no longer fabricates an empty supporting study for publication-less
+# sections, and moves the QC embedding stage to SapBERT (cache: `.tablassert/sapbert/`).
+# Fullmaps must be `tablassert.fullmap.v5` redb files — the on-disk format since Tablassert
+# 8.2, unchanged in 12.0, so an 11.0-built fullmap keeps working; anything older is rejected
+# on read (rebuild with `tablassert build-fullmap`). 11.0 had already removed the flat
+# `primary_knowledge_source` edge column (nested `sources[]` provenance only) and made the
+# `rig:` graph-config section mandatory (DAKP's graph.yaml carries one).
 dependencies = [
     # Bundles a statically-linked aria2c binary (PyPI dist `aria2`, import name `aria2c`) so the
     # FAERS + Drugs@FDA fetchers get multi-connection downloads with no separate system install.

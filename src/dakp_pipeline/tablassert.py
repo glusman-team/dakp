@@ -56,10 +56,11 @@ is what the emitted configs target, 9.1's per-row ``split_by`` (made the ONLY mu
 annotation encoding in 10.0) is what DAKP's pipe-joined evidence cells need, 11.0 makes
 the graph config's ``rig:`` section mandatory while dropping the flat
 ``primary_knowledge_source`` edge column (nested ``sources[]`` provenance only — the edge
-primary source now derives from ``rig.source_info.infores_id``), and 12.0 reads only
-``tablassert.fullmap.v5`` redb fullmaps (v1-v4 are rejected on read), keeps ``approval_ids``
-as a curated TOP-LEVEL edge field instead of folding it into ``supporting_text``, and stops
-fabricating an empty supporting study for publication-less sections like DAKP's.
+primary source now derives from ``rig.source_info.infores_id``), and 12.0 keeps ``approval_ids``
+as a curated TOP-LEVEL edge field instead of folding it into ``supporting_text`` and stops
+fabricating an empty supporting study for publication-less sections like DAKP's. Fullmaps must
+be ``tablassert.fullmap.v5`` redb files — the on-disk format since Tablassert 8.2; older ones
+(v1-v4) are rejected on read.
 
 The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it is
 on ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout override (the
@@ -116,9 +117,9 @@ GRAPH_NAME = "dakp"
 #: field, and Tablassert reads the fullmap path FROM this field on a graph build (the
 #: ``build-kg --fullmap`` flag was removed in Tablassert 8.1) — so :func:`generate`
 #: writes the real ``ctx.params["fullmap"]`` here for real runs. DAKP never downloads a fullmap.
-#: Tablassert >= 12 reads only ``tablassert.fullmap.v5`` redb files — a fullmap built by an
-#: older Tablassert is rejected on read ("fullmap DB is outdated"); rebuild it with the
-#: installed ``tablassert build-fullmap``.
+#: Tablassert reads only ``tablassert.fullmap.v5`` redb files (the on-disk format since
+#: Tablassert 8.2) — a fullmap built by 8.1 or older is rejected on read ("fullmap DB is
+#: outdated"); rebuild it with the installed ``tablassert build-fullmap``.
 FULLMAP_DEFAULT = ".fullmap"
 
 #: Real upstream dataset URL recorded as each table's ``source.url`` — the constants the
@@ -823,8 +824,9 @@ class TablassertRunner:
             msg = (
                 "a fullmap redb path is required for a real Tablassert handoff but none was provided: pass "
                 "`--fullmap <path>` to `dakp up` (DAKP no longer downloads a fullmap; build one with "
-                "`tablassert build-fullmap`). Tablassert >= 12 reads only `tablassert.fullmap.v5` redb "
-                "files — a fullmap built by an older Tablassert must be rebuilt"
+                "`tablassert build-fullmap`). Tablassert reads only `tablassert.fullmap.v5` redb "
+                "files (the format since Tablassert 8.2) — a fullmap built by 8.1 or older must be "
+                "rebuilt"
             )
             raise RuntimeError(msg)
         fullmap = str(fullmap_value)
