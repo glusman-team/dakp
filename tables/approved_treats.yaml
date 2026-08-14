@@ -348,12 +348,8 @@ template:
       encoding: J
     - annotation: has_evidence
       method: column
-      encoding: K
-      split_by: "|"
-    - annotation: supporting_documents
-      method: column
-      encoding: L
+      encoding: M
       split_by: "|"
     - annotation: clinical_approval_status
       method: column
-      encoding: M
+      encoding: N

@@ -202,20 +202,24 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
         assert supporting == set(family.required_upstream)
 
 
-def test_dailymed_evidence_lands_where_tablassert_10_puts_it(kgx_build: KgxBuild) -> None:
-    """The two DailyMed evidence columns land in their VERIFIED Tablassert >= 10 destinations.
+def test_dailymed_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> None:
+    """Both DailyMed evidence granularities ride the edge in ONE ``has_evidence`` array.
 
     ``has_evidence`` is a real multivalued slot of the association class every DAKP edge resolves to
     (``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``), and the generated configs encode it
-    with ``split_by: "|"`` — so DAKP's aggregated, pipe-joined SPL-set cell arrives as a real JSON
-    array of DailyMed label URLs, never a one-element list holding a joined ``"a|b"`` blob (the
-    silent corruption ``split_by`` exists to prevent). The tiny fixtures carry ONE SPL set per
-    assertion row, so the arrays here are single-element; the pipe guard is what fails loudly if
-    ``split_by`` is ever dropped from the emitted configs.
+    with ``split_by: "|"`` — so DAKP's aggregated, pipe-joined cell arrives as a real JSON array of
+    DailyMed label URLs, never a one-element list holding a joined ``"a|b"`` blob (the silent
+    corruption ``split_by`` exists to prevent).
 
-    ``supporting_documents`` is on Tablassert's edge-field allow-list (so it is never folded into
-    ``supporting_text``) but is NOT a slot of that association class, so ``prune_to_class`` routes it
-    onto the inlined supporting study instead of the edge — as per-section DailyMed URLs.
+    The array carries the SPL *set* URL and the *section* URL (``...?setid=<set>#<loinc>``, which
+    part of the label was read). They come from one merged column because a section can declare
+    ``has_evidence`` only once — a duplicate annotation name silently overwrites the first.
+
+    The negative half is the point of the change: nothing is relocated into the inlined supporting
+    study any more. ``supporting_documents`` (deprecated in Biolink and declared by no association
+    class) used to be nulled by ``prune_to_class`` and stringified into a StudyResult
+    ``description`` as ``supporting_documents=a, b`` — an unqueryable junk drawer no
+    translator-ingests source models.
     """
     dailymed_backed = [edge for edge in kgx_build.edges if edge["predicate"] in {_TREATS, _CONTRA}]
     assert dailymed_backed, "expected DailyMed-backed edges in the build"
@@ -227,17 +231,48 @@ def test_dailymed_evidence_lands_where_tablassert_10_puts_it(kgx_build: KgxBuild
             assert isinstance(value, str)
             assert value.startswith(DAILYMED_SET_URL_BASE), f"has_evidence value is not a DailyMed link: {value!r}"
             assert "|" not in value, f"has_evidence kept a joined cell instead of splitting it: {value!r}"
-        # Routed off the edge onto the inlined study, values intact.
+        # Both granularities present: at least one bare set link and one section-scoped link.
+        assert any("#" not in value for value in evidence), f"no SPL set link in {evidence!r}"
+        assert any("#" in value for value in evidence), f"no SPL section link in {evidence!r}"
         assert "supporting_documents" not in edge
-        results = next(iter(edge["has_supporting_studies"].values()))["has_study_results"]
-        descriptions = [result.get("description", "") for result in results]
-        assert any("supporting_documents=" in description for description in descriptions), descriptions
-        assert any(DAILYMED_SET_URL_BASE in description for description in descriptions), descriptions
+
+    # No DAKP value is stringified into a supporting study any more.
+    for edge in kgx_build.edges:
+        for study in (edge.get("has_supporting_studies") or {}).values():
+            for result in study.get("has_study_results") or []:
+                description = result.get("description", "")
+                assert "supporting_documents=" not in description, description
+                assert "number_of_cases=" not in description, description
 
     # FAERS edges have no SPL evidence at all (the assertion table carries no such column).
     for edge in kgx_build.edges:
         if edge["predicate"] == _APPLIED:
             assert "has_evidence" not in edge
+
+
+def test_faers_case_count_rides_the_edge_as_evidence_count(kgx_build: KgxBuild) -> None:
+    """The FAERS case count rides the edge as ``evidence_count``, not a study description.
+
+    ``number_of_cases`` is the literal Biolink slot for this, but it is declared on
+    ``EntityToDiseaseAssociation`` — a SIBLING of DAKP's association class, not an ancestor — so
+    DAKP's edges cannot hold it and ``prune_to_class`` used to stringify it into a StudyResult
+    ``description``. ``evidence_count`` is on ``Association`` itself, so the count stays on the
+    edge where a consumer can query it.
+
+    On the JSON type: Tablassert reads TSV cells as text and numerically coerces only the
+    p-value / effect-size / study-size columns (``lib.numeric_columns``), so the count arrives as
+    the string ``"1"`` even though ``format_numeric`` already knows ``evidence_count`` is an int
+    slot (``biolink.numeric_slot_kind``). Biolink's pydantic models are lax, so the string still
+    validates against the integer-ranged slot. Accept either shape: widening Tablassert's
+    ``numeric_columns`` to the count slots turns this into a real int without editing this test.
+    """
+    applied = [edge for edge in kgx_build.edges if edge["predicate"] == _APPLIED]
+    assert applied, "expected FAERS applied_to_treat edges in the build"
+    for edge in applied:
+        count = edge.get("evidence_count")
+        assert isinstance(count, int | str), f"evidence_count missing or oddly typed: {count!r}"
+        assert int(count) > 0
+        assert "number_of_cases" not in edge
 
 
 def test_validate_kgx_passes_on_raw_kgx(kgx_build: KgxBuild) -> None:

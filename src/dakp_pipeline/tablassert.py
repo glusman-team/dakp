@@ -252,41 +252,54 @@ _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
     "contraindication_assertions": ("contraindications", "contraindicated_in", ("infores:dailymed",), "knowledge_assertion", "text_mining_agent"),
 }
 
-# assertion column -> (annotation name, multivalued separator), per table. Under Tablassert >= 8.2
-# every DAKP edge is a ``biolink:ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` and the
-# annotation lands where that class can hold it:
-# * ``has_evidence`` (SPL set links) is a genuinely multivalued slot ON that class
-#   (``list[str]``), and DAKP aggregates every supporting SPL set into ONE pipe-joined cell, so
-#   ``split_by: "|"`` (Tablassert >= 9.1) is what makes it a real JSON array. Without the split
-#   Tablassert wraps the joined scalar into a USELESS one-element list (``["id1|id2"]``) that still
-#   passes Biolink validation — a silent-corruption guard, not a hard-failure one. Tablassert 8.2.1
-#   removed the old ``delimiter`` spelling, and 10.0 removed its ``method: list`` successor (a
-#   config-time literal — the same array on every row) entirely, so ``split_by`` is the ONLY
-#   encoding that can express a per-row array — hence the >= 10 floor in ``pyproject.toml``;
-# * ``supporting_documents`` (SPL document ids) is on Tablassert's edge-field allow-list — so it is
-#   never folded into ``supporting_text`` — but the association class above does not declare the
-#   slot, so ``prune_to_class`` moves it onto the inlined supporting study, same as
-#   ``number_of_cases`` below (value preserved; ``split_by`` only changes its rendering there from
-#   ``"a|b"`` to ``"a, b"``);
+# assertion column -> (annotation name, multivalued separator), per table. Every DAKP edge resolves
+# to ``biolink:ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` (Tablassert derives the
+# category from the (subject role, object role) pair, then keeps it for all three DAKP predicates),
+# so an annotation name is only useful if THAT class declares the slot. Anything else is relocated:
+# Tablassert's ``prune_to_class`` nulls what the class refuses and hands it to the inlined
+# ``has_supporting_studies`` as a ``"name=value"`` string in the StudyResult ``description`` — a
+# junk drawer, and nothing in ``NCATSTranslator/translator-ingests`` models evidence that way (there
+# a ``Study`` is a real cohort/dataset/trial with TYPED ``StudyResult`` slots). So each name below is
+# a slot the class actually holds:
+# * ``has_evidence`` (``list[str]``, range ``information content entity``) carries BOTH DailyMed
+#   granularities — the SPL set label URL and the ``#<loinc>`` section URL — from the single
+#   ``supporting_spl_evidence`` column. One column, not two, because ANNOTATION NAMES MUST BE
+#   UNIQUE PER TABLE: Tablassert applies annotations as ``with_columns(pl.col(src).alias(name))``
+#   in declaration order with no duplicate check, so a second ``has_evidence`` entry would SILENTLY
+#   overwrite the first. The union is built in ``assertions.evidence.spl_evidence_pipe``; the
+#   per-granularity ``supporting_spl_sets`` / ``supporting_spl_documents`` columns stay in the TSV
+#   as the debuggable split but are no longer annotated. (The deprecated Biolink
+#   ``supporting_documents`` slot — an alias of ``publications`` — is attached to no association
+#   class and was what previously landed in the study description.)
+# * DAKP aggregates each cell into ONE pipe-joined string, so ``split_by: "|"`` is what makes it a
+#   real JSON array. Without the split Tablassert wraps the joined scalar into a USELESS
+#   one-element list (``["url1|url2"]``) that still passes Biolink validation — a silent-corruption
+#   guard, not a hard-failure one. Tablassert 8.2.1 removed the old ``delimiter`` spelling, and 10.0
+#   removed its ``method: list`` successor (a config-time literal — the same array on every row)
+#   entirely, so ``split_by`` is the ONLY encoding that can express a per-row array;
 # * ``clinical_approval_status`` is a first-class enum-typed field on the association class, so its
 #   values must be ``ClinicalApprovalStatusEnum`` members (see the enum-membership note in
 #   ``assertions/observed_uses.py``);
-# * ``number_of_cases`` is a real Biolink slot but lives on ``EntityToDiseaseAssociation``, not on
-#   DAKP's class — Tablassert routes it onto the inlined supporting study (value preserved);
-# * ``approval_ids`` (FDA application numbers) and ``source_score`` (NER confidence) have no Biolink
-#   slot reachable from a lowercased annotation name, so Tablassert folds them into
-#   ``supporting_text`` as ``"name: value"`` strings — visible provenance, deliberately kept.
+# * ``evidence_count`` (integer) takes the FAERS case count. The literal slot ``number_of_cases``
+#   is a SIBLING-class field (``EntityToDiseaseAssociation``), not an ancestor's, so DAKP's class
+#   cannot hold it and it used to land in the study description as a string. ``evidence_count`` is
+#   on ``Association`` — "the number of evidence instances that are connected to an association" —
+#   so the count stays on the edge where a consumer can query it;
+# * ``approval_ids`` (FDA application numbers) and ``source_score`` have no Biolink slot reachable
+#   from a lowercased annotation name, so Tablassert folds them into ``supporting_text`` as
+#   ``"name: value"`` strings — visible provenance, deliberately kept. ``has_confidence_score``
+#   would be mechanically available for ``source_score``, but that column is the max NER SPAN score
+#   — confidence that a mention was recognized, not that the statement is true — so promoting it
+#   would mislead any consumer that weights edges by confidence.
 _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
     "approved_treats_assertions": (
         ("approval_ids", "approval_ids", None),
-        ("supporting_spl_sets", "has_evidence", "|"),
-        ("supporting_spl_documents", "supporting_documents", "|"),
+        ("supporting_spl_evidence", "has_evidence", "|"),
         ("clinical_approval_status", "clinical_approval_status", None),
     ),
-    "faers_applied_to_treat_assertions": (("case_count", "number_of_cases", None), ("clinical_approval_status", "clinical_approval_status", None)),
+    "faers_applied_to_treat_assertions": (("case_count", "evidence_count", None), ("clinical_approval_status", "clinical_approval_status", None)),
     "contraindication_assertions": (
-        ("supporting_spl_sets", "has_evidence", "|"),
-        ("supporting_spl_documents", "supporting_documents", "|"),
+        ("supporting_spl_evidence", "has_evidence", "|"),
         ("evidence_text", "supporting_text", "|"),
         ("source_score", "source_score", None),
     ),

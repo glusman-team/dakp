@@ -83,22 +83,24 @@ EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
 }
 
 # assertion table -> {annotation name: (assertion column it encodes, multivalued separator)}.
-# case_count maps to the Translator ``number_of_cases`` slot; the SPL-evidence columns map to names
-# on Tablassert's edge-field allow-list (``has_evidence`` / ``supporting_documents``) so they stay
-# first-class KGX fields, with ``split_by: "|"`` so the pipe-joined cells emit as real JSON arrays;
-# the rest keep their column name and fold into ``supporting_text`` (no Biolink slot on DAKP's
-# association class).
+# Every name here must be a slot DAKP's association class
+# (``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``) actually declares, or Tablassert
+# relocates the value off the edge into the inlined supporting study's StudyResult description --
+# a junk drawer no translator-ingests source models. So: the merged SPL-evidence column maps to
+# ``has_evidence`` (ONE annotation, carrying both the set and section URL granularities, because
+# duplicate annotation names silently overwrite each other), and ``case_count`` maps to
+# ``evidence_count`` rather than the sibling-class-only ``number_of_cases``. ``split_by: "|"``
+# makes the pipe-joined cells emit as real JSON arrays. ``approval_ids`` and ``source_score`` keep
+# their column names and fold into ``supporting_text``.
 EXPECTED_ANNOTATIONS = {
     "approved_treats_assertions": {
         "approval_ids": ("approval_ids", None),
-        "has_evidence": ("supporting_spl_sets", "|"),
-        "supporting_documents": ("supporting_spl_documents", "|"),
+        "has_evidence": ("supporting_spl_evidence", "|"),
         "clinical_approval_status": ("clinical_approval_status", None),
     },
-    "faers_applied_to_treat_assertions": {"number_of_cases": ("case_count", None), "clinical_approval_status": ("clinical_approval_status", None)},
+    "faers_applied_to_treat_assertions": {"evidence_count": ("case_count", None), "clinical_approval_status": ("clinical_approval_status", None)},
     "contraindication_assertions": {
-        "has_evidence": ("supporting_spl_sets", "|"),
-        "supporting_documents": ("supporting_spl_documents", "|"),
+        "has_evidence": ("supporting_spl_evidence", "|"),
         "supporting_text": ("evidence_text", "|"),
         "source_score": ("source_score", None),
     },
@@ -291,6 +293,60 @@ def test_table_config_annotations_encode_expected_columns(table: str) -> None:
             assert "split_by" not in entry
         else:
             assert entry["split_by"] == split_by
+
+
+@pytest.mark.parametrize("table", TABLES)
+def test_table_config_annotation_names_are_unique(table: str) -> None:
+    """No two annotations in a section may share a name -- Tablassert would silently drop one.
+
+    Annotations are applied in declaration order as ``with_columns(pl.col(src).alias(name))``
+    with no duplicate check, so a second entry named ``has_evidence`` OVERWRITES the first and
+    that column's values vanish without a warning. This is why the SPL set and section URLs are
+    unioned into one ``supporting_spl_evidence`` column upstream instead of being declared as
+    two ``has_evidence`` annotations.
+    """
+    names = [entry["annotation"] for entry in tablassert_configs.table_config(table)["annotations"]]
+    assert len(names) == len(set(names)), f"duplicate annotation names in {table}: {names}"
+
+
+def _dakp_association_classes(table: str) -> set[type]:
+    """The association classes Tablassert resolves for every category pair this table allows.
+
+    Derived, not hardcoded: the category comes from the (subject role, object role) pair and is
+    then reconciled against the section predicate, exactly as ``Tcode._ops`` does at build time.
+    """
+    from tablassert.biolink import resolve_association_class
+    from tablassert.lib import derived_edge_category
+
+    predicate = f"biolink:{tablassert_configs._TABLE_SPECS[table][1]}"
+    return {
+        resolve_association_class(derived_edge_category(subject, obj), predicate)
+        for subject in tablassert_configs.SUBJECT_PRIORITIZE
+        for obj in tablassert_configs.OBJECT_PRIORITIZE
+    }
+
+
+@pytest.mark.parametrize("table", TABLES)
+def test_annotation_slots_survive_dakp_association_class(table: str) -> None:
+    """Every annotated Biolink slot is one DAKP's association class can actually hold.
+
+    A name that is a slot of SOME association class but not of the one DAKP's edges resolve to
+    passes Tablassert's edge-field allow-list, then gets nulled by ``prune_to_class`` and
+    stringified into the inlined supporting study's StudyResult ``description`` -- exactly the
+    junk drawer this contract exists to keep DAKP out of. ``number_of_cases`` and
+    ``supporting_documents`` are the two that used to land there; this fails loudly if either
+    (or a newly added annotation) comes back.
+    """
+    from tablassert.biolink import ALLOWED_EDGE_FIELDS, KNOWN_PENDING_EDGE_FIELDS, class_fields
+
+    for cls in _dakp_association_classes(table):
+        slots = class_fields(cls)
+        for name in EXPECTED_ANNOTATIONS[table]:
+            if name not in ALLOWED_EDGE_FIELDS:
+                continue  # deliberately folded into ``supporting_text`` (e.g. ``source_score``)
+            if name in KNOWN_PENDING_EDGE_FIELDS:
+                continue  # curated Tablassert pass-through; no association class declares it
+            assert name in slots, f"{name} is not a slot of {cls.__name__}; it would be relocated onto the supporting study"
 
 
 # --- category guard (hard allow-lists via Tablassert ``avoid``) -------------------

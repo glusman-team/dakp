@@ -343,7 +343,7 @@ template:
       knowledge_level: observation
       agent_type: manual_validation_of_automated_agent
   annotations:
-    - annotation: number_of_cases
+    - annotation: evidence_count
       method: column
       encoding: J
     - annotation: clinical_approval_status
