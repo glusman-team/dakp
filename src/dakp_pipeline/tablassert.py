@@ -49,14 +49,17 @@ The real runner (:class:`TablassertRunner`) shells out to the installed ``tablas
 (a CORE dependency installed by the single ``uv sync``) and captures stdout / exit code into
 a handoff report; the deferred runner (:class:`DeferredTablassertRunner`) writes a
 deferred-handoff report without ever touching Tablassert (used when no fullmap triggers the
-real handoff, and in tests). DAKP requires Tablassert >= 11: the graph config carries the
+real handoff, and in tests). DAKP requires Tablassert >= 12: the graph config carries the
 fullmap path (the ``build-kg --fullmap`` flag was removed in Tablassert 8.1), the 8.2
 Biolink-valid KGX modeling (``sources[]`` retrieval provenance, first-class evidence slots)
 is what the emitted configs target, 9.1's per-row ``split_by`` (made the ONLY multivalued
-annotation encoding in 10.0) is what DAKP's pipe-joined evidence cells need, and 11.0 makes
+annotation encoding in 10.0) is what DAKP's pipe-joined evidence cells need, 11.0 makes
 the graph config's ``rig:`` section mandatory while dropping the flat
 ``primary_knowledge_source`` edge column (nested ``sources[]`` provenance only — the edge
-primary source now derives from ``rig.source_info.infores_id``).
+primary source now derives from ``rig.source_info.infores_id``), and 12.0 reads only
+``tablassert.fullmap.v5`` redb fullmaps (v1-v4 are rejected on read), keeps ``approval_ids``
+as a curated TOP-LEVEL edge field instead of folding it into ``supporting_text``, and stops
+fabricating an empty supporting study for publication-less sections like DAKP's.
 
 The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it is
 on ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout override (the
@@ -113,6 +116,9 @@ GRAPH_NAME = "dakp"
 #: field, and Tablassert reads the fullmap path FROM this field on a graph build (the
 #: ``build-kg --fullmap`` flag was removed in Tablassert 8.1) — so :func:`generate`
 #: writes the real ``ctx.params["fullmap"]`` here for real runs. DAKP never downloads a fullmap.
+#: Tablassert >= 12 reads only ``tablassert.fullmap.v5`` redb files — a fullmap built by an
+#: older Tablassert is rejected on read ("fullmap DB is outdated"); rebuild it with the
+#: installed ``tablassert build-fullmap``.
 FULLMAP_DEFAULT = ".fullmap"
 
 #: Real upstream dataset URL recorded as each table's ``source.url`` — the constants the
@@ -285,9 +291,12 @@ _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
 #   cannot hold it and it used to land in the study description as a string. ``evidence_count`` is
 #   on ``Association`` — "the number of evidence instances that are connected to an association" —
 #   so the count stays on the edge where a consumer can query it;
-# * ``approval_ids`` (FDA application numbers) and ``source_score`` have no Biolink slot reachable
-#   from a lowercased annotation name, so Tablassert folds them into ``supporting_text`` as
-#   ``"name: value"`` strings — visible provenance, deliberately kept. ``has_confidence_score``
+# * ``approval_ids`` (FDA application numbers) has no Biolink slot reachable from a lowercased
+#   annotation name, but Tablassert >= 12 keeps it as a CURATED pass-through: the pipe-joined
+#   cell reaches the final KGX edge as its own top-level ``approval_ids`` scalar, verbatim,
+#   instead of being folded into ``supporting_text``. ``source_score`` still has no reachable
+#   slot and no carve-out, so it folds into ``supporting_text`` as a ``"name: value"`` string —
+#   visible provenance, deliberately kept. ``has_confidence_score``
 #   would be mechanically available for ``source_score``, but that column is the max NER SPAN score
 #   — confidence that a mention was recognized, not that the statement is true — so promoting it
 #   would mislead any consumer that weights edges by confidence.
@@ -814,7 +823,8 @@ class TablassertRunner:
             msg = (
                 "a fullmap redb path is required for a real Tablassert handoff but none was provided: pass "
                 "`--fullmap <path>` to `dakp up` (DAKP no longer downloads a fullmap; build one with "
-                "`tablassert build-fullmap`)"
+                "`tablassert build-fullmap`). Tablassert >= 12 reads only `tablassert.fullmap.v5` redb "
+                "files — a fullmap built by an older Tablassert must be rebuilt"
             )
             raise RuntimeError(msg)
         fullmap = str(fullmap_value)
