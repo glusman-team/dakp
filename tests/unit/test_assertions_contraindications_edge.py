@@ -34,16 +34,24 @@ from dakp_pipeline.assertions.contraindications import (
     CONTRAINDICATION_GPUS,
     DEFAULT_CONTRA_KEYWORDS,
     ContraindicationsShaper,
+    ContraWorkItem,
+    EvidenceSpan,
+    _accumulate,
+    _classify_mention,
+    _classify_mentions,
     _contraindication_sentences,
     _max_score,
+    _mention_local_span,
     _mine_multi_gpu,
     _mine_shard,
     _mine_two_passes_multi_gpu,
     _resolve_devices,
     _resolve_keywords,
+    _sentence_spans,
     _shard_by_text_length,
     _spawn_safe_main,
     _split_sentences,
+    _work_item_evidence,
     build_contraindication_rows,
     default_ner,
 )
@@ -922,3 +930,212 @@ def test_spawn_safe_main_leaves_module_main_untouched(monkeypatch: pytest.Monkey
     with _spawn_safe_main():
         assert fake_main.__spec__ is spec
     assert fake_main.__spec__ is spec
+
+
+# --- ContraWorkItem legacy tuple protocol --------------------------------------
+
+
+def test_contra_work_item_keeps_legacy_tuple_protocol() -> None:
+    """Legacy workers/tests treat work items as ``(set_id, doc_id, text)`` 3-tuples, so
+    indexing, ``len()``, and unpacking must keep behaving like the old tuple interface."""
+    item = ContraWorkItem("SET-A", "DOC-A", "mined text", "full source text", ())
+    assert item[0] == "SET-A"
+    assert item[1] == "DOC-A"
+    assert item[2] == "mined text"
+    assert len(item) == 3
+    assert list(item) == ["SET-A", "DOC-A", "mined text"]
+
+
+# --- _sentence_spans: source-offset preservation --------------------------------
+
+
+def test_sentence_spans_preserve_source_offsets() -> None:
+    """Span offsets must index into the ORIGINAL text: leading whitespace is skipped, and a
+    trailing fragment without a sentence boundary still becomes the final span."""
+    spans = _sentence_spans("  First.  Second without boundary")
+    assert [(s.start, s.end, s.text) for s in spans] == [(2, 8, "First."), (10, 33, "Second without boundary")]
+    assert _sentence_spans("   ") == []  # whitespace-only text yields no spans
+
+
+# --- legacy tuple work items (pre-ContraWorkItem interface) ---------------------
+
+
+def test_legacy_tuple_item_classifies_by_section_default() -> None:
+    """Legacy ``(set_id, doc_id, text)`` tuples predate ContraWorkItem and stand in for a
+    dedicated 34070-3 section: evidence is the whole mined text, and the mention is accepted
+    on section context even when the sentence carries no explicit trigger word."""
+    text = "Avoid use in asthma."
+    mention = Mention(text="asthma", start=13, end=19, type="disease", score=1.0)
+    decision = _classify_mention(("SET-A", "DOC-A", text), mention)
+    assert decision.accepted
+    assert decision.trigger == "contraindication_section"
+    assert decision.evidence_text == text
+
+
+def test_work_item_evidence_resolves_spans_and_falls_back() -> None:
+    """Evidence recovery walks the joined spans (skipping non-overlapping ones), returns the
+    ORIGINAL sentence for the overlapping span, falls back to the full source text when no
+    span contains the mention, and uses the whole text for legacy tuple items."""
+    source = "First clean. Second with asthma. Trailing provenance."
+    item = ContraWorkItem(
+        "SET-A",
+        "DOC-A",
+        "First clean. Second with asthma.",
+        source,
+        (EvidenceSpan(0, 12, 0, 12, "First clean."), EvidenceSpan(13, 32, 40, 59, "Second with asthma.")),
+    )
+    # Mention inside the SECOND joined span: the first span is skipped without overlap.
+    in_second = Mention(text="asthma", start=25, end=31, type="disease", score=1.0)
+    assert _work_item_evidence(item, in_second) == "Second with asthma."
+    # Mention past every span: falls back to the full source text.
+    orphan = Mention(text="asthma", start=33, end=39, type="disease", score=1.0)
+    assert _work_item_evidence(item, orphan) == source
+    # Legacy tuple items carry no spans: the whole mined text is the evidence.
+    assert _work_item_evidence(("SET-A", "DOC-A", " plain text "), in_second) == "plain text"
+
+
+def test_mention_local_span_maps_overlap_and_returns_none_without_any() -> None:
+    """A mapped mention yields ``(sentence, local start, local end, source start)`` offsets;
+    a mention overlapping NO span maps to None so qualifier logic can skip it safely."""
+    item = ContraWorkItem("SET-A", "DOC-A", "xxxx asthma", "src asthma text", (EvidenceSpan(5, 11, 20, 26, "asthma"),))
+    overlapping = Mention(text="asthma", start=5, end=11, type="disease", score=1.0)
+    assert _mention_local_span(item, overlapping) == ("asthma", 0, 6, 20)
+    # Disjoint mention: the loop finds no overlapping span -> None.
+    disjoint = Mention(text="xxxx", start=0, end=4, type="disease", score=1.0)
+    assert _mention_local_span(item, disjoint) is None
+
+
+def test_classify_mentions_keeps_unmapped_mentions_out_of_qualifier_grouping() -> None:
+    """A mention that maps to no source span keeps its local decision but cannot join the
+    per-sentence patient-clause grouping (there is no sentence to group on)."""
+    spans = (EvidenceSpan(0, 7, 30, 37, "asthma."),)
+    item = ContraWorkItem("SET-A", "DOC-A", "asthma. diabetes.", "asthma. diabetes.", spans)
+    mapped = Mention(text="asthma", start=0, end=6, type="disease", score=1.0)
+    unmapped = Mention(text="diabetes", start=8, end=16, type="disease", score=1.0)
+    decisions = _classify_mentions(item, [mapped, unmapped])
+    # Both keep their section-context acceptance; the unmapped one just skips grouping.
+    assert [(d.accepted, d.trigger, d.context_text) for d in decisions] == [
+        (True, "contraindication_section", ""),
+        (True, "contraindication_section", ""),
+    ]
+
+
+# --- medication-context classification ------------------------------------------
+
+
+def test_mention_after_medication_marker_is_not_medication_only_context(tmp_path: Path) -> None:
+    """A disease named AFTER the medication marker (``concomitant ... asthma``) is the
+    contraindicated condition itself — the medication_only_context rejection only applies to
+    diseases that precede the marker, so this edge must survive."""
+    sections = _sections(tmp_path, [("SET-A", "SET-A#d", "Contraindicated with concomitant use in asthma.")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
+    rows = build_contraindication_rows([sections, ingredients], DiseaseNER(gazetteer={"asthma": "disease"}))
+    assert len(rows) == 1
+    assert rows[0]["object_text"] == "asthma"
+    assert rows[0]["disease_context_text"] == ""
+
+
+def test_context_qualifier_withheld_when_sentence_has_medication_marker(tmp_path: Path) -> None:
+    """A companion medication in the patient clause (``receiving warfarin``) disqualifies the
+    sentence from contributing a disease_context_qualifier (the marker is present, so both
+    diseases survive local classification first) — but the base asthma edge keeps its evidence."""
+    sections = _sections(
+        tmp_path, [("SET-A", "SET-A#d", "Contraindicated for treatment of hypertension in patients with asthma receiving warfarin.")]
+    )
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
+    ner = DiseaseNER(gazetteer={"hypertension": "disease", "asthma": "disease"})
+    rows = build_contraindication_rows([sections, ingredients], ner)
+    # hypertension becomes context_only_medication (rejected); only the asthma edge remains.
+    assert len(rows) == 1
+    assert rows[0]["object_text"] == "asthma"
+    assert rows[0]["disease_context_text"] == ""
+    assert rows[0]["evidence_text"] == "Contraindicated for treatment of hypertension in patients with asthma receiving warfarin."
+
+
+# --- Pass 2: soft language alone is not a hard trigger ---------------------------
+
+
+def test_indication_section_soft_language_alone_yields_no_edge(tmp_path: Path) -> None:
+    """Pass 2 requires HARD prohibition language: ``avoid use in`` admits the sentence to the
+    keyword filter, but without a hard trigger the mined disease is rejected (no_hard_trigger)
+    and no contraindication edge is asserted."""
+    sections = _mixed_sections(
+        tmp_path, [("SET-A", "SET-A#34067-9", INDICATION_LOINC, "DrugX is indicated for hypertension. Avoid use in patients with asthma.")]
+    )
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
+    ner = DiseaseNER(gazetteer={"asthma": "disease", "hypertension": "disease"})
+    assert build_contraindication_rows([sections, ingredients], ner) == []
+
+
+# --- context qualifier loop: intro / blank / non-disease / rejected-object guards -
+
+
+def test_context_qualifier_requires_intro_phrase(tmp_path: Path) -> None:
+    """A disease before the patient clause only becomes a context qualifier when an intro
+    phrase (``for treatment of``, ...) marks it as the treated condition; without one, both
+    diseases stay separate unconditional contraindication objects."""
+    sections = _sections(tmp_path, [("SET-A", "SET-A#d", "Hypertension: contraindicated in patients with asthma.")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
+    ner = DiseaseNER(gazetteer={"hypertension": "disease", "asthma": "disease"})
+    rows = build_contraindication_rows([sections, ingredients], ner)
+    assert {(r["object_text"], r["disease_context_text"]) for r in rows} == {("hypertension", ""), ("asthma", "")}
+
+
+def test_context_qualifier_rejected_when_mention_starts_inside_intro(tmp_path: Path) -> None:
+    """If the candidate context mention starts INSIDE the intro phrase itself, the intro cannot
+    vouch for it (``intro.end() > context_start``) -> no qualifier is assigned and both
+    diseases remain separate objects."""
+    sections = _sections(tmp_path, [("SET-A", "SET-A#d", "Contraindicated when used for hypertension in patients with asthma.")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
+    ner = DiseaseNER(gazetteer={"used for hypertension": "disease", "asthma": "disease"})
+    rows = build_contraindication_rows([sections, ingredients], ner)
+    assert {(r["object_text"], r["disease_context_text"]) for r in rows} == {("used for hypertension", ""), ("asthma", "")}
+
+
+def test_context_qualifier_skipped_when_context_normalizes_blank() -> None:
+    """A before-marker mention whose normalized text is empty (punctuation-only) cannot become
+    a qualifier: the loop bails out and the object edge survives untouched."""
+    sentence = "Contraindicated for treatment of --- in patients with asthma."
+    spans = (EvidenceSpan(0, len(sentence), 0, len(sentence), sentence),)
+    item = ContraWorkItem("SET-A", "DOC-A", sentence, sentence, spans)
+    context = Mention(text="---", start=33, end=36, type="disease", score=1.0)
+    asthma = Mention(text="asthma", start=54, end=60, type="disease", score=1.0)
+    decisions = _classify_mentions(item, [context, asthma])
+    assert [(d.accepted, d.trigger, d.context_text) for d in decisions] == [(True, "contraindicated", ""), (True, "contraindicated", "")]
+
+
+def test_context_qualifier_rejects_non_disease_context(tmp_path: Path) -> None:
+    """Biolink's disease_context_qualifier is disease-ranged: a phenotype (headache) in the
+    context slot is rejected as qualifier material while the asthma edge stays unconditional."""
+    sections = _sections(tmp_path, [("SET-A", "SET-A#d", "Contraindicated for treatment of headache in patients with asthma.")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
+    ner = DiseaseNER(gazetteer={"headache": "phenotype", "asthma": "disease"})
+    rows = build_contraindication_rows([sections, ingredients], ner)
+    assert len(rows) == 1
+    assert rows[0]["object_text"] == "asthma"
+    assert rows[0]["disease_context_text"] == ""
+
+
+def test_context_not_attached_to_rejected_object(tmp_path: Path) -> None:
+    """When the after-marker object mention itself is rejected (soft-safety-only language in a
+    34070-3 section), the context mention is still withheld as context_only — but no qualifier
+    upgrade is attempted on the rejected edge, and nothing is mined."""
+    sections = _sections(tmp_path, [("SET-A", "SET-A#d", "Avoid for treatment of hypertension in patients with asthma.")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
+    ner = DiseaseNER(gazetteer={"hypertension": "disease", "asthma": "disease"})
+    assert build_contraindication_rows([sections, ingredients], ner) == []
+
+
+# --- _accumulate: blank evidence is not unioned ----------------------------------
+
+
+def test_accumulate_skips_blank_evidence_text() -> None:
+    """Blank evidence must not enter the evidence union — the sorted-pipe evidence column may
+    only contain real sentences, while support/scores still accumulate."""
+    aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
+    mention = Mention(text="asthma", start=0, end=6, type="disease", score=0.9)
+    _accumulate(aggregated, "SET-A", "DOC-A", "DrugX", "UNII:X", "asthma", mention, evidence_text="   ")
+    agg = next(iter(aggregated.values()))
+    assert agg["evidence_texts"] == []
+    assert agg["sets"] == ["SET-A"]
+    assert agg["scores"] == [0.9]

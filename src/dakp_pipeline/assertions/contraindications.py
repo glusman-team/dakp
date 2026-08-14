@@ -205,23 +205,25 @@ def _sentence_spans(text: str) -> list[SentenceSpan]:
         return []
     spans: list[SentenceSpan] = []
     pos = 0
+    # Every loop chunk contains its boundary punctuation and the tail (when present) always
+    # starts on a non-whitespace char — the boundary regex consumes all trailing whitespace
+    # and re's ``\s`` agrees with ``str.strip`` on exactly which chars are whitespace — so
+    # each stripped chunk is provably non-empty (no emptiness guard needed).
     for match in _SENTENCE_BOUNDARY.finditer(text):
         raw = text[pos : match.end()]
         stripped = raw.strip()
-        if stripped:
-            leading = len(raw) - len(raw.lstrip())
-            start = pos + leading
-            end = start + len(stripped)
-            spans.append(SentenceSpan(start=start, end=end, text=text[start:end]))
+        leading = len(raw) - len(raw.lstrip())
+        start = pos + leading
+        end = start + len(stripped)
+        spans.append(SentenceSpan(start=start, end=end, text=text[start:end]))
         pos = match.end()
     if pos < len(text):
         raw = text[pos:]
         stripped = raw.strip()
-        if stripped:
-            leading = len(raw) - len(raw.lstrip())
-            start = pos + leading
-            end = start + len(stripped)
-            spans.append(SentenceSpan(start=start, end=end, text=text[start:end]))
+        leading = len(raw) - len(raw.lstrip())
+        start = pos + leading
+        end = start + len(stripped)
+        spans.append(SentenceSpan(start=start, end=end, text=text[start:end]))
     return spans
 
 
