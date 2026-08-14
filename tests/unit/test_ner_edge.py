@@ -31,6 +31,7 @@ from dakp_pipeline.ner.ner import (
     _overlaps_any,
     _sort_key,
     _token_budget,
+    _trim_hedges,
     _windows,
 )
 
@@ -245,6 +246,137 @@ def test_population_filter_only_drops_exact_population_phrases(monkeypatch: pyte
     _install_fake_gliner(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "disease", "score": 0.9}])
     backend = DiseaseNER(offline=False, gazetteer={})
     assert [m.text for m in backend.extract("porphyria cases")] == ["porphyria"]
+
+
+# --- specificity merge: the most specific span wins on containment --------------
+
+
+def _span(text: str, phrase: str, label: str, score: float) -> dict[str, Any]:
+    """A fake GLiNER prediction for ``phrase`` at its (unique) offsets in ``text``."""
+    start = text.index(phrase)
+    return {"start": start, "end": start + len(phrase), "label": label, "score": score}
+
+
+def test_model_span_containing_a_gazetteer_span_supersedes_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """'pulmonary hypertension' beats the gazetteer's bare 'hypertension' — the regression this
+    merge exists for. The model supplies the boundary; the gazetteer keeps the type (GLiNER is
+    the documented source of disease<->phenotype confusion, see ner/BENCHMARK.md)."""
+    text = "Contraindicated in patients with severe pulmonary hypertension."
+    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "pulmonary hypertension", "phenotype", 0.87)])
+
+    mentions = DiseaseNER(offline=False, gazetteer={"hypertension": "disease"}).extract(text)
+
+    assert [(m.text, m.type, m.notes) for m in mentions] == [("pulmonary hypertension", "disease", "gliner:extends")]
+    assert mentions[0].score == pytest.approx(0.87)
+    assert text[mentions[0].start : mentions[0].end] == "pulmonary hypertension"
+    assert mentions[0].normalized == "pulmonary hypertension"
+
+
+def test_unconfident_specific_span_abstains_instead_of_emitting_the_generic_one(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Below the acceptance floor the backend returns NOTHING. It must not fall back to
+    'hypertension' — that would assert a broader contraindication than the label supports."""
+    text = "Contraindicated in patients with severe pulmonary hypertension."
+    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "pulmonary hypertension", "disease", 0.42)])
+
+    backend = DiseaseNER(offline=False, gazetteer={"hypertension": "disease"}, threshold=0.35, accept_threshold=0.5)
+    assert backend.extract(text) == []
+
+
+def test_plain_model_span_below_accept_floor_is_dropped(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A free-standing candidate generated above `threshold` but below `accept_threshold` is
+    abstained on rather than asserted."""
+    _install_fake_gliner(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "disease", "score": 0.4}])
+    backend = DiseaseNER(offline=False, gazetteer={}, threshold=0.35, accept_threshold=0.5)
+    assert backend.extract("porphyria only") == []
+    # ...and the same span clears a floor set below its score.
+    _install_fake_gliner(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "disease", "score": 0.4}])
+    lenient = DiseaseNER(offline=False, gazetteer={}, threshold=0.35, accept_threshold=0.35)
+    assert [m.text for m in lenient.extract("porphyria only")] == ["porphyria"]
+
+
+@pytest.mark.parametrize(
+    ("sentence", "phrase", "term"),
+    [
+        ("Contraindicated in patients with a recent myocardial infarction.", "a recent myocardial infarction", "myocardial infarction"),
+        ("Contraindicated in patients with a history of peptic ulcer disease.", "a history of peptic ulcer disease", "peptic ulcer disease"),
+        ("Do not use in patients with known hypersensitivity.", "known hypersensitivity", "hypersensitivity"),
+    ],
+)
+def test_hedge_prefixes_are_trimmed_so_they_never_over_extend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sentence: str, phrase: str, term: str
+) -> None:
+    """The over-extension that made overlap-extension too risky to ship (ner/BENCHMARK.md):
+    temporal/evidential hedges are trimmed, so the model span collapses onto the gazetteer term
+    instead of superseding it with a longer, meaningless boundary."""
+    _install_fake_gliner(monkeypatch, tmp_path, [_span(sentence, phrase, "disease", 0.95)])
+    mentions = DiseaseNER(offline=False, gazetteer={term: "disease"}).extract(sentence)
+    assert [(m.text, m.notes) for m in mentions] == [(term, "exact")]
+
+
+def test_span_of_only_hedge_tokens_is_dropped(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    text = "Contraindicated in patients with asthma."
+    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "patients with", "disease", 0.9)])
+    assert DiseaseNER(offline=False, gazetteer={}).extract(text) == []
+
+
+def test_population_descriptor_revealed_by_trimming_is_still_dropped(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """'in pregnant women' is not a population phrase until the leading 'in' comes off, so the
+    filter has to run again on the trimmed surface."""
+    text = "Contraindicated in pregnant women."
+    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "in pregnant women", "phenotype", 0.9)])
+    assert DiseaseNER(offline=False, gazetteer={}).extract(text) == []
+
+
+def test_span_covering_several_gazetteer_terms_is_a_conjunction_not_a_qualifier(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A model span swallowing two gazetteer terms is 'asthma or hypertension', not one more
+    specific disease — both gazetteer spans stand and the model span is discarded."""
+    text = "Contraindicated in asthma or hypertension."
+    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "asthma or hypertension", "disease", 0.99)])
+    mentions = DiseaseNER(offline=False, gazetteer={"asthma": "disease", "hypertension": "disease"}).extract(text)
+    assert [(m.text, m.notes) for m in mentions] == [("asthma", "exact"), ("hypertension", "exact")]
+
+
+def test_partial_overlap_still_goes_to_the_gazetteer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Neither span contains the other, so there is no specificity gain to bank — the
+    high-precision gazetteer span wins, exactly as before this merge existed."""
+    text = "congestive heart failure risk"
+    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "failure risk", "phenotype", 0.99)])
+    mentions = DiseaseNER(offline=False, gazetteer={"heart failure": "disease"}).extract(text)
+    assert [(m.text, m.type, m.notes) for m in mentions] == [("heart failure", "disease", "exact")]
+
+
+def test_overlapping_model_spans_resolve_longest_first(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Model-vs-model: the longer span wins even when the shorter one scores higher."""
+    text = "severe pulmonary hypertension noted"
+    predictions = [_span(text, "hypertension", "disease", 0.95), _span(text, "pulmonary hypertension", "disease", 0.6)]
+    _install_fake_gliner(monkeypatch, tmp_path, predictions)
+    mentions = DiseaseNER(offline=False, gazetteer={}).extract(text)
+    assert [(m.text, m.notes) for m in mentions] == [("pulmonary hypertension", "gliner")]
+
+
+def test_equal_length_overlapping_model_spans_break_ties_deterministically(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    text = "alpha beta gamma"
+    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "alpha beta", "disease", 0.6), _span(text, "beta gamma", "disease", 0.9)])
+    assert [m.text for m in DiseaseNER(offline=False, gazetteer={}).extract(text)] == ["beta gamma"]  # equal length -> higher score
+
+    # A full tie falls back to the leftmost span, so repeated runs agree.
+    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "alpha beta", "disease", 0.9), _span(text, "beta gamma", "disease", 0.9)])
+    assert [m.text for m in DiseaseNER(offline=False, gazetteer={}).extract(text)] == ["alpha beta"]
+
+
+def test_trim_hedges_returns_none_for_a_tokenless_span() -> None:
+    """A span that is pure whitespace has no GLiNER tokens to walk — dropped, not crashed."""
+    assert _trim_hedges("a   b", 1, 4) is None
+    assert _trim_hedges("recent asthma", 0, 13) == (7, 13)
+    assert _trim_hedges("asthma flare", 0, 12) == (0, 12)  # no leading hedge -> untouched
+
+
+def test_offline_mode_keeps_its_gazetteer_granularity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Deliberate: offline mode has no model, so it still returns the generic gazetteer term.
+    Specificity is a production-mode capability; offline stays the deterministic baseline."""
+    text = "Contraindicated in patients with severe pulmonary hypertension."
+    mentions = DiseaseNER(offline=True, gazetteer={"hypertension": "disease"}).extract(text)
+    assert [(m.text, m.notes) for m in mentions] == [("hypertension", "exact")]
 
 
 # --- cross-window rejoin: hard splits can cut a multiword mention in two --------
@@ -568,6 +700,7 @@ def test_config_returns_serializable_construction_kwargs(tmp_path: Path) -> None
         gazetteer=gaz,
         model_id="acme/ner",
         threshold=0.42,
+        accept_threshold=0.66,
         chunk_words=128,
         cache_dir=tmp_path,
         workdir=tmp_path / "work",
@@ -577,6 +710,9 @@ def test_config_returns_serializable_construction_kwargs(tmp_path: Path) -> None
     assert config["offline"] is False
     assert config["model_id"] == "acme/ner"
     assert config["threshold"] == 0.42
+    # Must round-trip: the multi-GPU workers rebuild from this dict, and a missing key would
+    # silently run all four P100s at the default floor while the parent ran tuned.
+    assert config["accept_threshold"] == 0.66
     assert config["chunk_words"] == 128
     assert config["cache_dir"] == tmp_path
     assert config["workdir"] == tmp_path / "work"

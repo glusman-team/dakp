@@ -1,6 +1,6 @@
 {
   "schema_version": "dakp.ner.gold.v1",
-  "annotation_policy": "Gold spans are the maximal disease/phenotype mention spans a contraindication or indication targets. type is 'disease' (a diagnosed condition) or 'phenotype' (a clinical finding/symptom/condition-state). Borderline condition-states (hypersensitivity, pregnancy, bleeding, seizures, elevations, pain, nausea, vomiting, fatigue) are labeled 'phenotype'; named disorders/syndromes are 'disease'. Population descriptors (e.g. 'women of childbearing potential') are subject populations, NOT disease/phenotype mentions, and get no span. Each surface occurs exactly once in its text so offsets resolve unambiguously.",
+  "annotation_policy": "Gold spans are the maximal disease/phenotype mention spans a contraindication or indication targets. type is 'disease' (a diagnosed condition) or 'phenotype' (a clinical finding/symptom/condition-state). Borderline condition-states (hypersensitivity, pregnancy, bleeding, seizures, elevations, pain, nausea, vomiting, fatigue) are labeled 'phenotype'; named disorders/syndromes are 'disease'. 'Maximal' covers qualifiers that change the concept -- anatomical/etiological ('pulmonary hypertension', 'portal hypertension'), severity ('severe heart failure'), and course ('active liver disease') -- because the qualified term denotes a different condition than its head. It does NOT cover temporal or evidential hedges ('recent', 'a history of', 'known', 'suspected'), which say something about the patient record rather than about the condition: gold for 'a recent myocardial infarction' is 'myocardial infarction'. Population descriptors (e.g. 'women of childbearing potential') are subject populations, NOT disease/phenotype mentions, and get no span. Each surface occurs exactly once in its text so offsets resolve unambiguously.",
   "cases": [
     {
       "id": "dailymed-ibuprofen",
@@ -271,6 +271,33 @@
       "text": "acute kidney injury",
       "mentions": [
         {"surface": "acute kidney injury", "type": "disease"}
+      ]
+    },
+    {
+      "id": "dailymed-pulm-htn",
+      "source": "dailymed",
+      "loinc": "34070-3",
+      "text": "Contraindicated in patients with pulmonary hypertension.",
+      "mentions": [
+        {"surface": "pulmonary hypertension", "type": "disease"}
+      ]
+    },
+    {
+      "id": "dailymed-portal-htn",
+      "source": "dailymed",
+      "loinc": "34070-3",
+      "text": "Do not administer to patients with portal hypertension.",
+      "mentions": [
+        {"surface": "portal hypertension", "type": "disease"}
+      ]
+    },
+    {
+      "id": "dailymed-recent-mi",
+      "source": "dailymed",
+      "loinc": "34070-3",
+      "text": "Contraindicated in patients with a recent myocardial infarction.",
+      "mentions": [
+        {"surface": "myocardial infarction", "type": "disease"}
       ]
     }
   ]
