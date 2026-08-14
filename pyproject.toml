@@ -27,9 +27,14 @@ classifiers = [
 # still imported lazily (no torch at module load) and the mock profile + tests never touch the
 # network or Tablassert, but a single `uv sync` now materializes the whole production runtime.
 # Tablassert is pinned to the `[qc]` variant because the KG build needs the embedding-based
-# `tablassert build-kg --qc` audit (sentence-transformers). The >= 11 floor is required: 11.0
-# removed the flat `primary_knowledge_source` edge column (nested `sources[]` provenance only)
-# and made the `rig:` graph-config section mandatory (DAKP's graph.yaml carries one).
+# `tablassert build-kg --qc` audit (sentence-transformers). The >= 12 floor is required: 12.0
+# reads only `tablassert.fullmap.v5` redb fullmaps (v1-v4 are rejected on read — rebuild with
+# `tablassert build-fullmap`), emits `approval_ids` as a curated top-level edge field instead of
+# folding it into `supporting_text`, no longer fabricates an empty supporting study for
+# publication-less sections, and moves the QC embedding stage to SapBERT (cache:
+# `.tablassert/sapbert/`). 11.0 had already removed the flat `primary_knowledge_source` edge
+# column (nested `sources[]` provenance only) and made the `rig:` graph-config section mandatory
+# (DAKP's graph.yaml carries one).
 dependencies = [
     # Bundles a statically-linked aria2c binary (PyPI dist `aria2`, import name `aria2c`) so the
     # FAERS + Drugs@FDA fetchers get multi-connection downloads with no separate system install.
@@ -46,7 +51,7 @@ dependencies = [
     "pendulum>=3",
     "polars>=1.30.0",
     "pydantic>=2.12.0",
-    "tablassert[qc]>=11.0.0,<12",
+    "tablassert[qc]>=12.0.0,<13",
     # torch is transitive (gliner, sentence-transformers via tablassert[qc]) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host
     # (wenceslaus: 4x Tesla P100-PCIE-16GB, compute capability 6.0, CUDA 12.8 driver) force it:
