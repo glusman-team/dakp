@@ -32,10 +32,11 @@ _ONTOLOGY_TSV = _FIXTURE_ROOT / "ontology" / "disease_map.tsv"
 
 def test_defaults_and_contraindication_types() -> None:
     assert DEFAULT_MODEL == "gliner-community/gliner_large-v2.5"
-    # Generate wide, decide narrow: candidates must be visible to the specificity merge below the
-    # confidence at which they are actually asserted, so this ordering is load-bearing.
+    # 0.35 is the lowest score at which GLiNER is still accurate: generation sits at it and the
+    # acceptance floor joins it there, so nothing generated is abstained by default. The ordering
+    # stays load-bearing — candidates must reach the specificity merge at or below the floor.
     assert DEFAULT_THRESHOLD == 0.35
-    assert DEFAULT_ACCEPT_THRESHOLD == 0.5
+    assert DEFAULT_ACCEPT_THRESHOLD == 0.35
     assert DEFAULT_THRESHOLD <= DEFAULT_ACCEPT_THRESHOLD
     assert CONTRAINDICATION_DISEASE_TYPES == (TYPE_DISEASE, TYPE_PHENOTYPE)
     # The embedded gazetteer is non-empty and every term is typed disease/phenotype.

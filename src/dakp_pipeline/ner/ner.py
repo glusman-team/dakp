@@ -20,9 +20,11 @@ Composite design (gazetteer-first, GLiNER-augmented)
   Model spans whose normalized surface is a population descriptor (``_POPULATION_PHRASES``, e.g.
   "women of childbearing potential") are dropped, leading hedge tokens (``recent``, ``a history
   of``) are trimmed, and spans a hard window split cuts across a phrase boundary are re-joined.
-  Candidates are generated wide (``DEFAULT_THRESHOLD``) and accepted narrow
-  (``DEFAULT_ACCEPT_THRESHOLD``); the backend **abstains** on anything in between rather than
-  asserting a low-confidence mention or falling back to a less specific one. GLiNER is natively
+  Candidates are generated at ``DEFAULT_THRESHOLD`` and accepted at ``DEFAULT_ACCEPT_THRESHOLD``
+  — the same 0.35 floor by default (the lowest score at which GLiNER is still accurate), so
+  nothing generated is abstained; raise ``accept_threshold`` to decide narrower than you
+  generate. Below the floor the backend **abstains** rather than asserting a low-confidence
+  mention or falling back to a less specific one. GLiNER is natively
   multi-entity: one ``predict_entities`` call scores every requested label (disease + phenotype
   here) and returns any number of spans per label. GLiNER silently truncates inputs past
   ``config.max_len`` word tokens (768 on the shipped v2.5 checkpoint), so long sections are
@@ -57,17 +59,19 @@ from dakp_pipeline.ner.model_cache import NERDependencyError, ensure_model
 # GLiNER v2.5 large (deberta-v3-large encoder, max_len 768 word tokens, multi-entity: up to
 # ``max_types`` labels per call). Override for a smaller / biomedical-tuned checkpoint.
 DEFAULT_MODEL = "gliner-community/gliner_large-v2.5"
-#: Candidate-**generation** threshold, passed straight to ``predict_entities``. Deliberately
-#: BELOW :data:`DEFAULT_ACCEPT_THRESHOLD`: a specific span often scores lower than its generic
-#: head (``drug hypersensitivity`` 0.35 vs ``hypersensitivity``), so generating at the old 0.5
-#: hid exactly the spans the specificity merge exists to prefer. Generate wide, decide narrow.
+#: Candidate-**generation** threshold, passed straight to ``predict_entities``. 0.35 is the
+#: lowest score at which GLiNER is still accurate, so generation never goes below it. Keeping it
+#: at (not above) the acceptance floor matters: a specific span often scores lower than its
+#: generic head (``drug hypersensitivity`` 0.35 vs ``hypersensitivity``), and generating at the
+#: old 0.5 hid exactly the spans the specificity merge exists to prefer.
 DEFAULT_THRESHOLD = 0.35
 #: DAKP-side **acceptance** floor — the confidence a model span must reach to be emitted at all.
 #: Spans in the ``[DEFAULT_THRESHOLD, DEFAULT_ACCEPT_THRESHOLD)`` band are visible to the merge
-#: (so they can still win a boundary contest) but are abstained on rather than asserted. This is
-#: the recall-safe 0.5 operating point the backend has always shipped, now enforced here instead
-#: of inside GLiNER. Tighten deliberately, not by default.
-DEFAULT_ACCEPT_THRESHOLD = 0.5
+#: (so they can still win a boundary contest) but are abstained on rather than asserted.
+#: Default: the floor sits at the generation threshold — spans at the model's accuracy floor are
+#: still correct, so nothing generated is abstained. Raise ``accept_threshold`` to tighten
+#: deliberately; do not lower ``threshold`` below 0.35 (the model's accuracy floor).
+DEFAULT_ACCEPT_THRESHOLD = 0.35
 
 # GLiNER counts input in word tokens from its whitespace splitter and silently truncates anything
 # past ``config.max_len`` tokens (only a UserWarning). Mirror that exact token pattern (gliner's

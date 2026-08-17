@@ -31,7 +31,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from dakp_pipeline.ner.ner import EMBEDDED_GAZETTEER
+from dakp_pipeline.ner.ner import DEFAULT_THRESHOLD, EMBEDDED_GAZETTEER
 
 HERE = Path(__file__).resolve().parent
 GOLD_PATH = HERE / "ner_gold.json"
@@ -103,7 +103,7 @@ def gazetteer_predictor() -> Predictor:
     return lambda text: [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text)]
 
 
-def gliner_predictor(threshold: float = 0.5) -> Predictor:
+def gliner_predictor(threshold: float = DEFAULT_THRESHOLD) -> Predictor:
     """Production mode with an EMPTY gazetteer: GLiNER zero-shot only (isolates the model)."""
     from dakp_pipeline.ner.ner import DiseaseNER
 
@@ -111,7 +111,7 @@ def gliner_predictor(threshold: float = 0.5) -> Predictor:
     return lambda text: [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text)]
 
 
-def composite_predictor(threshold: float = 0.5) -> Predictor:
+def composite_predictor(threshold: float = DEFAULT_THRESHOLD) -> Predictor:
     """Production mode with the curated gazetteer: the settled backend (gazetteer + GLiNER)."""
     from dakp_pipeline.ner.ner import DiseaseNER
 

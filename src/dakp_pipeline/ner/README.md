@@ -40,18 +40,21 @@ Benchmarked on a hand-labeled fixture (34 cases / 42 gold spans, `tests/eval/`):
 
 ## Confidence and abstention
 
-Two thresholds, deliberately split — generate wide, decide narrow:
+Two knobs, one operating point by default:
 
 | knob | default | role |
 | ---- | ------- | ---- |
 | `threshold` | `0.35` | candidate **generation**, passed to GLiNER |
-| `accept_threshold` | `0.50` | DAKP-side **acceptance** floor |
+| `accept_threshold` | `0.35` | DAKP-side **acceptance** floor |
 
-Generating below the acceptance floor is what makes the specificity merge work: a specific span
-often scores lower than its generic head, so generating at the floor hid exactly the spans worth
-preferring. Candidates in the band between the two are visible to the merge but are **abstained
-on** rather than asserted — `extract` returns fewer mentions, or none at all, instead of emitting
-something the model is not confident about.
+`0.35` is the lowest score at which GLiNER is still accurate, so generation never goes below
+it — and spans at that floor are still correct, so the acceptance floor sits at it too:
+nothing generated is abstained by default. Generating at (not above) the acceptance floor is
+what makes the specificity merge work: a specific span often scores lower than its generic
+head, so generating above the floor hid exactly the spans worth preferring. Raise
+`accept_threshold` to open a band: candidates in `[threshold, accept_threshold)` stay visible
+to the merge but are **abstained on** rather than asserted — `extract` returns fewer mentions,
+or none at all, instead of emitting something the model is not confident about.
 
 Abstention never downgrades. If a specific span supersedes a gazetteer span and then falls below
 the floor, the generic term is **not** resurrected: emitting `hypertension` for text that reads

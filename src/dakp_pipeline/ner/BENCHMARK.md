@@ -184,6 +184,28 @@ gazetteer head. Specificity is a production-mode capability; offline stays the d
 zero-dependency baseline that tests and offline runs rely on. The cost is visible and accepted in
 the gazetteer row of the results table above.
 
+## Acceptance floor lowered to the generation floor (2026-08-17)
+
+Production mining showed the `[0.35, 0.5)` abstention band was dropping spans GLiNER had gotten
+right: **0.35 is the lowest score at which the model is still accurate**. The acceptance floor
+came down to meet the generation threshold — `DEFAULT_ACCEPT_THRESHOLD` 0.5 → 0.35, while
+`DEFAULT_THRESHOLD` stays at 0.35 (never generate below the accuracy floor). By default the band
+is now empty: every span GLiNER is willing to generate is asserted. The two-knob mechanism is
+unchanged — raising `accept_threshold` re-opens the band and abstention (including
+`superseded_unresolved`) exactly as before. Two recorded notes flip with it:
+
+* The `drug hypersensitivity` knife-edge (score exactly 0.35, above) is still filtered by
+  GLiNER's own generation filter, so that case is unchanged — but if it is ever generated it is
+  now **accepted** rather than superseded-and-abstained, resolving that granularity limit toward
+  recall.
+* The "0.5 recall-safe default" in the v2.5-upgrade note is superseded: the recall-safe floor is
+  0.35, still enforced at acceptance (now equal to generation).
+
+**Measured (real `gliner_large-v2.5`, CPU, regenerated `benchmark_results.json`).** Composite
+holds 1.000 / 1.000 / 1.000 on the 34-case fixture — the emptied band adds no FPs. GLiNER
+standalone *improves* to P 0.794 / R 0.643 / F1 0.711 (was 0.781 / 0.595 / 0.676): +2 TP at
+unchanged FP count, i.e. the formerly-abstained band spans that reach gold are correct.
+
 ## Small-example checks (hand verification, 2026-08-10)
 
 Short DailyMed-style snippets and FAERS indication strings through `DiseaseNER` offline +
