@@ -7,8 +7,9 @@ Pure, testable building blocks used by every assertion shaper:
   cross-source NDA join goes through :func:`normalize_nda`.
 * **Provenance column assembly** — deduplicated, deterministically sorted, pipe-joined
   lists (the Translator list-encoding convention) for ``approval_ids``,
-  ``supporting_spl_sets``, ``supporting_spl_documents``, and the ``supporting_spl_evidence``
-  union of the latter two that Tablassert encodes as Biolink ``has_evidence``.
+  ``supporting_spl_sets``, ``supporting_spl_documents``, and ``supporting_spl_evidence`` —
+  the ``dailymed:<spl_set_id>`` CURIEs of the backing SPL sets that Tablassert encodes as
+  Biolink ``has_evidence`` (the legacy DAKP KG evidence form).
 * **SPL-support joining** — index DailyMed SPL approvals/ingredients/sections and
   Drugs@FDA application→ingredient lookups so shapers can ask "which SPL sets support
   this approval?" without re-scanning frames.
@@ -64,6 +65,10 @@ def normalize_nda(value: Any) -> str:
 #: DailyMed label page URL every SPL set evidence value links to (``<base><spl_set_id>``).
 DAILYMED_SET_URL_BASE = "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid="
 
+#: CURIE prefix of the legacy DAKP KG SPL-set evidence form (``dailymed:<spl_set_id>``) — the
+#: shape every ``has_evidence`` value is emitted in.
+DAILYMED_SET_CURIE_PREFIX = "dailymed:"
+
 
 def dailymed_set_url(set_id: Any) -> str:
     """Return the DailyMed label URL used for one SPL set evidence value (idempotent)."""
@@ -88,6 +93,24 @@ def dailymed_document_url(document_id: Any) -> str:
     return f"{url}#{fragment}" if fragment else url
 
 
+def dailymed_set_curie(value: Any) -> str:
+    """Return the ``dailymed:<spl_set_id>`` CURIE for one SPL evidence value (idempotent).
+
+    Accepts a bare set id, a document id (``<set_id>#<loinc>`` — the set part forms the CURIE,
+    ``has_evidence`` is set-granular), or an already-prefixed CURIE / legacy label URL (both
+    pass through to the same CURIE). Empty values stay empty.
+    """
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return ""
+    if text.startswith(DAILYMED_SET_CURIE_PREFIX):
+        return text
+    if text.startswith(DAILYMED_SET_URL_BASE):
+        text = text.removeprefix(DAILYMED_SET_URL_BASE)
+    set_id = text.partition("#")[0]
+    return f"{DAILYMED_SET_CURIE_PREFIX}{set_id}"
+
+
 def merge_unique(*value_lists: Iterable[Any]) -> list[str]:
     """Flatten, stringify, drop empties, and return a deterministically sorted unique list."""
     seen: set[str] = set()
@@ -105,17 +128,17 @@ def sorted_pipe(values: Iterable[Any]) -> str:
 
 
 def spl_evidence_pipe(sets: Iterable[Any], documents: Iterable[Any]) -> str:
-    """Pipe-joined DailyMed label URLs for every SPL set AND section backing an assertion.
+    """Pipe-joined ``dailymed:<spl_set_id>`` CURIEs for every SPL set backing an assertion.
 
-    This is the column Tablassert encodes as the Biolink ``has_evidence`` slot, and it carries
-    BOTH granularities because it must: two annotations cannot share a name, so a section can
-    declare ``has_evidence`` exactly once (see the routing note in
-    :mod:`dakp_pipeline.tablassert`). They are the same evidence at different resolutions —
-    a document id is its own set id plus a ``#<loinc>`` fragment — so the union is one coherent
-    ``has_evidence`` array rather than two competing ones: the set URL opens the label, the
-    document URL names the section the text was actually read from.
+    This is the column Tablassert encodes as the Biolink ``has_evidence`` slot, in the legacy
+    DAKP KG evidence form: sorted, deduplicated set-granular CURIEs (downstream
+    translator-ingests treats them as ``publications``). Document ids (``<set_id>#<loinc>``)
+    reduce to their set CURIE, so rows tracking section-level provenance contribute the same
+    set evidence; the section granularity stays visible in the UN-annotated
+    ``supporting_spl_documents`` debug column (one column reaches the edge because a section
+    can declare ``has_evidence`` exactly once — annotation names must be unique per table).
     """
-    return sorted_pipe([*(dailymed_set_url(value) for value in sets), *(dailymed_document_url(value) for value in documents)])
+    return sorted_pipe([*(dailymed_set_curie(value) for value in sets), *(dailymed_set_curie(value) for value in documents)])
 
 
 # --- input table resolution -----------------------------------------------------
@@ -217,7 +240,7 @@ class DailyMedEvidence:
     """
 
     approval_sets: dict[str, set[str]] = field(default_factory=dict)  # norm_nda -> {spl_set_id}
-    approval_display: dict[str, str] = field(default_factory=dict)  # norm_nda -> display approval id
+    approval_display: dict[str, str] = field(default_factory=dict)  # norm_nda -> display approval id (``<type><number>``, e.g. ``BLA103795``)
     set_ingredient: dict[str, tuple[str, str]] = field(default_factory=dict)  # spl_set_id -> first active (name, unii)
     active_ingredients_by_set: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> all active (name, unii)
     indication_docs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> [(doc_id, text)]
@@ -262,7 +285,14 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
             if not norm or not set_id:
                 continue
             evidence.approval_sets.setdefault(norm, set()).add(set_id)
-            evidence.approval_display.setdefault(norm, str(rec.get("approval_id") or rec.get("approval_code") or "").strip())
+            approval_id = str(rec.get("approval_id") or "").strip()
+            approval_code = str(rec.get("approval_code") or "").strip()
+            approval_type = str(rec.get("approval_type") or "").strip()
+            # Legacy-KG display form: application type + number (``BLA103795``); without a
+            # type the number alone is the display value.
+            base = approval_id or approval_code
+            display = f"{approval_type}{base}" if base and approval_type else base
+            evidence.approval_display.setdefault(norm, display)
 
     ingredients = _read_indexed_table(index, "spl_ingredients.parquet")
     if ingredients is not None:
@@ -364,12 +394,14 @@ def write_assertion_table(
 
 __all__ = [
     "CONTRAINDICATION_LOINC",
+    "DAILYMED_SET_CURIE_PREFIX",
     "DAILYMED_SET_URL_BASE",
     "INDICATION_LOINC",
     "DailyMedEvidence",
     "build_dailymed_evidence",
     "build_drugsfda_ingredient_map",
     "dailymed_document_url",
+    "dailymed_set_curie",
     "dailymed_set_url",
     "find_faers_cases",
     "find_table",

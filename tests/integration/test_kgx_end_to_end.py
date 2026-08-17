@@ -36,7 +36,7 @@ import pytest
 import tiny_fullmap
 from harness import install_fixture_fetchers, run_stages
 
-from dakp_pipeline.assertions.evidence import DAILYMED_SET_URL_BASE
+from dakp_pipeline.assertions.evidence import DAILYMED_SET_CURIE_PREFIX
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.tablassert import TablassertRunner
@@ -203,17 +203,14 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
 
 
 def test_dailymed_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> None:
-    """Both DailyMed evidence granularities ride the edge in ONE ``has_evidence`` array.
+    """DailyMed SPL-set evidence rides the edge in ONE ``has_evidence`` array of set CURIEs.
 
     ``has_evidence`` is a real multivalued slot of the association class every DAKP edge resolves to
     (``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``), and the generated configs encode it
     with ``split_by: "|"`` — so DAKP's aggregated, pipe-joined cell arrives as a real JSON array of
-    DailyMed label URLs, never a one-element list holding a joined ``"a|b"`` blob (the silent
-    corruption ``split_by`` exists to prevent).
-
-    The array carries the SPL *set* URL and the *section* URL (``...?setid=<set>#<loinc>``, which
-    part of the label was read). They come from one merged column because a section can declare
-    ``has_evidence`` only once — a duplicate annotation name silently overwrites the first.
+    legacy-form ``dailymed:<spl_set_id>`` CURIEs (set granularity, sorted, deduped), never a
+    one-element list holding a joined ``"a|b"`` blob (the silent corruption ``split_by`` exists to
+    prevent).
 
     The negative half is the point of the change: nothing is relocated into the inlined supporting
     study any more. ``supporting_documents`` (deprecated in Biolink and declared by no association
@@ -229,11 +226,9 @@ def test_dailymed_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild)
         assert evidence
         for value in evidence:
             assert isinstance(value, str)
-            assert value.startswith(DAILYMED_SET_URL_BASE), f"has_evidence value is not a DailyMed link: {value!r}"
+            assert value.startswith(DAILYMED_SET_CURIE_PREFIX), f"has_evidence value is not a dailymed set CURIE: {value!r}"
             assert "|" not in value, f"has_evidence kept a joined cell instead of splitting it: {value!r}"
-        # Both granularities present: at least one bare set link and one section-scoped link.
-        assert any("#" not in value for value in evidence), f"no SPL set link in {evidence!r}"
-        assert any("#" in value for value in evidence), f"no SPL section link in {evidence!r}"
+            assert "#" not in value, f"has_evidence kept section granularity instead of set CURIEs: {value!r}"
         assert "supporting_documents" not in edge
 
     # No DAKP value is stringified into a supporting study any more. Tablassert >= 12 keeps a
@@ -277,21 +272,25 @@ def test_faers_case_count_rides_the_edge_as_evidence_count(kgx_build: KgxBuild) 
         assert "number_of_cases" not in edge
 
 
-def test_approval_ids_ride_the_edge_as_a_top_level_field(kgx_build: KgxBuild) -> None:
-    """Tablassert >= 12 keeps ``approval_ids`` as a curated top-level edge field.
+def test_approval_ids_ride_the_edge_as_a_top_level_json_array(kgx_build: KgxBuild) -> None:
+    """Tablassert >= 12 keeps ``approval_ids`` as a curated top-level edge field, split to an array.
 
     No association class declares the slot, and pre-12 Tablassert folded the FDA application
     numbers into ``supporting_text`` as an ``"approval_ids: <value>"`` string. 12.0 allow-lists
-    the column out of the fold sweep (a known-pending Biolink slot, like ``effect_size``), so the
-    pipe-joined cell is emitted VERBATIM as its own top-level scalar — Tablassert does not split
-    it into a JSON array.
+    the column out of the fold sweep (a known-pending Biolink slot, like ``effect_size``), and
+    DAKP annotates it with ``split_by: "|"`` so the pipe-joined cell is emitted as a real JSON
+    array — the legacy ``approvals`` list shape — instead of a joined scalar.
     """
     treats = [edge for edge in kgx_build.edges if edge["predicate"] == _TREATS]
     assert treats, "expected approved_treats edges in the build"
     for edge in treats:
         approval_ids = edge.get("approval_ids")
-        assert isinstance(approval_ids, str), f"approval_ids missing or not a scalar: {approval_ids!r}"
-        assert approval_ids.strip(), "treats edge missing FDA approval/NDA ids"
+        assert isinstance(approval_ids, list), f"approval_ids missing or not a JSON array: {approval_ids!r}"
+        assert approval_ids, "treats edge missing FDA approval/NDA ids"
+        for value in approval_ids:
+            assert isinstance(value, str)
+            assert value.strip(), f"empty approval id in {approval_ids!r}"
+            assert "|" not in value, f"approval_ids kept a joined cell instead of splitting it: {value!r}"
         assert "approval_ids" not in (edge.get("supporting_text") or "")
 
 

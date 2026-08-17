@@ -10,10 +10,12 @@ from __future__ import annotations
 import polars as pl
 
 from dakp_pipeline.assertions.evidence import (
+    DAILYMED_SET_CURIE_PREFIX,
     DAILYMED_SET_URL_BASE,
     build_dailymed_evidence,
     build_drugsfda_ingredient_map,
     dailymed_document_url,
+    dailymed_set_curie,
     dailymed_set_url,
     find_faers_cases,
     merge_unique,
@@ -78,17 +80,25 @@ def test_dailymed_document_url_keeps_the_loinc_fragment() -> None:
     assert dailymed_document_url("") == ""
 
 
-def test_spl_evidence_pipe_unions_both_dailymed_granularities() -> None:
-    """The ``has_evidence`` column carries SPL sets AND label sections in ONE array.
+def test_dailymed_set_curie_reduces_to_set_granularity() -> None:
+    assert dailymed_set_curie("SET-A") == f"{DAILYMED_SET_CURIE_PREFIX}SET-A"
+    assert dailymed_set_curie("SET-A#34067-9") == f"{DAILYMED_SET_CURIE_PREFIX}SET-A"  # document id -> set CURIE
+    assert dailymed_set_curie("dailymed:SET-A") == "dailymed:SET-A"  # idempotent
+    assert dailymed_set_curie(f"{DAILYMED_SET_URL_BASE}SET-A#34067-9") == "dailymed:SET-A"  # legacy URL form
+    assert dailymed_set_curie("") == ""
+    assert dailymed_set_curie(None) == ""
 
-    Two annotations cannot share a name (a second ``has_evidence`` would silently overwrite
-    the first), so the union is built here rather than by declaring the column twice.
+
+def test_spl_evidence_pipe_emits_set_curies() -> None:
+    """The ``has_evidence`` column carries legacy-form ``dailymed:<spl_set_id>`` CURIEs.
+
+    Set granularity only (the legacy DAKP KG shape); document ids reduce to their set CURIE
+    so section-level provenance contributes the same set evidence exactly once.
     """
-    assert spl_evidence_pipe(["SET-B", "SET-A"], ["SET-A#34067-9"]) == (
-        f"{DAILYMED_SET_URL_BASE}SET-A|{DAILYMED_SET_URL_BASE}SET-A#34067-9|{DAILYMED_SET_URL_BASE}SET-B"
-    )
-    # Already-linked input stays single-prefixed, and duplicates collapse.
-    assert spl_evidence_pipe([f"{DAILYMED_SET_URL_BASE}SET-A", "SET-A"], []) == f"{DAILYMED_SET_URL_BASE}SET-A"
+    assert spl_evidence_pipe(["SET-B", "SET-A"], ["SET-A#34067-9"]) == "dailymed:SET-A|dailymed:SET-B"
+    # CURIE-prefixed / URL-prefixed inputs normalize to the same single-prefixed CURIE; dups collapse.
+    assert spl_evidence_pipe(["dailymed:SET-A", "SET-A"], []) == "dailymed:SET-A"
+    assert spl_evidence_pipe([f"{DAILYMED_SET_URL_BASE}SET-A"], []) == "dailymed:SET-A"
     assert spl_evidence_pipe([], []) == ""
 
 
@@ -101,7 +111,7 @@ def test_dailymed_evidence_indexes_approvals_ingredients_sections(dailymed_refs:
     # Approvals keyed by normalized NDA -> SPL set.
     assert ev.approval_sets["12345"] == {"SETID-EXAMPLESTATIN-001"}
     assert ev.approval_sets["17977"] == {"SETID-IBUPROFEN-002"}
-    assert ev.approval_display["12345"] == "012345"  # padded display form preserved
+    assert ev.approval_display["12345"] == "NDA012345"  # legacy display form: application type + padded number
 
     # Active ingredient + UNII per set (inactive lactose excluded).
     assert ev.set_ingredient["SETID-EXAMPLESTATIN-001"] == ("Examplestatin", "UNII:QFX8B1R4QF")

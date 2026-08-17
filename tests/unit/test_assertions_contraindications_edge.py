@@ -181,6 +181,7 @@ def test_multi_ingredient_contraindication_set_is_skipped(tmp_path: Path) -> Non
     rows = build_contraindication_rows([sections, ingredients], ner)
     assert [r["subject_text"] for r in rows] == ["DrugS"]
     assert rows[0]["supporting_spl_sets"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-S"
+    assert rows[0]["supporting_spl_evidence"] == "dailymed:SET-S"
 
 
 def test_multi_ingredient_indication_set_is_skipped_in_pass_2(tmp_path: Path) -> None:

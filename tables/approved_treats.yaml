@@ -346,6 +346,7 @@ template:
     - annotation: approval_ids
       method: column
       encoding: J
+      split_by: "|"
     - annotation: has_evidence
       method: column
       encoding: M

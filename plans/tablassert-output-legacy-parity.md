@@ -47,7 +47,14 @@ and the downstream consumer `../DINGO/.../ingests/dakp/dakp.py`:
 The remaining legacy fields (`clinical_approval_status`, `N_cases`/`number_of_cases`,
 `approvals`/`FDA_regulatory_approvals`, structured `sources[]`, `EntityTo{Disease,PhenotypicFeature}`
 categories, deterministic `uuid3` ids) **cannot** be reproduced with stock Tablassert today and are left
-as-is for now (deferred).
+as-is for now (deferred). **2026-08-17 update:** `plans/legacy-edge-parity.md` resolved two of
+these with stock Tablassert 12 — `approvals` parity via the `approval_ids` curated pass-through
+annotated `split_by: "|"` (edges now carry a real JSON array of `<application type><number>`
+values, e.g. `NDA012345`) and `has_evidence` parity via set-granular `dailymed:<spl_set_id>`
+CURIEs. The rest were reviewed and deliberately kept as-is: the edge category stays
+`ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`, the FAERS count stays `evidence_count`,
+sources roles keep DAKP primary for all families, and gestalt `KGinfo.pl` source-record URLs /
+legacy uuid3 id values are not reproduced.
 
 ## DAKP-side changes (work with stock Tablassert today)
 
@@ -77,10 +84,13 @@ Reuse: `table_config()` already builds annotations from `_TABLE_ANNOTATIONS` via
   on Tablassert's edge-field allow-list but is not a slot of DAKP's association class, so
   `prune_to_class` routes it onto the inlined supporting study instead of the edge — the values are
   preserved, but as a `supporting_documents=a, b` entry in the study-result description, not an array.
-* DAKP now prefixes each SPL set before joining the assertion cell, so every emitted
-  `has_evidence` value is the deployed `dailymed:<spl_set_id>` CURIE form. This is done in the
-  assertion shapers rather than with Tablassert `Encoding.prefix`, because prefixing the joined
-  cell would affect only the first value after `split_by: "|"`.
+* `has_evidence` values are built in `assertions.evidence.spl_evidence_pipe` as sorted,
+  deduplicated `dailymed:<spl_set_id>` CURIEs (set granularity — the legacy DAKP KG form;
+  document ids reduce to their set CURIE via `dailymed_set_curie`). The prefixing happens in
+  the assertion shapers rather than with Tablassert `Encoding.prefix`, because prefixing the
+  joined cell would affect only the first value after `split_by: "|"`. The unannotated
+  `supporting_spl_sets` / `supporting_spl_documents` TSV columns keep the human-readable
+  DailyMed label URLs as the debuggable split.
 
 ## Steps
 
@@ -100,3 +110,8 @@ uv run pytest tests/integration/test_kgx_end_to_end.py -q   # needs tablassert +
 # Inspect a build's edges.ndjson: has_evidence / supporting_documents present as fields;
 # clinical_approval_status / number_of_cases / approval_ids still in supporting_text (expected today).
 ```
+
+**2026-08-17:** the verification line above is historical — `clinical_approval_status` and
+`approval_ids` are first-class edge fields under Tablassert >= 12, and current builds are
+verified by `tests/integration/test_kgx_end_to_end.py` (`has_evidence` = `dailymed:` set CURIEs,
+`approval_ids` = JSON array).

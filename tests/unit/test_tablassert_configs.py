@@ -87,16 +87,17 @@ EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
 # (``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``) actually declares, or Tablassert
 # relocates the value off the edge into the inlined supporting study's StudyResult description --
 # a junk drawer no translator-ingests source models. So: the merged SPL-evidence column maps to
-# ``has_evidence`` (ONE annotation, carrying both the set and section URL granularities, because
-# duplicate annotation names silently overwrite each other), and ``case_count`` maps to
+# ``has_evidence`` (ONE annotation, carrying the legacy ``dailymed:<spl_set_id>`` set CURIEs,
+# because duplicate annotation names silently overwrite each other), and ``case_count`` maps to
 # ``evidence_count`` rather than the sibling-class-only ``number_of_cases``. ``split_by: "|"``
 # makes the pipe-joined cells emit as real JSON arrays. ``approval_ids`` keeps its column name and,
 # under Tablassert >= 12, reaches the edge as a curated TOP-LEVEL pass-through field (it is on
-# Tablassert's edge allow-list as a known-pending Biolink slot, so it no longer folds);
+# Tablassert's edge allow-list as a known-pending Biolink slot, so it no longer folds); DAKP
+# splits it with ``split_by`` so the edge carries the legacy ``approvals`` JSON-ARRAY shape;
 # ``source_score`` still folds into ``supporting_text``.
 EXPECTED_ANNOTATIONS = {
     "approved_treats_assertions": {
-        "approval_ids": ("approval_ids", None),
+        "approval_ids": ("approval_ids", "|"),
         "has_evidence": ("supporting_spl_evidence", "|"),
         "clinical_approval_status": ("clinical_approval_status", None),
     },

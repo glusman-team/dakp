@@ -40,7 +40,8 @@ def test_faers_rule_keeps_approved_pairs_and_filters_unmapped(
     assert statin["subject_text"] == "Examplestatin"
     assert statin["subject_curie"] == "UNII:QFX8B1R4QF"  # DailyMed-provided UNII
     assert statin["object_curie"] == "MONDO:0005154"
-    assert statin["approval_ids"] == "012345"
+    assert statin["approval_ids"] == "NDA012345"  # legacy display form: application type + number
+    assert statin["supporting_spl_evidence"] == "dailymed:SETID-EXAMPLESTATIN-001"  # legacy set-CURIE form
     assert statin["supporting_spl_sets"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SETID-EXAMPLESTATIN-001"
     assert statin["supporting_spl_documents"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SETID-EXAMPLESTATIN-001#34067-9"
 
@@ -152,7 +153,8 @@ def test_dailymed_fallback_when_no_faers_cases(
     # 022329 not in Drugs@FDA; its indication is also not in the dictionary).
     assert set(by_obj) == {"hypercholesterolemia", "headache", "pain"}
     assert by_obj["pain"]["subject_text"] == "Ibuprofen"
-    assert by_obj["pain"]["approval_ids"] == "017977"
+    assert by_obj["pain"]["approval_ids"] == "NDA017977"
+    assert by_obj["pain"]["supporting_spl_evidence"] == "dailymed:SETID-IBUPROFEN-002"
 
 
 # --- provenance columns + determinism -------------------------------------------

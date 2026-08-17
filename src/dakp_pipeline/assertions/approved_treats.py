@@ -30,11 +30,13 @@ construction). Both paths apply the *same* four-part filter above.
 Provenance (``approval_ids``, ``supporting_spl_sets``, ``supporting_spl_documents``) is
 aggregated per ``(subject, object)`` as deduplicated, sorted, pipe-joined lists, restricted to
 the sets whose indication text actually mentions the condition (the legacy "SPLs containing
-both UNII and CURIE"). SPL set and document evidence is emitted as DailyMed label URLs
+both UNII and CURIE"). ``approval_ids`` values use the legacy display form
+``<application type><number>`` (e.g. ``BLA103795``). The unannotated
+``supporting_spl_sets`` / ``supporting_spl_documents`` debug columns carry DailyMed label URLs
 (``https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=<spl_set_id>[#<loinc>]``) so the
-values are directly clickable links, and ``supporting_spl_evidence`` unions both granularities
-into the single column Tablassert encodes as Biolink ``has_evidence`` (see
-:func:`~dakp_pipeline.assertions.evidence.spl_evidence_pipe`). Subject CURIEs
+values are directly clickable links, and ``supporting_spl_evidence`` carries the backing SPL
+sets as ``dailymed:<spl_set_id>`` CURIEs in the single column Tablassert encodes as Biolink
+``has_evidence`` (see :func:`~dakp_pipeline.assertions.evidence.spl_evidence_pipe`). Subject CURIEs
 are populated only where DailyMed already gives a UNII; object CURIEs come from the lexical
 disease baseline. Canonical CURIE mapping is a later milestone (text-first).
 """

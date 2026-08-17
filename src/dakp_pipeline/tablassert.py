@@ -268,16 +268,17 @@ _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
 # junk drawer, and nothing in ``NCATSTranslator/translator-ingests`` models evidence that way (there
 # a ``Study`` is a real cohort/dataset/trial with TYPED ``StudyResult`` slots). So each name below is
 # a slot the class actually holds:
-# * ``has_evidence`` (``list[str]``, range ``information content entity``) carries BOTH DailyMed
-#   granularities — the SPL set label URL and the ``#<loinc>`` section URL — from the single
-#   ``supporting_spl_evidence`` column. One column, not two, because ANNOTATION NAMES MUST BE
-#   UNIQUE PER TABLE: Tablassert applies annotations as ``with_columns(pl.col(src).alias(name))``
-#   in declaration order with no duplicate check, so a second ``has_evidence`` entry would SILENTLY
-#   overwrite the first. The union is built in ``assertions.evidence.spl_evidence_pipe``; the
-#   per-granularity ``supporting_spl_sets`` / ``supporting_spl_documents`` columns stay in the TSV
-#   as the debuggable split but are no longer annotated. (The deprecated Biolink
-#   ``supporting_documents`` slot — an alias of ``publications`` — is attached to no association
-#   class and was what previously landed in the study description.)
+# * ``has_evidence`` (``list[str]``, range ``information content entity``) carries the
+#   ``dailymed:<spl_set_id>`` CURIEs of the backing SPL sets — the legacy DAKP KG evidence
+#   form, set granularity — from the single ``supporting_spl_evidence`` column. One column,
+#   not two, because ANNOTATION NAMES MUST BE UNIQUE PER TABLE: Tablassert applies annotations
+#   as ``with_columns(pl.col(src).alias(name))`` in declaration order with no duplicate check,
+#   so a second ``has_evidence`` entry would SILENTLY overwrite the first. The CURIEs are
+#   built in ``assertions.evidence.spl_evidence_pipe``; the per-granularity
+#   ``supporting_spl_sets`` / ``supporting_spl_documents`` columns stay in the TSV as the
+#   debuggable split (human-readable DailyMed label URLs) but are no longer annotated. (The
+#   deprecated Biolink ``supporting_documents`` slot — an alias of ``publications`` — is
+#   attached to no association class and was what previously landed in the study description.)
 # * DAKP aggregates each cell into ONE pipe-joined string, so ``split_by: "|"`` is what makes it a
 #   real JSON array. Without the split Tablassert wraps the joined scalar into a USELESS
 #   one-element list (``["url1|url2"]``) that still passes Biolink validation — a silent-corruption
@@ -293,9 +294,10 @@ _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
 #   on ``Association`` — "the number of evidence instances that are connected to an association" —
 #   so the count stays on the edge where a consumer can query it;
 # * ``approval_ids`` (FDA application numbers) has no Biolink slot reachable from a lowercased
-#   annotation name, but Tablassert >= 12 keeps it as a CURATED pass-through: the pipe-joined
-#   cell reaches the final KGX edge as its own top-level ``approval_ids`` scalar, verbatim,
-#   instead of being folded into ``supporting_text``. ``source_score`` still has no reachable
+#   annotation name, but Tablassert >= 12 keeps it as a CURATED pass-through. DAKP annotates it
+#   with ``split_by: "|"`` so the pipe-joined cell reaches the final KGX edge as its own
+#   top-level ``approval_ids`` JSON ARRAY (the legacy ``approvals`` list shape) instead of a
+#   joined scalar. ``source_score`` still has no reachable
 #   slot and no carve-out, so it folds into ``supporting_text`` as a ``"name: value"`` string —
 #   visible provenance, deliberately kept. ``has_confidence_score``
 #   would be mechanically available for ``source_score``, but that column is the max NER SPAN score
@@ -303,7 +305,7 @@ _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
 #   would mislead any consumer that weights edges by confidence.
 _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
     "approved_treats_assertions": (
-        ("approval_ids", "approval_ids", None),
+        ("approval_ids", "approval_ids", "|"),
         ("supporting_spl_evidence", "has_evidence", "|"),
         ("clinical_approval_status", "clinical_approval_status", None),
     ),

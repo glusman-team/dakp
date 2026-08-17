@@ -45,11 +45,12 @@ ontology fixture gazetteer (``<fixture_root>/ontology/disease_map.tsv``, read as
 selector. Constructing the backend is import-free, so module import + the test suite run with
 no heavy NER deps imported.
 
-Provenance: contraindications are text-mined from DailyMed, so
-SPL set and document evidence is emitted as DailyMed label URLs
-(``https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=<spl_set_id>[#<loinc>]``), and
-``supporting_spl_evidence`` unions both granularities into the single column Tablassert encodes
-as Biolink ``has_evidence`` (see :func:`~dakp_pipeline.assertions.evidence.spl_evidence_pipe`).
+Provenance: contraindications are text-mined from DailyMed. The unannotated
+``supporting_spl_sets`` / ``supporting_spl_documents`` debug columns carry DailyMed label URLs
+(``https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=<spl_set_id>[#<loinc>]``), while
+``supporting_spl_evidence`` carries the backing SPL sets as ``dailymed:<spl_set_id>`` CURIEs in
+the single column Tablassert encodes as Biolink ``has_evidence`` (the legacy DAKP KG evidence
+form; see :func:`~dakp_pipeline.assertions.evidence.spl_evidence_pipe`).
 ``primary_knowledge_source = infores:multiomics-drugapprovals``,
 ``upstream_resource_ids = infores:dailymed``, ``agent_type = text_mining_agent`` (the DAKP RIG
 lists ``text_mining_agent`` for ``contraindicated_in``), ``knowledge_level = knowledge_assertion``.
