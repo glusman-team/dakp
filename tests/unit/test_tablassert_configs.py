@@ -42,6 +42,7 @@ from dakp_pipeline.tablassert import (
     category_avoid_list,
     qc_runtime_available,
     tablassert_available,
+    upstream_record_urls_supported,
 )
 from dakp_pipeline.tablassert import run as run_tablassert
 
@@ -221,8 +222,13 @@ def test_table_config_structure(table: str) -> None:
     override = config["provenance"]["override"]
     assert "infores" not in override  # the DAKP infores is graph-level only (Tablassert >= 8.0.1 forbids it here)
     assert override["upstream_resource_ids"] == upstream
-    # Edge source_record_urls live on the per-upstream supporting entries, not the primary DAKP entry.
-    assert override["upstream_source_record_urls"] == {resource: EXPECTED_UPSTREAM_RECORD_URLS[resource] for resource in upstream}
+    # Edge source_record_urls live on the per-upstream supporting entries, not the primary DAKP
+    # entry — but only on Tablassert releases that model the slot (post-12.0.0); stock 12.0.0
+    # forbids the key and keeps the URLs on the primary entry via source.url.
+    if upstream_record_urls_supported():
+        assert override["upstream_source_record_urls"] == {resource: EXPECTED_UPSTREAM_RECORD_URLS[resource] for resource in upstream}
+    else:
+        assert "upstream_source_record_urls" not in override
     assert override["knowledge_level"] == knowledge_level
     assert override["agent_type"] == agent_type
     assert "publication" not in config["provenance"]
@@ -561,6 +567,29 @@ def test_qc_runtime_available_reflects_importability(monkeypatch: pytest.MonkeyP
     assert qc_runtime_available() is True
     monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec(frozenset()))
     assert qc_runtime_available() is False
+
+
+def test_upstream_record_urls_supported_reflects_installed_model() -> None:
+    """The probe tracks the installed ManualProvenance, not the version string (a post-12.0.0
+    checkout also reports 12.0.0, so the field set is the only truthful signal)."""
+    from tablassert.models import ManualProvenance
+
+    assert upstream_record_urls_supported() is ("upstream_source_record_urls" in ManualProvenance.model_fields)
+
+
+def test_upstream_record_urls_supported_false_when_tablassert_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tablassert_configs, "tablassert_available", lambda: False)
+    assert upstream_record_urls_supported() is False
+
+
+def test_table_config_omits_upstream_record_urls_on_stock_tablassert(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On a Tablassert without the #104 slot the override must omit the key entirely —
+    pydantic rejects extra override inputs, which is what broke CI on stock 12.0.0."""
+    monkeypatch.setattr(tablassert_configs, "upstream_record_urls_supported", lambda: False)
+    for table in TABLES:
+        override = tablassert_configs.table_config(table)["provenance"]["override"]
+        assert "upstream_source_record_urls" not in override
+        assert set(override) == {"upstream_resource_ids", "knowledge_level", "agent_type"}
 
 
 # --- runner: command construction (pure; no process spawned) ----------------------

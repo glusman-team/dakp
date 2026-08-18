@@ -41,7 +41,7 @@ from dakp_pipeline import legacy_tsv
 from dakp_pipeline.assertions.evidence import DAILYMED_SET_CURIE_PREFIX
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.tablassert import _INFORES_RECORD_URLS, TablassertRunner
+from dakp_pipeline.tablassert import _INFORES_RECORD_URLS, TablassertRunner, upstream_record_urls_supported
 from dakp_pipeline.translator import EDGE_FAMILIES, INFORES_DAKP, read_kgx_jsonl, validate_kgx
 
 # Skip the WHOLE module when tablassert is not importable (deps not installed). tiny_fullmap imports
@@ -198,17 +198,29 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
         assert primary_entry.get("resource_id") == INFORES_DAKP
         family = EDGE_FAMILIES[edge["predicate"]]
         assert frozenset(primary_entry.get("upstream_resource_ids") or []) == family.required_upstream
-        assert not primary_entry.get("source_record_urls")
-        # Each upstream infores is its own supporting entry carrying its dataset's download URL.
+        # Each upstream infores is its own supporting entry carrying that dataset's REAL download
+        # URL — but only on a Tablassert that models upstream_source_record_urls (post-12.0.0,
+        # SkyeAv/Tablassert#104). On stock 12.0.0 the URLs stay on the primary entry via
+        # source.url (the pre-#104 shape main was green on).
         supporting = {entry.get("resource_id"): entry for entry in sources if entry.get("resource_role") == "supporting_data_source"}
         assert set(supporting) == set(family.required_upstream)
-        for resource, entry in supporting.items():
-            record_urls = entry.get("source_record_urls")
+        if upstream_record_urls_supported():
+            assert not primary_entry.get("source_record_urls")
+            for resource, entry in supporting.items():
+                record_urls = entry.get("source_record_urls")
+                assert isinstance(record_urls, list)
+                assert record_urls == _INFORES_RECORD_URLS[resource]
+                for url in record_urls:
+                    assert url.startswith("https://")
+                    assert "example.invalid" not in url
+        else:
+            record_urls = primary_entry.get("source_record_urls")
             assert isinstance(record_urls, list)
-            assert record_urls == _INFORES_RECORD_URLS[resource]
+            assert record_urls
             for url in record_urls:
                 assert url.startswith("https://")
                 assert "example.invalid" not in url
+            assert all(not entry.get("source_record_urls") for entry in supporting.values())
 
 
 def test_dailymed_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> None:

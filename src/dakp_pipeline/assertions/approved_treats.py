@@ -146,9 +146,7 @@ def build_approved_treats_rows(
     historical lexical-only behavior is kept.
     """
     mentions = _mine_indication_mentions(dailymed, ner, devices) if ner is not None else None
-    candidates = (
-        _faers_candidates(faers_cases, disease_map) if faers_cases is not None else _dailymed_candidates(dailymed, disease_map, mentions)
-    )
+    candidates = _faers_candidates(faers_cases, disease_map) if faers_cases is not None else _dailymed_candidates(dailymed, disease_map, mentions)
 
     aggregated: dict[tuple[str, str], dict[str, Any]] = {}
     candidates_seen = 0
@@ -246,7 +244,10 @@ def _condition_corroborated_sets(
     return [
         set_id
         for set_id in sets
-        if any(_section_mentions_condition(text, cand, disease_map, (mentions or {}).get((set_id, doc_id))) for doc_id, text in dailymed.indication_docs[set_id])
+        if any(
+            _section_mentions_condition(text, cand, disease_map, (mentions or {}).get((set_id, doc_id)))
+            for doc_id, text in dailymed.indication_docs[set_id]
+        )
     ]
 
 
@@ -335,9 +336,7 @@ def _faers_candidates(faers_cases: pl.DataFrame, disease_map: Mapping[str, Mappi
 
 
 def _dailymed_candidates(
-    dailymed: DailyMedEvidence,
-    disease_map: Mapping[str, Mapping[str, str]],
-    mentions: Mapping[tuple[str, str], list[Mention]] | None = None,
+    dailymed: DailyMedEvidence, disease_map: Mapping[str, Mapping[str, str]], mentions: Mapping[tuple[str, str], list[Mention]] | None = None
 ) -> Iterator[dict[str, str]]:
     """Fallback candidates: dictionary conditions or NER mentions named in approved SPL indication sections.
 

@@ -134,8 +134,8 @@ def _mine_indication_mentions(texts: list[str], ner: DiseaseNER, devices: Sequen
     if not texts:
         return {}
     if devices and len(texts) > 1 and not ner._offline:
-        mined = _mine_multi_gpu([(text, text, text) for text in texts], ner, devices)
-        return {set_id: mentions for (set_id, _doc_id), mentions in mined.items()}
+        mined_multi = _mine_multi_gpu([(text, text, text) for text in texts], ner, devices)
+        return {set_id: mentions for (set_id, _doc_id), mentions in mined_multi.items()}
     mined: dict[str, list[Mention]] = {}
     for done, text in enumerate(texts, start=1):
         mined[text] = ner.extract(text)

@@ -31,11 +31,7 @@ def test_mine_passes_multi_gpu_single_nonempty_pass_uses_multi_gpu() -> None:
 
 def test_mine_passes_multi_gpu_splits_devices_across_three_passes() -> None:
     """Three passes share the device list contiguously; every pass's mentions are collected."""
-    passes = [
-        [("SET-A", "DOC-A", "asthma")],
-        [("SET-B", "DOC-B", "diabetes")],
-        [("SET-C", "DOC-C", "epilepsy")],
-    ]
+    passes = [[("SET-A", "DOC-A", "asthma")], [("SET-B", "DOC-B", "diabetes")], [("SET-C", "DOC-C", "epilepsy")]]
     results = mine_passes_multi_gpu(passes, _ner("asthma", "diabetes", "epilepsy"), ("cpu", "cpu", "cpu"))
     assert set(results.keys()) == {("SET-A", "DOC-A"), ("SET-B", "DOC-B"), ("SET-C", "DOC-C")}
     assert [m.text for m in results[("SET-C", "DOC-C")]] == ["epilepsy"]

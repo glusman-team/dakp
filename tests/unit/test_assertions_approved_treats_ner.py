@@ -159,11 +159,7 @@ def test_production_ner_single_section_stays_sequential(monkeypatch: pytest.Monk
     """A single section is mined inline even with devices available (no pool for one item)."""
     ev = _supported_evidence("indicated for asthma")
     ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"})
-    monkeypatch.setattr(
-        approved_treats,
-        "_mine_multi_gpu",
-        lambda *args: (_ for _ in ()).throw(AssertionError("must not dispatch")),
-    )
+    monkeypatch.setattr(approved_treats, "_mine_multi_gpu", lambda *args: (_ for _ in ()).throw(AssertionError("must not dispatch")))
     cases = pl.DataFrame({"nda": ["012345"], "indication": ["asthma"], "drugname": ["Examplestatin"], "ingredient": ["Examplestatin"]})
     rows = build_approved_treats_rows(cases, ev, _MAPPING, {}, ner=ner, devices=("cuda:0", "cuda:1"))
     assert [row["object_text"] for row in rows] == ["asthma"]
