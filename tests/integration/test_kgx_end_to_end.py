@@ -20,9 +20,10 @@ so the skip does not affect the 100% ``src/`` coverage gate.
 
 Provenance shape (Tablassert >= 11): edges carry NO flat ``primary_knowledge_source`` scalar —
 retrieval provenance lives only in the ``sources`` list of RetrievalSource entries; the primary
-entry carries ``upstream_resource_ids`` and the table's real ``source_record_urls``, each upstream
-infores appears as a ``supporting_data_source`` entry — exactly the canonical Translator contract
-``validate_kgx`` checks.
+entry carries ``upstream_resource_ids`` and NO ``source_record_urls`` (those moved per-upstream with
+``ManualProvenance.upstream_source_record_urls``, SkyeAv/Tablassert#104), each upstream infores
+appears as a ``supporting_data_source`` entry carrying its own dataset download URL — exactly the
+canonical Translator contract ``validate_kgx`` checks.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from harness import install_fixture_fetchers, run_stages
 from dakp_pipeline.assertions.evidence import DAILYMED_SET_CURIE_PREFIX
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.tablassert import TablassertRunner
+from dakp_pipeline.tablassert import _INFORES_RECORD_URLS, TablassertRunner
 from dakp_pipeline.translator import EDGE_FAMILIES, INFORES_DAKP, read_kgx_jsonl, validate_kgx
 
 # Skip the WHOLE module when tablassert is not importable (deps not installed). tiny_fullmap imports
@@ -166,13 +167,14 @@ def test_three_edge_families_present(kgx_build: KgxBuild) -> None:
 
 
 def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
-    """RAW Tablassert >= 11 edges carry the canonical Translator provenance shape directly.
+    """RAW Tablassert edges carry the canonical Translator provenance shape directly.
 
     NO flat ``primary_knowledge_source`` scalar (removed in Tablassert 11.0): retrieval
-    provenance lives only in the ``sources`` RetrievalSource list — the primary entry carries
-    the edge family's upstream infores and the table's REAL ``source_record_urls`` (never the
-    retired ``example.invalid`` placeholder); each upstream infores also appears as its own
-    ``supporting_data_source`` entry.
+    provenance lives only in the ``sources`` RetrievalSource list — the primary entry
+    (``infores:multiomics-drugapprovals``) carries the edge family's upstream infores but NO
+    ``source_record_urls`` (DAKP is the transforming resource, not a downloadable record);
+    each upstream infores appears as its own ``supporting_data_source`` entry carrying that
+    dataset's REAL download URL (never the retired ``example.invalid`` placeholder).
     """
     assert kgx_build.edges, "build-kg produced no edges"
     for edge in kgx_build.edges:
@@ -183,7 +185,7 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
             assert value
         # The flat scalar is gone (Tablassert >= 11); the primary source is the sources entry.
         assert "primary_knowledge_source" not in edge
-        # Retrieval provenance: primary entry carries the family's upstream infores + real URLs.
+        # Retrieval provenance: primary entry carries the family's upstream infores, no URLs.
         sources = edge.get("sources")
         assert isinstance(sources, list)
         assert sources
@@ -191,15 +193,17 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
         assert primary_entry.get("resource_id") == INFORES_DAKP
         family = EDGE_FAMILIES[edge["predicate"]]
         assert frozenset(primary_entry.get("upstream_resource_ids") or []) == family.required_upstream
-        record_urls = primary_entry.get("source_record_urls")
-        assert isinstance(record_urls, list)
-        assert record_urls
-        for url in record_urls:
-            assert url.startswith("https://")
-            assert "example.invalid" not in url
-        # Each upstream infores is its own supporting entry.
-        supporting = {entry.get("resource_id") for entry in sources if entry.get("resource_role") == "supporting_data_source"}
-        assert supporting == set(family.required_upstream)
+        assert not primary_entry.get("source_record_urls")
+        # Each upstream infores is its own supporting entry carrying its dataset's download URL.
+        supporting = {entry.get("resource_id"): entry for entry in sources if entry.get("resource_role") == "supporting_data_source"}
+        assert set(supporting) == set(family.required_upstream)
+        for resource, entry in supporting.items():
+            record_urls = entry.get("source_record_urls")
+            assert isinstance(record_urls, list)
+            assert record_urls == _INFORES_RECORD_URLS[resource]
+            for url in record_urls:
+                assert url.startswith("https://")
+                assert "example.invalid" not in url
 
 
 def test_dailymed_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> None:

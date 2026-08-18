@@ -15,12 +15,16 @@ The configs match the ACTUAL current Tablassert schema (verified against
   top-level ``template`` / ``sections`` keys — a bare ``source:``/``statement:`` shape is
   silently dropped, so the ``template:`` wrapper is mandatory;
 * ``source.kind: text`` with a tab ``delimiter`` and the uncompressed assertion ``.tsv``
-  as ``source.local``. ``source.url`` is required by the model and becomes the edge
-  ``sources[].source_record_urls`` provenance, so each table records its REAL upstream
-  dataset URL (:data:`_TABLE_SOURCE_URLS`) — never a placeholder. Tablassert 8.2.1+ models
-  ``source.url`` as a ``list`` of one or more URLs per section and DAKP assertion rows
-  aggregate across quarters, releases, and applications, so no per-row URL is truthful at
-  row granularity; the single dataset-level URL is the honest record, and per-row precision
+  as ``source.local``. ``source.url`` is required by the model and records the table's REAL
+  upstream dataset URL (:data:`_TABLE_SOURCE_URLS`) — never a placeholder. On the edge it no
+  longer lands on the primary ``sources[]`` entry: with the override's
+  ``upstream_source_record_urls`` mapping (:data:`_INFORES_RECORD_URLS`), Tablassert attaches
+  each upstream's download URL to that upstream's own ``supporting_data_source`` entry
+  (``infores:dailymed`` / ``infores:faers``) and leaves the primary
+  ``infores:multiomics-drugapprovals`` entry bare; ``source.url`` then serves the RIG. Tablassert
+  8.2.1+ models ``source.url`` as a ``list`` of one or more URLs per section and DAKP assertion
+  rows aggregate across quarters, releases, and applications, so no per-row URL is truthful at
+  row granularity; the dataset-level URLs are the honest record, and per-row precision
   stays on the edge via ``has_evidence`` (SPL set links) and ``approval_ids`` (FDA application
   numbers);
 * column-encoded ``statement.subject`` / ``statement.object`` / ``statement.predicate``
@@ -31,7 +35,9 @@ The configs match the ACTUAL current Tablassert schema (verified against
 * a ``provenance.override`` (:class:`~tablassert.models.ManualProvenance`) block carrying
   the DINGO-conventional upstream infores chain, ``knowledge_level`` and ``agent_type``
   (the DAKP ``infores`` is graph-level only since Tablassert >= 8.0.1 forbids it in the override;
-  no ``publication`` — the override replaces repo/publication provenance);
+  no ``publication`` — the override replaces repo/publication provenance), plus
+  ``upstream_source_record_urls`` re-homing the edge ``source_record_urls`` from the primary
+  DAKP entry onto the per-upstream entries (:data:`_INFORES_RECORD_URLS`);
 * column-encoded ``statement.qualifiers`` where an assertion column carries the qualifier's entity
   (per-table :data:`_TABLE_QUALIFIERS`). A Tablassert qualifier is a node encoding resolved through
   the fullmap alongside subject/object (an unmatched qualifier value drops the whole edge), so a
@@ -124,14 +130,24 @@ FULLMAP_DEFAULT = ".fullmap"
 
 #: Real upstream dataset URL recorded as each table's ``source.url`` — the constants the
 #: acquisition layer itself uses, so provenance can never drift from what was downloaded.
-#: Tablassert turns ``source.url`` into the primary ``sources[]`` entry's
-#: ``source_record_urls`` on every edge of the table. Approved-treats and contraindication
+#: ``source.url`` is the section's RIG/audit record; on the edge, Tablassert places the URLs
+#: per-upstream via the override's ``upstream_source_record_urls`` (:data:`_INFORES_RECORD_URLS`),
+#: leaving the primary DAKP ``sources[]`` entry bare. Approved-treats and contraindication
 #: rows are extracted from DailyMed SPL releases (the DailyMed full-release index); FAERS
 #: observed-use rows from the FAERS quarterly ASCII extracts (the FDA quarterly-data listing).
 _TABLE_SOURCE_URLS: dict[str, str] = {
     "approved_treats_assertions": dailymed_source.FULL_RELEASE_INDEX_URL,
     "faers_applied_to_treat_assertions": faers_source.FDA_FAERS_INDEX_URL,
     "contraindication_assertions": dailymed_source.FULL_RELEASE_INDEX_URL,
+}
+#: Download URL each upstream infores entry carries as its own ``source_record_urls`` on every
+#: edge where it appears as a ``supporting_data_source``. The primary
+#: ``infores:multiomics-drugapprovals`` entry deliberately carries none — DAKP is the
+#: transforming resource, not a downloadable record. Requires the Tablassert release shipping
+#: ``ManualProvenance.upstream_source_record_urls`` (SkyeAv/Tablassert#104).
+_INFORES_RECORD_URLS: dict[str, list[str]] = {
+    "infores:dailymed": [dailymed_source.FULL_RELEASE_INDEX_URL],
+    "infores:faers": [faers_source.FDA_FAERS_INDEX_URL],
 }
 GRAPH_DESCRIPTION = (
     "Drug Approvals Knowledge Provider: FDA-approved treatment relationships, "
@@ -473,7 +489,18 @@ def table_config(table: str) -> dict[str, Any]:
     return {
         "source": {"kind": "text", "local": f"data/tabular/{table}.tsv", "url": [_TABLE_SOURCE_URLS[table]], "delimiter": "\t"},
         "statement": statement,
-        "provenance": {"override": {"upstream_resource_ids": list(upstream), "knowledge_level": knowledge_level, "agent_type": agent_type}},
+        "provenance": {
+            "override": {
+                "upstream_resource_ids": list(upstream),
+                # Per-upstream download URLs: each supporting infores entry carries its own
+                # dataset's URL; the primary DAKP entry stays bare (no record to download).
+                "upstream_source_record_urls": {
+                    resource: _INFORES_RECORD_URLS[resource] for resource in upstream if resource in _INFORES_RECORD_URLS
+                },
+                "knowledge_level": knowledge_level,
+                "agent_type": agent_type,
+            }
+        },
         "annotations": annotations,
     }
 

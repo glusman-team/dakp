@@ -340,6 +340,11 @@ template:
       upstream_resource_ids:
         - "infores:dailymed"
         - "infores:faers"
+      upstream_source_record_urls:
+        infores:dailymed:
+          - "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
+        infores:faers:
+          - "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
       knowledge_level: knowledge_assertion
       agent_type: manual_validation_of_automated_agent
   annotations:

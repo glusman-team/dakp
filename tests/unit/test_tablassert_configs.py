@@ -110,11 +110,19 @@ EXPECTED_ANNOTATIONS = {
 }
 
 # assertion table -> the REAL upstream dataset URL recorded as ``source.url`` (never a placeholder;
-# Tablassert emits it as the edge ``sources[].source_record_urls``).
+# with ``upstream_source_record_urls`` set, Tablassert keeps it for the RIG and places the edge
+# ``sources[].source_record_urls`` per-upstream instead of on the primary DAKP entry).
 EXPECTED_SOURCE_URLS = {
     "approved_treats_assertions": "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm",
     "faers_applied_to_treat_assertions": "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html",
     "contraindication_assertions": "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm",
+}
+
+# upstream infores -> the download URL that infores' supporting entry carries as its own
+# ``source_record_urls`` on every edge where it appears (mirrors tablassert_configs._INFORES_RECORD_URLS).
+EXPECTED_UPSTREAM_RECORD_URLS = {
+    "infores:dailymed": ["https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"],
+    "infores:faers": ["https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"],
 }
 
 
@@ -213,6 +221,8 @@ def test_table_config_structure(table: str) -> None:
     override = config["provenance"]["override"]
     assert "infores" not in override  # the DAKP infores is graph-level only (Tablassert >= 8.0.1 forbids it here)
     assert override["upstream_resource_ids"] == upstream
+    # Edge source_record_urls live on the per-upstream supporting entries, not the primary DAKP entry.
+    assert override["upstream_source_record_urls"] == {resource: EXPECTED_UPSTREAM_RECORD_URLS[resource] for resource in upstream}
     assert override["knowledge_level"] == knowledge_level
     assert override["agent_type"] == agent_type
     assert "publication" not in config["provenance"]
