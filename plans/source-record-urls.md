@@ -1,5 +1,14 @@
 # Plan: Real source record URLs for Tablassert output
 
+> **Status (2026-08-18): COMPLETE.** The shipped design converged on section-level REAL
+> dataset URLs (`_TABLE_SOURCE_URLS`, commit eba1a03 retired `example.invalid`; list-valued
+> `source.url` per the Tablassert 8.2.1 convention, 53ee744) plus per-upstream
+> `source_record_urls` via Tablassert 12.1.0's `ManualProvenance.upstream_source_record_urls`
+> (SkyeAv/Tablassert#104; adopted in 5052c74, made unconditional by the `>=12.1.0,<13` floor
+> in 61b75e9). That supersedes the per-row `source_record_urls` TSV column, section-grouping
+> by URL tuple, and Tablassert-version gating steps below — edge-level precision stays on
+> `has_evidence` (SPL set links) and `approval_ids` (FDA application numbers) instead.
+
 ## Context
 
 The Tablassert table configs currently hardcode a placeholder source URL:
