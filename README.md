@@ -32,7 +32,7 @@ waits, and prints the build summary. `uv run dakp down` stops the local Airflow.
 ## The Pipeline
 
 ```text
-acquire ─▶ extract ─▶ NER ─▶ aggregate ─▶ Tablassert KGX handoff
+acquire ─▶ extract ─▶ NER ─▶ aggregate ─▶ Tablassert KGX handoff ─▶ legacy TSV export
 ```
 
 - **acquire** — real downloaders for DailyMed full releases, Drugs@FDA, and FAERS quarterly
@@ -50,6 +50,10 @@ acquire ─▶ extract ─▶ NER ─▶ aggregate ─▶ Tablassert KGX handoff
   tables.
 - **Tablassert handoff** — generates a graph config plus one table config per assertion table,
   then delegates to `tablassert build-kg`.
+- **legacy TSV export** — retrofits the KGX pair into the pre-rewrite DAKP TSV schema
+  (`<workdir>/data/dakp_<version>.{nodes,edges}.tsv`: 3-column nodes, 12-column edges, `NA`
+  fills, comma-joined multi-values) for the internal service that still consumes it. The task
+  skips cleanly when the handoff was deferred (no `--fullmap` → no KGX to convert).
 
 ## Output Tables
 

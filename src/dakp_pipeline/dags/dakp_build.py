@@ -45,13 +45,15 @@ CONFIG_VARIABLE = "dakp_config"
 _DAG_DOC_MD = """
 ### DAKP build stages
 
-The DAG is organized into five visual TaskGroups while preserving the historical task IDs:
+The DAG is organized into six visual TaskGroups while preserving the historical task IDs:
 
 1. **acquire** — network/model acquisition, bounded by `dakp_download`.
 2. **extract** — native Go SDK stubs on the `golang` queue, bounded by `dakp_extract`.
 3. **shape** — Python assertion-table shaping over artifact manifests.
 4. **tablassert** — config generation and optional real Tablassert KGX handoff.
-5. **summary** — terminal translator validation/regression/build-summary task.
+5. **export** — retrofit the KGX pair into the legacy DAKP TSV schema (skipped when the handoff
+   was deferred — no fullmap means no KGX to convert).
+6. **summary** — terminal translator validation/regression/build-summary task.
 
 The `dakp_extract` pool has 4 slots; each extract consumes the default 1 slot, so DailyMed, FAERS,
 and Drugs@FDA all extract concurrently. (The streaming FAERS rewrite — plans/fix-faers-memory.md —
@@ -63,6 +65,7 @@ _ACQUIRE_DOC_MD = """Acquire raw source/model artifacts and return small `Artifa
 _EXTRACT_DOC_MD = """Native Go SDK bundle extraction; heavy payloads stay in the content-addressed store."""
 _SHAPE_DOC_MD = """Shape interim artifacts into DAKP assertion TSVs without moving table bytes through XCom."""
 _TABLASSERT_DOC_MD = """Generate Tablassert configs and optionally run the installed Tablassert CLI."""
+_EXPORT_DOC_MD = """Convert the Tablassert KGX ndjson pair into the legacy DAKP `.nodes.tsv` / `.edges.tsv` schema."""
 _SUMMARY_DOC_MD = """Terminal build-summary stage: translator validation, regression checks, and report JSON."""
 
 
@@ -331,13 +334,36 @@ def _build_tablassert_stage(assertions: AssertionOutputs) -> TablassertOutputs:
         return TablassertOutputs(configs=configs, kgx=kgx)
 
 
-def _build_summary_stage(assertions: AssertionOutputs, kgx: Any) -> Any:
+def _build_export_stage(kgx: Any) -> Any:
+    """Create the legacy-TSV-export TaskGroup and return its task handle."""
+    with TaskGroup(group_id="export", prefix_group_id=False, tooltip="Legacy TSV export", doc_md=_EXPORT_DOC_MD):
+
+        @task(doc_md="Retrofit the KGX ndjson pair into the legacy DAKP TSV pair; skipped when the Tablassert handoff was deferred.")
+        def export_legacy_tsv(kgx_refs: Any) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+            from airflow.sdk.exceptions import AirflowSkipException
+
+            from dakp_pipeline import legacy_tsv
+
+            ctx = _ctx()
+            with step(logger, "task export_legacy_tsv"):
+                refs = legacy_tsv.export(_refs_from_xcom(kgx_refs), ctx)
+                stats(logger, "task export_legacy_tsv", output_refs=len(refs))
+                if not refs:  # deferred handoff: no build-kg ran, no KGX to convert — SKIP, not fail
+                    raise AirflowSkipException("Tablassert handoff was deferred (no fullmap); nothing to retrofit into the legacy TSV schema")
+                return _refs_to_xcom(refs)
+
+        return export_legacy_tsv(kgx)
+
+
+def _build_summary_stage(assertions: AssertionOutputs, kgx: Any, legacy_tsv_refs_task: Any) -> Any:
     """Create the terminal summary TaskGroup and return its task handle."""
     with TaskGroup(group_id="summary", prefix_group_id=False, tooltip="Build summary", doc_md=_SUMMARY_DOC_MD):
-
-        @task(doc_md="Terminal task: validate assertion tables, run regression guards, and write build_summary.json.")
+        # none_failed: export_legacy_tsv SKIPs (never fails) on a deferred handoff, and the summary
+        # must still run — a skip upstream under the default all_success rule would skip the whole
+        # terminal stage (its XCom then resolves to None, i.e. an empty ref list).
+        @task(trigger_rule="none_failed", doc_md="Terminal task: validate assertion tables, run regression guards, and write build_summary.json.")
         def write_build_summary(
-            approved: Any, uses: Any, contra: Any, kgx_refs: Any
+            approved: Any, uses: Any, contra: Any, kgx_refs: Any, legacy_refs: Any
         ) -> str:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline import runtime, translator
             from dakp_pipeline.paths import Workdir
@@ -346,24 +372,34 @@ def _build_summary_stage(assertions: AssertionOutputs, kgx: Any) -> Any:
             with step(logger, "task write_build_summary"):
                 assertion_refs = [*_refs_from_xcom(approved), *_refs_from_xcom(uses), *_refs_from_xcom(contra)]
                 kgx_ref_list = _refs_from_xcom(kgx_refs)
-                stats(logger, "task write_build_summary", assertion_refs=len(assertion_refs), kgx_refs=len(kgx_ref_list))
+                legacy_ref_list = _refs_from_xcom(legacy_refs)
+                stats(
+                    logger,
+                    "task write_build_summary",
+                    assertion_refs=len(assertion_refs),
+                    kgx_refs=len(kgx_ref_list),
+                    legacy_tsv_refs=len(legacy_ref_list),
+                )
                 report = translator.validate(assertion_refs)
                 regression_report = translator.check_assertion_tables(assertion_refs)
-                summary = runtime.write_build_summary(Workdir(ctx.workdir), assertion_refs, kgx_ref_list, report, regression_report)
+                summary = runtime.write_build_summary(
+                    Workdir(ctx.workdir), assertion_refs, kgx_ref_list, report, regression_report, legacy_tsv_refs=legacy_ref_list
+                )
                 stats(logger, "task write_build_summary", summary_path=str(summary))
                 return str(summary)
 
-        return write_build_summary(assertions.approved, assertions.uses, assertions.contraindications, kgx)
+        return write_build_summary(assertions.approved, assertions.uses, assertions.contraindications, kgx, legacy_tsv_refs_task)
 
 
 @dag(dag_id=DAG_ID, start_date=datetime(2026, 1, 1), schedule=None, catchup=False, tags=["dakp", "drug-approvals"], doc_md=_DAG_DOC_MD)
 def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies execute only under an Airflow runtime
-    """Full DAKP build DAG: acquire -> extract (native Go) -> shape -> Tablassert handoff -> summary."""
+    """Full DAKP build DAG: acquire -> extract (native Go) -> shape -> Tablassert handoff -> legacy TSV export -> summary."""
     acquired = _build_acquire_stage()
     extracted = _build_extract_stage(acquired)
     assertions = _build_shape_stage(extracted, acquired.ner_models)
     tablassert_outputs = _build_tablassert_stage(assertions)
-    _build_summary_stage(assertions, tablassert_outputs.kgx)
+    legacy_tsv = _build_export_stage(tablassert_outputs.kgx)
+    _build_summary_stage(assertions, tablassert_outputs.kgx, legacy_tsv)
 
 
 # Register the DAG (Airflow scans the dags folder for module-level DAGs).

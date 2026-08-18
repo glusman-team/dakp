@@ -37,6 +37,7 @@ import pytest
 import tiny_fullmap
 from harness import install_fixture_fetchers, run_stages
 
+from dakp_pipeline import legacy_tsv
 from dakp_pipeline.assertions.evidence import DAILYMED_SET_CURIE_PREFIX
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
@@ -83,6 +84,7 @@ class KgxBuild:
     report: dict[str, Any]
     nodes: list[dict[str, Any]]
     edges: list[dict[str, Any]]
+    legacy_refs: list[Any]
 
 
 def _ref(path: Path, media_type: str) -> ArtifactRef:
@@ -125,7 +127,10 @@ def kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
     edge_files = sorted((work / "data").glob("*.edges.ndjson"))
     assert len(node_files) == 1, f"expected exactly one KGX nodes file, found {node_files}"
     assert len(edge_files) == 1, f"expected exactly one KGX edges file, found {edge_files}"
-    return KgxBuild(workdir=work, report=report, nodes=read_kgx_jsonl(node_files[0]), edges=read_kgx_jsonl(edge_files[0]))
+
+    # (5) Legacy TSV export, exactly as the DAG wires it (run_tablassert -> export_legacy_tsv).
+    legacy_refs = legacy_tsv.export(report_refs, ctx)
+    return KgxBuild(workdir=work, report=report, nodes=read_kgx_jsonl(node_files[0]), edges=read_kgx_jsonl(edge_files[0]), legacy_refs=legacy_refs)
 
 
 def test_build_kg_handoff_succeeds(kgx_build: KgxBuild) -> None:
@@ -304,3 +309,49 @@ def test_validate_kgx_passes_on_raw_kgx(kgx_build: KgxBuild) -> None:
     assert report.ok, f"validate_kgx reported problems: {report.problems}"
     assert report.problems == []
     assert report.kgx_problems == []
+
+
+# --- legacy TSV retrofit -----------------------------------------------------------
+
+
+def test_legacy_tsv_pair_matches_the_old_schema(kgx_build: KgxBuild) -> None:
+    """The export stage writes the old-service TSV pair with the exact legacy semantics.
+
+    Same stem/directory as the ndjson sources, extension swapped (``.nodes.tsv`` / ``.edges.tsv``);
+    node categories are first-element; edge multi-values are comma-joined (`approval_ids` ->
+    `approval`, `has_evidence` -> `supporting_spls`); every absent field is ``NA`` — including
+    `object_modifier`, always; endpoint names are the CANONICAL node names (legacy parity).
+    """
+    data = kgx_build.workdir / "data"
+    assert [ref.uri.name for ref in kgx_build.legacy_refs] == [
+        next(data.glob("*.nodes.ndjson")).with_suffix(".tsv").name,
+        next(data.glob("*.edges.ndjson")).with_suffix(".tsv").name,
+    ]
+    nodes_ref, edges_ref = kgx_build.legacy_refs
+    assert nodes_ref.rows == len(kgx_build.nodes)
+    assert edges_ref.rows == len(kgx_build.edges)
+
+    nodes_lines = nodes_ref.uri.read_text(encoding="utf-8").splitlines()
+    assert nodes_lines[0].split("\t") == legacy_tsv.NODES_HEADER
+    node_names = {line.split("\t")[0]: line.split("\t")[1] for line in nodes_lines[1:]}
+    assert set(node_names) == {node["id"] for node in kgx_build.nodes}
+    for node in kgx_build.nodes:
+        assert f"{node['id']}\t{node['name']}\t{node['category'][0]}" in nodes_lines  # first-element category
+
+    edges_lines = edges_ref.uri.read_text(encoding="utf-8").splitlines()
+    assert edges_lines[0].split("\t") == legacy_tsv.EDGES_HEADER
+    by_id = {edge["id"]: edge for edge in kgx_build.edges}
+    for line in edges_lines[1:]:
+        row = dict(zip(legacy_tsv.EDGES_HEADER, line.split("\t"), strict=True))
+        edge = by_id[row["id"]]
+        assert row["subject"] == edge["subject"]
+        assert row["predicate"] == edge["predicate"]
+        assert row["object"] == edge["object"]
+        assert row["subject_name"] == node_names[edge["subject"]]  # canonical name parity
+        assert row["object_name"] == node_names[edge["object"]]
+        assert row["object_modifier"] == "NA"  # always NA — legacy parity
+        assert row["knowledge_level"] == edge["knowledge_level"]
+        assert row["agent_type"] == edge["agent_type"]
+        assert row["approval"] == (",".join(edge["approval_ids"]) if "approval_ids" in edge else "NA")
+        assert row["N_cases"] == (str(edge["evidence_count"]) if "evidence_count" in edge else "NA")
+        assert row["supporting_spls"] == (",".join(edge["has_evidence"]) if "has_evidence" in edge else "NA")
