@@ -1,7 +1,7 @@
 """DAG wiring tests for the Airflow-native ``dakp_build`` DAG (Airflow 3 is a hard dependency).
 
 The DAG always imports and constructs (no optional-extra guard). These tests assert the module
-constants, the 13-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
+constants, the 14-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
 three ``extract_*`` tasks are native Go SDK stubs routed to the ``golang`` queue, and that
 acquisition/extraction resource pools let every task run concurrently.
 """
@@ -24,6 +24,7 @@ _EXPECTED_TASK_IDS = {
     "shape_contraindication_tables",
     "generate_tablassert_configs",
     "run_tablassert",
+    "export_legacy_tsv",
     "write_build_summary",
 }
 
@@ -34,6 +35,7 @@ _EXPECTED_GROUP_MEMBERS = {
     "extract": _GO_STUB_IDS,
     "shape": {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"},
     "tablassert": {"generate_tablassert_configs", "run_tablassert"},
+    "export": {"export_legacy_tsv"},
     "summary": {"write_build_summary"},
 }
 
@@ -103,7 +105,20 @@ def test_dag_task_graph(dakp_build) -> None:
     shapes = {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"}
     assert upstream("generate_tablassert_configs") == shapes
     assert upstream("run_tablassert") == shapes | {"generate_tablassert_configs"}
-    assert upstream("write_build_summary") == shapes | {"run_tablassert"}
+    # The legacy TSV export consumes the handoff (its report ref tells it real vs deferred).
+    assert upstream("export_legacy_tsv") == {"run_tablassert"}
+    assert upstream("write_build_summary") == shapes | {"run_tablassert", "export_legacy_tsv"}
 
     # The summary is terminal.
     assert downstream("write_build_summary") == set()
+
+
+def test_summary_tolerates_a_skipped_export(dakp_build) -> None:
+    """write_build_summary runs even when export_legacy_tsv SKIPs (deferred handoff).
+
+    The export task raises AirflowSkipException on a deferred handoff; under the default
+    all_success trigger rule that skip would cascade onto the terminal summary task. none_failed
+    keeps the summary running (its legacy_refs XCom then resolves to an empty list).
+    """
+    summary = dakp_build.dag_obj.get_task("write_build_summary")
+    assert summary.trigger_rule == "none_failed"

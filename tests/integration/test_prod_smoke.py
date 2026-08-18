@@ -127,7 +127,25 @@ def _install_fake_http(monkeypatch: pytest.MonkeyPatch, requested: list[str]) ->
 
 
 def _fake_tablassert_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    """The real TablassertRunner runs; only the ``../Tablassert`` process is faked (offline)."""
+    """The real TablassertRunner runs; only the ``../Tablassert`` process is faked (offline).
+
+    The fake writes the KGX ndjson pair a successful ``build-kg`` leaves under ``data/`` (the
+    runner's cwd is the workdir root), so the downstream legacy TSV export exercises its real
+    branch against the faked subprocess output.
+    """
+    from dakp_pipeline import __version__
+
+    data = (cwd or Path.cwd()) / "data"
+    data.mkdir(parents=True, exist_ok=True)
+    (data / f"dakp_{__version__}.nodes.ndjson").write_text(
+        '{"id":"CHEBI:1000001","name":"Examplestatin","category":["biolink:Drug"]}\n', encoding="utf-8"
+    )
+    (data / f"dakp_{__version__}.edges.ndjson").write_text(
+        '{"id":"fake-edge","subject":"CHEBI:1000001","predicate":"biolink:treats","object":"MONDO:0005154",'
+        '"knowledge_level":"knowledge_assertion","agent_type":"manual_validation_of_automated_agent",'
+        '"approval_ids":["NDA1"]}\n',
+        encoding="utf-8",
+    )
     return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok", stderr="")
 
 
@@ -182,6 +200,18 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
     assert result.build_summary.exists()
     handoff = json.loads((workdir / "data" / "reports" / "tablassert_handoff.json").read_text(encoding="utf-8"))
     assert handoff["mode"] == "real"
+
+    # The legacy TSV stage retrofitted the (faked-subprocess) KGX pair into the old schema.
+    from dakp_pipeline import __version__
+
+    summary = json.loads(result.build_summary.read_text(encoding="utf-8"))
+    assert summary["legacy_tsv"]["exported"] is True
+    nodes_tsv = workdir / "data" / f"dakp_{__version__}.nodes.tsv"
+    edges_tsv = workdir / "data" / f"dakp_{__version__}.edges.tsv"
+    assert nodes_tsv.exists()
+    assert edges_tsv.exists()
+    assert nodes_tsv.read_text(encoding="utf-8").splitlines()[1].split("\t") == ["CHEBI:1000001", "Examplestatin", "biolink:Drug"]
+    assert edges_tsv.read_text(encoding="utf-8").splitlines()[1].split("\t")[9] == "NDA1"
 
     # The real download branches ran (index + per-source URLs were requested over HTTP)...
     assert any("spl-resources-all-drug-labels.cfm" in u for u in requested)

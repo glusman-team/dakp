@@ -82,16 +82,26 @@ def write_build_summary(
     kgx_refs: list[ArtifactRef],
     report: translator.ContractReport,
     regression_report: translator.RegressionReport,
+    legacy_tsv_refs: list[ArtifactRef] | None = None,
 ) -> Path:
-    """Write the build-summary JSON under the workdir's reports dir and return its path."""
+    """Write the build-summary JSON under the workdir's reports dir and return its path.
+
+    ``legacy_tsv_refs`` (optional; empty on a deferred Tablassert handoff, where the legacy TSV
+    export stage skips) adds a ``legacy_tsv`` section recording the retrofitted pair.
+    """
     summary_path = wd.reports / "build_summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_refs = legacy_tsv_refs or []
     summary = {
         "schema_version": "dakp.build_summary.v1",
         "generated_at": datetime.now(UTC).isoformat(),
         "workdir": str(wd.root),
         "tables": [{"name": ref.uri.stem, "path": str(ref.uri), "rows": ref.rows, "artifact_id": ref.blake3} for ref in assertion_refs],
         "tablassert": {"handoff_refs": [str(ref.uri) for ref in kgx_refs]},
+        "legacy_tsv": {
+            "exported": bool(legacy_refs),
+            "files": [{"name": ref.uri.stem, "path": str(ref.uri), "rows": ref.rows, "artifact_id": ref.blake3} for ref in legacy_refs],
+        },
         "translator_contract": {"ok": report.ok, "problems": report.problems, "tables": report.tables},
         "translator_regression": {
             "ok": regression_report.ok,
@@ -105,7 +115,7 @@ def write_build_summary(
     }
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     event = "build_summary"
-    stats(logger, event, path=str(summary_path), tables=len(assertion_refs), handoff_refs=len(kgx_refs))
+    stats(logger, event, path=str(summary_path), tables=len(assertion_refs), handoff_refs=len(kgx_refs), legacy_tsv_refs=len(legacy_refs))
     for ref in assertion_refs:
         stats(logger, event, table=ref.uri.stem, rows=ref.rows if ref.rows is not None else "-", blake3=ref.blake3)
     stats(logger, event, contract_ok=report.ok, contract_problems=len(report.problems))

@@ -495,10 +495,19 @@ def table_config(table: str) -> dict[str, Any]:
             "override": {
                 "upstream_resource_ids": list(upstream),
                 # Per-upstream download URLs: each supporting infores entry carries its own
-                # dataset's URL; the primary DAKP entry stays bare (no record to download).
-                "upstream_source_record_urls": {
-                    resource: _INFORES_RECORD_URLS[resource] for resource in upstream if resource in _INFORES_RECORD_URLS
-                },
+                # dataset's URL; the primary DAKP entry stays bare (no record to download). Only
+                # emitted when the installed Tablassert models the slot (post-12.0.0,
+                # SkyeAv/Tablassert#104 — see :func:`upstream_record_urls_supported`); on stock
+                # 12.0.0 the key is extra-forbidden and ``source.url`` lands on the primary entry.
+                **(
+                    {
+                        "upstream_source_record_urls": {
+                            resource: _INFORES_RECORD_URLS[resource] for resource in upstream if resource in _INFORES_RECORD_URLS
+                        }
+                    }
+                    if upstream_record_urls_supported()
+                    else {}
+                ),
                 "knowledge_level": knowledge_level,
                 "agent_type": agent_type,
             }
@@ -767,6 +776,24 @@ def qc_runtime_available() -> bool:
     return importlib.util.find_spec("sentence_transformers") is not None
 
 
+def upstream_record_urls_supported() -> bool:
+    """True when the installed Tablassert models ``ManualProvenance.upstream_source_record_urls``.
+
+    The slot ships in the Tablassert release FOLLOWING 12.0.0 (SkyeAv/Tablassert#104) — a
+    checkout built from that unreleased tree also reports 12.0.0, so the version string cannot
+    gate this; the model fields can. Stock 12.0.0 (today's PyPI latest, and what CI installs)
+    rejects the key as an extra override input, so :func:`table_config` emits it only when this
+    probe passes; without it the config degrades to the pre-#104 shape, where Tablassert places
+    ``source.url`` on the primary ``sources[]`` entry as the edge ``source_record_urls`` — the
+    shape main was green on before 5052c74.
+    """
+    if not tablassert_available():
+        return False
+    from tablassert.models import ManualProvenance  # lazy: keep this module's own import light
+
+    return "upstream_source_record_urls" in ManualProvenance.model_fields
+
+
 def _command_prefix(tablassert_dir: str | None) -> list[str]:
     """argv prefix that launches the ``tablassert`` CLI.
 
@@ -971,4 +998,5 @@ __all__ = [
     "tablassert_available",
     "table_config",
     "table_yaml",
+    "upstream_record_urls_supported",
 ]
