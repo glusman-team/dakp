@@ -419,9 +419,12 @@ def test_table_yaml_validates_against_tablassert_section_model(table: str) -> No
     assert [str(qualifier.qualifier) for qualifier in model_qualifiers] == list(EXPECTED_QUALIFIERS[table])
 
 
-def test_committed_table_configs_match_generator_output() -> None:
+def test_committed_table_configs_match_generator_output(monkeypatch: pytest.MonkeyPatch) -> None:
     # The committed ``tables/*.yaml`` must byte-equal the generator output (regenerate, never
-    # hand-diverge).
+    # hand-diverge). They are committed in the WITH-``upstream_source_record_urls`` form (the
+    # canonical new-Tablassert shape), so pin the probe ON: on a stock 12.0.0 install the generator
+    # would otherwise omit the key and byte-diverge from the committed files.
+    monkeypatch.setattr(tablassert_configs, "upstream_record_urls_supported", lambda: True)
     repo_tables = Path(__file__).resolve().parents[2] / "tables"
     for table in TABLES:
         basename = tablassert_configs._TABLE_SPECS[table][0]
