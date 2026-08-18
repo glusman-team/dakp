@@ -462,6 +462,34 @@ func TestHL7v3Branches(t *testing.T) {
 		}
 	})
 
+	t.Run("section code prefers the LOINC codeSystem OID", func(t *testing.T) {
+		// A code tagged with the LOINC codeSystem OID beats an earlier LOINC-shaped
+		// code from another system (mirrors spl_xml._collect_sections).
+		docs := parseHL7v3String(t, `<document><setId root="S"/>`+
+			`<section><code code="99999-9" codeSystem="9.9.9.9.9"/>`+
+			`<code code="34066-1" codeSystem="2.16.840.1.113883.6.1"/>`+
+			`<title>BOXED WARNING</title><text>Do not use.</text></section>`+
+			`<section><code code="43685-7" codeSystem="2.16.840.1.113883.6.1"/>`+
+			`<title>WARNINGS AND PRECAUTIONS</title><text>Not recommended.</text></section>`+
+			`<section><code code="42229-5" codeSystem="2.16.840.1.113883.6.1"/>`+
+			`<title>SPL UNCLASSIFIED SECTION</title><text>Manufactured by X.</text></section>`+
+			`</document>`)
+		secs := docs[0].Sections
+		if len(secs) != 3 {
+			t.Fatalf("got %d sections, want 3", len(secs))
+		}
+		if secs[0].LOINC != "34066-1" || secs[0].Name != "boxed_warning" {
+			t.Errorf("section0 = %+v, want LOINC 34066-1 boxed_warning", secs[0])
+		}
+		if secs[1].LOINC != "43685-7" || secs[1].Name != "warnings_and_precautions" {
+			t.Errorf("section1 = %+v, want LOINC 43685-7 warnings_and_precautions", secs[1])
+		}
+		// 42229-5 is SPL UNCLASSIFIED, never warnings content (historical mislabel).
+		if secs[2].LOINC != "42229-5" || secs[2].Name != "spl_unclassified" {
+			t.Errorf("section2 = %+v, want LOINC 42229-5 spl_unclassified", secs[2])
+		}
+	})
+
 	t.Run("active via activeIngredientSubstance", func(t *testing.T) {
 		docs := parseHL7v3String(t, `<document><setId root="S"/>`+
 			`<activeMoiety><activeIngredientSubstance>`+

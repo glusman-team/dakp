@@ -52,6 +52,7 @@ from dakp_pipeline.assertions.contraindications import (
     _spawn_safe_main,
     _split_sentences,
     _work_item_evidence,
+    _work_item_parts,
     build_contraindication_rows,
     default_ner,
 )
@@ -117,6 +118,11 @@ def _ingredients(tmp_path: Path, rows: list[tuple[str, str, str, str]]) -> Artif
     path = tmp_path / "spl_ingredients.parquet"
     frame.write_parquet(path)
     return _ref(path)
+
+
+def test_work_item_parts_accepts_legacy_tuple() -> None:
+    """The tuple-like fallback in ``_work_item_parts`` reads plain (set_id, doc_id, text) tuples."""
+    assert _work_item_parts(("SET-A", "DOC-A", "text")) == ("SET-A", "DOC-A", "text")
 
 
 class _BlankNER(DiseaseNER):

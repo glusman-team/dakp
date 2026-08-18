@@ -41,6 +41,10 @@ from dakp_pipeline.paths import Workdir
 # LOINC section codes DAKP consumes for SPL support (mirrors extract.spl_xml.SECTION_CODE_NAMES).
 INDICATION_LOINC = "34067-9"  # indications_and_usage
 CONTRAINDICATION_LOINC = "34070-3"  # contraindications
+BOXED_WARNING_LOINC = "34066-1"  # boxed_warning
+#: Warnings sections feeding contraindication Pass 3: the combined warnings-and-precautions
+#: section on modern labels plus the legacy pre-2009 split sections.
+WARNINGS_LOINCS = frozenset({"43685-7", "34071-1", "42232-9"})  # warnings_and_precautions / warnings / precautions
 
 _NDA_DIGITS_RE = re.compile(r"[^0-9]+")
 
@@ -245,6 +249,8 @@ class DailyMedEvidence:
     active_ingredients_by_set: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> all active (name, unii)
     indication_docs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> [(doc_id, text)]
     contraindication_docs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> [(doc_id, text)]
+    boxed_warning_docs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> [(doc_id, text)]
+    warning_docs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> [(doc_id, text)] (warnings + precautions)
 
     def indication_support(self, norm_nda: str) -> tuple[list[str], list[str]]:
         """Sorted ``(spl_set_ids, spl_document_ids)`` supporting an approval via indication sections.
@@ -268,11 +274,13 @@ class DailyMedEvidence:
 
 
 def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
-    """Index DailyMed SPL approvals, active ingredients, and indication/contraindication sections.
+    """Index DailyMed SPL approvals, active ingredients, and consumed section types.
 
     Reads the normalized interim tables (``spl_approvals``/``spl_ingredients``/``spl_sections``)
-    emitted by :mod:`dakp_pipeline.extract.spl_xml`. Missing tables yield empty indexes so the
-    shapers degrade gracefully rather than failing.
+    emitted by :mod:`dakp_pipeline.extract.spl_xml`, indexing the indication
+    (:data:`INDICATION_LOINC`), contraindication (:data:`CONTRAINDICATION_LOINC`), boxed-warning
+    (:data:`BOXED_WARNING_LOINC`), and warnings/precautions (:data:`WARNINGS_LOINCS`) sections.
+    Missing tables yield empty indexes so the shapers degrade gracefully rather than failing.
     """
     evidence = DailyMedEvidence()
     index = _table_index(inputs)
@@ -327,6 +335,10 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
                 evidence.indication_docs.setdefault(set_id, []).append((doc_id, text))
             elif loinc == CONTRAINDICATION_LOINC:
                 evidence.contraindication_docs.setdefault(set_id, []).append((doc_id, text))
+            elif loinc == BOXED_WARNING_LOINC:
+                evidence.boxed_warning_docs.setdefault(set_id, []).append((doc_id, text))
+            elif loinc in WARNINGS_LOINCS:
+                evidence.warning_docs.setdefault(set_id, []).append((doc_id, text))
 
     stats(
         logger,
@@ -335,6 +347,8 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
         sets_with_ingredients=len(evidence.set_ingredient),
         indication_sets=len(evidence.indication_docs),
         contraindication_sets=len(evidence.contraindication_docs),
+        boxed_warning_sets=len(evidence.boxed_warning_docs),
+        warning_sets=len(evidence.warning_docs),
     )
     return evidence
 
@@ -393,10 +407,12 @@ def write_assertion_table(
 
 
 __all__ = [
+    "BOXED_WARNING_LOINC",
     "CONTRAINDICATION_LOINC",
     "DAILYMED_SET_CURIE_PREFIX",
     "DAILYMED_SET_URL_BASE",
     "INDICATION_LOINC",
+    "WARNINGS_LOINCS",
     "DailyMedEvidence",
     "build_dailymed_evidence",
     "build_drugsfda_ingredient_map",

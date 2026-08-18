@@ -1,11 +1,25 @@
 # NER layer — one composite backend, mentions only
 
 DAKP extracts disease/phenotype **mentions** (text spans + entity type) from DailyMed SPL
-"Contraindications" sections (LOINC `34070-3`) and FAERS indication strings. There is **one**
+sections and FAERS indication strings. There is **one**
 NER backend (`ner.py`, `DiseaseNER`) with **one** entry point — no pluggable backend selector.
 DAKP never resolves terms to ontology CURIEs; ontology mapping is exclusively Tablassert's job
 (fullmap/BABEL at `tablassert build-kg`). Assertion tables carry mention **text**; Tablassert
 resolves the CURIEs.
+
+## Consumers
+
+- `assertions/contraindications.py` — three-pass mining: contraindication sections (LOINC
+  `34070-3`), keyword-filtered indication sections (`34067-9`), and boxed-warning /
+  warnings-and-precautions sections (`34066-1`, `43685-7`, `34071-1`, `42232-9`; hard-trigger-only
+  acceptance).
+- `assertions/approved_treats.py` — mines indication sections once per document and uses the
+  mentions as a corroboration channel for `treats` candidates the dictionary matcher missed
+  (recall for label prose that names a more specific condition than the FDA indication string).
+- `assertions/observed_uses.py` — mines FAERS indication strings that the dictionary matcher
+  missed and resolves exactly-one disease/phenotype mention into an `observed_use` object.
+- `assertions/ner_dispatch.py` — the shared plumbing for these consumers: `default_ner`, GPU
+  device resolution, and multi-pass multi-GPU dispatch (`mine_passes_multi_gpu`).
 
 ## The settled composite (see `BENCHMARK.md`)
 

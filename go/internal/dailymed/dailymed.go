@@ -86,20 +86,26 @@ var (
 
 // SectionCodeNames maps the LOINC section codes DAKP consumes to stable output names
 // (mirrors spl_xml.SECTION_CODE_NAMES). Codes absent here fall back to the XML name
-// attribute or the LOINC code itself.
+// attribute or the LOINC code itself. Codes verified against the FDA Section Headings
+// (LOINC) list.
 var SectionCodeNames = map[string]string{
 	"34067-9": "indications_and_usage",
 	"34070-3": "contraindications",
 	"34066-1": "boxed_warning",
-	"42229-5": "warnings_and_precautions",
+	"43685-7": "warnings_and_precautions", // combined section on modern (post-2006) labels
+	"34071-1": "warnings",                 // legacy split sections (pre-2009 labels)
+	"42232-9": "precautions",
+	"34084-4": "adverse_reactions", // named for readability; not mined by any shaper
+	"42229-5": "spl_unclassified",  // NOT warnings: manufacturing/storage boilerplate
 }
 
 // Approval OID roots / code systems ported from the legacy parser (mirrors spl_xml).
 const (
-	ndaOID         = "2.16.840.1.113883.3.150"    // subjectOf/approval/id[@root] -> extension (NDA id)
-	applCodeSystem = "2.16.840.1.113883.3.26.1.1" // subjectOf/approval/code[@codeSystem] -> application type
-	hl7v3Namespace = "urn:hl7-org:v3"             // real DailyMed SPL namespace
-	headPeekBytes  = 4096                         // bytes peeked to detect the HL7 v3 namespace
+	ndaOID          = "2.16.840.1.113883.3.150"    // subjectOf/approval/id[@root] -> extension (NDA id)
+	applCodeSystem  = "2.16.840.1.113883.3.26.1.1" // subjectOf/approval/code[@codeSystem] -> application type
+	loincCodeSystem = "2.16.840.1.113883.6.1"      // section/code[@codeSystem] -> LOINC section code
+	hl7v3Namespace  = "urn:hl7-org:v3"             // real DailyMed SPL namespace
+	headPeekBytes   = 4096                         // bytes peeked to detect the HL7 v3 namespace
 )
 
 // Approval is one parsed approval (NDA id + application-type code).
@@ -489,12 +495,16 @@ func collectSections(sectionElems []*node, warnings *[]string) []Section {
 			if candidate == "" {
 				continue
 			}
-			// Prefer the first code that looks like a LOINC; the `loinc == ""` fallback
-			// means the first non-empty code wins (mirrors the Python branch exactly).
-			if (loinc == "" && looksLoinc(candidate)) || loinc == "" {
+			// A code tagged with the LOINC codeSystem OID is authoritative (mirrors
+			// spl_xml._collect_sections). Otherwise prefer the first LOINC-shaped code
+			// (digit-dash-digit), else the first code present.
+			if code.attr("codeSystem") == loincCodeSystem {
+				loinc = candidate
+				break
+			}
+			if loinc == "" || (looksLoinc(candidate) && !looksLoinc(loinc)) {
 				loinc = candidate
 			}
-			break
 		}
 		if loinc == "" {
 			loinc = sec.attr("loinc") // mock stores LOINC directly on <section>

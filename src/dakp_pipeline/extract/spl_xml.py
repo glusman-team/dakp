@@ -54,17 +54,23 @@ from dakp_pipeline.paths import Workdir
 
 # LOINC section codes DAKP consumes, with stable output names (sharded DailyMed
 # extraction). Codes absent here are still extracted; the name just falls back
-# to the XML ``name`` attribute or the LOINC code itself.
+# to the XML ``name`` attribute or the LOINC code itself. Codes verified against the
+# FDA Section Headings (LOINC) list: https://www.fda.gov/ForIndustry/DataStandards/StructuredProductLabeling/ucm162057.htm
 SECTION_CODE_NAMES = {
     "34067-9": "indications_and_usage",
     "34070-3": "contraindications",
     "34066-1": "boxed_warning",
-    "42229-5": "warnings_and_precautions",
+    "43685-7": "warnings_and_precautions",  # combined section on modern (post-2006) labels
+    "34071-1": "warnings",  # legacy split sections (pre-2009 labels)
+    "42232-9": "precautions",
+    "34084-4": "adverse_reactions",  # named for readability; not mined by any shaper
+    "42229-5": "spl_unclassified",  # NOT warnings: manufacturing/storage boilerplate
 }
 
 # Approval OID roots / code systems ported from the legacy parser.
 _NDA_OID = "2.16.840.1.113883.3.150"  # subjectOf/approval/id[@root] -> extension (NDA id)
 _APPL_CODE_SYSTEM = "2.16.840.1.113883.3.26.1.1"  # subjectOf/approval/code[@codeSystem] -> application type
+_LOINC_CODE_SYSTEM = "2.16.840.1.113883.6.1"  # section/code[@codeSystem] -> LOINC section code
 _HL7V3_NS = "{urn:hl7-org:v3}"
 
 # Column contracts for the new normalized tables (spl_documents stays in io.schemas).
@@ -367,13 +373,15 @@ def _collect_sections(section_elems: list[ET.Element], warnings: list[str]) -> l
             candidate = _attr(code, "code")
             if not candidate:
                 continue
-            # Fall back to the first code present, but prefer a LOINC-shaped code
-            # (digit-dash-digit) if one appears (the fixture carries LOINC on the section).
-            if not loinc:
-                loinc = candidate
-            if _looks_loinc(candidate):
+            # A code tagged with the LOINC codeSystem OID is authoritative — take it
+            # immediately. Otherwise prefer the first LOINC-shaped code
+            # (digit-dash-digit), else the first code present (the fixture carries
+            # LOINC on the section).
+            if _attr(code, "codeSystem") == _LOINC_CODE_SYSTEM:
                 loinc = candidate
                 break
+            if not loinc or (_looks_loinc(candidate) and not _looks_loinc(loinc)):
+                loinc = candidate
         loinc = loinc or _attr(sec, "loinc")  # the fixture stores LOINC directly on <section>
         name = _attr(sec, "name") or SECTION_CODE_NAMES.get(loinc, loinc)
         title_elem = next(_descendants(sec, "title"), None)

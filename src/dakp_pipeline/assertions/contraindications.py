@@ -5,7 +5,7 @@ Builds ``contraindication_assertions.tsv``: drug→condition contraindication as
 (:mod:`dakp_pipeline.ner.ner`). Contraindications are extracted from the label text itself,
 which yields better coverage and DailyMed-grounded provenance than an externally-sourced list.
 
-Two-pass mining rule (explicit and tested)
+Three-pass mining rule (explicit and tested)
 ------------------------------------------
 **Pass 1** — for every SPL set with a contraindication section (LOINC ``34070-3``) and ≥1
 active ingredient, run the NER backend over the full section text to extract disease/phenotype
@@ -18,7 +18,14 @@ text. This catches contraindications embedded in the indication section — comm
 DailyMed labels where safety statements appear alongside indication text. The keyword filter
 ensures indication-context diseases (``indicated for X``) are NOT mined as contraindications.
 
-Mentions from both passes are paired with the set's active ingredient to form a
+**Pass 3** — for every SPL set with a boxed-warning section (LOINC ``34066-1``) or a
+warnings/precautions section (``43685-7``, or the legacy split ``34071-1``/``42232-9``), mine the
+full section text. Boxed warnings in particular frequently carry absolute contraindications that
+never appear in a dedicated ``34070-3`` section. Acceptance is **hard-trigger-only** (the Pass 2
+discipline): a warning section's general caution prose supplies no section-level contraindication
+context, so a mention becomes an edge only when its sentence carries hard prohibition language.
+
+Mentions from all passes are paired with the set's active ingredient to form a
 ``biolink:contraindicated_in`` assertion (ingredient = subject, mention = object) — but ONLY for
 **singleton-ingredient sets** (the legacy ``selectActiveIngredientSingletons.pl`` discipline): a
 combination product's contraindication section applies to the mixture, so pairing a mention with
@@ -58,15 +65,9 @@ lists ``text_mining_agent`` for ``contraindicated_in``), ``knowledge_level = kno
 
 from __future__ import annotations
 
-import importlib.machinery
-import multiprocessing as mp
 import re
-import sys
 from collections.abc import Iterable, Iterator, Sequence
-from concurrent.futures import ProcessPoolExecutor
-from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from dakp_pipeline.assertions import INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, row_for
@@ -78,14 +79,19 @@ from dakp_pipeline.assertions.evidence import (
     spl_evidence_pipe,
     write_assertion_table,
 )
+from dakp_pipeline.assertions.ner_dispatch import BUILD_HOST_GPUS, _resolve_devices, default_ner, mine_passes_multi_gpu
+from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu as _mine_multi_gpu
+from dakp_pipeline.assertions.ner_dispatch import _mine_shard as _mine_shard
+from dakp_pipeline.assertions.ner_dispatch import _mine_two_passes_multi_gpu as _mine_two_passes_multi_gpu
+from dakp_pipeline.assertions.ner_dispatch import _shard_by_text_length as _shard_by_text_length
+from dakp_pipeline.assertions.ner_dispatch import _spawn_safe_main as _spawn_safe_main
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
-from dakp_pipeline.ner.ner import DiseaseNER, Mention, _cuda_device_supported, extract_contraindication_diseases
+from dakp_pipeline.ner.ner import DiseaseNER, Mention, extract_contraindication_diseases
 
 _TABLE = "contraindication_assertions"
 _PREDICATE = "biolink:contraindicated_in"
-_ONTOLOGY_FIXTURE = Path("ontology") / "disease_map.tsv"
 #: One INFO progress line per this many mined contraindication sections (GLiNER is the slow step).
 _MINING_PROGRESS_EVERY = 500
 
@@ -102,10 +108,9 @@ DEFAULT_CONTRA_KEYWORDS: re.Pattern[str] = re.compile(
     re.IGNORECASE,
 )
 
-#: The 4x Tesla P100-PCIE-16GB GPUs on the DAKP build host (wenceslaus). Hardcoded - not
-#: auto-detected — so the shaper always dispatches across all four when CUDA is available.
-#: When CUDA is absent (CI, tests, non-GPU hosts) the shaper falls back to sequential.
-CONTRAINDICATION_GPUS: tuple[str, ...] = ("cuda:0", "cuda:1", "cuda:2", "cuda:3")
+#: Historical name for the shared build-host GPU list (see
+#: :data:`~dakp_pipeline.assertions.ner_dispatch.BUILD_HOST_GPUS`).
+CONTRAINDICATION_GPUS: tuple[str, ...] = BUILD_HOST_GPUS
 
 #: Hard prohibition language accepted for Pass 2. Soft safety language such as ``avoid`` and
 #: ``not recommended`` is deliberately not sufficient for a ``contraindicated_in`` edge.
@@ -125,6 +130,11 @@ _SOFT_SAFETY_TRIGGER = re.compile(
     r"monitor(?:ing)?|consider\s+an\s+alternative)\b",
     re.IGNORECASE,
 )
+
+#: Section kinds whose mentions become edges ONLY under hard prohibition language: indication
+#: sections (Pass 2) and the Pass 3 warning sections, whose general caution prose supplies no
+#: section-level contraindication context (unlike a dedicated ``34070-3`` section).
+_HARD_TRIGGER_SECTION_KINDS = frozenset({"indications", "boxed_warning", "warnings"})
 
 
 @dataclass(frozen=True)
@@ -274,8 +284,9 @@ def _classify_mention(item: ContraWorkItem | tuple[str, str, str], mention: Ment
     """Apply local polarity and trigger rules before an edge is formed.
 
     A dedicated contraindication section supplies section-level positive context, but explicit
-    negation always wins. Indication-section candidates require hard prohibition language; broad
-    filter terms (``avoid`` / ``not recommended``) are not enough to assert a contraindication.
+    negation always wins. Indication-section and warning-section (boxed warning / warnings and
+    precautions) candidates require hard prohibition language; broad filter terms (``avoid`` /
+    ``not recommended``) are not enough to assert a contraindication.
     """
     evidence_text = _work_item_evidence(item, mention)
     if _EXPLICIT_NEGATION.search(evidence_text):
@@ -290,7 +301,7 @@ def _classify_mention(item: ContraWorkItem | tuple[str, str, str], mention: Ment
         # patient disease when one is explicitly present.
         if mapped is not None and patient_with is None and mapped[2] <= medication.start():
             return MentionDecision(False, "medication_only_context", evidence_text)
-    if isinstance(item, ContraWorkItem) and item.section_kind == "indications":
+    if isinstance(item, ContraWorkItem) and item.section_kind in _HARD_TRIGGER_SECTION_KINDS:
         if hard is None:
             return MentionDecision(False, "no_hard_trigger", evidence_text)
         return MentionDecision(True, hard.group(0).lower(), evidence_text)
@@ -412,20 +423,6 @@ def _resolve_keywords(ctx: TaskContext) -> re.Pattern[str]:
     return re.compile(raw, re.IGNORECASE)
 
 
-def default_ner(fixture_root: Path | str | None) -> DiseaseNER:
-    """The deterministic offline NER backend: gazetteer from the ontology fixture, else embedded.
-
-    Reads the ontology fixture as a term→type gazetteer ONLY (``text`` + ``category`` columns;
-    CURIE/name columns are ignored — DAKP does not map terms to ontology concepts). No heavy
-    NER dep is imported.
-    """
-    if fixture_root is not None:
-        ontology = Path(fixture_root) / _ONTOLOGY_FIXTURE
-        if ontology.exists():
-            return DiseaseNER.from_tsv(ontology, text_col="text", type_col="category")
-    return DiseaseNER()
-
-
 class ContraindicationsShaper:
     def transform(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
         with step(logger, "shape_contraindications"):
@@ -442,7 +439,7 @@ class ContraindicationsShaper:
 def build_contraindication_rows(
     inputs: Iterable[ArtifactRef], ner: DiseaseNER, *, devices: Sequence[str] | None = None, keywords: re.Pattern[str] | None = None
 ) -> list[dict[str, str]]:
-    """Mine DailyMed contraindication + indication sections into assertion rows (deterministic).
+    """Mine DailyMed contraindication + indication + warning sections into assertion rows (deterministic).
 
     **Pass 1:** For each singleton-ingredient SPL set with a contraindication section (LOINC
     ``34070-3``), extract disease/phenotype mentions from the full section text.
@@ -453,10 +450,17 @@ def build_contraindication_rows(
     and extract mentions from the filtered text only. This catches contraindications embedded
     in the indication section while avoiding false positives from indication-context diseases.
 
-    Mentions from both passes are paired with the set's single active ingredient and aggregated by
-    ``(subject_text, object_text, disease_context_text)``. When ``devices`` is provided (production multi-GPU), each
-    pass is dispatched across half the GPUs concurrently (2+2 split). Output is byte-identical
-    regardless of dispatch mode.
+    **Pass 3:** For each singleton-ingredient SPL set with a boxed-warning section (LOINC
+    ``34066-1``) or a warnings/precautions section (``43685-7``, ``34071-1``, ``42232-9``),
+    extract mentions from the full section text. Acceptance is hard-trigger-only: a warning
+    section's caution prose supplies no section-level contraindication context, so mentions
+    become edges only when their sentence carries hard prohibition language.
+
+    Mentions from all passes are paired with the set's single active ingredient and aggregated by
+    ``(subject_text, object_text, disease_context_text)``. When ``devices`` is provided
+    (production multi-GPU), the passes are dispatched across the GPUs concurrently
+    (:func:`~dakp_pipeline.assertions.ner_dispatch.mine_passes_multi_gpu`). Output is
+    byte-identical regardless of dispatch mode.
     """
     evidence = build_dailymed_evidence(inputs)
     kw = keywords or DEFAULT_CONTRA_KEYWORDS
@@ -492,7 +496,23 @@ def build_contraindication_rows(
             if filtered.strip():
                 work_items_p2.append(ContraWorkItem(set_id, doc_id, filtered, text, mappings, "indications"))
 
-    all_work_items = work_items_p1 + work_items_p2
+    # Pass 3 work items: boxed-warning + warnings/precautions sections (full text, hard-trigger-only
+    # acceptance), with the same singleton-ingredient rule and full-text identity mappings as Pass 1.
+    work_items_p3: list[ContraWorkItem] = []
+    for section_kind, docs in (("boxed_warning", evidence.boxed_warning_docs), ("warnings", evidence.warning_docs)):
+        for set_id in sorted(docs):
+            ingredients = evidence.active_ingredients_by_set.get(set_id, [])
+            if not ingredients:
+                continue
+            if len(ingredients) > 1:
+                skipped_multi_ingredient += 1
+                continue  # combination product: no single attributable subject (singleton rule)
+            for doc_id, text in docs[set_id]:
+                source_spans = _sentence_spans(text)
+                mappings = tuple(EvidenceSpan(span.start, span.end, span.start, span.end, span.text) for span in source_spans)
+                work_items_p3.append(ContraWorkItem(set_id, doc_id, text, text, mappings, section_kind))
+
+    all_work_items = work_items_p1 + work_items_p2 + work_items_p3
     stats(
         logger,
         "shape_contraindications",
@@ -501,16 +521,19 @@ def build_contraindication_rows(
         skipped_multi_ingredient_sets=skipped_multi_ingredient,
         pass1_sections=len(work_items_p1),
         pass2_sections=len(work_items_p2),
+        pass3_sections=len(work_items_p3),
         sections_to_mine=len(all_work_items),
     )
 
-    # Extract mentions: two-pass multi-GPU when devices given + production NER + >1 item;
+    # Extract mentions: multi-pass multi-GPU when devices given + production NER + >1 item;
     # else sequential (with periodic progress narration — GLiNER mining is the slow step).
     if devices and len(all_work_items) > 1 and not ner._offline:
-        if work_items_p2 and len(devices) >= 2:
+        if work_items_p3:
+            mined = mine_passes_multi_gpu([work_items_p1, work_items_p2, work_items_p3], ner, devices)
+        elif work_items_p2 and len(devices) >= 2:
             mined = _mine_two_passes_multi_gpu(work_items_p1, work_items_p2, ner, devices)
         else:
-            # No Pass 2 work, or too few devices to split — all GPUs on combined work.
+            # No Pass 2/3 work, or too few devices to split — all GPUs on combined work.
             mined = _mine_multi_gpu(all_work_items, ner, devices)
     else:
         mined = {}
@@ -543,173 +566,6 @@ def build_contraindication_rows(
 
     stats(logger, "shape_contraindications", mentions_mined=mentions_mined, assertions=len(aggregated))
     return [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]
-
-
-#: Module spawned workers re-import instead of the parent's ``__main__`` script (see
-#: :func:`_spawn_safe_main`). Must import with zero side effects. A plain MODULE, not the
-#: package itself — ``runpy.run_module`` cannot directly execute a package without a
-#: ``__main__.py``.
-_SPAWN_SAFE_MAIN_MODULE = "dakp_pipeline.logging_setup"
-
-
-@contextmanager
-def _spawn_safe_main() -> Iterator[None]:
-    """Keep spawn children from re-executing the parent's ``__main__`` script.
-
-    The spawn start method re-initializes ``__main__`` in every child: when
-    ``__main__.__spec__`` exists it imports that module by name, otherwise it RE-EXECUTES
-    ``__main__.__file__``. Under the Airflow task runtime ``__main__`` is the ``airflow`` CLI
-    script (no ``__spec__``), so each mining worker re-executed the CLI and died initializing
-    Airflow's DB settings there (no parseable ``sql_alchemy_conn`` in the child) — the pool
-    broke before its first task (``BrokenProcessPool``). For the pool's lifetime, point spawn
-    at a side-effect-free module; the worker callable itself is unpickled via its own
-    module, and the original ``__main__`` spec is restored on exit.
-    """
-    main = sys.modules["__main__"]
-    if getattr(main, "__spec__", None) is not None:
-        yield  # module context (python -m / console scripts with a spec): spawn imports by name
-        return
-    main.__spec__ = importlib.machinery.ModuleSpec(_SPAWN_SAFE_MAIN_MODULE, loader=None)
-    try:
-        yield
-    finally:
-        main.__spec__ = None
-
-
-# --- multi-GPU dispatch ---------------------------------------------------------
-
-
-def _resolve_devices(ner: DiseaseNER) -> Sequence[str] | None:
-    """The hardcoded GPU list capped to the VISIBLE device count and filtered to devices the
-    installed torch can actually run on; None when unusable.
-
-    Only the production (GLiNER) backend benefits from multi-GPU dispatch — the offline
-    gazetteer is CPU-only and deterministic. ``torch.cuda.is_available()`` guards against
-    CI / test hosts with no CUDA (the lazy import never fires at module load). The list is
-    capped at ``torch.cuda.device_count()`` because hosts vary: the build server has the full
-    4x P100 set, laptops often expose a single GPU — dispatching a worker to a nonexistent
-    ``cuda:N`` crashes the whole pool (torch refuses to deserialize onto a missing device).
-    Devices whose arch the torch build lacks kernels for (e.g. sm_60 P100s against a cu128
-    wheel line) are filtered out via :func:`~dakp_pipeline.ner.ner._cuda_device_supported` —
-    ``is_available()`` alone lies there (True, but the first CUDA call raises), so with no
-    supported device the shaper falls back to sequential CPU mining with a warning.
-    """
-    if ner._offline:
-        return None
-    try:
-        import torch  # lazy: no torch at module load
-    except ImportError:
-        return None
-    if not torch.cuda.is_available():
-        return None
-    visible = torch.cuda.device_count()
-    if visible <= 0:
-        return None
-    supported = tuple(
-        CONTRAINDICATION_GPUS[index] for index in range(min(visible, len(CONTRAINDICATION_GPUS))) if _cuda_device_supported(torch, index)
-    )
-    if not supported:
-        logger.warning(
-            "contraindication_gpus_unsupported: no visible CUDA device arch is in the torch build arch list = {}; falling back to sequential CPU mining",
-            torch.cuda.get_arch_list(),
-        )
-        return None
-    return supported
-
-
-def _shard_by_text_length(items: Sequence[Any], n: int) -> list[list[Any]]:
-    """Distribute work items across ``n`` shards, balanced by text length (LPT scheduling).
-
-    Sorts items by text length descending, then greedily assigns each to the shard with the
-    least total text so far. Returns exactly ``n`` shards (some may be empty when ``n > len(items)``).
-    """
-    shards: list[list[Any]] = [[] for _ in range(n)]
-    loads: list[int] = [0] * n
-    for item in sorted(items, key=lambda x: len(_work_item_parts(x)[2]), reverse=True):
-        idx = loads.index(min(loads))
-        shards[idx].append(item)
-        loads[idx] += len(_work_item_parts(item)[2])
-    return shards
-
-
-def _mine_shard(
-    shard: Sequence[ContraWorkItem | tuple[str, str, str]], ner_config: dict[str, Any], device: str
-) -> list[tuple[str, str, list[Mention]]]:
-    """ProcessPoolExecutor worker: load GLiNER on ``device``, mine each text, return mentions.
-
-    Reconstructs a :class:`DiseaseNER` from the picklable ``ner_config`` pinned to ``device``,
-    then runs extraction over every ``(set_id, doc_id, text)`` item in its shard. The model
-    loads lazily on the first extract call, so each worker initializes its own CUDA context
-    (safe under the ``spawn`` start method).
-    """
-    ner = DiseaseNER(device=device, **ner_config)
-    return [(set_id, doc_id, ner.extract(text)) for set_id, doc_id, text in (_work_item_parts(item) for item in shard)]
-
-
-def _mine_multi_gpu(
-    work_items: Sequence[ContraWorkItem | tuple[str, str, str]], ner: DiseaseNER, devices: Sequence[str]
-) -> dict[tuple[str, str], list[Mention]]:
-    """Dispatch NER extraction across one worker per GPU and collect results.
-
-    Shards ``work_items`` across ``len(devices)`` groups (LPT-balanced by text length), spawns
-    one process per device via :class:`~concurrent.futures.ProcessPoolExecutor` (``spawn``
-    start method — CUDA + ``fork`` is unsafe), and returns a ``{(set_id, doc_id): [mentions]}``
-    map. The model cache on disk is shared read-only across workers.
-    """
-    n_workers = min(len(devices), len(work_items))
-    shards = _shard_by_text_length(work_items, n_workers)
-    ner_config = ner._config()
-    ctx = mp.get_context("spawn")
-    results: dict[tuple[str, str], list[Mention]] = {}
-    with _spawn_safe_main(), ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
-        futures = [pool.submit(_mine_shard, shard, ner_config, devices[i]) for i, shard in enumerate(shards)]
-        for future in futures:
-            for set_id, doc_id, mentions in future.result():
-                results[(set_id, doc_id)] = mentions
-    return results
-
-
-def _mine_two_passes_multi_gpu(
-    work_items_p1: Sequence[ContraWorkItem | tuple[str, str, str]],
-    work_items_p2: Sequence[ContraWorkItem | tuple[str, str, str]],
-    ner: DiseaseNER,
-    devices: Sequence[str],
-) -> dict[tuple[str, str], list[Mention]]:
-    """Dispatch both extraction passes concurrently, splitting GPUs between them.
-
-    Splits the device list in half: the first half mines Pass 1 (contraindication sections),
-    the second half mines Pass 2 (filtered indication sections). Both passes are dispatched
-    as futures in a single :class:`~concurrent.futures.ProcessPoolExecutor` so they run in
-    parallel. When either pass has no work items, all GPUs fall back to the other pass via
-    :func:`_mine_multi_gpu`. Results from both passes are merged into one
-    ``{(set_id, doc_id): [mentions]}`` map.
-    """
-    if not work_items_p2:
-        return _mine_multi_gpu(work_items_p1, ner, devices)
-    if not work_items_p1:
-        return _mine_multi_gpu(work_items_p2, ner, devices)
-
-    mid = max(1, len(devices) // 2)
-    devices_p1 = list(devices[:mid])
-    devices_p2 = list(devices[mid:]) or list(devices[:1])  # defensive: never empty
-
-    n_p1 = min(len(devices_p1), len(work_items_p1))
-    n_p2 = min(len(devices_p2), len(work_items_p2))
-    shards_p1 = _shard_by_text_length(work_items_p1, n_p1)
-    shards_p2 = _shard_by_text_length(work_items_p2, n_p2)
-    ner_config = ner._config()
-    ctx = mp.get_context("spawn")
-
-    results: dict[tuple[str, str], list[Mention]] = {}
-    with _spawn_safe_main(), ProcessPoolExecutor(max_workers=n_p1 + n_p2, mp_context=ctx) as pool:
-        futures = [
-            *(pool.submit(_mine_shard, shard, ner_config, devices_p1[i]) for i, shard in enumerate(shards_p1)),
-            *(pool.submit(_mine_shard, shard, ner_config, devices_p2[i]) for i, shard in enumerate(shards_p2)),
-        ]
-        for future in futures:
-            for set_id, doc_id, mentions in future.result():
-                results[(set_id, doc_id)] = mentions
-    return results
 
 
 def _accumulate(

@@ -199,9 +199,15 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
 
         @task(doc_md="Shape FDA-approved treatment assertions from DailyMed, Drugs@FDA, and FAERS refs.")
         def shape_treatment_tables(
-            dm_ext: Any, drugsfda_ext: Any, faers_ext: Any
+            dm_ext: Any, drugsfda_ext: Any, faers_ext: Any, ner_models_ref: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+            # ``ner_models_ref`` is an ordering dependency: the production NER lazily loads the
+            # GLiNER weights cached by acquire_ner_models, so corroboration mining runs after
+            # acquisition (the model refs aren't inputs).
+            del ner_models_ref
             from dakp_pipeline.assertions import approved_treats
+            from dakp_pipeline.io.contracts import TaskContext
+            from dakp_pipeline.ner.ner import DiseaseNER
 
             ctx = _ctx()
             with step(logger, "task shape_treatment_tables"):
@@ -213,6 +219,8 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                     drugsfda_refs=len(drugsfda_refs),
                     faers_refs=len(faers_refs),
                 )
+                ner = DiseaseNER(offline=False, workdir=ctx.workdir)
+                ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
                 out = approved_treats.transform([*dailymed_refs, *drugsfda_refs, *faers_refs], ctx)
                 stats(logger, "task shape_treatment_tables", output_refs=len(out))
                 return _refs_to_xcom(out)
@@ -221,9 +229,14 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
             doc_md="Shape FAERS observed-use assertions from FAERS cases + DailyMed refs, cross-referenced with the approved-treats table for the approval status."
         )
         def shape_faers_use_tables(
-            faers_ext: Any, dm_ext: Any, approved: Any
+            faers_ext: Any, dm_ext: Any, approved: Any, ner_models_ref: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+            # ``ner_models_ref`` is an ordering dependency: the production NER lazily loads the
+            # GLiNER weights cached by acquire_ner_models (the model refs aren't inputs).
+            del ner_models_ref
             from dakp_pipeline.assertions import observed_uses
+            from dakp_pipeline.io.contracts import TaskContext
+            from dakp_pipeline.ner.ner import DiseaseNER
 
             ctx = _ctx()
             with step(logger, "task shape_faers_use_tables"):
@@ -235,6 +248,8 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                     dailymed_refs=len(dailymed_refs),
                     approved_refs=len(approved_refs),
                 )
+                ner = DiseaseNER(offline=False, workdir=ctx.workdir)
+                ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
                 out = observed_uses.transform([*faers_refs, *dailymed_refs, *approved_refs], ctx)
                 stats(logger, "task shape_faers_use_tables", output_refs=len(out))
                 return _refs_to_xcom(out)
@@ -270,10 +285,10 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
 
         # The observed-uses task consumes the produced approved-treats table (approval-status
         # cross-reference), so it runs after shape_treatment_tables.
-        approved = shape_treatment_tables(extracts.dailymed, extracts.drugsfda, extracts.faers)
+        approved = shape_treatment_tables(extracts.dailymed, extracts.drugsfda, extracts.faers, ner_models)
         return AssertionOutputs(
             approved=approved,
-            uses=shape_faers_use_tables(extracts.faers, extracts.dailymed, approved),
+            uses=shape_faers_use_tables(extracts.faers, extracts.dailymed, approved, ner_models),
             contraindications=shape_contraindication_tables(extracts.dailymed, ner_models),
         )
 

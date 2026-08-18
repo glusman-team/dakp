@@ -15,7 +15,11 @@ An approved-treats row requires an **NDA-bearing drug-indication pair** that sat
    disease-dictionary match on the section (CURIE match when both sides carry one, else
    normalized-text equality) or a verbatim word-bounded mention of the candidate indication
    text in the section (same normalized-space boundaries as
-   :class:`~dakp_pipeline.ner.lexical.LexicalMatcher`). Candidates whose condition appears on
+   :class:`~dakp_pipeline.ner.lexical.LexicalMatcher`) or an **NER mention** whose normalized
+   text equals the candidate or is word-contained IN it (the label naming the general
+   condition — e.g. ``breast cancer`` — corroborates the more specific FAERS report —
+   e.g. ``hormone receptor positive breast cancer``; the reverse direction would assert
+   more than the label supports and is never accepted). Candidates whose condition appears on
    no supporting label are dropped (``dropped_no_label_term_support``) — the legacy
    ``supportInDailyMed`` gate (``ref/legacy/bin/drug2indi2kg.py``).
 
@@ -24,8 +28,18 @@ indication) — the primary source, wired into this stage by the DAG. Placeholde
 FAERS indications ("Product used for unknown indication", bare "Prophylaxis", ...) are dropped
 via the shared :func:`~dakp_pipeline.assertions.observed_uses.is_non_disease_indication`
 stop-list. When no FAERS case table is present the candidates fall back to DailyMed SPL
-indication sections whose text names a dictionary condition (rule 4 holds there by
-construction). Both paths apply the *same* four-part filter above.
+indication sections whose text names a dictionary condition or an NER disease/phenotype
+mention (rule 4 holds there by construction). Both paths apply the *same* four-part filter above.
+
+The NER backend
+---------------
+The shaper uses an injected ``params["ner"]`` :class:`~dakp_pipeline.ner.ner.DiseaseNER` when
+present (production GLiNER wiring in the DAG), else the deterministic **offline** backend from
+:func:`~dakp_pipeline.assertions.ner_dispatch.default_ner`. Indication sections are mined once
+per ``(set_id, doc_id)`` — never per candidate — with the same multi-GPU dispatch as the
+contraindication shaper (:mod:`~dakp_pipeline.assertions.ner_dispatch`). The mention channels
+degrade gracefully: calling :func:`build_approved_treats_rows` without a ``ner`` keeps the
+pure lexical behavior (the historical direct-call test surface).
 
 Provenance (``approval_ids``, ``supporting_spl_sets``, ``supporting_spl_documents``) is
 aggregated per ``(subject, object)`` as deduplicated, sorted, pipe-joined lists, restricted to
@@ -43,7 +57,7 @@ disease baseline. Canonical CURIE mapping is a later milestone (text-first).
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 import polars as pl
@@ -62,10 +76,12 @@ from dakp_pipeline.assertions.evidence import (
     spl_evidence_pipe,
     write_assertion_table,
 )
+from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu, _resolve_devices, default_ner
 from dakp_pipeline.assertions.observed_uses import is_non_disease_indication
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.logging_setup import logger, stats, step
+from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
+from dakp_pipeline.ner.ner import DiseaseNER, Mention
 
 _TABLE = "approved_treats_assertions"
 _PREDICATE = "biolink:treats"
@@ -74,24 +90,65 @@ _STATUS = "approved_for_condition"
 #: Case-table columns the FAERS candidate path reads (projection keeps production-scale reads cheap).
 _FAERS_CASE_COLUMNS = ("nda", "nda_raw", "indication", "ingredient", "drugname")
 
+#: One INFO progress line per this many mined indication sections (GLiNER is the slow step).
+_MINING_PROGRESS_EVERY = 500
+
 
 class ApprovedTreatsShaper:
     def transform(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
         with step(logger, "shape_approved_treats"):
             disease_map: dict[str, dict[str, str]] = ctx.params.get("disease_map", {})  # type: ignore[assignment]
+            ner_param = ctx.params.get("ner")
+            ner = ner_param if isinstance(ner_param, DiseaseNER) else default_ner(ctx.fixture_root)
+            devices = _resolve_devices(ner)
             stats(logger, "shape_approved_treats", inputs=len(inputs), disease_map_terms=len(disease_map))
             dailymed = build_dailymed_evidence(inputs)
             drugsfda_map = build_drugsfda_ingredient_map(inputs)
             faers_cases = find_faers_cases(inputs, columns=_FAERS_CASE_COLUMNS)
-            rows = build_approved_treats_rows(faers_cases, dailymed, drugsfda_map, disease_map)
+            rows = build_approved_treats_rows(faers_cases, dailymed, drugsfda_map, disease_map, ner=ner, devices=devices)
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_approved_treats")
 
 
+def _mine_indication_mentions(dailymed: DailyMedEvidence, ner: DiseaseNER, devices: Sequence[str] | None) -> dict[tuple[str, str], list[Mention]]:
+    """Mine every indication section ONCE, returning ``{(set_id, doc_id): [mentions]}``.
+
+    Sections are mined per ``(set_id, doc_id)`` and shared by both candidate paths (FAERS
+    corroboration + DailyMed fallback) — never re-mined per candidate. Production runs dispatch
+    across GPUs (:func:`~dakp_pipeline.assertions.ner_dispatch._mine_multi_gpu`); the offline
+    gazetteer backend runs sequentially with periodic progress narration. Output is identical
+    regardless of dispatch mode.
+    """
+    work_items = [(set_id, doc_id, text) for set_id in sorted(dailymed.indication_docs) for doc_id, text in dailymed.indication_docs[set_id]]
+    if not work_items:
+        return {}
+    if devices and len(work_items) > 1 and not ner._offline:
+        return _mine_multi_gpu(work_items, ner, devices)
+    mined: dict[tuple[str, str], list[Mention]] = {}
+    for done, (set_id, doc_id, text) in enumerate(work_items, start=1):
+        mined[(set_id, doc_id)] = ner.extract(text)
+        progress(logger, "shape_approved_treats", done, len(work_items), every=_MINING_PROGRESS_EVERY)
+    return mined
+
+
 def build_approved_treats_rows(
-    faers_cases: pl.DataFrame | None, dailymed: DailyMedEvidence, drugsfda_map: Mapping[str, set[str]], disease_map: Mapping[str, Mapping[str, str]]
+    faers_cases: pl.DataFrame | None,
+    dailymed: DailyMedEvidence,
+    drugsfda_map: Mapping[str, set[str]],
+    disease_map: Mapping[str, Mapping[str, str]],
+    *,
+    ner: DiseaseNER | None = None,
+    devices: Sequence[str] | None = None,
 ) -> list[dict[str, str]]:
-    """Aggregate approved-treats assertion rows (pure; deterministic ordering)."""
-    candidates = _faers_candidates(faers_cases, disease_map) if faers_cases is not None else _dailymed_candidates(dailymed, disease_map)
+    """Aggregate approved-treats assertion rows (pure; deterministic ordering).
+
+    When ``ner`` is given, every indication section is mined once and its mentions feed the
+    corroboration gate (rule 4) and the DailyMed fallback candidate path; without a backend the
+    historical lexical-only behavior is kept.
+    """
+    mentions = _mine_indication_mentions(dailymed, ner, devices) if ner is not None else None
+    candidates = (
+        _faers_candidates(faers_cases, disease_map) if faers_cases is not None else _dailymed_candidates(dailymed, disease_map, mentions)
+    )
 
     aggregated: dict[tuple[str, str], dict[str, Any]] = {}
     candidates_seen = 0
@@ -109,7 +166,7 @@ def build_approved_treats_rows(
         if not sets:  # (2)+(3) DailyMed approval AND SPL indication-section support
             dropped_no_spl_support += 1
             continue
-        sets = _condition_corroborated_sets(dailymed, sets, cand, disease_map)
+        sets = _condition_corroborated_sets(dailymed, sets, cand, disease_map, mentions)
         if not sets:  # (4) the condition must actually appear on a supporting label
             dropped_no_label_term_support += 1
             continue
@@ -179,23 +236,35 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
 
 
 def _condition_corroborated_sets(
-    dailymed: DailyMedEvidence, sets: list[str], cand: Mapping[str, str], disease_map: Mapping[str, Mapping[str, str]]
+    dailymed: DailyMedEvidence,
+    sets: list[str],
+    cand: Mapping[str, str],
+    disease_map: Mapping[str, Mapping[str, str]],
+    mentions: Mapping[tuple[str, str], list[Mention]] | None = None,
 ) -> list[str]:
     """The supporting sets whose indication-section text actually mentions the candidate condition."""
     return [
-        set_id for set_id in sets if any(_section_mentions_condition(text, cand, disease_map) for _doc_id, text in dailymed.indication_docs[set_id])
+        set_id
+        for set_id in sets
+        if any(_section_mentions_condition(text, cand, disease_map, (mentions or {}).get((set_id, doc_id))) for doc_id, text in dailymed.indication_docs[set_id])
     ]
 
 
-def _section_mentions_condition(section_text: str, cand: Mapping[str, str], disease_map: Mapping[str, Mapping[str, str]]) -> bool:
-    """True when the indication section names the candidate condition (dictionary or verbatim).
+def _section_mentions_condition(
+    section_text: str, cand: Mapping[str, str], disease_map: Mapping[str, Mapping[str, str]], mentions: list[Mention] | None = None
+) -> bool:
+    """True when the indication section names the candidate condition (dictionary, verbatim, or NER).
 
     A disease-dictionary match on the section counts when it corresponds to the candidate object:
     CURIE equality when both sides carry one, else normalized-text equality. The production
     dictionary baseline is small, so a verbatim word-bounded mention of the candidate indication
     text (normalized space, mirroring :class:`~dakp_pipeline.ner.lexical.LexicalMatcher`) also
     counts — real FAERS indications quoted on the label are not dropped for lack of a dictionary
-    entry.
+    entry. Finally, an NER mention of the section corroborates the candidate when their normalized
+    texts are equal or the mention is word-contained IN the candidate: the label naming the general
+    condition (``breast cancer``) covers the specific FAERS report (``hormone receptor positive
+    breast cancer``). The reverse (mention more specific than the candidate) never corroborates —
+    and needs no rule: it is already covered by the verbatim check.
     """
     needle = normalize_text(cand["object_text"])
     if not needle:
@@ -207,7 +276,13 @@ def _section_mentions_condition(section_text: str, cand: Mapping[str, str], dise
         elif normalize_text(match["text"]) == needle:
             return True
     normalized_section = normalize_text(section_text)
-    return f" {needle} " in f" {normalized_section} "
+    if f" {needle} " in f" {normalized_section} ":
+        return True
+    for mention in mentions or []:
+        mention_text = normalize_text(mention.text)
+        if mention_text and (mention_text == needle or f" {mention_text} " in f" {needle} "):
+            return True
+    return False
 
 
 def _subject_for_sets(dailymed: DailyMedEvidence, sets: list[str], fallback: str) -> tuple[str, str]:
@@ -259,8 +334,18 @@ def _faers_candidates(faers_cases: pl.DataFrame, disease_map: Mapping[str, Mappi
         }
 
 
-def _dailymed_candidates(dailymed: DailyMedEvidence, disease_map: Mapping[str, Mapping[str, str]]) -> Iterator[dict[str, str]]:
-    """Fallback candidates: dictionary conditions named in approved SPL indication sections."""
+def _dailymed_candidates(
+    dailymed: DailyMedEvidence,
+    disease_map: Mapping[str, Mapping[str, str]],
+    mentions: Mapping[tuple[str, str], list[Mention]] | None = None,
+) -> Iterator[dict[str, str]]:
+    """Fallback candidates: dictionary conditions or NER mentions named in approved SPL indication sections.
+
+    NER mentions the dictionary missed (production GLiNER recall) become text-only candidates
+    (CURIE/name/category resolved via :func:`_object_attrs`, empty when unknown). A mention whose
+    normalized text equals a dictionary match on the same document is skipped — offline
+    (gazetteer) mentions coincide with dictionary matches, so offline candidates are unchanged.
+    """
     set_to_ndas: dict[str, set[str]] = {}
     for norm, sets in dailymed.approval_sets.items():
         for set_id in sets:
@@ -271,8 +356,9 @@ def _dailymed_candidates(dailymed: DailyMedEvidence, disease_map: Mapping[str, M
         ndas = sorted(set_to_ndas.get(set_id, ()))
         if not ndas:
             continue
-        for _doc_id, text in dailymed.indication_docs[set_id]:
-            for match in match_diseases(text, disease_map):
+        for doc_id, text in dailymed.indication_docs[set_id]:
+            matches = match_diseases(text, disease_map)
+            for match in matches:
                 for norm in ndas:
                     key = (norm, match["text"])
                     if key in seen:
@@ -284,6 +370,25 @@ def _dailymed_candidates(dailymed: DailyMedEvidence, disease_map: Mapping[str, M
                         "object_curie": match["curie"],
                         "object_name": match["name"],
                         "object_category": match["category"],
+                        "fallback_subject": "",
+                    }
+            dictionary_texts = {normalize_text(match["text"]) for match in matches}
+            for mention in (mentions or {}).get((set_id, doc_id), []):
+                object_text = normalize_text(mention.text)
+                if not object_text or object_text in dictionary_texts:
+                    continue
+                curie, name, category = _object_attrs(object_text, disease_map)
+                for norm in ndas:
+                    key = (norm, object_text)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    yield {
+                        "norm_nda": norm,
+                        "object_text": object_text,
+                        "object_curie": curie,
+                        "object_name": name,
+                        "object_category": category,
                         "fallback_subject": "",
                     }
 

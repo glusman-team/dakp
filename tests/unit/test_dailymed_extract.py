@@ -223,3 +223,84 @@ def test_extractor_handles_plain_and_gzipped_xml(tmp_path: Path) -> None:
     # Same set ids as the gz path (content-identical).
     set_ids = set(sections.get_column("spl_set_id").to_list())
     assert "SETID-EXAMPLESTATIN-001" in set_ids
+
+
+# --- HL7 v3 section-code resolution ---------------------------------------------
+
+_HL7V3_WARNINGS_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<SPL xmlns="urn:hl7-org:v3">
+  <document>
+    <setId root="SETID-WARNDOC-001"/>
+    <section>
+      <code code="99999-9" codeSystem="9.9.9.9.9"/>
+      <code code="34066-1" codeSystem="2.16.840.1.113883.6.1"/>
+      <title>BOXED WARNING</title>
+      <text>Do not use in patients with severe hepatic impairment.</text>
+    </section>
+    <section>
+      <code code="43685-7" codeSystem="2.16.840.1.113883.6.1"/>
+      <title>WARNINGS AND PRECAUTIONS</title>
+      <text>Not recommended in patients with renal failure.</text>
+    </section>
+    <section>
+      <code code="42229-5" codeSystem="2.16.840.1.113883.6.1"/>
+      <title>SPL UNCLASSIFIED SECTION</title>
+      <text>Manufactured by Example Pharma.</text>
+    </section>
+  </document>
+</SPL>
+"""
+
+
+def test_hl7v3_sections_prefer_loinc_oid_code(tmp_path: Path) -> None:
+    """A codeSystem=LOINC-OID code beats an earlier LOINC-shaped code from another system."""
+    ctx = _ctx(tmp_path)
+    Workdir(ctx.workdir).create()
+    path = tmp_path / "warnings_spl.xml"
+    path.write_text(_HL7V3_WARNINGS_XML, encoding="utf-8")
+
+    from dakp_pipeline.io.content_hash import hash_file
+
+    refs = spl_xml.extract([ArtifactRef(uri=path, blake3=hash_file(path), media_type="application/xml")], ctx)
+    sections = pl.read_parquet(next(r for r in refs if r.uri.name == "spl_sections.parquet").uri)
+
+    by_loinc = {row["loinc_code"]: row["section_name"] for row in sections.iter_rows(named=True)}
+    assert by_loinc == {
+        # The 99999-9 distractor is LOINC-shaped but not LOINC-coded; the OID-tagged 34066-1 wins.
+        "34066-1": "boxed_warning",
+        # The real warnings-and-precautions code (42229-5 was a historical mislabel).
+        "43685-7": "warnings_and_precautions",
+        # 42229-5 is SPL UNCLASSIFIED — never warnings content.
+        "42229-5": "spl_unclassified",
+    }
+
+
+_HL7V3_TWO_PLAIN_CODES_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<SPL xmlns="urn:hl7-org:v3">
+  <document>
+    <setId root="SETID-TWOCODE-001"/>
+    <section>
+      <code code="34070-3" codeSystem="9.9.9.9.9"/>
+      <code code="34067-9" codeSystem="8.8.8.8.8"/>
+      <title>CONTRAINDICATIONS</title>
+      <text>Contraindicated in patients with asthma.</text>
+    </section>
+  </document>
+</SPL>
+"""
+
+
+def test_hl7v3_first_loinc_shaped_code_wins_without_oid(tmp_path: Path) -> None:
+    """No OID-tagged code: the first LOINC-shaped code wins and later codes are ignored."""
+    ctx = _ctx(tmp_path)
+    Workdir(ctx.workdir).create()
+    path = tmp_path / "two_code_spl.xml"
+    path.write_text(_HL7V3_TWO_PLAIN_CODES_XML, encoding="utf-8")
+
+    from dakp_pipeline.io.content_hash import hash_file
+
+    refs = spl_xml.extract([ArtifactRef(uri=path, blake3=hash_file(path), media_type="application/xml")], ctx)
+    sections = pl.read_parquet(next(r for r in refs if r.uri.name == "spl_sections.parquet").uri)
+
+    by_loinc = {row["loinc_code"]: row["section_name"] for row in sections.iter_rows(named=True)}
+    assert by_loinc == {"34070-3": "contraindications"}
