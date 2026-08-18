@@ -55,7 +55,7 @@ The real runner (:class:`TablassertRunner`) shells out to the installed ``tablas
 (a CORE dependency installed by the single ``uv sync``) and captures stdout / exit code into
 a handoff report; the deferred runner (:class:`DeferredTablassertRunner`) writes a
 deferred-handoff report without ever touching Tablassert (used when no fullmap triggers the
-real handoff, and in tests). DAKP requires Tablassert >= 12: the graph config carries the
+real handoff, and in tests). DAKP requires Tablassert >= 12.1: the graph config carries the
 fullmap path (the ``build-kg --fullmap`` flag was removed in Tablassert 8.1), the 8.2
 Biolink-valid KGX modeling (``sources[]`` retrieval provenance, first-class evidence slots)
 is what the emitted configs target, 9.1's per-row ``split_by`` (made the ONLY multivalued
@@ -64,7 +64,9 @@ the graph config's ``rig:`` section mandatory while dropping the flat
 ``primary_knowledge_source`` edge column (nested ``sources[]`` provenance only — the edge
 primary source now derives from ``rig.source_info.infores_id``), and 12.0 keeps ``approval_ids``
 as a curated TOP-LEVEL edge field instead of folding it into ``supporting_text`` and stops
-fabricating an empty supporting study for publication-less sections like DAKP's. Fullmaps must
+fabricating an empty supporting study for publication-less sections like DAKP's; 12.1 adds
+``ManualProvenance.upstream_source_record_urls`` (SkyeAv/Tablassert#104) — the provenance
+override DAKP emits requires it, so the floor is 12.1. Fullmaps must
 be ``tablassert.fullmap.v5`` redb files — the on-disk format since Tablassert 8.2; older ones
 (v1-v4) are rejected on read.
 
@@ -143,8 +145,8 @@ _TABLE_SOURCE_URLS: dict[str, str] = {
 #: Download URL each upstream infores entry carries as its own ``source_record_urls`` on every
 #: edge where it appears as a ``supporting_data_source``. The primary
 #: ``infores:multiomics-drugapprovals`` entry deliberately carries none — DAKP is the
-#: transforming resource, not a downloadable record. Requires the Tablassert release shipping
-#: ``ManualProvenance.upstream_source_record_urls`` (SkyeAv/Tablassert#104).
+#: transforming resource, not a downloadable record. Shipped in Tablassert 12.1.0
+#: (``ManualProvenance.upstream_source_record_urls``, SkyeAv/Tablassert#104).
 _INFORES_RECORD_URLS: dict[str, list[str]] = {
     "infores:dailymed": [dailymed_source.FULL_RELEASE_INDEX_URL],
     "infores:faers": [faers_source.FDA_FAERS_INDEX_URL],

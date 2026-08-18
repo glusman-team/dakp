@@ -22,7 +22,9 @@ from dakp_pipeline.ner.ner import DiseaseNER
 
 
 def _cases(*indications: str) -> pl.DataFrame:
-    return pl.DataFrame({"drugname": ["DrugX"] * len(indications), "indication": list(indications), "primaryid": list(range(1, len(indications) + 1))})
+    return pl.DataFrame(
+        {"drugname": ["DrugX"] * len(indications), "indication": list(indications), "primaryid": list(range(1, len(indications) + 1))}
+    )
 
 
 # --- the single-mention resolution rule ------------------------------------------
@@ -137,11 +139,7 @@ def test_production_ner_dispatches_multi_gpu(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_offline_ner_never_dispatches_even_with_devices(monkeypatch: pytest.MonkeyPatch) -> None:
     ner = DiseaseNER(offline=True, gazetteer={"migraine": "disease"})
-    monkeypatch.setattr(
-        observed_uses,
-        "_mine_multi_gpu",
-        lambda *args: (_ for _ in ()).throw(AssertionError("must not dispatch")),
-    )
+    monkeypatch.setattr(observed_uses, "_mine_multi_gpu", lambda *args: (_ for _ in ()).throw(AssertionError("must not dispatch")))
     rows = build_observed_use_rows(_cases("migraine prophylaxis"), {}, ner=ner, devices=("cuda:0",))
     assert rows[0]["object_text"] == "migraine"
 

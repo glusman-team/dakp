@@ -93,9 +93,7 @@ def test_evidence_indexes_warning_sections(tmp_path: Path) -> None:
 
 def test_pass3_boxed_warning_hard_trigger_accepted(tmp_path: Path) -> None:
     """A boxed warning with hard prohibition language yields an edge with 34066-1 provenance."""
-    sections = _sections(
-        tmp_path, [("SET-A", "SET-A#34066-1", BOXED_WARNING_LOINC, "Do not use in patients with asthma.")]
-    )
+    sections = _sections(tmp_path, [("SET-A", "SET-A#34066-1", BOXED_WARNING_LOINC, "Do not use in patients with asthma.")])
     ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
     ner = DiseaseNER(gazetteer={"asthma": "disease"})
 
@@ -108,9 +106,7 @@ def test_pass3_boxed_warning_hard_trigger_accepted(tmp_path: Path) -> None:
 
 def test_pass3_warnings_section_hard_trigger_accepted(tmp_path: Path) -> None:
     """A warnings-and-precautions section (43685-7) with hard language also yields an edge."""
-    sections = _sections(
-        tmp_path, [("SET-A", "SET-A#43685-7", WARNINGS_AND_PRECAUTIONS_LOINC, "Never use in patients with asthma.")]
-    )
+    sections = _sections(tmp_path, [("SET-A", "SET-A#43685-7", WARNINGS_AND_PRECAUTIONS_LOINC, "Never use in patients with asthma.")])
     ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
     ner = DiseaseNER(gazetteer={"asthma": "disease"})
 
@@ -122,9 +118,7 @@ def test_pass3_warnings_section_hard_trigger_accepted(tmp_path: Path) -> None:
 
 def test_pass3_soft_language_rejected(tmp_path: Path) -> None:
     """Soft caution prose in a warning section is NOT promoted to a contraindication edge."""
-    sections = _sections(
-        tmp_path, [("SET-A", "SET-A#34066-1", BOXED_WARNING_LOINC, "Use with caution in patients with asthma.")]
-    )
+    sections = _sections(tmp_path, [("SET-A", "SET-A#34066-1", BOXED_WARNING_LOINC, "Use with caution in patients with asthma.")])
     ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
     ner = DiseaseNER(gazetteer={"asthma": "disease"})
 
@@ -133,10 +127,7 @@ def test_pass3_soft_language_rejected(tmp_path: Path) -> None:
 
 def test_pass3_explicit_negation_rejected(tmp_path: Path) -> None:
     """Explicit negation wins even inside a warning section."""
-    sections = _sections(
-        tmp_path,
-        [("SET-A", "SET-A#34071-1", WARNINGS_LOINC, "DrugX is not contraindicated in patients with asthma.")],
-    )
+    sections = _sections(tmp_path, [("SET-A", "SET-A#34071-1", WARNINGS_LOINC, "DrugX is not contraindicated in patients with asthma.")])
     ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
     ner = DiseaseNER(gazetteer={"asthma": "disease"})
 
@@ -148,12 +139,8 @@ def test_pass3_explicit_negation_rejected(tmp_path: Path) -> None:
 
 def test_pass3_multi_ingredient_skipped(tmp_path: Path) -> None:
     """Combination products contribute no Pass 3 edges (no single attributable subject)."""
-    sections = _sections(
-        tmp_path, [("SET-A", "SET-A#34066-1", BOXED_WARNING_LOINC, "Do not use in patients with asthma.")]
-    )
-    ingredients = _ingredients(
-        tmp_path, [("active", "SET-A", "DrugX", "UNII:X"), ("active", "SET-A", "DrugY", "UNII:Y")]
-    )
+    sections = _sections(tmp_path, [("SET-A", "SET-A#34066-1", BOXED_WARNING_LOINC, "Do not use in patients with asthma.")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X"), ("active", "SET-A", "DrugY", "UNII:Y")])
     ner = DiseaseNER(gazetteer={"asthma": "disease"})
 
     assert build_contraindication_rows([sections, ingredients], ner) == []
@@ -161,9 +148,7 @@ def test_pass3_multi_ingredient_skipped(tmp_path: Path) -> None:
 
 def test_pass3_set_without_ingredients_skipped(tmp_path: Path) -> None:
     """A warning section on a set with no active-ingredient rows contributes nothing."""
-    sections = _sections(
-        tmp_path, [("SET-Z", "SET-Z#42232-9", PRECAUTIONS_LOINC, "Do not use in patients with asthma.")]
-    )
+    sections = _sections(tmp_path, [("SET-Z", "SET-Z#42232-9", PRECAUTIONS_LOINC, "Do not use in patients with asthma.")])
     ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X")])
     ner = DiseaseNER(gazetteer={"asthma": "disease"})
 
@@ -184,12 +169,7 @@ def test_build_rows_dispatches_passes_multi_gpu_when_pass3_present(monkeypatch: 
         ],
     )
     ingredients = _ingredients(
-        tmp_path,
-        [
-            ("active", "SET-A", "DrugX", "UNII:X"),
-            ("active", "SET-B", "DrugY", "UNII:Y"),
-            ("active", "SET-C", "DrugZ", "UNII:Z"),
-        ],
+        tmp_path, [("active", "SET-A", "DrugX", "UNII:X"), ("active", "SET-B", "DrugY", "UNII:Y"), ("active", "SET-C", "DrugZ", "UNII:Z")]
     )
     ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease", "diabetes": "disease", "epilepsy": "disease"})
 

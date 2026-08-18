@@ -188,7 +188,9 @@ def mine_passes_multi_gpu(passes: Sequence[Sequence[Any]], ner: DiseaseNER, devi
     return results
 
 
-def _mine_two_passes_multi_gpu(work_items_p1: Sequence[Any], work_items_p2: Sequence[Any], ner: DiseaseNER, devices: Sequence[str]) -> dict[tuple[str, str], list[Mention]]:
+def _mine_two_passes_multi_gpu(
+    work_items_p1: Sequence[Any], work_items_p2: Sequence[Any], ner: DiseaseNER, devices: Sequence[str]
+) -> dict[tuple[str, str], list[Mention]]:
     """Dispatch two extraction passes concurrently, splitting GPUs between them.
 
     Thin wrapper over :func:`mine_passes_multi_gpu` — the contraindication shaper's
@@ -229,8 +231,4 @@ def _spawn_safe_main() -> Iterator[None]:
         main.__spec__ = None
 
 
-__all__ = [
-    "BUILD_HOST_GPUS",
-    "default_ner",
-    "mine_passes_multi_gpu",
-]
+__all__ = ["BUILD_HOST_GPUS", "default_ner", "mine_passes_multi_gpu"]

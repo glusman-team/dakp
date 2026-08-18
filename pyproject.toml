@@ -27,8 +27,11 @@ classifiers = [
 # still imported lazily (no torch at module load) and the mock profile + tests never touch the
 # network or Tablassert, but a single `uv sync` now materializes the whole production runtime.
 # Tablassert is pinned to the `[qc]` variant because the KG build needs the embedding-based
-# `tablassert build-kg --qc` audit (sentence-transformers). The >= 12 floor is required: 12.0
-# emits `approval_ids` as a curated top-level edge field instead of folding it into
+# `tablassert build-kg --qc` audit (sentence-transformers). The >= 12.1 floor is required:
+# 12.1 adds `ManualProvenance.upstream_source_record_urls` (SkyeAv/Tablassert#104), which the
+# generated provenance override emits to re-home per-upstream source_record_urls onto each
+# supporting infores entry; stock 12.0 rejects the key (extra_forbidden). 12.0 emits
+# `approval_ids` as a curated top-level edge field instead of folding it into
 # `supporting_text`, no longer fabricates an empty supporting study for publication-less
 # sections, and moves the QC embedding stage to SapBERT (cache: `.tablassert/sapbert/`).
 # Fullmaps must be `tablassert.fullmap.v5` redb files — the on-disk format since Tablassert
@@ -52,7 +55,7 @@ dependencies = [
     "pendulum>=3",
     "polars>=1.30.0",
     "pydantic>=2.12.0",
-    "tablassert[qc]>=12.0.0,<13",
+    "tablassert[qc]>=12.1.0,<13",
     # torch is transitive (gliner, sentence-transformers via tablassert[qc]) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host
     # (wenceslaus: 4x Tesla P100-PCIE-16GB, compute capability 6.0, CUDA 12.8 driver) force it:
