@@ -87,7 +87,9 @@ _MENTION_TYPE_CATEGORIES = {"disease": "Disease", "phenotype": "PhenotypicFeatur
 # bare "Prophylaxis"/"Chemotherapy", and reporting artifacts like "Medication error"). These are
 # not drug->condition observations and would otherwise default to bogus "Disease" objects (~41% of
 # the case-weighted rows in a real quarter). The list is the union of the legacy DAKP FAERS
-# stop-lists (ref/legacy FAERS/bin/drug2indi.pl + listCases.pl + caseList2uses.pl). Specific
+# stop-lists (ref/legacy FAERS/bin/drug2indi.pl + listCases.pl + caseList2uses.pl), extended
+# with MedDRA product-issue PTs seen in production (`Contraindicated product administered`,
+# `Product administered to patient of inappropriate age`, …). Specific
 # conditions are untouched: "Migraine prophylaxis" or "Hormone receptor positive HER2 negative
 # breast cancer" do NOT match (the anchored generic terms require the whole string; the phrase
 # terms target the placeholder wording only).
@@ -96,7 +98,7 @@ _NON_DISEASE_INDICATION_RE = re.compile(
     r"|evidence based treatment|medication error|not applicable"
     r"|product used for|product use in|product use issue|drug use in|product dose|product prescribing"
     r"|product storage|product availab|product quality|product misuse|product origin unknown"
-    r"|product (?:administer|prescrib|dispens)\w*|contraindicated product"
+    r"|product (?:administ|prescrib|dispens)\w*|contraindicated product"
     r"|accidental exposure|exposure during pregnancy"
     r"|\Aprophylaxis\Z|\Apremedication\Z|\Achemotherapy\Z|\Adrug therapy\Z|\Asupplementation therapy\Z",
     re.IGNORECASE,

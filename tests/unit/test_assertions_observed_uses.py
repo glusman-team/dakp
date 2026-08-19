@@ -156,6 +156,12 @@ def test_is_non_disease_indication_classifier() -> None:
         "Accidental exposure to product",
         "Product use issue",
         "Product administration",
+        # MedDRA product-issue PTs that slip past the bare literals (the ASCIMINIB edge):
+        "Contraindicated product administered",
+        "Contraindicated product prescribed",
+        "Product administered to patient of inappropriate age",
+        "Product prescribed at wrong time",
+        "Product dispensed to wrong patient",
     ]:
         assert is_non_disease_indication(bad), bad
     # Case-insensitive and tolerant of surrounding whitespace.
