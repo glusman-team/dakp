@@ -247,14 +247,21 @@ def test_jsonable_falls_back_to_str_for_exotic_values() -> None:
 
 
 def test_ner_cache_material_degrades_when_the_model_ref_is_unavailable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A model-cache lookup failure (no network, corrupt manifest) means: mine without cache."""
+    """A model-cache lookup failure (corrupt manifest, unreadable dir) means: mine without cache."""
 
     def boom(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("no network")
+        raise RuntimeError("corrupt manifest")
 
-    monkeypatch.setattr(model_cache, "ensure_model", boom)
+    monkeypatch.setattr(model_cache, "lookup_model", boom)
     ner = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path)
     assert ner_cache_material(ner) is None
+
+
+def test_ner_cache_material_cold_cache_mines_without_caching(tmp_path: Path) -> None:
+    """A cold model cache (no manifest) yields no key material — never a model download."""
+    ner = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path)
+    assert ner_cache_material(ner) is None
+    assert ner._model is None  # and no GLiNER model was loaded
 
 
 def test_warn_once_logs_only_the_first_warning(tmp_path: Path) -> None:

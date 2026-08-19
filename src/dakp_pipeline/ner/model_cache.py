@@ -223,6 +223,28 @@ def ensure_model(
     return ModelRef(model_id=model_id, source=source, path=content, b3=b3, manifest=manifest)
 
 
+def lookup_model(
+    model_id: str, *, source: str = DEFAULT_SOURCE, cache_dir: Path | str | None = None, workdir: Path | str | None = None
+) -> ModelRef | None:
+    """Manifest-only cache lookup: the :class:`ModelRef` on a hit, ``None`` on any miss.
+
+    Unlike :func:`ensure_model` this NEVER downloads — a miss (no manifest, corrupt
+    manifest, mismatched id/source) returns ``None``. This is the read path for cache-key
+    material (:func:`dakp_pipeline.ner.mention_cache.ner_cache_material`), where a cold
+    cache must mean "mine without caching", not a multi-GB fetch as a side effect of
+    building a cache key.
+    """
+    resolved_cache = Path(cache_dir) if cache_dir is not None else default_model_cache_dir(Path(workdir) if workdir is not None else None)
+    root = model_root(resolved_cache, model_id, source)
+    manifest = manifest_path(root)
+    if not manifest.exists():
+        return None
+    data = read_manifest(manifest)
+    if data is None or data.get("model_id") != model_id or data.get("source") != source:
+        return None
+    return ModelRef(model_id=model_id, source=source, path=content_dir(root), b3=str(data.get("b3", "")), manifest=manifest)
+
+
 def _verify_content(content: Path, cached_b3: str, data: dict[str, Any], manifest: Path) -> bool:
     """Verify a cached content tree against its manifest: stats first, hash on demand.
 
@@ -260,6 +282,7 @@ __all__ = [
     "default_downloader",
     "default_model_cache_dir",
     "ensure_model",
+    "lookup_model",
     "manifest_path",
     "model_root",
     "read_manifest",

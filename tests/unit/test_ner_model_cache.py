@@ -8,6 +8,7 @@ Edge cases live in ``test_ner_model_cache_edge.py``.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from dakp_pipeline.ner.model_cache import (
     SCHEMA_VERSION,
     default_model_cache_dir,
     ensure_model,
+    lookup_model,
     manifest_path,
     model_root,
     read_manifest,
@@ -147,3 +149,35 @@ def test_ensure_model_sanitizes_model_id_in_path(tmp_path: Path) -> None:
     calls: list[str] = []
     ref = ensure_model("urchade/gliner_small-v2.1", cache_dir=tmp_path, downloader=_fake_downloader(calls))
     assert "urchade--gliner_small-v2.1" in ref.path.as_posix()
+
+
+# --- lookup_model: manifest-only, never downloads ---------------------------------
+
+
+def test_lookup_model_miss_returns_none_without_downloading(tmp_path: Path) -> None:
+    # No manifest at all: a plain miss, and crucially no downloader is even involved.
+    assert lookup_model("m/x", cache_dir=tmp_path) is None
+
+
+def test_lookup_model_hit_returns_cached_ref(tmp_path: Path) -> None:
+    calls: list[str] = []
+    ref = ensure_model("m/x", cache_dir=tmp_path, downloader=_fake_downloader(calls))
+    hit = lookup_model("m/x", cache_dir=tmp_path)
+    assert hit is not None
+    assert (hit.path, hit.b3, hit.manifest) == (ref.path, ref.b3, ref.manifest)
+    assert calls == ["m/x"]  # lookup never re-invokes the downloader
+
+
+def test_lookup_model_corrupt_manifest_returns_none(tmp_path: Path) -> None:
+    ref = ensure_model("m/x", cache_dir=tmp_path, downloader=_fake_downloader([]))
+    ref.manifest.write_text("{ corrupt", encoding="utf-8")  # read_manifest -> None
+    assert lookup_model("m/x", cache_dir=tmp_path) is None
+
+
+def test_lookup_model_mismatched_provenance_returns_none(tmp_path: Path) -> None:
+    ref = ensure_model("m/x", cache_dir=tmp_path, downloader=_fake_downloader([]))
+    # Rewrite the manifest with a DIFFERENT model_id -> provenance mismatch -> miss, not a download.
+    data = json.loads(ref.manifest.read_text("utf-8"))
+    data["model_id"] = "m/other"
+    ref.manifest.write_text(json.dumps(data), encoding="utf-8")
+    assert lookup_model("m/x", cache_dir=tmp_path) is None

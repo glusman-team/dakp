@@ -96,18 +96,22 @@ def ner_cache_material(ner: DiseaseNER) -> tuple[str, str, str] | None:
     deterministic, CPU-cheap, and keyed by nothing heavier than its embedded/fixture
     gazetteer, so a cache would add a server dependency for no measurable gain. For the
     production backend the model content hash comes from the model-cache manifest
-    (:func:`~dakp_pipeline.ner.model_cache.ensure_model` with ``verify=False`` — a manifest
-    read, never a re-hash or a model load); ``None`` when that cannot be resolved, in
+    (:func:`~dakp_pipeline.ner.model_cache.lookup_model` — a manifest read, never a
+    re-hash, model load, or download); ``None`` when that cannot be resolved, in
     which case callers mine without caching.
     """
     if ner._offline:
         return None
-    from dakp_pipeline.ner.model_cache import ensure_model
+    from dakp_pipeline.ner.model_cache import lookup_model
 
     try:
-        ref = ensure_model(ner._model_id, cache_dir=ner._cache_dir, workdir=ner._workdir, verify=False)
+        ref = lookup_model(ner._model_id, cache_dir=ner._cache_dir, workdir=ner._workdir)
     except Exception as exc:  # never let cache key material break mining
         logger.warning("mention_cache: model ref for {} unavailable ({}); mining without cache", ner._model_id, type(exc).__name__)
+        return None
+    if ref is None:
+        # Cold model cache: mining without caching, not a model download as a side effect
+        # of building a cache key.
         return None
     return ner._model_id, digest_dirname(ref.b3), config_fingerprint(ner)
 
