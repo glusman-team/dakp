@@ -354,7 +354,7 @@ template:
       split_by: "|"
     - annotation: has_evidence
       method: column
-      encoding: M
+      encoding: S
       split_by: "|"
     - annotation: clinical_approval_status
       method: column

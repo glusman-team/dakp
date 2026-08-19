@@ -511,9 +511,13 @@ template:
       knowledge_level: knowledge_assertion
       agent_type: text_mining_agent
   annotations:
+    - annotation: approval_ids
+      method: column
+      encoding: T
+      split_by: "|"
     - annotation: has_evidence
       method: column
-      encoding: N
+      encoding: U
       split_by: "|"
     - annotation: supporting_text
       method: column

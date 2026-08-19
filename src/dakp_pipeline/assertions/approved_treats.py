@@ -68,6 +68,10 @@ from dakp_pipeline.assertions.evidence import (
     build_drugsfda_ingredient_map,
     dailymed_document_url,
     dailymed_set_url,
+    edge_evidence_pipe,
+    faers_evidence_id,
+    faers_quarter_urls,
+    faers_record_url,
     find_faers_cases,
     load_or_build_dailymed_evidence,
     merge_unique,
@@ -88,7 +92,17 @@ _PREDICATE = "biolink:treats"
 _STATUS = "approved_for_condition"
 
 #: Case-table columns the FAERS candidate path reads (projection keeps production-scale reads cheap).
-_FAERS_CASE_COLUMNS = ("nda", "nda_raw", "indication", "ingredient", "drugname")
+_FAERS_CASE_COLUMNS = (
+    "nda",
+    "nda_raw",
+    "indication",
+    "ingredient",
+    "drugname",
+    "quarter",
+    "primaryid",
+    "drug_seq",
+    "source_record_id",
+)
 
 #: One INFO progress line per this many mined indication sections (GLiNER is the slow step).
 _MINING_PROGRESS_EVERY = 500
@@ -105,8 +119,18 @@ class ApprovedTreatsShaper:
             dailymed = load_or_build_dailymed_evidence(inputs, ctx)
             drugsfda_map = build_drugsfda_ingredient_map(inputs)
             faers_cases = find_faers_cases(inputs, columns=_FAERS_CASE_COLUMNS)
+            quarter_urls = faers_quarter_urls(inputs)
             with MentionCache(ctx.workdir) as cache:
-                rows = build_approved_treats_rows(faers_cases, dailymed, drugsfda_map, disease_map, ner=ner, devices=devices, cache=cache)
+                rows = build_approved_treats_rows(
+                    faers_cases,
+                    dailymed,
+                    drugsfda_map,
+                    disease_map,
+                    ner=ner,
+                    devices=devices,
+                    cache=cache,
+                    faers_quarter_urls=quarter_urls,
+                )
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_approved_treats")
 
 
@@ -148,6 +172,7 @@ def build_approved_treats_rows(
     ner: DiseaseNER | None = None,
     devices: Sequence[str] | None = None,
     cache: MentionCache | None = None,
+    faers_quarter_urls: Mapping[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """Aggregate approved-treats assertion rows (pure; deterministic ordering).
 
@@ -157,7 +182,11 @@ def build_approved_treats_rows(
     changes WHERE mentions come from, never their content.
     """
     mentions = _mine_indication_mentions(dailymed, ner, devices, cache) if ner is not None else None
-    candidates = _faers_candidates(faers_cases, disease_map) if faers_cases is not None else _dailymed_candidates(dailymed, disease_map, mentions)
+    candidates = (
+        _faers_candidates(faers_cases, disease_map, faers_quarter_urls)
+        if faers_cases is not None
+        else _dailymed_candidates(dailymed, disease_map, mentions)
+    )
 
     aggregated: dict[tuple[str, str], dict[str, Any]] = {}
     candidates_seen = 0
@@ -197,11 +226,17 @@ def build_approved_treats_rows(
                 "approval_ids": [],
                 "sets": [],
                 "docs": [],
+                "faers_evidence_ids": [],
+                "faers_source_records": [],
+                "faers_urls": [],
             },
         )
         agg["approval_ids"].append(dailymed.approval_display.get(norm) or norm)
         agg["sets"].extend(sets)
         agg["docs"].extend(docs)
+        agg["faers_evidence_ids"].extend(cand.get("faers_evidence_ids", []))
+        agg["faers_source_records"].extend(cand.get("faers_source_records", []))
+        agg["faers_urls"].extend(cand.get("faers_urls", []))
         if not agg["subject_curie"] and subject_curie:
             agg["subject_curie"] = subject_curie
         # object_curie needs no back-fill: it is a deterministic function of object_text (the
@@ -236,6 +271,12 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         supporting_spl_sets=sorted_pipe(dailymed_set_url(set_id) for set_id in agg["sets"]),
         supporting_spl_documents=sorted_pipe(dailymed_document_url(doc_id) for doc_id in agg["docs"]),
         supporting_spl_evidence=spl_evidence_pipe(agg["sets"], agg["docs"]),
+        edge_evidence=edge_evidence_pipe(
+            spl_evidence_pipe(agg["sets"], agg["docs"]).split("|") if spl_evidence_pipe(agg["sets"], agg["docs"]) else [],
+            agg.get("faers_evidence_ids", []),
+        ),
+        supporting_faers_records=sorted_pipe(agg.get("faers_source_records", [])),
+        supporting_faers_urls=sorted_pipe(agg.get("faers_urls", [])),
         clinical_approval_status=_STATUS,
         knowledge_level=KL_ASSERTION,
         agent_type=AT_MANUAL,
@@ -321,36 +362,50 @@ def _object_attrs(text: str, disease_map: Mapping[str, Mapping[str, str]]) -> tu
     return "", text, "Disease"
 
 
-def _faers_candidates(faers_cases: pl.DataFrame, disease_map: Mapping[str, Mapping[str, str]]) -> Iterator[dict[str, str]]:
-    """NDA-bearing FAERS drug-indication pairs (deduplicated by NDA + indication).
+def _faers_candidates(
+    faers_cases: pl.DataFrame,
+    disease_map: Mapping[str, Mapping[str, str]],
+    quarter_urls: Mapping[str, str] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """NDA-bearing FAERS pairs with all contributing report provenance retained.
 
-    The projection, NDA normalization, filtering, and dedup run as one Polars lazy pipeline
-    (never Python row iteration), so the full-production case table (tens of millions of rows)
-    reduces to the distinct pair set in a few seconds with bounded memory — the same discipline
-    as :func:`~dakp_pipeline.assertions.observed_uses.build_observed_use_rows`. Semantics are
-    unchanged: ``nda_raw`` supplies the NDA only when ``nda`` is null/empty (and vice versa for
-    ``drugname`` vs ``ingredient`` on the fallback subject), pairs deduplicate on
-    ``(norm_nda, indication)`` keeping the FIRST row's fallback subject, and candidates are
-    yielded in first-occurrence order (the aggregation back-fills subject CURIEs
-    first-non-empty-wins, so order is observable).
+    Candidate identity remains ``(normalized NDA, indication)`` and the first fallback subject
+    wins exactly as before. The grouped rich-row list additionally preserves every contributing
+    report/drug line so approved-treat edges can expose the FAERS evidence that supplied them.
     """
-    nda = pl.col("nda").fill_null("").cast(pl.Utf8) if "nda" in faers_cases.columns else pl.lit("")
-    nda_raw = pl.col("nda_raw").fill_null("").cast(pl.Utf8) if "nda_raw" in faers_cases.columns else pl.lit("")
-    ingredient = pl.col("ingredient").fill_null("").cast(pl.Utf8) if "ingredient" in faers_cases.columns else pl.lit("")
-    drugname = pl.col("drugname").fill_null("").cast(pl.Utf8) if "drugname" in faers_cases.columns else pl.lit("")
-    indication = pl.col("indication").fill_null("").cast(pl.Utf8).str.strip_chars() if "indication" in faers_cases.columns else pl.lit("")
+    def _text_column(name: str) -> pl.Expr:
+        return pl.col(name).fill_null("").cast(pl.Utf8) if name in faers_cases.columns else pl.lit("")
+
+    nda = _text_column("nda")
+    nda_raw = _text_column("nda_raw")
+    ingredient = _text_column("ingredient")
+    drugname = _text_column("drugname")
+    indication = _text_column("indication").str.strip_chars()
+    quarter = _text_column("quarter")
+    primaryid = _text_column("primaryid")
+    drug_seq = _text_column("drug_seq")
+    source_record_id = _text_column("source_record_id")
+    normalized_nda = pl.when(nda != "").then(nda).otherwise(nda_raw).str.replace_all(r"[^0-9]+", "").str.strip_chars_start("0")
     pairs = (
         faers_cases.lazy()
         .select(
-            # nda_raw only when nda is null/empty; NDA normalization mirrors normalize_nda
-            # (digits only, leading zeros stripped).
-            pl.when(nda != "").then(nda).otherwise(nda_raw).str.replace_all(r"[^0-9]+", "").str.strip_chars_start("0").alias("norm_nda"),
+            normalized_nda.alias("norm_nda"),
             indication.alias("indication"),
-            # ingredient only when null/empty falls back to drugname; strip AFTER the fallback.
             pl.when(ingredient != "").then(ingredient).otherwise(drugname).str.strip_chars().alias("fallback_subject"),
+            pl.struct(
+                quarter.alias("quarter"),
+                primaryid.alias("primaryid"),
+                drug_seq.alias("drug_seq"),
+                source_record_id.alias("source_record_id"),
+                nda_raw.alias("nda_raw"),
+            ).alias("faers_row"),
         )
         .filter((pl.col("norm_nda") != "") & (pl.col("indication") != ""))
-        .unique(subset=["norm_nda", "indication"], keep="first", maintain_order=True)
+        .group_by("norm_nda", "indication", maintain_order=True)
+        .agg(
+            pl.col("fallback_subject").first().alias("fallback_subject"),
+            pl.col("faers_row").unique().alias("faers_rows"),
+        )
         .collect()
     )
     for rec in pairs.iter_rows(named=True):
@@ -358,6 +413,20 @@ def _faers_candidates(faers_cases: pl.DataFrame, disease_map: Mapping[str, Mappi
         if is_non_disease_indication(object_text):
             continue  # FAERS placeholder/usage-context indication, not a drug->condition approval claim
         curie, name, category = _object_attrs(object_text, disease_map)
+        evidence_ids: set[str] = set()
+        source_records: set[str] = set()
+        urls: set[str] = set()
+        for raw in rec.get("faers_rows") or []:
+            row = raw or {}
+            q = str(row.get("quarter") or "").strip()
+            pid = str(row.get("primaryid") or "").strip()
+            seq = str(row.get("drug_seq") or "").strip()
+            if q and pid:
+                evidence_ids.add(faers_evidence_id(q, pid, seq))
+                urls.add(faers_record_url(q, dict(quarter_urls or {})))
+            source_id = str(row.get("source_record_id") or "").strip()
+            if source_id:
+                source_records.add(source_id)
         yield {
             "norm_nda": str(rec["norm_nda"]),
             "object_text": object_text,
@@ -365,6 +434,9 @@ def _faers_candidates(faers_cases: pl.DataFrame, disease_map: Mapping[str, Mappi
             "object_name": name,
             "object_category": category,
             "fallback_subject": str(rec["fallback_subject"]),
+            "faers_evidence_ids": sorted(evidence_ids),
+            "faers_source_records": sorted(source_records),
+            "faers_urls": sorted(urls),
         }
 
 

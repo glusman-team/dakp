@@ -48,6 +48,9 @@ APPROVED_TREATS_COLUMNS = [
     "agent_type",
     "primary_knowledge_source",
     "upstream_resource_ids",
+    "edge_evidence",
+    "supporting_faers_records",
+    "supporting_faers_urls",
 ]
 
 FAERS_APPLIED_TO_TREAT_COLUMNS = [
@@ -66,6 +69,10 @@ FAERS_APPLIED_TO_TREAT_COLUMNS = [
     "agent_type",
     "primary_knowledge_source",
     "upstream_resource_ids",
+    "approval_ids",
+    "edge_evidence",
+    "supporting_faers_records",
+    "supporting_faers_urls",
 ]
 
 CONTRAINDICATION_COLUMNS = [
@@ -88,6 +95,8 @@ CONTRAINDICATION_COLUMNS = [
     "agent_type",
     "primary_knowledge_source",
     "upstream_resource_ids",
+    "approval_ids",
+    "edge_evidence",
 ]
 
 FAERS_CASES_COLUMNS = [

@@ -177,20 +177,23 @@ func TestFAERSRunRoundTrip(t *testing.T) {
 		t.Fatalf("round-trip rows = %d, want %d", len(got), len(cases))
 	}
 	for i, c := range cases {
-		want := []string{
-			c.Quarter, c.PrimaryID, c.CaseID, c.Source, c.OccpCod, c.ReporterCountry,
-			c.Drugname, c.Ingredient, c.Nda, c.Indication, c.Effects, c.DrugSeq,
+		want := map[string]string{
+			"quarter": c.Quarter, "primaryid": c.PrimaryID, "caseid": c.CaseID, "source": c.Source,
+			"occp_cod": c.OccpCod, "reporter_country": c.ReporterCountry, "drugname": c.Drugname,
+			"ingredient": c.Ingredient, "nda": c.Nda, "nda_raw": c.NdaRaw, "role_cod": c.RoleCod,
+			"drug_seq": c.DrugSeq, "indi_drug_seq": c.IndiDrugSeq, "indication": c.Indication,
+			"effects": c.Effects, "source_file": c.SourceFile, "source_record_id": c.SourceRecordID,
 		}
-		for j := range want {
-			if got[i][j] != want[j] {
-				t.Errorf("row %d col %d = %q, want %q", i, j, got[i][j], want[j])
+		for name, expected := range want {
+			if gotValue := got[i][faersRunColumnIndex[name]]; gotValue != expected {
+				t.Errorf("row %d col %s = %q, want %q", i, name, gotValue, expected)
 			}
 		}
 	}
 }
 
-// TestStreamingCasesParquetMatchesBatch verifies the merged cases.parquet emission (the 17-column
-// reconstruction with empty provenance columns) row-for-row against the batch path.
+// TestStreamingCasesParquetMatchesBatch verifies the merged cases.parquet emission (the full rich
+// case row, including provenance columns) row-for-row against the batch path.
 func TestStreamingCasesParquetMatchesBatch(t *testing.T) {
 	refs := faersFixtureRefs(t)
 	srcs, err := loadFAERSSources(mustStage(t, refs))
@@ -232,8 +235,8 @@ func TestStreamingCasesParquetMatchesBatch(t *testing.T) {
 			"quarter": c.Quarter, "primaryid": c.PrimaryID, "caseid": c.CaseID, "source": c.Source,
 			"occp_cod": c.OccpCod, "reporter_country": c.ReporterCountry, "drugname": c.Drugname,
 			"ingredient": c.Ingredient, "nda": c.Nda, "indication": c.Indication, "effects": c.Effects,
-			"nda_raw": "", "role_cod": "", "drug_seq": "", "indi_drug_seq": "",
-			"source_file": "", "source_record_id": "",
+			"nda_raw": c.NdaRaw, "role_cod": c.RoleCod, "drug_seq": c.DrugSeq, "indi_drug_seq": c.IndiDrugSeq,
+			"source_file": c.SourceFile, "source_record_id": c.SourceRecordID,
 		}
 		for name, w := range want {
 			if got := rows[i][colIdx[name]]; got != w {

@@ -16,17 +16,24 @@ import (
 // merge that reproduces the batch path's global ordering without ever holding all cases in
 // memory at once (see plans/fix-faers-memory.md).
 
-// faersRunColumns is the on-disk schema of per-quarter kept-case run files: the public
-// faers_cases.tsv columns in contract order plus drug_seq — an ordering-only column the
-// global merge needs to reproduce the batch path's sort (cases.parquet emits it empty; the
-// public TSV excludes it).
-var faersRunColumns = append(append([]string{}, faers.CasesTSVColumns...), "drug_seq")
+// faersRunColumns is the full rich per-quarter case schema. Keeping all CaseColumns in the
+// scratch runs means the bounded-memory merge can emit the same provenance-bearing cases.parquet
+// as the batch extractor; faers_cases.tsv remains a projection of this richer row.
+var faersRunColumns = append([]string{}, faers.CaseColumns...)
+
+var faersRunColumnIndex = func() map[string]int {
+	index := make(map[string]int, len(faersRunColumns))
+	for i, name := range faersRunColumns {
+		index[name] = i
+	}
+	return index
+}()
 
 // Sort-key positions inside faersRunColumns (mirrors faers caseSortKey).
-const (
-	faersRunPrimaryID  = 1
-	faersRunIndication = 9
-	faersRunDrugSeq    = 11
+var (
+	faersRunPrimaryID  = faersRunColumnIndex["primaryid"]
+	faersRunIndication = faersRunColumnIndex["indication"]
+	faersRunDrugSeq    = faersRunColumnIndex["drug_seq"]
 )
 
 // writeFAERSRun writes one quarter's kept cases as a sorted run file. The input must already
@@ -39,9 +46,26 @@ func writeFAERSRun(path string, cases []faers.Case) error {
 	}
 	row := make([]string, len(faersRunColumns))
 	for _, c := range cases {
-		row[0], row[1], row[2], row[3] = c.Quarter, c.PrimaryID, c.CaseID, c.Source
-		row[4], row[5], row[6], row[7] = c.OccpCod, c.ReporterCountry, c.Drugname, c.Ingredient
-		row[8], row[9], row[10], row[11] = c.Nda, c.Indication, c.Effects, c.DrugSeq
+		for i := range row {
+			row[i] = ""
+		}
+		row[faersRunColumnIndex["quarter"]] = c.Quarter
+		row[faersRunColumnIndex["primaryid"]] = c.PrimaryID
+		row[faersRunColumnIndex["caseid"]] = c.CaseID
+		row[faersRunColumnIndex["source"]] = c.Source
+		row[faersRunColumnIndex["occp_cod"]] = c.OccpCod
+		row[faersRunColumnIndex["reporter_country"]] = c.ReporterCountry
+		row[faersRunColumnIndex["drugname"]] = c.Drugname
+		row[faersRunColumnIndex["ingredient"]] = c.Ingredient
+		row[faersRunColumnIndex["nda"]] = c.Nda
+		row[faersRunColumnIndex["nda_raw"]] = c.NdaRaw
+		row[faersRunColumnIndex["role_cod"]] = c.RoleCod
+		row[faersRunColumnIndex["drug_seq"]] = c.DrugSeq
+		row[faersRunColumnIndex["indi_drug_seq"]] = c.IndiDrugSeq
+		row[faersRunColumnIndex["indication"]] = c.Indication
+		row[faersRunColumnIndex["effects"]] = c.Effects
+		row[faersRunColumnIndex["source_file"]] = c.SourceFile
+		row[faersRunColumnIndex["source_record_id"]] = c.SourceRecordID
 		if err := w.Append(row); err != nil {
 			w.Close()
 			return err
@@ -227,23 +251,20 @@ func mergeFAERSRuns(paths []string, emit func(row []string) error) error {
 // writeFAERSRunTSVRow writes one merged run row as a public faers_cases.tsv data row: the
 // contract projection (CasesTSVColumns — the run's trailing drug_seq dropped), tab-joined.
 func writeFAERSRunTSVRow(w io.Writer, row []string) error {
-	if _, err := io.WriteString(w, strings.Join(row[:len(faers.CasesTSVColumns)], "\t")); err != nil {
+	values := make([]string, 0, len(faers.CasesTSVColumns))
+	for _, name := range faers.CasesTSVColumns {
+		values = append(values, row[faersRunColumnIndex[name]])
+	}
+	if _, err := io.WriteString(w, strings.Join(values, "\t")); err != nil {
 		return err
 	}
 	_, err := io.WriteString(w, "\n")
 	return err
 }
 
-// faersCaseRow17 projects one merged run row (faersRunColumns order) to the 17-column
-// cases.parquet layout (faersCaseColumns): the public fields carry the data, the provenance
-// columns (nda_raw/role_cod/drug_seq/indi_drug_seq/source_file/source_record_id) are empty —
-// exactly the reconstruction the batch path emitted.
+// faersCaseRow17 projects one merged rich run row to the rich cases.parquet layout. The run
+// schema is intentionally kept in the same order as faers.CaseColumns, so this copy preserves
+// nda_raw, role/sequence metadata, source_file, and source_record_id instead of blanking them.
 func faersCaseRow17(row []string) []string {
-	return []string{
-		row[0], row[1], row[2], row[3], row[4], row[5], // quarter..reporter_country
-		row[6], row[7], row[8], // drugname, ingredient, nda
-		"", "", "", "", // nda_raw, role_cod, drug_seq, indi_drug_seq
-		row[9], row[10], // indication, effects
-		"", "", // source_file, source_record_id
-	}
+	return append([]string(nil), row...)
 }

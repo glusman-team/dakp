@@ -33,6 +33,34 @@ def test_case_count_aggregates_distinct_cases(disease_map: dict[str, dict[str, s
     assert counts[("DrugX", "other")] == "1"
 
 
+def test_observed_use_retains_faers_report_and_nda_provenance(disease_map: dict[str, dict[str, str]]) -> None:
+    cases = pl.DataFrame(
+        {
+            "drugname": ["Advil", "Advil"],
+            "indication": ["headache", "headache"],
+            "primaryid": ["1001", "1002"],
+            "nda": ["17977", "017977"],
+            "nda_raw": ["017977", "017977"],
+            "quarter": ["24Q3", "24Q2"],
+            "drug_seq": ["1", "2"],
+            "source_record_id": ["24Q3:1001:1:headache", "24Q2:1002:2:headache"],
+        }
+    )
+    rows = build_observed_use_rows(
+        cases,
+        disease_map,
+        approved_pairs=set(),
+        faers_quarter_urls={"24Q3": "https://example.test/faers-24q3.zip", "24Q2": "https://example.test/faers-24q2.zip"},
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["case_count"] == "2"
+    assert row["approval_ids"] == "017977"
+    assert row["edge_evidence"] == "faers:24Q2:1002:2|faers:24Q3:1001:1"
+    assert row["supporting_faers_records"] == "24Q2:1002:2:headache|24Q3:1001:1:headache"
+    assert row["supporting_faers_urls"] == "https://example.test/faers-24q2.zip|https://example.test/faers-24q3.zip"
+
+
 def test_case_count_falls_back_to_rows_without_primaryid(disease_map: dict[str, dict[str, str]]) -> None:
     cases = pl.DataFrame({"drugname": ["DrugX", "DrugX"], "indication": ["condY", "condY"]})
     rows = build_observed_use_rows(cases, disease_map)

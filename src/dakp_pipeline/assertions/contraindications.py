@@ -74,6 +74,7 @@ from dakp_pipeline.assertions import INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTIO
 from dakp_pipeline.assertions.evidence import (
     dailymed_document_url,
     dailymed_set_url,
+    edge_evidence_pipe,
     load_or_build_dailymed_evidence,
     sorted_pipe,
     spl_evidence_pipe,
@@ -583,7 +584,16 @@ def build_contraindication_rows(
                 continue
             for ingredient_name, ingredient_unii in ingredients:
                 _accumulate(
-                    aggregated, set_id, doc_id, ingredient_name, ingredient_unii, object_text, mention, decision.evidence_text, decision.context_text
+                    aggregated,
+                    set_id,
+                    doc_id,
+                    ingredient_name,
+                    ingredient_unii,
+                    object_text,
+                    mention,
+                    decision.evidence_text,
+                    decision.context_text,
+                    evidence.approval_ids_for_sets([set_id]),
                 )
 
     stats(logger, "shape_contraindications", mentions_mined=mentions_mined, assertions=len(aggregated))
@@ -600,6 +610,7 @@ def _accumulate(
     mention: Mention,
     evidence_text: str = "",
     context_text: str = "",
+    approval_ids: Iterable[str] = (),
 ) -> None:
     """Add one observation to the ``(subject, object, disease-context)`` aggregate.
 
@@ -622,12 +633,14 @@ def _accumulate(
             "disease_context_text": context_text.strip(),
             "sets": [],
             "docs": [],
+            "approval_ids": [],
             "scores": [],
             "evidence_texts": [],
         },
     )
     agg["sets"].append(set_id)
     agg["docs"].append(doc_id)
+    agg["approval_ids"].extend(approval_ids)
     agg["scores"].append(mention.score)
     if evidence_text.strip():
         agg["evidence_texts"].append(evidence_text.strip())
@@ -650,6 +663,8 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         supporting_spl_sets=sorted_pipe(dailymed_set_url(set_id) for set_id in agg["sets"]),
         supporting_spl_documents=sorted_pipe(dailymed_document_url(doc_id) for doc_id in agg["docs"]),
         supporting_spl_evidence=spl_evidence_pipe(agg["sets"], agg["docs"]),
+        approval_ids=sorted_pipe(agg.get("approval_ids", [])),
+        edge_evidence=edge_evidence_pipe(spl_evidence_pipe(agg["sets"], agg["docs"]).split("|") if spl_evidence_pipe(agg["sets"], agg["docs"]) else []),
         source_score=_max_score(agg["scores"]),
         knowledge_level=KL_ASSERTION,
         agent_type=AT_TEXT_MINING,

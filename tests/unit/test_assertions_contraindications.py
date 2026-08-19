@@ -49,6 +49,8 @@ def test_mines_contraindication_from_dailymed_section(dailymed_refs: list[Artifa
     assert ibu["supporting_spl_documents"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SETID-IBUPROFEN-002#34070-3"
     # The annotated ``has_evidence`` column carries the legacy set-CURIE form.
     assert ibu["supporting_spl_evidence"] == "dailymed:SETID-IBUPROFEN-002"
+    assert ibu["edge_evidence"] == "dailymed:SETID-IBUPROFEN-002"
+    assert ibu["approval_ids"] == "NDA017977"
     # The offline gazetteer is a high-confidence direct match (score 1.0).
     assert ibu["source_score"] == "1"
 

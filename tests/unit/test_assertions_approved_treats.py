@@ -51,6 +51,10 @@ def test_faers_rule_keeps_approved_pairs_and_filters_unmapped(
     assert ibuprofen["subject_curie"] == "UNII:WK2XYI10QM"
     assert ibuprofen["object_curie"] == "HP:0002315"
     assert ibuprofen["predicate"] == "biolink:treats"
+    assert "dailymed:SETID-IBUPROFEN-002" in ibuprofen["edge_evidence"]
+    assert "faers:" in ibuprofen["edge_evidence"]
+    assert ibuprofen["supporting_faers_records"]
+    assert ibuprofen["supporting_faers_urls"]
 
 
 def test_faers_pair_without_drugsfda_mapping_is_not_approved(disease_map: dict[str, dict[str, str]]) -> None:

@@ -76,6 +76,26 @@ def test_faers_candidates_skip_missing_nda_or_indication_and_dedup(disease_map: 
     assert cands[0]["fallback_subject"] == "c"  # ingredient empty -> falls back to drugname
 
 
+def test_faers_candidates_retains_report_provenance(disease_map: dict[str, dict[str, str]]) -> None:
+    cases = pl.DataFrame(
+        {
+            "nda": ["012345"],
+            "nda_raw": ["012345"],
+            "indication": ["hypercholesterolemia"],
+            "ingredient": ["Examplestatin"],
+            "drugname": ["Examplestatin"],
+            "quarter": ["24Q3"],
+            "primaryid": ["1001"],
+            "drug_seq": ["1"],
+            "source_record_id": ["24Q3:1001:1:hypercholesterolemia"],
+        }
+    )
+    candidate = next(_faers_candidates(cases, disease_map, {"24Q3": "https://example.test/faers-24q3.zip"}))
+    assert candidate["faers_evidence_ids"] == ["faers:24Q3:1001:1"]
+    assert candidate["faers_source_records"] == ["24Q3:1001:1:hypercholesterolemia"]
+    assert candidate["faers_urls"] == ["https://example.test/faers-24q3.zip"]
+
+
 def test_faers_candidates_uses_nda_raw_and_ingredient_columns(disease_map: dict[str, dict[str, str]]) -> None:
     # A frame shaped with the legacy 'nda_raw' / 'ingredient' aliases instead of 'nda'/'drugname'.
     cases = pl.DataFrame({"nda_raw": ["012345"], "indication": ["hypercholesterolemia"], "ingredient": ["Examplestatin"]})

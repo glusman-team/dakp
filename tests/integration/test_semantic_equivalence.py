@@ -237,6 +237,29 @@ def test_treats_carries_fda_approval_and_spl_evidence(built: dict[str, Any]) -> 
         assert str(rec.get("supporting_spl_documents")).strip(), "treats row missing supporting SPL document"
 
 
+def test_all_edge_families_carry_identifier_provenance(built: dict[str, Any]) -> None:
+    """Every family exposes the unified identifier-only evidence contract.
+
+    Human-readable URLs remain in the source-specific debug columns; KGX ``has_evidence`` is
+    intentionally limited to the stable ``dailymed:`` / ``faers:`` identifiers.
+    """
+    for rec in _family_rows(built["tables"], TREATS):
+        evidence = str(rec.get("edge_evidence") or "")
+        assert "dailymed:" in evidence
+        assert "faers:" in evidence
+        assert str(rec.get("supporting_faers_records") or "").strip()
+        assert str(rec.get("supporting_faers_urls") or "").startswith("https://")
+    for rec in _family_rows(built["tables"], APPLIED_TO_TREAT):
+        evidence = str(rec.get("edge_evidence") or "")
+        assert evidence.startswith("faers:")
+        assert str(rec.get("approval_ids") or "").strip()
+        assert str(rec.get("supporting_faers_records") or "").strip()
+        assert str(rec.get("supporting_faers_urls") or "").startswith("https://")
+    for rec in _family_rows(built["tables"], CONTRAINDICATED_IN):
+        assert str(rec.get("edge_evidence") or "").startswith("dailymed:")
+        assert str(rec.get("approval_ids") or "").strip()
+
+
 def test_applied_to_treat_carries_faers_case_counts(built: dict[str, Any]) -> None:
     """Legacy ``N_cases`` survives as a positive case_count on every applied_to_treat row."""
     for rec in _family_rows(built["tables"], APPLIED_TO_TREAT):

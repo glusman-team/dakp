@@ -30,6 +30,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import polars as pl
 
@@ -37,7 +38,7 @@ from dakp_pipeline.io import schemas
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.content_hash import hash_bytes
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.io.manifests import OperationBlock, TableBlock
+from dakp_pipeline.io.manifests import OperationBlock, TableBlock, read_manifest
 from dakp_pipeline.logging_setup import logger, stats
 from dakp_pipeline.paths import Workdir
 
@@ -50,6 +51,13 @@ BOXED_WARNING_LOINC = "34066-1"  # boxed_warning
 WARNINGS_LOINCS = frozenset({"43685-7", "34071-1", "42232-9"})  # warnings_and_precautions / warnings / precautions
 
 _NDA_DIGITS_RE = re.compile(r"[^0-9]+")
+_FAERS_QUARTER_RE = re.compile(r"^(?:(\d{4})|(\d{2}))Q([1-4])$", re.IGNORECASE)
+_FAERS_FILENAME_RE = re.compile(r"faers_ascii_(\d{2}|\d{4})q([1-4])\.zip", re.IGNORECASE)
+_PIPE_UNSAFE_RE = re.compile(r"[|\t\r\n]")
+
+#: Canonical FDA FAERS quarterly ZIP fallback. The FDA listing page is only a discovery
+#: page; the immutable quarter files live under this download base.
+FAERS_DOWNLOAD_BASE = "https://fis.fda.gov/content/Exports"
 
 
 # --- NDA join-key normalization -------------------------------------------------
@@ -67,6 +75,105 @@ def normalize_nda(value: Any) -> str:
 
 
 # --- provenance column assembly -------------------------------------------------
+
+
+def faers_quarter_url(quarter: Any, *, base_url: str = FAERS_DOWNLOAD_BASE) -> str:
+    """Return the exact canonical FDA FAERS quarterly ZIP URL for ``quarter``.
+
+    Accepted labels are ``24Q3``/``24q3`` and ``2024Q3``/``2024q3``. Two-digit years are
+    interpreted as 20xx, matching the FAERS quarter labels produced by the extractor. The
+    returned fallback is therefore ``.../faers_ascii_2024q3.zip``; callers should prefer the
+    URL recorded in the input artifact manifest when one is available.
+    """
+    text = "" if quarter is None else str(quarter).strip()
+    match = _FAERS_QUARTER_RE.fullmatch(text)
+    if match is None:
+        raise ValueError(f"invalid FAERS quarter {quarter!r}; expected YYQn or YYYYQn")
+    year = int(match.group(1) or ("20" + match.group(2)))
+    qtr = match.group(3)
+    return f"{base_url.rstrip('/')}/faers_ascii_{year:04d}q{qtr}.zip"
+
+
+def source_manifest_url(ref: ArtifactRef) -> str:
+    """Return the recorded upstream URL for one artifact, or ``""`` when unavailable."""
+    manifest_path = ref.manifest
+    if manifest_path is None or not manifest_path.exists():
+        return ""
+    try:
+        manifest = read_manifest(manifest_path)
+    except Exception as exc:
+        logger.warning("provenance: unreadable manifest {} ({})", manifest_path, exc)
+        return ""
+    return (manifest.source.url or "").strip()
+
+
+def source_urls(inputs: Iterable[ArtifactRef]) -> list[str]:
+    """Return sorted unique source URLs recorded by the input artifact manifests."""
+    return merge_unique(source_manifest_url(ref) for ref in inputs)
+
+
+def faers_quarter_urls(inputs: Iterable[ArtifactRef]) -> dict[str, str]:
+    """Map canonical FAERS quarter labels to manifest URLs, with official URL fallback.
+
+    Raw downloaded refs normally carry the exact FDA URL in ``SourceBlock.url``. Fixture refs
+    and older manifests may not, so a filename/path quarter is resolved through
+    :func:`faers_quarter_url` rather than producing a blank provenance value.
+    """
+    result: dict[str, str] = {}
+    for ref in inputs:
+        candidates = [source_manifest_url(ref), str(ref.uri)]
+        match = next((m for value in candidates if (m := _FAERS_FILENAME_RE.search(value))), None)
+        if match is None:
+            continue
+        year, qtr = match.group(1), match.group(2)
+        quarter = f"{year[-2:]}Q{qtr}"
+        url = source_manifest_url(ref) or faers_quarter_url(quarter)
+        result[quarter] = url
+    return dict(sorted(result.items()))
+
+
+def faers_record_url(quarter: Any, quarter_urls: dict[str, str] | None = None) -> str:
+    """Return the public FDA source URL for a FAERS record's quarter."""
+    label = "" if quarter is None else str(quarter).strip().upper()
+    if quarter_urls and label in quarter_urls:
+        return quarter_urls[label]
+    return faers_quarter_url(label)
+
+
+def edge_evidence_pipe(*identifier_lists: Iterable[Any]) -> str:
+    """Encode the identifier-only union used for final Biolink ``has_evidence``."""
+    return sorted_pipe(value for values in identifier_lists for value in values)
+
+
+def faers_evidence_id(quarter: Any, primaryid: Any, drug_seq: Any = "") -> str:
+    """Build a URI-safe, pipe-safe FAERS report evidence identifier.
+
+    The report id is stable across aggregation and identifies the contributing FAERS report
+    plus drug line: ``faers:<YYQn>:<primaryid>[:<drug_seq>]``. Components are percent-encoded
+    before joining, so raw source values can never inject the pipe list delimiter or URI control
+    characters. The indication remains in the TSV debug ``source_record_id`` column; it is not
+    needed to identify the report/drug line in this edge-level evidence identifier.
+    """
+    q = "" if quarter is None else str(quarter).strip().upper()
+    pid = "" if primaryid is None else str(primaryid).strip()
+    seq = "" if drug_seq is None else str(drug_seq).strip()
+    if not q or not pid:
+        raise ValueError("FAERS evidence IDs require non-empty quarter and primaryid")
+    # Validate the quarter before encoding so malformed source data cannot become a plausible id.
+    faers_quarter_url(q)
+    parts = [quote(value, safe="-._~") for value in (q, pid) if value]
+    if seq:
+        parts.append(quote(seq, safe="-._~"))
+    evidence_id = "faers:" + ":".join(parts)
+    _validate_pipe_safe(evidence_id, "FAERS evidence id")
+    return evidence_id
+
+
+def _validate_pipe_safe(value: str, label: str = "provenance value") -> str:
+    """Reject values that cannot be represented losslessly in a pipe-encoded TSV cell."""
+    if _PIPE_UNSAFE_RE.search(value):
+        raise ValueError(f"{label} contains a pipe/tab/newline delimiter: {value!r}")
+    return value
 
 
 #: DailyMed label page URL every SPL set evidence value links to (``<base><spl_set_id>``).
@@ -125,7 +232,7 @@ def merge_unique(*value_lists: Iterable[Any]) -> list[str]:
         for value in values:
             text = "" if value is None else str(value).strip()
             if text:
-                seen.add(text)
+                seen.add(_validate_pipe_safe(text))
     return sorted(seen)
 
 
@@ -248,6 +355,7 @@ class DailyMedEvidence:
 
     approval_sets: dict[str, set[str]] = field(default_factory=dict)  # norm_nda -> {spl_set_id}
     approval_display: dict[str, str] = field(default_factory=dict)  # norm_nda -> display approval id (``<type><number>``, e.g. ``BLA103795``)
+    approval_ids_by_set: dict[str, set[str]] = field(default_factory=dict)  # spl_set_id -> display approval ids
     set_ingredient: dict[str, tuple[str, str]] = field(default_factory=dict)  # spl_set_id -> first active (name, unii)
     active_ingredients_by_set: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> all active (name, unii)
     indication_docs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> [(doc_id, text)]
@@ -264,6 +372,10 @@ class DailyMedEvidence:
         sets = [s for s in self.approval_sets.get(norm_nda, set()) if self.indication_docs.get(s)]
         docs = [doc for s in sets for doc, _text in self.indication_docs[s]]
         return merge_unique(sets), merge_unique(docs)
+
+    def approval_ids_for_sets(self, set_ids: Iterable[str]) -> list[str]:
+        """Return sorted unique FDA application IDs attached to the supplied SPL sets."""
+        return merge_unique(approval_id for set_id in set_ids for approval_id in self.approval_ids_by_set.get(set_id, set()))
 
     def contraindication_sets_for_drug(self, drug_text: str) -> list[str]:
         """Sorted SPL set ids whose active ingredient matches ``drug_text`` and that have a
@@ -302,8 +414,9 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
             # Legacy-KG display form: application type + number (``BLA103795``); without a
             # type the number alone is the display value.
             base = approval_id or approval_code
-            display = f"{approval_type}{base}" if base and approval_type else base
+            display = f"{approval_type}{base}" if base and approval_type else (base or norm)
             evidence.approval_display.setdefault(norm, display)
+            evidence.approval_ids_by_set.setdefault(set_id, set()).add(display)
 
     ingredients = _read_indexed_table(index, "spl_ingredients.parquet")
     if ingredients is not None:
@@ -347,6 +460,7 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
         logger,
         "dailymed_evidence",
         approvals=len(evidence.approval_sets),
+        approval_set_links=len(evidence.approval_ids_by_set),
         sets_with_ingredients=len(evidence.set_ingredient),
         indication_sets=len(evidence.indication_docs),
         contraindication_sets=len(evidence.contraindication_docs),
@@ -361,7 +475,7 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
 #: Operation name under which the serialized :class:`DailyMedEvidence` is registered.
 EVIDENCE_OPERATION = "build_dailymed_evidence"
 #: Bump when the evidence structure or builder logic changes (invalidates cached evidence).
-EVIDENCE_BUILDER_VERSION = "v1"
+EVIDENCE_BUILDER_VERSION = "v2"
 #: Synthetic input id folding the builder version into the operation-index key.
 _EVIDENCE_VERSION_INPUT = hash_bytes(f"dailymed_evidence_builder:{EVIDENCE_BUILDER_VERSION}".encode())
 
@@ -509,6 +623,7 @@ __all__ = [
     "DAILYMED_SET_URL_BASE",
     "EVIDENCE_BUILDER_VERSION",
     "EVIDENCE_OPERATION",
+    "FAERS_DOWNLOAD_BASE",
     "INDICATION_LOINC",
     "WARNINGS_LOINCS",
     "DailyMedEvidence",
@@ -518,6 +633,11 @@ __all__ = [
     "dailymed_document_url",
     "dailymed_set_curie",
     "dailymed_set_url",
+    "edge_evidence_pipe",
+    "faers_evidence_id",
+    "faers_quarter_url",
+    "faers_quarter_urls",
+    "faers_record_url",
     "find_faers_cases",
     "find_table",
     "load_or_build_dailymed_evidence",
@@ -526,6 +646,8 @@ __all__ = [
     "shape_config_fingerprint",
     "shape_operation_inputs",
     "sorted_pipe",
+    "source_manifest_url",
+    "source_urls",
     "spl_evidence_pipe",
     "write_assertion_table",
 ]

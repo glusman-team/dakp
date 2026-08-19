@@ -84,6 +84,25 @@ func TestExtractFAERSParity(t *testing.T) {
 	if got[0].Rows == nil || int(*got[0].Rows) != len(res.Cases) {
 		t.Errorf("cases.parquet ref.Rows = %v, want %d", got[0].Rows, len(res.Cases))
 	}
+	colIndex := make(map[string]int, len(cols))
+	for i, name := range cols {
+		colIndex[name] = i
+	}
+	for i, want := range res.Cases {
+		row := rows[i]
+		checks := map[string]string{
+			"nda_raw":          want.NdaRaw,
+			"drug_seq":         want.DrugSeq,
+			"indi_drug_seq":    want.IndiDrugSeq,
+			"source_file":      want.SourceFile,
+			"source_record_id": want.SourceRecordID,
+		}
+		for name, expected := range checks {
+			if gotValue := row[colIndex[name]]; gotValue != expected {
+				t.Errorf("cases.parquet row %d %s = %q, want %q", i, name, gotValue, expected)
+			}
+		}
+	}
 
 	// warnings.parquet is empty (0 rows).
 	_, wrows := readBack(t, got[4].URI)

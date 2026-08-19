@@ -287,14 +287,12 @@ _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
 # a ``Study`` is a real cohort/dataset/trial with TYPED ``StudyResult`` slots). So each name below is
 # a slot the class actually holds:
 # * ``has_evidence`` (``list[str]``, range ``information content entity``) carries the
-#   ``dailymed:<spl_set_id>`` CURIEs of the backing SPL sets — the legacy DAKP KG evidence
-#   form, set granularity — from the single ``supporting_spl_evidence`` column. One column,
+#   sorted identifier union from the single ``edge_evidence`` column: ``dailymed:<spl_set_id>``
+#   for DailyMed labels and ``faers:<record_id>`` for contributing FAERS reports. One column,
 #   not two, because ANNOTATION NAMES MUST BE UNIQUE PER TABLE: Tablassert applies annotations
 #   as ``with_columns(pl.col(src).alias(name))`` in declaration order with no duplicate check,
-#   so a second ``has_evidence`` entry would SILENTLY overwrite the first. The CURIEs are
-#   built in ``assertions.evidence.spl_evidence_pipe``; the per-granularity
-#   ``supporting_spl_sets`` / ``supporting_spl_documents`` columns stay in the TSV as the
-#   debuggable split (human-readable DailyMed label URLs) but are no longer annotated. (The
+#   so a second ``has_evidence`` entry would SILENTLY overwrite the first. Human-readable URLs
+#   remain in the unannotated source-specific debug columns and source-record provenance. (The
 #   deprecated Biolink ``supporting_documents`` slot — an alias of ``publications`` — is
 #   attached to no association class and was what previously landed in the study description.)
 # * DAKP aggregates each cell into ONE pipe-joined string, so ``split_by: "|"`` is what makes it a
@@ -324,12 +322,18 @@ _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
 _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
     "approved_treats_assertions": (
         ("approval_ids", "approval_ids", "|"),
-        ("supporting_spl_evidence", "has_evidence", "|"),
+        ("edge_evidence", "has_evidence", "|"),
         ("clinical_approval_status", "clinical_approval_status", None),
     ),
-    "faers_applied_to_treat_assertions": (("case_count", "evidence_count", None), ("clinical_approval_status", "clinical_approval_status", None)),
+    "faers_applied_to_treat_assertions": (
+        ("case_count", "evidence_count", None),
+        ("approval_ids", "approval_ids", "|"),
+        ("edge_evidence", "has_evidence", "|"),
+        ("clinical_approval_status", "clinical_approval_status", None),
+    ),
     "contraindication_assertions": (
-        ("supporting_spl_evidence", "has_evidence", "|"),
+        ("approval_ids", "approval_ids", "|"),
+        ("edge_evidence", "has_evidence", "|"),
         ("evidence_text", "supporting_text", "|"),
         ("source_score", "source_score", None),
     ),

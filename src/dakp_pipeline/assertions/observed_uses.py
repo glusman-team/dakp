@@ -56,7 +56,17 @@ from typing import Any
 import polars as pl
 
 from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_FAERS, join_pipe, match_diseases, row_for
-from dakp_pipeline.assertions.evidence import find_faers_cases, find_table, write_assertion_table
+from dakp_pipeline.assertions.evidence import (
+    edge_evidence_pipe,
+    faers_evidence_id,
+    faers_quarter_urls,
+    faers_record_url,
+    find_faers_cases,
+    find_table,
+    normalize_nda,
+    sorted_pipe,
+    write_assertion_table,
+)
 from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu, _resolve_devices, default_ner, mine_with_cache
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
@@ -120,11 +130,22 @@ class ObservedUsesShaper:
             stats(logger, "shape_faers_applied_to_treat", inputs=len(inputs), disease_map_terms=len(disease_map))
             # Projection: only the three columns the aggregation needs (the production case table
             # is tens of millions of rows wide; reading all 17 columns wastes gigabytes).
-            faers_cases = find_faers_cases(inputs, columns=("drugname", "indication", "primaryid"))
+            faers_cases = find_faers_cases(
+                inputs,
+                columns=("drugname", "indication", "primaryid", "nda", "nda_raw", "quarter", "drug_seq", "source_record_id"),
+            )
             approved = find_table(inputs, "approved_treats_assertions.tsv")
             approved_pairs = _approved_pair_index(approved) if approved is not None else None
             with MentionCache(ctx.workdir) as cache:
-                rows = build_observed_use_rows(faers_cases, disease_map, approved_pairs, ner=ner, devices=devices, cache=cache)
+                rows = build_observed_use_rows(
+                    faers_cases,
+                    disease_map,
+                    approved_pairs,
+                    ner=ner,
+                    devices=devices,
+                    cache=cache,
+                    faers_quarter_urls=faers_quarter_urls(inputs),
+                )
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_faers_applied_to_treat")
 
 
@@ -202,6 +223,7 @@ def build_observed_use_rows(
     ner: DiseaseNER | None = None,
     devices: Sequence[str] | None = None,
     cache: MentionCache | None = None,
+    faers_quarter_urls: Mapping[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """Aggregate FAERS drug-indication case counts into applied-to-treat rows (deterministic).
 
@@ -224,24 +246,36 @@ def build_observed_use_rows(
     if faers_cases is None:
         return []
 
-    has_primaryid = "primaryid" in faers_cases.columns
-    primaryid = pl.col("primaryid").fill_null("").cast(pl.Utf8).str.strip_chars() if has_primaryid else pl.lit("")
-    pairs = (
+    def _text_column(name: str) -> pl.Expr:
+        return pl.col(name).fill_null("").cast(pl.Utf8) if name in faers_cases.columns else pl.lit("")
+
+    primaryid = _text_column("primaryid").str.strip_chars()
+    normalized = (
         faers_cases.lazy()
         .select(
-            pl.col("drugname").fill_null("").cast(pl.Utf8).str.strip_chars().alias("drugname"),
-            pl.col("indication").fill_null("").cast(pl.Utf8).str.strip_chars().alias("indication"),
+            _text_column("drugname").str.strip_chars().alias("drugname"),
+            _text_column("indication").str.strip_chars().alias("indication"),
             primaryid.alias("primaryid"),
+            _text_column("nda").alias("nda"),
+            _text_column("nda_raw").alias("nda_raw"),
+            _text_column("quarter").alias("quarter"),
+            _text_column("drug_seq").alias("drug_seq"),
+            _text_column("source_record_id").alias("source_record_id"),
         )
         .filter((pl.col("drugname") != "") & (pl.col("indication") != ""))
+        .with_columns(
+            pl.struct(["primaryid", "nda", "nda_raw", "quarter", "drug_seq", "source_record_id"]).alias("faers_row")
+        )
         .group_by("drugname", "indication")
         .agg(
             pl.col("primaryid").filter(pl.col("primaryid") != "").n_unique().alias("distinct_cases"),
             pl.col("primaryid").filter(pl.col("primaryid") == "").len().alias("anon_rows"),
+            pl.col("faers_row").unique().alias("faers_rows"),
         )
         .collect()
         .sort("drugname", "indication")
     )
+    pairs = normalized
 
     # Mine the distinct stop-list-passing, dictionary-miss indication strings once (NER channel).
     indication_mentions: dict[str, list[Mention]] | None = None
@@ -275,6 +309,26 @@ def build_observed_use_rows(
             if mention_obj is not None:
                 ner_resolved += 1
             obj = mention_obj or {"text": indication, "curie": "", "name": indication, "category": "Disease"}
+        evidence_ids: set[str] = set()
+        source_records: set[str] = set()
+        evidence_urls: set[str] = set()
+        approval_values_by_norm: dict[str, set[str]] = {}
+        for raw in rec.get("faers_rows") or []:
+            row = raw or {}
+            q = str(row.get("quarter") or "").strip()
+            pid = str(row.get("primaryid") or "").strip()
+            seq = str(row.get("drug_seq") or "").strip()
+            if q and pid:
+                evidence_ids.add(faers_evidence_id(q, pid, seq))
+                evidence_urls.add(faers_record_url(q, dict(faers_quarter_urls or {})))
+            source_id = str(row.get("source_record_id") or "").strip()
+            if source_id:
+                source_records.add(source_id)
+            raw_nda = str(row.get("nda_raw") or row.get("nda") or "").strip()
+            norm_nda = normalize_nda(raw_nda)
+            if norm_nda:
+                approval_values_by_norm.setdefault(norm_nda, set()).add(raw_nda)
+        approval_values = [min(values) for values in approval_values_by_norm.values()]
         if approved_pairs is None:
             status = _STATUS_NOT_PROVIDED
         elif (normalize_text(drug), normalize_text(obj["text"])) in approved_pairs:
@@ -294,6 +348,10 @@ def build_observed_use_rows(
                 object_name=obj["name"],
                 object_category=obj["category"],
                 case_count=int(rec["distinct_cases"]) + int(rec["anon_rows"]),
+                approval_ids=sorted_pipe(approval_values),
+                edge_evidence=edge_evidence_pipe(evidence_ids),
+                supporting_faers_records=sorted_pipe(source_records),
+                supporting_faers_urls=sorted_pipe(evidence_urls),
                 clinical_approval_status=status,
                 knowledge_level=_KNOWLEDGE_LEVEL,
                 agent_type=AT_MANUAL,

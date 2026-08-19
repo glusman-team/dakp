@@ -20,9 +20,8 @@ import (
 )
 
 // faersCaseColumns is the rich interim case schema (mirrors faers_ascii._CASE_COLUMNS). The native
-// task reconstructs cases.parquet from the public case projection (as _extract_via_go did), so the
-// provenance columns (nda_raw/role_cod/drug_seq/indi_drug_seq/source_file/source_record_id) are
-// emitted empty; the public columns carry the data.
+// streaming task preserves the full rich case row, including NDA raw value, role/sequence metadata,
+// source file, and source_record_id, so downstream assertion shapers can trace exact FAERS records.
 var faersCaseColumns = []string{
 	"quarter", "primaryid", "caseid", "source", "occp_cod", "reporter_country",
 	"drugname", "ingredient", "nda", "nda_raw", "role_cod", "drug_seq", "indi_drug_seq",
@@ -225,9 +224,9 @@ func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]Arti
 	return refs, nil
 }
 
-// mergeFAERSOutputs k-way-merges the per-quarter sorted runs and streams the merged rows into
-// cases.parquet (17-column reconstruction, faersCaseRow17) and faers_cases.tsv (public
-// projection) simultaneously. Returns the merged row count.
+// mergeFAERSOutputs k-way-merges the per-quarter sorted rich runs and streams the merged rows into
+// cases.parquet (full CaseColumns via faersCaseRow17) and faers_cases.tsv (public projection)
+// simultaneously. Returns the merged row count.
 func mergeFAERSOutputs(runs []string, casesPath, tsvPath string) (int, error) {
 	pw, err := NewStringParquetWriter(casesPath, faersCaseColumns)
 	if err != nil {

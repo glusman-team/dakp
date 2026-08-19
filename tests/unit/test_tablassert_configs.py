@@ -87,10 +87,11 @@ EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
 # Every name here must be a slot DAKP's association class
 # (``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``) actually declares, or Tablassert
 # relocates the value off the edge into the inlined supporting study's StudyResult description --
-# a junk drawer no translator-ingests source models. So: the merged SPL-evidence column maps to
-# ``has_evidence`` (ONE annotation, carrying the legacy ``dailymed:<spl_set_id>`` set CURIEs,
-# because duplicate annotation names silently overwrite each other), and ``case_count`` maps to
-# ``evidence_count`` rather than the sibling-class-only ``number_of_cases``. ``split_by: "|"``
+# a junk drawer no translator-ingests source models. So: the common ``edge_evidence`` column maps to
+# ``has_evidence`` (ONE annotation, carrying the sorted ``dailymed:<spl_set_id>`` /
+# ``faers:<record_id>`` identifier union, because duplicate annotation names silently overwrite
+# each other), and ``case_count`` maps to ``evidence_count`` rather than the sibling-class-only
+# ``number_of_cases``. ``split_by: "|"``
 # makes the pipe-joined cells emit as real JSON arrays. ``approval_ids`` keeps its column name and,
 # under Tablassert >= 12, reaches the edge as a curated TOP-LEVEL pass-through field (it is on
 # Tablassert's edge allow-list as a known-pending Biolink slot, so it no longer folds); DAKP
@@ -99,12 +100,18 @@ EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
 EXPECTED_ANNOTATIONS = {
     "approved_treats_assertions": {
         "approval_ids": ("approval_ids", "|"),
-        "has_evidence": ("supporting_spl_evidence", "|"),
+        "has_evidence": ("edge_evidence", "|"),
         "clinical_approval_status": ("clinical_approval_status", None),
     },
-    "faers_applied_to_treat_assertions": {"evidence_count": ("case_count", None), "clinical_approval_status": ("clinical_approval_status", None)},
+    "faers_applied_to_treat_assertions": {
+        "evidence_count": ("case_count", None),
+        "approval_ids": ("approval_ids", "|"),
+        "has_evidence": ("edge_evidence", "|"),
+        "clinical_approval_status": ("clinical_approval_status", None),
+    },
     "contraindication_assertions": {
-        "has_evidence": ("supporting_spl_evidence", "|"),
+        "approval_ids": ("approval_ids", "|"),
+        "has_evidence": ("edge_evidence", "|"),
         "supporting_text": ("evidence_text", "|"),
         "source_score": ("source_score", None),
     },

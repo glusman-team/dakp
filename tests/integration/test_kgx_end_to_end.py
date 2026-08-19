@@ -223,13 +223,14 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
             assert all(not entry.get("source_record_urls") for entry in supporting.values())
 
 
-def test_dailymed_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> None:
-    """DailyMed SPL-set evidence rides the edge in ONE ``has_evidence`` array of set CURIEs.
+def test_edge_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> None:
+    """Unified DailyMed/FAERS evidence rides the edge in ONE ``has_evidence`` array.
 
     ``has_evidence`` is a real multivalued slot of the association class every DAKP edge resolves to
     (``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``), and the generated configs encode it
     with ``split_by: "|"`` — so DAKP's aggregated, pipe-joined cell arrives as a real JSON array of
-    legacy-form ``dailymed:<spl_set_id>`` CURIEs (set granularity, sorted, deduped), never a
+    legacy-form ``dailymed:<spl_set_id>`` and ``faers:<record_id>`` identifiers (sorted,
+    deduped), never a
     one-element list holding a joined ``"a|b"`` blob (the silent corruption ``split_by`` exists to
     prevent).
 
@@ -241,13 +242,18 @@ def test_dailymed_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild)
     """
     dailymed_backed = [edge for edge in kgx_build.edges if edge["predicate"] in {_TREATS, _CONTRA}]
     assert dailymed_backed, "expected DailyMed-backed edges in the build"
+    for edge in kgx_build.edges:
+        for field in ("approval_ids", "has_evidence"):
+            if field in edge:
+                assert isinstance(edge[field], list), f"{field} must be a list: {edge}"
+                assert edge[field], f"{field} must be omitted or non-empty: {edge}"
     for edge in dailymed_backed:
         evidence = edge.get("has_evidence")
         assert isinstance(evidence, list), f"has_evidence must be a JSON array, got {evidence!r}"
         assert evidence
         for value in evidence:
             assert isinstance(value, str)
-            assert value.startswith(DAILYMED_SET_CURIE_PREFIX), f"has_evidence value is not a dailymed set CURIE: {value!r}"
+            assert value.startswith((DAILYMED_SET_CURIE_PREFIX, "faers:")), f"unknown has_evidence identifier: {value!r}"
             assert "|" not in value, f"has_evidence kept a joined cell instead of splitting it: {value!r}"
             assert "#" not in value, f"has_evidence kept section granularity instead of set CURIEs: {value!r}"
         assert "supporting_documents" not in edge
@@ -262,10 +268,13 @@ def test_dailymed_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild)
             for result in study.get("has_study_results") or []:
                 assert not result.get("description"), f"DAKP value relocated into a study: {result}"
 
-    # FAERS edges have no SPL evidence at all (the assertion table carries no such column).
-    for edge in kgx_build.edges:
-        if edge["predicate"] == _APPLIED:
-            assert "has_evidence" not in edge
+    applied = [edge for edge in kgx_build.edges if edge["predicate"] == _APPLIED]
+    assert applied, "expected FAERS applied_to_treat edges"
+    for edge in applied:
+        evidence = edge.get("has_evidence")
+        assert isinstance(evidence, list)
+        assert evidence
+        assert all(value.startswith("faers:") for value in evidence)
 
 
 def test_faers_case_count_rides_the_edge_as_evidence_count(kgx_build: KgxBuild) -> None:
@@ -302,12 +311,15 @@ def test_approval_ids_ride_the_edge_as_a_top_level_json_array(kgx_build: KgxBuil
     DAKP annotates it with ``split_by: "|"`` so the pipe-joined cell is emitted as a real JSON
     array — the legacy ``approvals`` list shape — instead of a joined scalar.
     """
-    treats = [edge for edge in kgx_build.edges if edge["predicate"] == _TREATS]
-    assert treats, "expected approved_treats edges in the build"
-    for edge in treats:
+    edges = [edge for edge in kgx_build.edges if edge["predicate"] in {_TREATS, _APPLIED, _CONTRA}]
+    assert edges, "expected DAKP edges in the build"
+    for edge in edges:
         approval_ids = edge.get("approval_ids")
+        if approval_ids is None:
+            # Missing source approval provenance is intentionally omitted, not represented by [].
+            continue
         assert isinstance(approval_ids, list), f"approval_ids missing or not a JSON array: {approval_ids!r}"
-        assert approval_ids, "treats edge missing FDA approval/NDA ids"
+        assert approval_ids, "populated approval_ids must not be an empty array"
         for value in approval_ids:
             assert isinstance(value, str)
             assert value.strip(), f"empty approval id in {approval_ids!r}"

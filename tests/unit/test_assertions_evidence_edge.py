@@ -9,13 +9,26 @@ keys (191, 203, 214), and the ``build_drugsfda_ingredient_map`` skip on missing 
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import polars as pl
 
-from dakp_pipeline.assertions.evidence import build_dailymed_evidence, build_drugsfda_ingredient_map, find_faers_cases, find_table
+from dakp_pipeline.assertions.evidence import (
+    build_dailymed_evidence,
+    build_drugsfda_ingredient_map,
+    faers_evidence_id,
+    faers_quarter_url,
+    faers_quarter_urls,
+    find_faers_cases,
+    find_table,
+    sorted_pipe,
+    source_manifest_url,
+    source_urls,
+)
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef
+from dakp_pipeline.io.manifests import ArtifactManifest, SourceBlock
 
 
 def _ref(path: Path) -> ArtifactRef:
@@ -26,6 +39,66 @@ def _parquet(tmp_path: Path, name: str, data: dict[str, list[object]]) -> Artifa
     path = tmp_path / name
     pl.DataFrame(data).write_parquet(path)
     return _ref(path)
+
+
+# --- URI-safe FAERS evidence IDs and pipe encoding ------------------------------
+
+
+def test_faers_quarter_url_uses_exact_fda_zip_fallback() -> None:
+    expected = "https://fis.fda.gov/content/Exports/faers_ascii_2024q3.zip"
+    assert faers_quarter_url("24Q3") == expected
+    assert faers_quarter_url("2024q3") == expected
+
+
+def test_faers_quarter_url_rejects_malformed_quarter() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="invalid FAERS quarter"):
+        faers_quarter_url("2024Q5")
+
+
+def test_faers_quarter_urls_use_manifest_then_fallback(tmp_path: Path) -> None:
+    loose = tmp_path / "faers_ascii_24Q3.zip"
+    loose.write_bytes(b"fixture")
+    fallback = _ref(loose)
+    assert faers_quarter_urls([fallback]) == {"24Q3": "https://fis.fda.gov/content/Exports/faers_ascii_2024q3.zip"}
+
+    manifest_path = tmp_path / "manifest.json"
+    ArtifactManifest(
+        artifact_id=fallback.blake3,
+        path=str(loose),
+        media_type="application/zip",
+        source=SourceBlock(url="https://example.test/custom-faers-2024q3.zip"),
+    ).write(manifest_path)
+    exact = ArtifactRef(uri=loose, blake3=fallback.blake3, media_type="application/zip", manifest=manifest_path)
+    assert faers_quarter_urls([exact]) == {"24Q3": "https://example.test/custom-faers-2024q3.zip"}
+    assert source_manifest_url(exact) == "https://example.test/custom-faers-2024q3.zip"
+    assert source_urls([exact]) == ["https://example.test/custom-faers-2024q3.zip"]
+    corrupt_manifest = tmp_path / "corrupt-manifest.json"
+    corrupt_manifest.write_text("not json", encoding="utf-8")
+    corrupt = ArtifactRef(uri=loose, blake3=fallback.blake3, media_type="application/zip", manifest=corrupt_manifest)
+    assert source_manifest_url(corrupt) == ""
+    assert source_urls([]) == []
+
+
+def test_faers_evidence_id_is_uri_and_pipe_safe() -> None:
+    value = faers_evidence_id("24q3", "1002", "1")
+    assert value == "faers:24Q3:1002:1"
+    assert faers_evidence_id("24Q3", "1002") == "faers:24Q3:1002"
+    assert "|" not in value
+    assert "\\n" not in value
+
+    import pytest
+
+    with pytest.raises(ValueError, match="require non-empty"):
+        faers_evidence_id("24Q3", "")
+
+
+def test_sorted_pipe_rejects_delimiter_unsafe_values() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="delimiter"):
+        sorted_pipe(["faers:24Q3:1002|1"])
 
 
 # --- find_table: unreadable matching input is swallowed (103-104) ---------------
@@ -207,6 +280,28 @@ def test_build_dailymed_evidence_section_text_falls_back_to_raw_text(tmp_path: P
     )
     ev = build_dailymed_evidence([sections])
     assert ev.indication_docs["SET-A"] == [("d1", "asthma from raw")]
+
+
+# --- DailyMed SPL-set -> approval reverse index -------------------------------
+
+
+def test_dailymed_evidence_reverse_approval_index_deduplicates_and_skips_missing() -> None:
+    approvals = pl.DataFrame(
+        {
+            "approval_id": ["012345", "012345", "", ""],
+            "approval_code": ["", "", "099998", ""],
+            "approval_type": ["NDA", "NDA", "BLA", "NDA"],
+            "spl_set_id": ["SET-A", "SET-A", "SET-A", ""],
+        }
+    )
+    # Keep the fixture isolated and avoid relying on a real acquisition artifact.
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "spl_approvals.parquet"
+        approvals.write_parquet(path)
+        evidence = build_dailymed_evidence([_ref(path)])
+
+    assert evidence.approval_ids_by_set == {"SET-A": {"NDA012345", "BLA099998"}}
+    assert evidence.approval_ids_for_sets(["SET-A", "MISSING", "SET-A"]) == ["BLA099998", "NDA012345"]
 
 
 # --- build_drugsfda_ingredient_map: skip on missing NDA/ingredient (239->236) ---
