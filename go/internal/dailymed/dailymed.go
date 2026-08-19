@@ -665,10 +665,14 @@ type Tables struct {
 // Extract parses the given SPL files and flattens them into the normalized tables. Row
 // order is deterministic: files in `paths` order, documents in file order, sub-rows in
 // document order. Files are parsed concurrently (bounded by limit; <=0 means unbounded)
-// but results are reassembled in input order, so parallelism never affects output. The
-// source artifact id for each file is its BLAKE3 file hash (matching the Python ref.blake3
-// that underlies every source_record_id).
-func Extract(ctx context.Context, paths []string, limit int) (*Tables, error) {
+// but results are reassembled in input order, so parallelism never affects output.
+//
+// `ids` is parallel to `paths` and carries each file's known BLAKE3 artifact id (e.g. the
+// input ArtifactRefs' Blake3 carried over XCom from acquisition), so already-hashed inputs
+// are not re-read; an empty/missing entry falls back to hashing that file. The source
+// artifact id for each file is its BLAKE3 file hash (matching the Python ref.blake3 that
+// underlies every source_record_id).
+func Extract(ctx context.Context, paths []string, ids []string, limit int) (*Tables, error) {
 	type fileResult struct {
 		sourceID    string
 		releaseFile string
@@ -686,9 +690,16 @@ func Extract(ctx context.Context, paths []string, limit int) (*Tables, error) {
 			if err := gctx.Err(); err != nil {
 				return err
 			}
-			sourceID, err := blake3store.HashFile(p)
-			if err != nil {
-				return fmt.Errorf("dailymed: hash %s: %w", p, err)
+			sourceID := ""
+			if i < len(ids) {
+				sourceID = ids[i]
+			}
+			if sourceID == "" {
+				var err error
+				sourceID, err = blake3store.HashFile(p)
+				if err != nil {
+					return fmt.Errorf("dailymed: hash %s: %w", p, err)
+				}
 			}
 			docs, err := ParseFile(p)
 			if err != nil {

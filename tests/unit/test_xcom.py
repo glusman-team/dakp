@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from dakp_pipeline.io.contracts import ArtifactRef
-from dakp_pipeline.io.xcom import ref_from_xcom, ref_to_xcom, refs_from_xcom, refs_to_xcom
+from dakp_pipeline.io.xcom import REFS_FILE_MEDIA_TYPE, ref_from_xcom, ref_to_xcom, refs_from_file, refs_from_xcom, refs_to_xcom
 
 
 def test_ref_to_xcom_full() -> None:
@@ -74,3 +75,34 @@ def test_refs_to_xcom_and_back() -> None:
 def test_refs_from_xcom_none_is_empty() -> None:
     assert refs_from_xcom(None) == []
     assert refs_from_xcom([]) == []
+
+
+# --- single-file refs handoff (the DailyMed acquire XCom shrink) ----------------
+
+
+def _refs_file(tmp_path: Path, refs: list[ArtifactRef]) -> Path:
+    """Write refs in the exact shape the producer's single-file handoff writes."""
+    path = tmp_path / "spl-refs.json"
+    path.write_text(json.dumps(refs_to_xcom(refs), indent=2), encoding="utf-8")
+    return path
+
+
+def test_refs_from_xcom_resolves_refs_file_sentinel(tmp_path: Path) -> None:
+    """A one-element sentinel payload resolves to the full refs list from the store JSON."""
+    refs = [
+        ArtifactRef(uri=Path("m1.xml"), blake3="b3:1", media_type="application/xml", manifest=Path("data/manifests/1.json")),
+        ArtifactRef(uri=Path("m2.xml.gz"), blake3="b3:2", media_type="application/gzip", manifest=Path("data/manifests/2.json")),
+    ]
+    sentinel = ref_to_xcom(ArtifactRef(uri=_refs_file(tmp_path, refs), blake3="b3:refs", media_type=REFS_FILE_MEDIA_TYPE))
+    assert refs_from_xcom([sentinel]) == refs
+
+
+def test_refs_from_xcom_single_non_sentinel_ref_stays_inline() -> None:
+    """A genuine one-ref inline list (e.g. the Drugs@FDA ZIP) is never mistaken for the sentinel."""
+    ref = ArtifactRef(uri=Path("drugsfda.zip"), blake3="b3:z", media_type="application/zip")
+    assert refs_from_xcom(refs_to_xcom([ref])) == [ref]
+
+
+def test_refs_from_file_reads_the_handoff_json(tmp_path: Path) -> None:
+    refs = [ArtifactRef(uri=Path("only.xml"), blake3="b3:o", media_type="application/xml", rows=4)]
+    assert refs_from_file(_refs_file(tmp_path, refs)) == refs

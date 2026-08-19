@@ -65,22 +65,22 @@ import polars as pl
 from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_FAERS, KL_ASSERTION, join_pipe, match_diseases, row_for
 from dakp_pipeline.assertions.evidence import (
     DailyMedEvidence,
-    build_dailymed_evidence,
     build_drugsfda_ingredient_map,
     dailymed_document_url,
     dailymed_set_url,
     find_faers_cases,
+    load_or_build_dailymed_evidence,
     merge_unique,
-    normalize_nda,
     sorted_pipe,
     spl_evidence_pipe,
     write_assertion_table,
 )
-from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu, _resolve_devices, default_ner
+from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu, _resolve_devices, default_ner, mine_with_cache
 from dakp_pipeline.assertions.observed_uses import is_non_disease_indication
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
+from dakp_pipeline.ner.mention_cache import MentionCache
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
 
 _TABLE = "approved_treats_assertions"
@@ -102,32 +102,41 @@ class ApprovedTreatsShaper:
             ner = ner_param if isinstance(ner_param, DiseaseNER) else default_ner(ctx.fixture_root)
             devices = _resolve_devices(ner)
             stats(logger, "shape_approved_treats", inputs=len(inputs), disease_map_terms=len(disease_map))
-            dailymed = build_dailymed_evidence(inputs)
+            dailymed = load_or_build_dailymed_evidence(inputs, ctx)
             drugsfda_map = build_drugsfda_ingredient_map(inputs)
             faers_cases = find_faers_cases(inputs, columns=_FAERS_CASE_COLUMNS)
-            rows = build_approved_treats_rows(faers_cases, dailymed, drugsfda_map, disease_map, ner=ner, devices=devices)
+            with MentionCache(ctx.workdir) as cache:
+                rows = build_approved_treats_rows(faers_cases, dailymed, drugsfda_map, disease_map, ner=ner, devices=devices, cache=cache)
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_approved_treats")
 
 
-def _mine_indication_mentions(dailymed: DailyMedEvidence, ner: DiseaseNER, devices: Sequence[str] | None) -> dict[tuple[str, str], list[Mention]]:
+def _mine_indication_mentions(
+    dailymed: DailyMedEvidence, ner: DiseaseNER, devices: Sequence[str] | None, cache: MentionCache | None = None
+) -> dict[tuple[str, str], list[Mention]]:
     """Mine every indication section ONCE, returning ``{(set_id, doc_id): [mentions]}``.
 
     Sections are mined per ``(set_id, doc_id)`` and shared by both candidate paths (FAERS
     corroboration + DailyMed fallback) — never re-mined per candidate. Production runs dispatch
     across GPUs (:func:`~dakp_pipeline.assertions.ner_dispatch._mine_multi_gpu`); the offline
-    gazetteer backend runs sequentially with periodic progress narration. Output is identical
-    regardless of dispatch mode.
+    gazetteer backend runs sequentially with periodic progress narration. When ``cache`` is
+    given, previously mined texts are served from the persistent mention cache
+    (:func:`~dakp_pipeline.assertions.ner_dispatch.mine_with_cache`). Output is identical
+    regardless of dispatch mode or cache state.
     """
     work_items = [(set_id, doc_id, text) for set_id in sorted(dailymed.indication_docs) for doc_id, text in dailymed.indication_docs[set_id]]
     if not work_items:
         return {}
-    if devices and len(work_items) > 1 and not ner._offline:
-        return _mine_multi_gpu(work_items, ner, devices)
-    mined: dict[tuple[str, str], list[Mention]] = {}
-    for done, (set_id, doc_id, text) in enumerate(work_items, start=1):
-        mined[(set_id, doc_id)] = ner.extract(text)
-        progress(logger, "shape_approved_treats", done, len(work_items), every=_MINING_PROGRESS_EVERY)
-    return mined
+
+    def mine(items: Sequence[Any]) -> dict[tuple[str, str], list[Mention]]:
+        if devices and len(items) > 1 and not ner._offline:
+            return _mine_multi_gpu(items, ner, devices)
+        mined: dict[tuple[str, str], list[Mention]] = {}
+        for done, (set_id, doc_id, text) in enumerate(items, start=1):
+            mined[(set_id, doc_id)] = ner.extract(text)
+            progress(logger, "shape_approved_treats", done, len(items), every=_MINING_PROGRESS_EVERY)
+        return mined
+
+    return mine_with_cache(work_items, ner, mine, cache)
 
 
 def build_approved_treats_rows(
@@ -138,14 +147,16 @@ def build_approved_treats_rows(
     *,
     ner: DiseaseNER | None = None,
     devices: Sequence[str] | None = None,
+    cache: MentionCache | None = None,
 ) -> list[dict[str, str]]:
     """Aggregate approved-treats assertion rows (pure; deterministic ordering).
 
     When ``ner`` is given, every indication section is mined once and its mentions feed the
     corroboration gate (rule 4) and the DailyMed fallback candidate path; without a backend the
-    historical lexical-only behavior is kept.
+    historical lexical-only behavior is kept. ``cache`` (a persistent mention cache) only
+    changes WHERE mentions come from, never their content.
     """
-    mentions = _mine_indication_mentions(dailymed, ner, devices) if ner is not None else None
+    mentions = _mine_indication_mentions(dailymed, ner, devices, cache) if ner is not None else None
     candidates = _faers_candidates(faers_cases, disease_map) if faers_cases is not None else _dailymed_candidates(dailymed, disease_map, mentions)
 
     aggregated: dict[tuple[str, str], dict[str, Any]] = {}
@@ -311,27 +322,49 @@ def _object_attrs(text: str, disease_map: Mapping[str, Mapping[str, str]]) -> tu
 
 
 def _faers_candidates(faers_cases: pl.DataFrame, disease_map: Mapping[str, Mapping[str, str]]) -> Iterator[dict[str, str]]:
-    """NDA-bearing FAERS drug-indication pairs (deduplicated by NDA + indication)."""
-    seen: set[tuple[str, str]] = set()
-    for rec in faers_cases.iter_rows(named=True):
-        norm = normalize_nda(rec.get("nda") or rec.get("nda_raw"))
-        indication = str(rec.get("indication") or "").strip()
-        if not norm or not indication:
-            continue
-        if is_non_disease_indication(indication):
+    """NDA-bearing FAERS drug-indication pairs (deduplicated by NDA + indication).
+
+    The projection, NDA normalization, filtering, and dedup run as one Polars lazy pipeline
+    (never Python row iteration), so the full-production case table (tens of millions of rows)
+    reduces to the distinct pair set in a few seconds with bounded memory — the same discipline
+    as :func:`~dakp_pipeline.assertions.observed_uses.build_observed_use_rows`. Semantics are
+    unchanged: ``nda_raw`` supplies the NDA only when ``nda`` is null/empty (and vice versa for
+    ``drugname`` vs ``ingredient`` on the fallback subject), pairs deduplicate on
+    ``(norm_nda, indication)`` keeping the FIRST row's fallback subject, and candidates are
+    yielded in first-occurrence order (the aggregation back-fills subject CURIEs
+    first-non-empty-wins, so order is observable).
+    """
+    nda = pl.col("nda").fill_null("").cast(pl.Utf8) if "nda" in faers_cases.columns else pl.lit("")
+    nda_raw = pl.col("nda_raw").fill_null("").cast(pl.Utf8) if "nda_raw" in faers_cases.columns else pl.lit("")
+    ingredient = pl.col("ingredient").fill_null("").cast(pl.Utf8) if "ingredient" in faers_cases.columns else pl.lit("")
+    drugname = pl.col("drugname").fill_null("").cast(pl.Utf8) if "drugname" in faers_cases.columns else pl.lit("")
+    indication = pl.col("indication").fill_null("").cast(pl.Utf8).str.strip_chars() if "indication" in faers_cases.columns else pl.lit("")
+    pairs = (
+        faers_cases.lazy()
+        .select(
+            # nda_raw only when nda is null/empty; NDA normalization mirrors normalize_nda
+            # (digits only, leading zeros stripped).
+            pl.when(nda != "").then(nda).otherwise(nda_raw).str.replace_all(r"[^0-9]+", "").str.strip_chars_start("0").alias("norm_nda"),
+            indication.alias("indication"),
+            # ingredient only when null/empty falls back to drugname; strip AFTER the fallback.
+            pl.when(ingredient != "").then(ingredient).otherwise(drugname).str.strip_chars().alias("fallback_subject"),
+        )
+        .filter((pl.col("norm_nda") != "") & (pl.col("indication") != ""))
+        .unique(subset=["norm_nda", "indication"], keep="first", maintain_order=True)
+        .collect()
+    )
+    for rec in pairs.iter_rows(named=True):
+        object_text = str(rec["indication"])
+        if is_non_disease_indication(object_text):
             continue  # FAERS placeholder/usage-context indication, not a drug->condition approval claim
-        key = (norm, indication)
-        if key in seen:
-            continue
-        seen.add(key)
-        curie, name, category = _object_attrs(indication, disease_map)
+        curie, name, category = _object_attrs(object_text, disease_map)
         yield {
-            "norm_nda": norm,
-            "object_text": indication,
+            "norm_nda": str(rec["norm_nda"]),
+            "object_text": object_text,
             "object_curie": curie,
             "object_name": name,
             "object_category": category,
-            "fallback_subject": str(rec.get("ingredient") or rec.get("drugname") or "").strip(),
+            "fallback_subject": str(rec["fallback_subject"]),
         }
 
 

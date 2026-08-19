@@ -18,6 +18,10 @@ const drugsfdaWarningsMediaType = "application/x-ndjson"
 // drugsfdaEvent prefixes every stat line the Drugs@FDA extractor emits (one stat per line).
 const drugsfdaEvent = "extract_drugsfda"
 
+// drugsfdaTaskOperation is the task-level operation-index key for the already-done skip (the
+// per-artifact manifests keep their own operation names; see opindex.go).
+const drugsfdaTaskOperation = "extract_drugsfda"
+
 // drugsfdaInput is one recognized input file plus its classified table key.
 type drugsfdaInput struct {
 	path string
@@ -32,6 +36,14 @@ type drugsfdaInput struct {
 // returned in the same order as the Python extractor.
 func ExtractDrugsFDA(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]ArtifactRef, error) {
 	store := Store{Workdir: cfg.Workdir}
+	upstreamIDs := upstreamInputIDs(inputs)
+	if !cfg.Force {
+		// Already-done skip: the same upstream artifacts were extracted before.
+		if cached := store.FindByOperation(drugsfdaTaskOperation, upstreamIDs); cached != nil {
+			Stat(ctx, drugsfdaEvent, "skipped_already_done", len(cached))
+			return cached, nil
+		}
+	}
 	drugsfdaDir := filepath.Join(store.InterimDir(), "drugsfda")
 	if err := os.MkdirAll(drugsfdaDir, 0o755); err != nil {
 		return nil, err
@@ -143,8 +155,10 @@ func ExtractDrugsFDA(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 	}
 	StatOutput(ctx, drugsfdaEvent, "extract_warnings.jsonl", warningsRef)
 
-	Stat(ctx, drugsfdaEvent, "output_refs", len(refs)+1)
-	return append(refs, warningsRef), nil
+	refs = append(refs, warningsRef)
+	Stat(ctx, drugsfdaEvent, "output_refs", len(refs))
+	store.RecordOperation(drugsfdaTaskOperation, upstreamIDs, refs)
+	return refs, nil
 }
 
 func writeDrugsFDAParquet(store Store, dir, name string, columns []string, rows []drugsfda.Row, inputIDs []string, warnings int64) (ArtifactRef, error) {

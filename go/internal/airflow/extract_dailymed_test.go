@@ -81,7 +81,7 @@ func TestExtractDailyMedParity(t *testing.T) {
 
 	// Each interim parquet reads back with the contract columns (as a set) and the exact row count
 	// the parser produced (proving no rows were dropped on the way to parquet).
-	tables, err := dailymed.Extract(context.Background(), []string{fixture}, 4)
+	tables, err := dailymed.Extract(context.Background(), []string{fixture}, nil, 4)
 	if err != nil {
 		t.Fatal(err)
 	}

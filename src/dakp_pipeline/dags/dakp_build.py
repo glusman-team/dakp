@@ -38,6 +38,11 @@ DOWNLOAD_POOL = "dakp_download"
 #: dropped extract_faers peak RSS from ≫50 GB to ~6-15 GB, removing the memory pressure that
 #: previously forced the two heavy extracts to serialize via weighted pool slots.
 EXTRACT_POOL = "dakp_extract"
+#: Pool serializing the three GLiNER-mining shape tasks (1 slot, provisioned by the CLI): each
+#: shape task spawns up to one worker per GPU, and concurrent shape tasks would oversubscribe
+#: the cards. A scheduler hint only — the per-device flock in ``ner/ner.py`` (:func:`_acquire_gpu_lock`)
+#: is the hard one-model-per-GPU guarantee.
+NER_MINING_POOL = "ner_mining"
 
 #: Airflow Variable (JSON) holding the per-run config (workdir / fixture_root / threads / limits).
 CONFIG_VARIABLE = "dakp_config"
@@ -49,7 +54,9 @@ The DAG is organized into six visual TaskGroups while preserving the historical 
 
 1. **acquire** — network/model acquisition, bounded by `dakp_download`.
 2. **extract** — native Go SDK stubs on the `golang` queue, bounded by `dakp_extract`.
-3. **shape** — Python assertion-table shaping over artifact manifests.
+3. **shape** — Python assertion-table shaping over artifact manifests; the three GLiNER-mining
+   tasks serialize on the 1-slot `ner_mining` pool so concurrent shape tasks can't oversubscribe
+   the GPUs (the per-device flock in `ner/ner.py` is the hard guarantee).
 4. **tablassert** — config generation and optional real Tablassert KGX handoff.
 5. **export** — retrofit the KGX pair into the legacy DAKP TSV schema (skipped when the handoff
    was deferred — no fullmap means no KGX to convert).
@@ -135,15 +142,23 @@ def _build_acquire_stage() -> AcquireOutputs:
     """Create the acquisition TaskGroup and return its task handles."""
     with TaskGroup(group_id="acquire", prefix_group_id=False, tooltip="Acquire raw inputs", doc_md=_ACQUIRE_DOC_MD):
 
-        @task(pool=DOWNLOAD_POOL, doc_md="Download/cache DailyMed SPL artifacts; returns `ArtifactRef` manifests only.")
+        @task(
+            pool=DOWNLOAD_POOL,
+            doc_md="Download/cache DailyMed SPL artifacts; pushes ONE refs-file `ArtifactRef` over XCom (the per-member SPL refs live in a single store JSON, not inline).",
+        )
         def acquire_dailymed() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline import acquire
+            from dakp_pipeline.sources import dailymed
 
             ctx = _ctx()
             with step(logger, "task acquire_dailymed"):
                 refs = acquire.acquire_dailymed(ctx)
-                stats(logger, "task acquire_dailymed", output_refs=len(refs))
-                return _refs_to_xcom(refs)
+                # Single-file handoff: one ref per SPL member would be tens of thousands of XCom
+                # dicts (Execution-API ReadTimeouts under real data); publish the list as one
+                # store JSON and push only its sentinel ref.
+                refs_file = dailymed.write_refs_manifest(ctx, refs)
+                stats(logger, "task acquire_dailymed", output_refs=len(refs), refs_file=str(refs_file.uri))
+                return _refs_to_xcom([refs_file])
 
         @task(pool=DOWNLOAD_POOL, doc_md="Download/cache FAERS quarterly ASCII artifacts; returns `ArtifactRef` manifests only.")
         def acquire_faers() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
@@ -200,7 +215,7 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
     """Create the assertion-shaping TaskGroup and return assertion task handles."""
     with TaskGroup(group_id="shape", prefix_group_id=False, tooltip="Shape assertion tables", doc_md=_SHAPE_DOC_MD):
 
-        @task(doc_md="Shape FDA-approved treatment assertions from DailyMed, Drugs@FDA, and FAERS refs.")
+        @task(pool=NER_MINING_POOL, doc_md="Shape FDA-approved treatment assertions from DailyMed, Drugs@FDA, and FAERS refs.")
         def shape_treatment_tables(
             dm_ext: Any, drugsfda_ext: Any, faers_ext: Any, ner_models_ref: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
@@ -209,6 +224,7 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
             # acquisition (the model refs aren't inputs).
             del ner_models_ref
             from dakp_pipeline.assertions import approved_treats
+            from dakp_pipeline.assertions.evidence import cached_shape_outputs
             from dakp_pipeline.io.contracts import TaskContext
             from dakp_pipeline.ner.ner import DiseaseNER
 
@@ -224,12 +240,20 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                 )
                 ner = DiseaseNER(offline=False, workdir=ctx.workdir)
                 ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
-                out = approved_treats.transform([*dailymed_refs, *drugsfda_refs, *faers_refs], ctx)
+                in_refs = [*dailymed_refs, *drugsfda_refs, *faers_refs]
+                # Already-done skip: identical inputs + config fingerprint => return the
+                # previously registered outputs without re-running the shaper.
+                cached = cached_shape_outputs("shape_approved_treats", in_refs, ctx)
+                if cached is not None:
+                    stats(logger, "task shape_treatment_tables", skipped=True, cached_refs=len(cached))
+                    return _refs_to_xcom(cached)
+                out = approved_treats.transform(in_refs, ctx)
                 stats(logger, "task shape_treatment_tables", output_refs=len(out))
                 return _refs_to_xcom(out)
 
         @task(
-            doc_md="Shape FAERS observed-use assertions from FAERS cases + DailyMed refs, cross-referenced with the approved-treats table for the approval status."
+            pool=NER_MINING_POOL,
+            doc_md="Shape FAERS observed-use assertions from FAERS cases + DailyMed refs, cross-referenced with the approved-treats table for the approval status.",
         )
         def shape_faers_use_tables(
             faers_ext: Any, dm_ext: Any, approved: Any, ner_models_ref: Any
@@ -238,6 +262,7 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
             # GLiNER weights cached by acquire_ner_models (the model refs aren't inputs).
             del ner_models_ref
             from dakp_pipeline.assertions import observed_uses
+            from dakp_pipeline.assertions.evidence import cached_shape_outputs
             from dakp_pipeline.io.contracts import TaskContext
             from dakp_pipeline.ner.ner import DiseaseNER
 
@@ -253,11 +278,17 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                 )
                 ner = DiseaseNER(offline=False, workdir=ctx.workdir)
                 ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
-                out = observed_uses.transform([*faers_refs, *dailymed_refs, *approved_refs], ctx)
+                in_refs = [*faers_refs, *dailymed_refs, *approved_refs]
+                # Already-done skip: identical inputs + config fingerprint => cached outputs.
+                cached = cached_shape_outputs("shape_faers_applied_to_treat", in_refs, ctx)
+                if cached is not None:
+                    stats(logger, "task shape_faers_use_tables", skipped=True, cached_refs=len(cached))
+                    return _refs_to_xcom(cached)
+                out = observed_uses.transform(in_refs, ctx)
                 stats(logger, "task shape_faers_use_tables", output_refs=len(out))
                 return _refs_to_xcom(out)
 
-        @task(doc_md="Mine contraindication assertions from DailyMed refs after production NER models are cached.")
+        @task(pool=NER_MINING_POOL, doc_md="Mine contraindication assertions from DailyMed refs after production NER models are cached.")
         def shape_contraindication_tables(
             dm_ext: Any, ner_models_ref: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
@@ -267,6 +298,7 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
             # mining and 4-GPU dispatch; the DAG only needs DailyMed refs + model-cache ordering.
             del ner_models_ref
             from dakp_pipeline.assertions import contraindications
+            from dakp_pipeline.assertions.evidence import cached_shape_outputs
             from dakp_pipeline.io.contracts import TaskContext
             from dakp_pipeline.ner.ner import DiseaseNER
 
@@ -282,6 +314,11 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                 stats(logger, "task shape_contraindication_tables", dailymed_refs=len(dailymed_refs))
                 ner = DiseaseNER(offline=False, workdir=ctx.workdir)
                 ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
+                # Already-done skip: identical inputs + config fingerprint => cached outputs.
+                cached = cached_shape_outputs("shape_contraindications", dailymed_refs, ctx)
+                if cached is not None:
+                    stats(logger, "task shape_contraindication_tables", skipped=True, cached_refs=len(cached))
+                    return _refs_to_xcom(cached)
                 out = contraindications.transform(dailymed_refs, ctx)
                 stats(logger, "task shape_contraindication_tables", output_refs=len(out))
                 return _refs_to_xcom(out)
@@ -405,4 +442,4 @@ def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies 
 # Register the DAG (Airflow scans the dags folder for module-level DAGs).
 dag_obj: Any = dakp_build()
 
-__all__ = ["CONFIG_VARIABLE", "DAG_ID", "DOWNLOAD_POOL", "EXTRACT_POOL", "GO_QUEUE", "dag_obj", "dakp_build"]
+__all__ = ["CONFIG_VARIABLE", "DAG_ID", "DOWNLOAD_POOL", "EXTRACT_POOL", "GO_QUEUE", "NER_MINING_POOL", "dag_obj", "dakp_build"]

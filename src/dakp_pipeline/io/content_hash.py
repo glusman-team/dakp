@@ -47,6 +47,22 @@ def hash_file(path: Path, *, chunk_size: int = _DEFAULT_CHUNK) -> str:
     return artifact_id(hasher.hexdigest())
 
 
+def hash_file_with_sri(path: Path, *, chunk_size: int = _DEFAULT_CHUNK) -> tuple[str, str]:
+    """Single-pass BLAKE3 id + SHA-256 SRI of a file's bytes.
+
+    Streams the file once, updating both hashers per chunk; returns ``(b3:<hex>,
+    sha256-<base64>)`` in exactly the formats of :func:`hash_file` and :func:`sha256_sri`.
+    """
+    b3_hasher = blake3()
+    sha_hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            b3_hasher.update(chunk)
+            sha_hasher.update(chunk)
+    digest = base64.b64encode(sha_hasher.digest()).decode("ascii")
+    return artifact_id(b3_hasher.hexdigest()), f"sha256-{digest}"
+
+
 def hash_tree(root: Path, *, chunk_size: int = _DEFAULT_CHUNK) -> str:
     """Deterministic BLAKE3 tree hash over a directory.
 
@@ -90,4 +106,4 @@ def digest_dirname(artifact_id_str: str) -> str:
     return _hex(artifact_id_str)
 
 
-__all__ = ["BLAKE3_ALGORITHM", "artifact_id", "digest_dirname", "hash_bytes", "hash_file", "hash_tree", "sha256_sri"]
+__all__ = ["BLAKE3_ALGORITHM", "artifact_id", "digest_dirname", "hash_bytes", "hash_file", "hash_file_with_sri", "hash_tree", "sha256_sri"]

@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from dakp_pipeline import translator as regression
+from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef
 from dakp_pipeline.translator import check_assertion_tables, check_rows
 
@@ -49,3 +51,25 @@ def test_check_assertion_tables_skips_non_assertion_refs(tmp_path: Path) -> None
     assert report.row_count == 0
     assert report.ok is True
     assert report.families_seen == []
+
+
+def test_check_assertion_tables_streams_parquet_refs(tmp_path: Path) -> None:
+    # Parquet interims stream through the lazy engine (the batched reader is TSV-only).
+    columns = schemas.columns_for("contraindication_assertions")
+    row = dict.fromkeys(columns, "")
+    row.update(
+        {
+            "predicate": "biolink:contraindicated_in",
+            "knowledge_level": "knowledge_assertion",
+            "primary_knowledge_source": _DAKP,
+            "upstream_resource_ids": "infores:dailymed",
+        }
+    )
+    path = tmp_path / "contraindication_assertions.parquet"
+    schemas.write_parquet(pl.DataFrame([row], schema=columns), path)
+    ref = ArtifactRef(uri=path, blake3="b3:" + "4" * 64, media_type=schemas.PARQUET_MEDIA_TYPE)
+
+    report = check_assertion_tables([ref])
+    assert report.ok is True
+    assert report.row_count == 1
+    assert report.families_seen == ["biolink:contraindicated_in"]

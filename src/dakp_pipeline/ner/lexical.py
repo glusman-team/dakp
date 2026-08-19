@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from dakp_pipeline.ner.dictionary import Gazetteer, normalize_text, normalize_with_map
 
@@ -81,6 +82,33 @@ class Mention:
     normalized: str = ""
     notes: str = ""
     section: str = ""
+
+    def to_dict(self) -> dict[str, str | int | float]:
+        """Lossless JSON-serializable form (all fields; used by the persistent mention cache)."""
+        return {
+            "text": self.text,
+            "start": self.start,
+            "end": self.end,
+            "type": self.type,
+            "score": self.score,
+            "normalized": self.normalized,
+            "notes": self.notes,
+            "section": self.section,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Mention:
+        """Inverse of :meth:`to_dict` — round-trips a cached mention exactly."""
+        return cls(
+            text=str(data["text"]),
+            start=int(data["start"]),
+            end=int(data["end"]),
+            type=str(data["type"]),
+            score=float(data["score"]),
+            normalized=str(data.get("normalized", "")),
+            notes=str(data.get("notes", "")),
+            section=str(data.get("section", "")),
+        )
 
 
 class LexicalMatcher:

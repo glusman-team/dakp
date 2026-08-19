@@ -21,7 +21,8 @@ Layout under the cache dir (the ``content/`` subdir is what :func:`hash_tree` ha
 manifest itself is never part of the content hash)::
 
     <cache>/<source>/<sanitized-model-id>/
-        manifest.json     # provenance: schema_version, model_id, source, b3, retrieved_at
+        manifest.json     # provenance: schema_version, model_id, source, b3, retrieved_at,
+                          # file_count, total_bytes (cheap verification stats)
         content/          # the downloaded model files (what a backend loads from)
 """
 
@@ -142,6 +143,15 @@ def default_downloader(model_id: str, dest: Path) -> None:
     snapshot_download(repo_id=model_id, local_dir=dest)
 
 
+# --- content stats (cheap verification) -------------------------------------------
+
+
+def _content_stats(content: Path) -> tuple[int, int]:
+    """Return ``(file_count, total_bytes)`` over the model content tree (stat only, no reads)."""
+    files = [path for path in content.rglob("*") if path.is_file()]
+    return len(files), sum(path.stat().st_size for path in files)
+
+
 # --- idempotent cache entrypoint -----------------------------------------------
 
 
@@ -170,7 +180,10 @@ def ensure_model(
         downloader: Injectable fetcher ``(model_id, dest) -> None``; defaults to the Hugging
             Face Hub downloader. Tests pass a fake to avoid network.
         force: Re-download even on a cache hit.
-        verify: On a would-be hit, re-hash ``content/`` and re-download if it drifted.
+        verify: On a would-be hit, verify ``content/`` and re-download if it drifted. The
+            default check is a cheap stat pass (file count + total bytes against the
+            manifest, falling back to a full tree hash on mismatch); set
+            ``DAKP_MODEL_VERIFY=full`` to always re-hash the whole tree.
     """
     event = "ner_model_cache"
     resolved_cache = Path(cache_dir) if cache_dir is not None else default_model_cache_dir(Path(workdir) if workdir is not None else None)
@@ -182,7 +195,8 @@ def ensure_model(
         data = read_manifest(manifest)
         if data is not None and data.get("model_id") == model_id and data.get("source") == source:
             cached_b3 = str(data.get("b3", ""))
-            if not verify or (content.exists() and hash_tree(content) == cached_b3):
+            verified = not verify or (content.exists() and _verify_content(content, cached_b3, data, manifest))
+            if verified:
                 stats(logger, event, model_id=model_id, source=source, cache_hit=True, b3=cached_b3)
                 return ModelRef(model_id=model_id, source=source, path=content, b3=cached_b3, manifest=manifest)
             logger.warning("{}: cached model content drifted from manifest; re-downloading", event)
@@ -192,13 +206,46 @@ def ensure_model(
     content.mkdir(parents=True, exist_ok=True)
     (downloader or default_downloader)(model_id, content)
     b3 = hash_tree(content)
+    file_count, total_bytes = _content_stats(content)
     write_manifest(
-        manifest, {"schema_version": SCHEMA_VERSION, "model_id": model_id, "source": source, "b3": b3, "retrieved_at": datetime.now(UTC).isoformat()}
+        manifest,
+        {
+            "schema_version": SCHEMA_VERSION,
+            "model_id": model_id,
+            "source": source,
+            "b3": b3,
+            "retrieved_at": datetime.now(UTC).isoformat(),
+            "file_count": file_count,
+            "total_bytes": total_bytes,
+        },
     )
-    file_count = sum(1 for path in content.rglob("*") if path.is_file())
-    total_bytes = sum(path.stat().st_size for path in content.rglob("*") if path.is_file())
     stats(logger, event, model_id=model_id, cache_hit=False, b3=b3, files=file_count, bytes=total_bytes)
     return ModelRef(model_id=model_id, source=source, path=content, b3=b3, manifest=manifest)
+
+
+def _verify_content(content: Path, cached_b3: str, data: dict[str, Any], manifest: Path) -> bool:
+    """Verify a cached content tree against its manifest: stats first, hash on demand.
+
+    Default: compare file count + total bytes against the manifest; on mismatch fall back
+    to the full :func:`hash_tree` comparison. ``DAKP_MODEL_VERIFY=full`` always hashes.
+    Manifests written before the stats fields existed are hashed fully once, then rewritten
+    with the stats backfilled so the fast path kicks in from then on.
+    """
+    full = os.environ.get("DAKP_MODEL_VERIFY", "").strip().lower() == "full"
+    file_count = data.get("file_count")
+    total_bytes = data.get("total_bytes")
+    if full or not isinstance(file_count, int) or not isinstance(total_bytes, int):
+        if hash_tree(content) != cached_b3:
+            return False
+        if not full:
+            # Legacy manifest: backfill the stats so later hits take the fast path.
+            actual_count, actual_bytes = _content_stats(content)
+            write_manifest(manifest, {**data, "file_count": actual_count, "total_bytes": actual_bytes})
+        return True
+    if _content_stats(content) == (file_count, total_bytes):
+        return True
+    # Stat mismatch: confirm with the full tree hash before declaring drift.
+    return hash_tree(content) == cached_b3
 
 
 __all__ = [

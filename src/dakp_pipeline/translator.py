@@ -49,10 +49,12 @@ from __future__ import annotations
 
 import gzip
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+import polars as pl
 
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef
@@ -484,14 +486,36 @@ def check_rows(rows: Iterable[Mapping[str, object]]) -> RegressionReport:
     return RegressionReport(ok=not violations, families_seen=sorted(families_seen), row_count=row_count, violations=violations)
 
 
+def _iter_assertion_rows(path: Path) -> Iterator[Mapping[str, object]]:
+    """Stream one assertion table's rows as dicts in bounded memory.
+
+    The table (TSV — the on-disk form of every DAKP assertion table — or a parquet interim) is
+    scanned lazily and collected in batches via the streaming engine, so row values are
+    identical to :func:`~dakp_pipeline.io.schemas.read_table` — only the materialization
+    strategy differs.
+    """
+    scan = pl.scan_parquet(path) if path.suffix == ".parquet" else pl.scan_csv(path, separator="\t")
+    for batch in scan.collect_batches():
+        yield from batch.iter_rows(named=True)
+
+
 def check_assertion_tables(refs: list[ArtifactRef]) -> RegressionReport:
-    """Run :func:`check_rows` over every DAKP assertion table found among ``refs``."""
-    rows: list[Mapping[str, object]] = []
-    for ref in refs:
-        if ref.uri.stem not in schemas.ASSERTION_TABLES:
-            continue
-        rows.extend(schemas.read_table(ref.uri).iter_rows(named=True))
-    report = check_rows(rows)
+    """Run :func:`check_rows` over every DAKP assertion table found among ``refs``.
+
+    Tables stream one at a time (:func:`_iter_assertion_rows`) and the per-table row streams
+    chain lazily into ``check_rows``, so the full row set is never materialized as one Python
+    list — the production FAERS-derived tables can carry millions of rows. The checks are
+    row-local (only the per-(family, invariant) offender aggregation is global state), so
+    per-table streaming is semantically identical to the former whole-list read.
+    """
+
+    def rows() -> Iterator[Mapping[str, object]]:
+        for ref in refs:
+            if ref.uri.stem not in schemas.ASSERTION_TABLES:
+                continue
+            yield from _iter_assertion_rows(ref.uri)
+
+    report = check_rows(rows())
     stats(
         logger,
         "translator_regression",

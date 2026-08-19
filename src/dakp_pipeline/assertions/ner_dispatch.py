@@ -11,6 +11,9 @@ Every shaper that mines DailyMed/FAERS text with the composite NER backend
 * **multi-GPU dispatch** — :func:`_mine_multi_gpu` / :func:`mine_passes_multi_gpu` shard
   work items across one spawned worker per GPU (LPT-balanced by text length), with
   byte-identical output regardless of dispatch mode.
+* **persistent caching** — :func:`mine_with_cache` fronts a shaper's mining path with the
+  Pebble-backed mention cache (:mod:`~dakp_pipeline.ner.mention_cache`), so repeated DAG
+  runs re-mine only previously-unseen texts.
 
 Work items are tuple-like ``(set_id, doc_id, text)`` triples: plain tuples or any object
 supporting integer indexing (e.g. the contraindication shaper's ``ContraWorkItem``, whose
@@ -23,13 +26,14 @@ from __future__ import annotations
 import importlib.machinery
 import multiprocessing as mp
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from dakp_pipeline.logging_setup import logger
+from dakp_pipeline.logging_setup import logger, stats
+from dakp_pipeline.ner.mention_cache import MentionCache, mention_key, ner_cache_material
 from dakp_pipeline.ner.ner import DiseaseNER, Mention, _cuda_device_supported
 
 #: The 4x Tesla P100-PCIE-16GB GPUs on the DAKP build host (wenceslaus). Hardcoded - not
@@ -200,6 +204,60 @@ def _mine_two_passes_multi_gpu(
     return mine_passes_multi_gpu([work_items_p1, work_items_p2], ner, devices)
 
 
+#: A shaper's existing mining path (multi-GPU dispatch or sequential loop) over the given
+#: items, returning ``{(set_id, doc_id): [mentions]}``.
+MineFn = Callable[[Sequence[Any]], dict[tuple[str, str], list[Mention]]]
+
+
+def mine_with_cache(work_items: Sequence[Any], ner: DiseaseNER, mine: MineFn, cache: MentionCache | None) -> dict[tuple[str, str], list[Mention]]:
+    """Run ``mine`` over ``work_items``, serving repeats from the persistent mention cache.
+
+    Central caching seam for all three NER shapers. Text-level flow: every item's cache key
+    (:func:`~dakp_pipeline.ner.mention_cache.mention_key` over model id + model content b3 +
+    config fingerprint + normalized text) is batch-fetched up front; only MISSES reach
+    ``mine`` (one representative item per distinct missing key, so duplicate texts are mined
+    once), and freshly mined results are batch-put back before the hit+miss merge. The
+    returned ``{(set_id, doc_id): [mentions]}`` map is byte-identical to a no-cache run —
+    hits round-trip :meth:`Mention.to_dict`/:meth:`Mention.from_dict` losslessly and the
+    server stores the value bytes verbatim.
+
+    Cache access happens ONLY in this parent process: spawned GPU workers
+    (:func:`_mine_shard`) receive no cache handle, which keeps the Pebble store
+    single-owner and the worker code untouched. Pass-through (``mine`` over everything)
+    when ``cache`` is None, when the backend is offline (the gazetteer is deterministic and
+    CPU-cheap — deliberately not cached), or when the cache server is unavailable
+    (:class:`~dakp_pipeline.ner.mention_cache.MentionCache` degrades to a no-op).
+    """
+    if cache is None:
+        return mine(work_items)
+    material = ner_cache_material(ner)
+    if material is None:
+        return mine(work_items)
+    model_id, model_b3, fingerprint = material
+
+    key_by_item = {_item_parts(item)[:2]: mention_key(model_id, model_b3, fingerprint, _item_parts(item)[2]) for item in work_items}
+    hits = cache.get_many(sorted(set(key_by_item.values())))
+
+    representatives: dict[str, Any] = {}  # missing key -> one item carrying that text
+    for item in work_items:
+        key = key_by_item[_item_parts(item)[:2]]
+        if key not in hits and key not in representatives:
+            representatives[key] = item
+    mined: dict[str, list[Mention]] = {}
+    if representatives:
+        results = mine(list(representatives.values()))
+        mined = {key: results.get(_item_parts(item)[:2], []) for key, item in representatives.items()}
+        cache.put_many(mined)
+    stats(logger, "ner_mention_cache", items=len(work_items), hits=len(work_items) - len(representatives), mined=len(representatives))
+
+    out: dict[tuple[str, str], list[Mention]] = {}
+    for item in work_items:
+        set_id, doc_id, _text = _item_parts(item)
+        key = key_by_item[(set_id, doc_id)]
+        out[(set_id, doc_id)] = hits[key] if key in hits else mined.get(key, [])
+    return out
+
+
 #: Module spawned workers re-import instead of the parent's ``__main__`` script (see
 #: :func:`_spawn_safe_main`). Must import with zero side effects. A plain MODULE, not the
 #: package itself — ``runpy.run_module`` cannot directly execute a package without a
@@ -231,4 +289,4 @@ def _spawn_safe_main() -> Iterator[None]:
         main.__spec__ = None
 
 
-__all__ = ["BUILD_HOST_GPUS", "default_ner", "mine_passes_multi_gpu"]
+__all__ = ["BUILD_HOST_GPUS", "MineFn", "default_ner", "mine_passes_multi_gpu", "mine_with_cache"]

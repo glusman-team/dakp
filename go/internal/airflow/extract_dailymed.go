@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +13,10 @@ import (
 )
 
 const dailymedOperation = "extract_dailymed_spl"
+
+// dailymedTaskOperation is the task-level operation-index key for the already-done skip
+// (the per-artifact manifests keep dailymedOperation; see opindex.go).
+const dailymedTaskOperation = "extract_dailymed"
 
 // dailymedEvent prefixes every stat line the DailyMed extractor emits (one stat per line).
 const dailymedEvent = "extract_dailymed"
@@ -29,6 +34,14 @@ var dailymedInterimOrder = []string{"spl_documents", "spl_sets", "spl_approvals"
 // spl_documents first, then the sections TSV).
 func ExtractDailyMed(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]ArtifactRef, error) {
 	store := Store{Workdir: cfg.Workdir}
+	upstreamIDs := upstreamInputIDs(inputs)
+	if !cfg.Force {
+		// Already-done skip: the same upstream artifacts were extracted before.
+		if cached := store.FindByOperation(dailymedTaskOperation, upstreamIDs); cached != nil {
+			Stat(ctx, dailymedEvent, "skipped_already_done", len(cached))
+			return cached, nil
+		}
+	}
 	interimDir := filepath.Join(store.InterimDir(), "dailymed")
 	if err := os.MkdirAll(interimDir, 0o755); err != nil {
 		return nil, err
@@ -63,8 +76,32 @@ func ExtractDailyMed(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 		limit = 4
 	}
 	Stat(ctx, dailymedEvent, "workers", limit)
+	// Reuse the input refs' BLAKE3 ids (carried over XCom from acquisition) instead of
+	// re-hashing every SPL file; Extract hashes any staged path whose id is unknown.
+	idsByName := make(map[string]string, len(inputs))
+	for _, ref := range inputs {
+		if ref.Blake3 != "" {
+			idsByName[filepath.Base(ref.URI)] = ref.Blake3
+		}
+	}
+	ids := make([]string, len(paths))
+	for i, p := range paths {
+		name := filepath.Base(p)
+		if id, ok := idsByName[name]; ok {
+			ids[i] = id
+			continue
+		}
+		// StageInputs renames basename collisions to NNNN_<base>; strip that prefix.
+		if len(name) > 5 && name[4] == '_' {
+			if _, convErr := strconv.Atoi(name[:4]); convErr == nil {
+				if id, ok := idsByName[name[5:]]; ok {
+					ids[i] = id
+				}
+			}
+		}
+	}
 	parseStart := time.Now()
-	tables, err := dailymed.Extract(ctx, paths, limit)
+	tables, err := dailymed.Extract(ctx, paths, ids, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -127,8 +164,10 @@ func ExtractDailyMed(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 	}
 	StatOutput(ctx, dailymedEvent, "dailymed_spl_sections.tsv", tsvRef)
 
-	Stat(ctx, dailymedEvent, "output_refs", len(refs)+1)
-	return append(refs, tsvRef), nil
+	refs = append(refs, tsvRef)
+	Stat(ctx, dailymedEvent, "output_refs", len(refs))
+	store.RecordOperation(dailymedTaskOperation, upstreamIDs, refs)
+	return refs, nil
 }
 
 // writeTableTSV writes columns + rows as an uncompressed TSV via the polars-compatible writer in

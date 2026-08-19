@@ -57,7 +57,7 @@ func runDailyMed(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("dailymed: no SPL files (.xml/.xml.gz) found in %s", inDir)
 	}
 
-	tables, err := dailymed.Extract(ctx, paths, *limit)
+	tables, err := dailymed.Extract(ctx, paths, nil, *limit)
 	if err != nil {
 		return err
 	}

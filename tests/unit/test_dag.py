@@ -2,8 +2,9 @@
 
 The DAG always imports and constructs (no optional-extra guard). These tests assert the module
 constants, the 14-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
-three ``extract_*`` tasks are native Go SDK stubs routed to the ``golang`` queue, and that
-acquisition/extraction resource pools let every task run concurrently.
+three ``extract_*`` tasks are native Go SDK stubs routed to the ``golang`` queue, that
+acquisition/extraction resource pools let those tasks run concurrently, and that the three
+GLiNER-mining shape tasks serialize on the 1-slot ``ner_mining`` pool.
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ def test_module_constants(dakp_build) -> None:
     assert dakp_build.GO_QUEUE == "golang"
     assert dakp_build.DOWNLOAD_POOL == "dakp_download"
     assert dakp_build.EXTRACT_POOL == "dakp_extract"
+    assert dakp_build.NER_MINING_POOL == "ner_mining"
     assert dakp_build.CONFIG_VARIABLE == "dakp_config"
 
 
@@ -80,6 +82,14 @@ def test_acquisition_tasks_use_download_pool(dakp_build) -> None:
     dag = dakp_build.dag_obj
     for task_id in _ACQUIRE_IDS:
         assert dag.get_task(task_id).pool == dakp_build.DOWNLOAD_POOL
+
+
+def test_shape_tasks_use_ner_mining_pool(dakp_build) -> None:
+    # Every GLiNER-mining shape task sits on the 1-slot pool so concurrent shape tasks
+    # serialize instead of oversubscribing the GPUs (the per-device flock is the backstop).
+    dag = dakp_build.dag_obj
+    for task_id in _EXPECTED_GROUP_MEMBERS["shape"]:
+        assert dag.get_task(task_id).pool == dakp_build.NER_MINING_POOL
 
 
 def test_dag_task_graph(dakp_build) -> None:

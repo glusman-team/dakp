@@ -219,3 +219,20 @@ func SHA256SRI(path string) (string, error) {
 	}
 	return "sha256-" + base64.StdEncoding.EncodeToString(h.Sum(nil)), nil
 }
+
+// HashFileWithSRI streams a file's bytes ONCE, feeding both the BLAKE3 and SHA-256 hashers
+// per chunk, and returns (b3:<hex>, sha256-<base64>) — the same formats as HashFile and
+// SHA256SRI (the Go mirror of content_hash.hash_file_with_sri).
+func HashFileWithSRI(path string) (string, string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", "", err
+	}
+	defer f.Close()
+	b3 := blake3.New()
+	sha := sha256.New()
+	if _, err := io.CopyBuffer(io.MultiWriter(b3, sha), f, make([]byte, DefaultChunk)); err != nil {
+		return "", "", err
+	}
+	return ArtifactID(hex.EncodeToString(b3.Sum(nil))), "sha256-" + base64.StdEncoding.EncodeToString(sha.Sum(nil)), nil
+}

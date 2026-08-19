@@ -85,6 +85,23 @@ def test_faers_candidates_uses_nda_raw_and_ingredient_columns(disease_map: dict[
     assert cands[0]["fallback_subject"] == "Examplestatin"
 
 
+def test_faers_candidates_keep_first_row_subject_in_first_occurrence_order(disease_map: dict[str, dict[str, str]]) -> None:
+    # The (NDA, indication) duplicate carries a DIFFERENT drugname: the first row's fallback
+    # subject wins, and distinct pairs yield in first-occurrence order (the aggregation
+    # back-fills subject CURIEs first-non-empty-wins, so candidate order is observable).
+    cases = pl.DataFrame(
+        {
+            "nda": ["011111", "022222", "011111"],
+            "indication": ["condA", "condB", "condA"],
+            "drugname": ["First", "Second", "Changed"],
+            "ingredient": ["", "", ""],
+        }
+    )
+    cands = list(_faers_candidates(cases, disease_map))
+    assert [(cand["norm_nda"], cand["object_text"]) for cand in cands] == [("11111", "condA"), ("22222", "condB")]
+    assert [cand["fallback_subject"] for cand in cands] == ["First", "Second"]
+
+
 # --- build_approved_treats_rows: empty-subject skip (77) ------------------------
 
 

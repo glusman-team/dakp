@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import http
 import io
+import json
 import re
 import shutil
 import time
@@ -47,6 +48,7 @@ from pathlib import Path
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import SourceBlock
+from dakp_pipeline.io.xcom import REFS_FILE_MEDIA_TYPE, refs_to_xcom
 from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.paths import Workdir
 
@@ -68,6 +70,9 @@ _CHUNK = 1 << 20  # 1 MiB streaming window.
 _EVENT = "acquire_dailymed"
 #: One INFO progress line per this many ingested SPL documents (per-document detail is DEBUG).
 _SPL_PROGRESS_EVERY = 2500
+#: Store alias of the single JSON file the DAG's ``acquire_dailymed`` task publishes the full SPL
+#: member refs list through (the single-file XCom handoff — see :func:`write_refs_manifest`).
+_REFS_ALIAS = "dailymed/spl-refs.json"
 
 
 class DailyMedFetcher:
@@ -108,6 +113,30 @@ def _download_full_release(ctx: TaskContext) -> list[ArtifactRef]:
             refs = [ref for future in futures for ref in future.result()]
         stats(logger, _EVENT, spl_artifacts_acquired=len(refs))
         return refs
+
+
+def write_refs_manifest(ctx: TaskContext, refs: list[ArtifactRef]) -> ArtifactRef:
+    """Persist the acquired SPL member refs as ONE JSON artifact; return its sentinel ref.
+
+    The acquisition yields one ref per SPL member (tens of thousands across all releases);
+    pushing that list inline as the task's XCom result stalls the Airflow Execution API
+    (ReadTimeouts under real data). Instead the full list — in the exact :func:`refs_to_xcom`
+    shape, the Python<->Go contract — is written to a single JSON file, content-addressed into
+    the store under :data:`_REFS_ALIAS`, and only that file's ref (marked with the
+    ``REFS_FILE_MEDIA_TYPE`` sentinel) crosses XCom. Consumers resolve the sentinel back to the
+    full list (:func:`dakp_pipeline.io.xcom.refs_from_xcom`; the Go ``DecodeArtifactRefs``
+    mirror). Every acquisition path (fresh download, 304 re-expansion, cached-refs fast path)
+    funnels through here at the DAG boundary; identical refs are a store cache hit, so re-runs
+    stay idempotent.
+    """
+    store = ArtifactStore(Workdir(ctx.workdir))
+    staging = Workdir(ctx.workdir).root / ".staging" / "dailymed" / "spl-refs.json"
+    staging.parent.mkdir(parents=True, exist_ok=True)
+    staging.write_text(json.dumps(refs_to_xcom(refs), indent=2), encoding="utf-8")
+    ref, cache_hit = store.ingest(staging, alias=_REFS_ALIAS, media_type=REFS_FILE_MEDIA_TYPE)
+    staging.unlink(missing_ok=True)
+    stats(logger, _EVENT, refs_file=str(ref.uri), spl_refs=len(refs), cache_hit=cache_hit)
+    return ref
 
 
 def _fetch_index(ctx: TaskContext, staging: Path, store: ArtifactStore) -> str:
@@ -418,4 +447,4 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-__all__ = ["FULL_RELEASE_INDEX_URL", "DailyMedFetcher", "fetch"]
+__all__ = ["FULL_RELEASE_INDEX_URL", "DailyMedFetcher", "fetch", "write_refs_manifest"]

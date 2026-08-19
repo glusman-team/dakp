@@ -43,7 +43,9 @@ Output is sorted deterministically by ``(start, end, type, text)``.
 
 from __future__ import annotations
 
+import fcntl
 import itertools
+import os
 import re
 import time
 from collections.abc import Mapping
@@ -54,7 +56,7 @@ from typing import Any
 from dakp_pipeline.logging_setup import logger, stats
 from dakp_pipeline.ner.dictionary import CONTRAINDICATION_DISEASE_TYPES, TYPE_DISEASE, TYPE_PHENOTYPE, Gazetteer, canonical_type, normalize_text
 from dakp_pipeline.ner.lexical import LexicalMatcher, Mention
-from dakp_pipeline.ner.model_cache import NERDependencyError, ensure_model
+from dakp_pipeline.ner.model_cache import NERDependencyError, default_model_cache_dir, ensure_model
 
 # GLiNER v2.5 large (deberta-v3-large encoder, max_len 768 word tokens, multi-entity: up to
 # ``max_types`` labels per call). Override for a smaller / biomedical-tuned checkpoint.
@@ -476,6 +478,60 @@ def _model_device() -> str:
     return "cuda"
 
 
+# --- one GLiNER model per GPU -------------------------------------------------
+
+#: Env var overriding the GPU-lock directory (tests point it at a tmp dir).
+_GPU_LOCK_DIR_ENV = "DAKP_GPU_LOCK_DIR"
+
+
+def _cuda_index(device: str) -> int:
+    """Numeric index from a CUDA device string: ``"cuda"`` -> 0, ``"cuda:2"`` -> 2."""
+    return int(device.partition(":")[2] or 0)
+
+
+def _gpu_lock_dir(cache_dir: Path | str | None = None, workdir: Path | str | None = None) -> Path:
+    """Where per-device lock files live, resolved like the model cache dir.
+
+    ``$DAKP_GPU_LOCK_DIR`` wins (tests); then ``<workdir>/cache/gpu-locks``; then, with no
+    workdir, a sibling of the model cache root (``<cache>/../gpu-locks``, i.e.
+    ``~/.cache/dakp/gpu-locks`` for the default user cache).
+    """
+    override = os.environ.get(_GPU_LOCK_DIR_ENV, "").strip()
+    if override:
+        return Path(override)
+    if workdir is not None:
+        return Path(workdir) / "cache" / "gpu-locks"
+    cache = Path(cache_dir) if cache_dir is not None else default_model_cache_dir()
+    return cache.parent / "gpu-locks"
+
+
+def _acquire_gpu_lock(device: str, lock_dir: Path) -> int:
+    """Acquire the BLOCKING exclusive flock for a CUDA device; return the open fd.
+
+    One GLiNER model per GPU is a hard cap (two models OOM a 16 GB P100), and the Airflow
+    ``ner_mining`` pool is only a scheduler hint — a second DAG run, a manual task trigger,
+    or a stray CLI invocation bypasses it. The kernel flock is the correctness guarantee:
+    every production CUDA load parks here until the previous holder's fd closes. The caller
+    keeps the returned fd open for the life of the loaded model; there is no explicit
+    release path — closing the fd (or process exit, which is the whole lifecycle of the
+    spawned per-GPU mining workers) releases the lock.
+    """
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    path = lock_dir / f"cuda-{_cuda_index(device)}.lock"
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            stats(logger, "ner_gpu_lock", level="DEBUG", device=device, path=str(path), waited=False)
+        except BlockingIOError:
+            stats(logger, "ner_gpu_lock", device=device, path=str(path), waited=True)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 class DiseaseNER:
     """The single composite disease/phenotype mention extractor.
 
@@ -535,6 +591,7 @@ class DiseaseNER:
         self._workdir = workdir
         self._device = device
         self._model: Any = None
+        self._gpu_lock_fd: int | None = None
 
     # -- builders --------------------------------------------------------------
     @classmethod
@@ -568,6 +625,14 @@ class DiseaseNER:
                 raise NERDependencyError(_install_message("gliner")) from exc
             ref = ensure_model(self._model_id, cache_dir=self._cache_dir, workdir=self._workdir)
             device = self._device or _model_device()
+            if device.startswith("cuda"):
+                # One GLiNER per GPU is a hard cap (16 GB cards OOM with two models). The
+                # Airflow ``ner_mining`` pool serializes shape tasks at the scheduler level,
+                # but this per-device flock is the correctness guarantee for any concurrent
+                # loader (second DAG run, manual trigger, CLI). The fd is held on the instance
+                # for the life of the model; process exit releases it, which is the whole
+                # lifecycle of a spawned GPU worker. CPU and offline loads never lock.
+                self._gpu_lock_fd = _acquire_gpu_lock(device, _gpu_lock_dir(cache_dir=self._cache_dir, workdir=self._workdir))
             started = time.monotonic()
             self._model = GLiNER.from_pretrained(str(ref.path), map_location=device)
             stats(logger, "ner_model_load", model_id=self._model_id, device=device, b3=ref.b3, elapsed_s=round(time.monotonic() - started, 3))

@@ -205,3 +205,48 @@ func TestSHA256SRI(t *testing.T) {
 		t.Errorf("SHA256SRI malformed: %q", got)
 	}
 }
+
+func TestHashFileWithSRIMatchesSeparateHashers(t *testing.T) {
+	// The single-pass hasher must agree exactly with HashFile + SHA256SRI.
+	dir := t.TempDir()
+	p := filepath.Join(dir, "blob.bin")
+	payload := []byte("dailymed spl fragment")
+	for i := 0; i < 10; i++ {
+		payload = append(payload, payload...) // ~21 KiB
+	}
+	if err := os.WriteFile(p, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id, sri, err := HashFileWithSRI(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantID, err := HashFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSRI, err := SHA256SRI(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != wantID || sri != wantSRI {
+		t.Errorf("HashFileWithSRI = (%q, %q), want (%q, %q)", id, sri, wantID, wantSRI)
+	}
+
+	// Known vectors lock both formats for the empty file.
+	empty := filepath.Join(dir, "empty.bin")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id, sri, err = HashFileWithSRI(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != vecEmpty || sri != sriEmpty {
+		t.Errorf("HashFileWithSRI(empty) = (%q, %q), want (%q, %q)", id, sri, vecEmpty, sriEmpty)
+	}
+
+	if _, _, err := HashFileWithSRI(filepath.Join(dir, "missing.bin")); err == nil {
+		t.Error("expected error for a missing file")
+	}
+}

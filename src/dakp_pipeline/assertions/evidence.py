@@ -23,6 +23,8 @@ mapping is a later milestone.
 
 from __future__ import annotations
 
+import json
+import pickle
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -33,6 +35,7 @@ import polars as pl
 
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.artifact_store import ArtifactStore
+from dakp_pipeline.io.content_hash import hash_bytes
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import OperationBlock, TableBlock
 from dakp_pipeline.logging_setup import logger, stats
@@ -353,6 +356,95 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
     return evidence
 
 
+# --- DailyMed evidence cache (build once per run) -------------------------------
+
+#: Operation name under which the serialized :class:`DailyMedEvidence` is registered.
+EVIDENCE_OPERATION = "build_dailymed_evidence"
+#: Bump when the evidence structure or builder logic changes (invalidates cached evidence).
+EVIDENCE_BUILDER_VERSION = "v1"
+#: Synthetic input id folding the builder version into the operation-index key.
+_EVIDENCE_VERSION_INPUT = hash_bytes(f"dailymed_evidence_builder:{EVIDENCE_BUILDER_VERSION}".encode())
+
+#: Interim tables ``build_dailymed_evidence`` consumes; their artifact ids key the cache.
+_EVIDENCE_TABLES = ("spl_approvals.parquet", "spl_ingredients.parquet", "spl_sections.parquet")
+
+
+def load_or_build_dailymed_evidence(inputs: Iterable[ArtifactRef], ctx: TaskContext | None = None) -> DailyMedEvidence:
+    """The DailyMed evidence index for ``inputs``, served from the store when already built.
+
+    ``build_dailymed_evidence`` scans ``spl_sections.parquet`` row-by-row and is needed by
+    BOTH the approved-treats and contraindications shape tasks (separate Airflow tasks, so no
+    in-memory sharing). The built structure is therefore persisted as a pickled store artifact
+    keyed by the blake3 ids of the consumed DailyMed interim tables plus the builder version
+    (:data:`EVIDENCE_BUILDER_VERSION`): the second shape task of a run deserializes instead of
+    re-scanning. Without ``ctx`` (or without any consumed table among ``inputs``) this just
+    builds — the graceful-degradation contract of the builder is unchanged.
+    """
+    refs = list(inputs)
+    consumed = sorted(ref.blake3 for ref in refs if ref.uri.name in _EVIDENCE_TABLES)
+    if ctx is None or not consumed:
+        return build_dailymed_evidence(refs)
+    key_inputs = [*consumed, _EVIDENCE_VERSION_INPUT]
+    store = ArtifactStore(Workdir(ctx.workdir))
+    cached = store.find_by_operation(EVIDENCE_OPERATION, key_inputs)
+    if cached is not None:
+        with cached[0].uri.open("rb") as handle:
+            evidence: DailyMedEvidence = pickle.load(handle)
+        stats(logger, "dailymed_evidence", cache_hit=True, blake3=cached[0].blake3)
+        return evidence
+
+    evidence = build_dailymed_evidence(refs)
+    out = Workdir(ctx.workdir).store / "dailymed_evidence.pickle"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(pickle.dumps(evidence))
+    store.register(out, media_type="application/octet-stream", inputs=key_inputs, operation=OperationBlock(name=EVIDENCE_OPERATION))
+    stats(logger, "dailymed_evidence", cache_hit=False, path=str(out))
+    return evidence
+
+
+# --- shape-stage "already done" skip ---------------------------------------------
+
+
+def shape_config_fingerprint(ctx: TaskContext) -> str:
+    """A synthetic ``b3:<hex>`` input id capturing everything NON-artifact that shapes outputs.
+
+    Folded into the shape tasks' operation-index keys so a skip only happens when the config
+    is unchanged too: the lexical disease map content, the NER backend key material (model id
+    + model content hash + backend config fingerprint via the Phase-2
+    :func:`~dakp_pipeline.ner.mention_cache.ner_cache_material` helper when a production
+    backend is injected), and the contraindication keyword override. Run limits
+    (``quarter_limit`` etc.) are deliberately absent — they act on acquisition/extraction,
+    whose OUTPUT ids are already among the keyed inputs.
+    """
+    from dakp_pipeline.ner.mention_cache import ner_cache_material  # lazy: pulls in the NER stack
+    from dakp_pipeline.ner.ner import DiseaseNER
+
+    material: dict[str, Any] = {"disease_map": ctx.params.get("disease_map") or {}}
+    ner = ctx.params.get("ner")
+    if isinstance(ner, DiseaseNER):
+        material["ner"] = ner_cache_material(ner)
+    keywords = ctx.params.get("contraindication_keywords")
+    if keywords is not None:
+        material["contraindication_keywords"] = keywords.pattern if isinstance(keywords, re.Pattern) else str(keywords)
+    canonical = json.dumps(material, sort_keys=True, separators=(",", ":"), default=str)
+    return hash_bytes(canonical.encode("utf-8"))
+
+
+def shape_operation_inputs(refs: Iterable[ArtifactRef], ctx: TaskContext) -> list[str]:
+    """The manifest input ids for a shape task: the input artifact ids + the config fingerprint."""
+    return [ref.blake3 for ref in refs] + [shape_config_fingerprint(ctx)]
+
+
+def cached_shape_outputs(operation: str, refs: Iterable[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef] | None:
+    """Prior registered outputs of a shape task whose inputs+config are unchanged, else None.
+
+    ``force`` bypasses the skip (registration still happens, overwriting the entry).
+    """
+    if ctx.params.get("force"):
+        return None
+    return ArtifactStore(Workdir(ctx.workdir)).find_by_operation(operation, shape_operation_inputs(list(refs), ctx))
+
+
 # --- Drugs@FDA application -> ingredient index ----------------------------------
 
 
@@ -393,12 +485,16 @@ def write_assertion_table(
     rows_written = schemas.write_tsv(frame, out)
     fingerprint = schemas.schema_fingerprint(columns)
     store = ArtifactStore(Workdir(ctx.workdir))
+    # The manifest inputs carry the shape-stage config fingerprint as a synthetic final id so
+    # the operation-index entry (maintained by ``register``) matches the shape task's skip
+    # lookup (see ``shape_operation_inputs`` / ``cached_shape_outputs``).
+    input_ids = shape_operation_inputs(inputs, ctx)
     ref = store.register(
         out,
         media_type=schemas.TSV_MEDIA_TYPE,
         rows=rows_written,
         schema_fingerprint=fingerprint,
-        inputs=[ref.blake3 for ref in inputs],
+        inputs=input_ids,
         operation=OperationBlock(name=operation),
         table=TableBlock(rows=rows_written, schema_fingerprint=fingerprint),
     )
@@ -411,18 +507,24 @@ __all__ = [
     "CONTRAINDICATION_LOINC",
     "DAILYMED_SET_CURIE_PREFIX",
     "DAILYMED_SET_URL_BASE",
+    "EVIDENCE_BUILDER_VERSION",
+    "EVIDENCE_OPERATION",
     "INDICATION_LOINC",
     "WARNINGS_LOINCS",
     "DailyMedEvidence",
     "build_dailymed_evidence",
     "build_drugsfda_ingredient_map",
+    "cached_shape_outputs",
     "dailymed_document_url",
     "dailymed_set_curie",
     "dailymed_set_url",
     "find_faers_cases",
     "find_table",
+    "load_or_build_dailymed_evidence",
     "merge_unique",
     "normalize_nda",
+    "shape_config_fingerprint",
+    "shape_operation_inputs",
     "sorted_pipe",
     "spl_evidence_pipe",
     "write_assertion_table",

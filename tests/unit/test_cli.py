@@ -102,10 +102,11 @@ def test_up_mock_happy_path_reuses_running_airflow(monkeypatch: pytest.MonkeyPat
     assert "reusing" in out
     assert "SUCCESS" in out
     assert '{"ok": true}' in out  # build summary was printed
-    # Orchestration ran the go pack + unpause + both pools + variables set + trigger.
+    # Orchestration ran the go pack + nercache build + unpause + all three pools + variables set + trigger.
     assert fake.commands_containing("airflow-go-pack")
+    assert fake.commands_containing("dakp-nercache")
     assert fake.commands_containing("unpause")
-    assert len(fake.commands_containing("pools")) == 2
+    assert len(fake.commands_containing("pools")) == 3
     assert fake.commands_containing("variables")
     assert fake.commands_containing("trigger")
 
@@ -196,7 +197,7 @@ def test_up_preflight_reinstall_heals(monkeypatch: pytest.MonkeyPatch, sandbox: 
 
     assert code == 0
     assert fake.commands_containing("--reinstall-package")
-    assert not fake.commands_containing("cache")  # healed on the first reinstall, no cache clean
+    assert not fake.commands_containing("clean")  # healed on the first reinstall, no uv cache clean
 
 
 def test_up_preflight_cache_clean_heals(monkeypatch: pytest.MonkeyPatch, sandbox: Path) -> None:
@@ -207,7 +208,7 @@ def test_up_preflight_cache_clean_heals(monkeypatch: pytest.MonkeyPatch, sandbox
     code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 0
-    assert fake.commands_containing("cache")  # a corrupt uv cache was cleaned
+    assert fake.commands_containing("clean")  # a corrupt uv cache was cleaned (uv cache clean)
 
 
 def test_up_preflight_still_broken(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -503,3 +504,110 @@ def test_airflow_env_carries_ui_customization(sandbox: Path) -> None:
     assert env["AIRFLOW__API__DEFAULT_WRAP"] == "True"
     # Keep the custom color palette from being reintroduced accidentally.
     assert "AIRFLOW__API__THEME" not in env
+
+
+# --- up: dakp-nercache build (optional) --------------------------------------------
+
+
+def test_up_nercache_build_failure_is_non_fatal(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A failed dakp-nercache build only disables mention caching; the run proceeds."""
+    fake = _patch_happy(monkeypatch)
+    fake.fail_markers = ("dakp-nercache",)
+    _write_summary(sandbox)
+
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "dakp-nercache build failed" in out
+    assert "boom" in out  # the build's stderr tail was printed
+    assert "SUCCESS" in out
+
+
+def test_up_nercache_build_failure_without_stderr(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A failed nercache build with EMPTY stderr prints the failure line and nothing more."""
+    fake = _patch_happy(monkeypatch)
+    fake.fail_markers = ("dakp-nercache",)
+    fake.stderr = ""
+    _write_summary(sandbox)
+
+    code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
+
+    assert code == 0
+    assert "dakp-nercache build failed" in capsys.readouterr().out
+
+
+def test_up_builds_nercache_into_workdir_bin(monkeypatch: pytest.MonkeyPatch, sandbox: Path) -> None:
+    """The mention-cache server lands at <workdir>/bin/dakp-nercache (the client's default lookup)."""
+    fake = _patch_happy(monkeypatch)
+    _write_summary(sandbox)
+
+    assert cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False) == 0
+    (build,) = [call for call in fake.commands_containing("dakp-nercache") if "build" in call]
+    assert str(sandbox / "work" / "bin" / "dakp-nercache") in build
+
+
+# --- cache clear --------------------------------------------------------------------
+
+
+def test_cache_clear_removes_the_store(sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    cache_dir = sandbox / "work" / "cache" / "ner"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "LOCK").write_bytes(b"")
+
+    assert cli.run_cache_clear() == 0
+    assert not cache_dir.exists()
+    assert "cleared" in capsys.readouterr().out
+
+
+def test_cache_clear_without_cache_is_a_noop(sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.run_cache_clear() == 0
+    assert "no NER mention cache" in capsys.readouterr().out
+
+
+def test_cache_clear_stops_a_live_server_first(monkeypatch: pytest.MonkeyPatch, sandbox: Path) -> None:
+    cache_dir = sandbox / "work" / "cache" / "ner"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "server.json").write_text(json.dumps({"pid": 4242, "port": 9999}), encoding="utf-8")
+    stopped: list[int] = []
+    alive = iter([True, False])  # alive, then gone after SIGTERM
+    monkeypatch.setattr(cli, "pid_alive", lambda pid: next(alive))
+    monkeypatch.setattr(cli, "terminate", stopped.append)
+
+    assert cli.run_cache_clear() == 0
+    assert stopped == [4242]
+    assert not cache_dir.exists()
+
+
+def test_cache_clear_tolerates_a_corrupt_server_json(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """An unreadable server.json means no live server to stop — the store is simply deleted."""
+    cache_dir = sandbox / "work" / "cache" / "ner"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "server.json").write_text("not json", encoding="utf-8")
+    terminated: list[int] = []
+    monkeypatch.setattr(cli, "terminate", terminated.append)
+
+    assert cli.run_cache_clear() == 0
+    assert terminated == []  # pid probe failed -> nothing to stop
+    assert not cache_dir.exists()
+    assert "cleared" in capsys.readouterr().out
+
+
+def test_cache_clear_refuses_when_the_server_survives_sigterm(
+    monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cache_dir = sandbox / "work" / "cache" / "ner"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "server.json").write_text(json.dumps({"pid": 4242, "port": 9999}), encoding="utf-8")
+    monkeypatch.setattr(cli, "pid_alive", lambda pid: True)  # never dies
+    monkeypatch.setattr(cli, "terminate", lambda pid: None)
+
+    assert cli.run_cache_clear() == 1
+    assert cache_dir.exists()  # untouched
+    assert "refusing" in capsys.readouterr().out
+
+
+def test_cache_clear_command_raises_systemexit(sandbox: Path) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.clear()
+    assert excinfo.value.code == 0

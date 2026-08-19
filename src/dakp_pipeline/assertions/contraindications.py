@@ -72,14 +72,14 @@ from typing import Any
 
 from dakp_pipeline.assertions import INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, row_for
 from dakp_pipeline.assertions.evidence import (
-    build_dailymed_evidence,
     dailymed_document_url,
     dailymed_set_url,
+    load_or_build_dailymed_evidence,
     sorted_pipe,
     spl_evidence_pipe,
     write_assertion_table,
 )
-from dakp_pipeline.assertions.ner_dispatch import BUILD_HOST_GPUS, _resolve_devices, default_ner, mine_passes_multi_gpu
+from dakp_pipeline.assertions.ner_dispatch import BUILD_HOST_GPUS, _resolve_devices, default_ner, mine_passes_multi_gpu, mine_with_cache
 from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu as _mine_multi_gpu
 from dakp_pipeline.assertions.ner_dispatch import _mine_shard as _mine_shard
 from dakp_pipeline.assertions.ner_dispatch import _mine_two_passes_multi_gpu as _mine_two_passes_multi_gpu
@@ -88,6 +88,7 @@ from dakp_pipeline.assertions.ner_dispatch import _spawn_safe_main as _spawn_saf
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
+from dakp_pipeline.ner.mention_cache import MentionCache
 from dakp_pipeline.ner.ner import DiseaseNER, Mention, extract_contraindication_diseases
 
 _TABLE = "contraindication_assertions"
@@ -432,12 +433,19 @@ class ContraindicationsShaper:
             keywords = _resolve_keywords(ctx)
             if devices:
                 stats(logger, "shape_contraindications", dispatch_gpus=len(devices))
-            rows = build_contraindication_rows(inputs, ner, devices=devices, keywords=keywords)
+            with MentionCache(ctx.workdir) as cache:
+                rows = build_contraindication_rows(inputs, ner, devices=devices, keywords=keywords, cache=cache, ctx=ctx)
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_contraindications")
 
 
 def build_contraindication_rows(
-    inputs: Iterable[ArtifactRef], ner: DiseaseNER, *, devices: Sequence[str] | None = None, keywords: re.Pattern[str] | None = None
+    inputs: Iterable[ArtifactRef],
+    ner: DiseaseNER,
+    *,
+    devices: Sequence[str] | None = None,
+    keywords: re.Pattern[str] | None = None,
+    cache: MentionCache | None = None,
+    ctx: TaskContext | None = None,
 ) -> list[dict[str, str]]:
     """Mine DailyMed contraindication + indication + warning sections into assertion rows (deterministic).
 
@@ -459,10 +467,15 @@ def build_contraindication_rows(
     Mentions from all passes are paired with the set's single active ingredient and aggregated by
     ``(subject_text, object_text, disease_context_text)``. When ``devices`` is provided
     (production multi-GPU), the passes are dispatched across the GPUs concurrently
-    (:func:`~dakp_pipeline.assertions.ner_dispatch.mine_passes_multi_gpu`). Output is
-    byte-identical regardless of dispatch mode.
+    (:func:`~dakp_pipeline.assertions.ner_dispatch.mine_passes_multi_gpu`). When ``cache`` (a
+    persistent mention cache) is given, previously mined section texts are served from it via
+    :func:`~dakp_pipeline.assertions.ner_dispatch.mine_with_cache` — it only changes WHERE
+    mentions come from, never their content. Output is byte-identical regardless of dispatch
+    mode or cache state. When ``ctx`` is given, the DailyMed evidence index is served from the
+    store when another shape task already built it this run
+    (:func:`~dakp_pipeline.assertions.evidence.load_or_build_dailymed_evidence`).
     """
-    evidence = build_dailymed_evidence(inputs)
+    evidence = load_or_build_dailymed_evidence(inputs, ctx)
     kw = keywords or DEFAULT_CONTRA_KEYWORDS
 
     # Pass 1 work items: contraindication sections (all text is relevant), retaining the
@@ -527,20 +540,29 @@ def build_contraindication_rows(
 
     # Extract mentions: multi-pass multi-GPU when devices given + production NER + >1 item;
     # else sequential (with periodic progress narration — GLiNER mining is the slow step).
-    if devices and len(all_work_items) > 1 and not ner._offline:
-        if work_items_p3:
-            mined = mine_passes_multi_gpu([work_items_p1, work_items_p2, work_items_p3], ner, devices)
-        elif work_items_p2 and len(devices) >= 2:
-            mined = _mine_two_passes_multi_gpu(work_items_p1, work_items_p2, ner, devices)
-        else:
+    # mine_with_cache fronts the whole block: hits never reach the miners, only misses are
+    # dispatched (each pass is filtered to its own misses, preserving the pass split).
+    p1_items, p2_items, p3_items = set(work_items_p1), set(work_items_p2), set(work_items_p3)
+
+    def mine(items: Sequence[Any]) -> dict[tuple[str, str], list[Mention]]:
+        if devices and len(items) > 1 and not ner._offline:
+            miss_p1 = [item for item in items if item in p1_items]
+            miss_p2 = [item for item in items if item in p2_items]
+            miss_p3 = [item for item in items if item in p3_items]
+            if miss_p3:
+                return mine_passes_multi_gpu([miss_p1, miss_p2, miss_p3], ner, devices)
+            if miss_p2 and len(devices) >= 2:
+                return _mine_two_passes_multi_gpu(miss_p1, miss_p2, ner, devices)
             # No Pass 2/3 work, or too few devices to split — all GPUs on combined work.
-            mined = _mine_multi_gpu(all_work_items, ner, devices)
-    else:
-        mined = {}
-        for done, item in enumerate(all_work_items, start=1):
+            return _mine_multi_gpu(list(items), ner, devices)
+        mined_seq: dict[tuple[str, str], list[Mention]] = {}
+        for done, item in enumerate(items, start=1):
             set_id, doc_id, text = _work_item_parts(item)
-            mined[(set_id, doc_id)] = extract_contraindication_diseases(text, ner)
-            progress(logger, "shape_contraindications", done, len(all_work_items), every=_MINING_PROGRESS_EVERY)
+            mined_seq[(set_id, doc_id)] = extract_contraindication_diseases(text, ner)
+            progress(logger, "shape_contraindications", done, len(items), every=_MINING_PROGRESS_EVERY)
+        return mined_seq
+
+    mined = mine_with_cache(all_work_items, ner, mine, cache)
 
     # Aggregate mentions into assertion rows keyed by (subject, object, disease context).
     # Work items are singleton-only, so each set contributes exactly one subject ingredient;

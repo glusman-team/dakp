@@ -51,15 +51,17 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from typing import Any
 
 import polars as pl
 
 from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_FAERS, join_pipe, match_diseases, row_for
 from dakp_pipeline.assertions.evidence import find_faers_cases, find_table, write_assertion_table
-from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu, _resolve_devices, default_ner
+from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu, _resolve_devices, default_ner, mine_with_cache
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
+from dakp_pipeline.ner.mention_cache import MentionCache
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
 
 _TABLE = "faers_applied_to_treat_assertions"
@@ -94,7 +96,8 @@ _NON_DISEASE_INDICATION_RE = re.compile(
     r"|evidence based treatment|medication error|not applicable"
     r"|product used for|product use in|product use issue|drug use in|product dose|product prescribing"
     r"|product storage|product availab|product quality|product misuse|product origin unknown"
-    r"|product administration|accidental exposure|exposure during pregnancy"
+    r"|product (?:administer|prescrib|dispens)\w*|contraindicated product"
+    r"|accidental exposure|exposure during pregnancy"
     r"|\Aprophylaxis\Z|\Apremedication\Z|\Achemotherapy\Z|\Adrug therapy\Z|\Asupplementation therapy\Z",
     re.IGNORECASE,
 )
@@ -118,29 +121,39 @@ class ObservedUsesShaper:
             faers_cases = find_faers_cases(inputs, columns=("drugname", "indication", "primaryid"))
             approved = find_table(inputs, "approved_treats_assertions.tsv")
             approved_pairs = _approved_pair_index(approved) if approved is not None else None
-            rows = build_observed_use_rows(faers_cases, disease_map, approved_pairs, ner=ner, devices=devices)
+            with MentionCache(ctx.workdir) as cache:
+                rows = build_observed_use_rows(faers_cases, disease_map, approved_pairs, ner=ner, devices=devices, cache=cache)
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_faers_applied_to_treat")
 
 
-def _mine_indication_mentions(texts: list[str], ner: DiseaseNER, devices: Sequence[str] | None) -> dict[str, list[Mention]]:
+def _mine_indication_mentions(
+    texts: list[str], ner: DiseaseNER, devices: Sequence[str] | None, cache: MentionCache | None = None
+) -> dict[str, list[Mention]]:
     """Mine distinct dictionary-miss indication strings, returning ``{normalized_text: [mentions]}``.
 
     Deduplication happens upstream (``texts`` are distinct normalized strings), so each unique
     string is mined exactly once — the production case table's millions of rows collapse to a
     bounded set of distinct indications. Production runs dispatch across GPUs
     (:func:`~dakp_pipeline.assertions.ner_dispatch._mine_multi_gpu`); the offline gazetteer
-    backend runs sequentially with periodic progress narration.
+    backend runs sequentially with periodic progress narration. When ``cache`` is given,
+    previously mined texts are served from the persistent mention cache
+    (:func:`~dakp_pipeline.assertions.ner_dispatch.mine_with_cache`).
     """
     if not texts:
         return {}
-    if devices and len(texts) > 1 and not ner._offline:
-        mined_multi = _mine_multi_gpu([(text, text, text) for text in texts], ner, devices)
-        return {set_id: mentions for (set_id, _doc_id), mentions in mined_multi.items()}
-    mined: dict[str, list[Mention]] = {}
-    for done, text in enumerate(texts, start=1):
-        mined[text] = ner.extract(text)
-        progress(logger, "shape_faers_applied_to_treat", done, len(texts), every=_MINING_PROGRESS_EVERY)
-    return mined
+    work_items = [(text, text, text) for text in texts]
+
+    def mine(items: Sequence[Any]) -> dict[tuple[str, str], list[Mention]]:
+        if devices and len(items) > 1 and not ner._offline:
+            return _mine_multi_gpu(items, ner, devices)
+        mined: dict[tuple[str, str], list[Mention]] = {}
+        for done, (set_id, doc_id, text) in enumerate(items, start=1):
+            mined[(set_id, doc_id)] = ner.extract(text)
+            progress(logger, "shape_faers_applied_to_treat", done, len(items), every=_MINING_PROGRESS_EVERY)
+        return mined
+
+    mined_all = mine_with_cache(work_items, ner, mine, cache)
+    return {set_id: mentions for (set_id, _doc_id), mentions in mined_all.items()}
 
 
 def _ner_object(indication: str, indication_mentions: Mapping[str, list[Mention]] | None) -> dict[str, str] | None:
@@ -186,6 +199,7 @@ def build_observed_use_rows(
     *,
     ner: DiseaseNER | None = None,
     devices: Sequence[str] | None = None,
+    cache: MentionCache | None = None,
 ) -> list[dict[str, str]]:
     """Aggregate FAERS drug-indication case counts into applied-to-treat rows (deterministic).
 
@@ -202,7 +216,8 @@ def build_observed_use_rows(
 
     When ``ner`` is given, stop-list-passing indications the dictionary misses are mined once per
     distinct normalized string (:func:`_mine_indication_mentions`); a single unambiguous mention
-    supplies the object text/name/category (:func:`_ner_object`).
+    supplies the object text/name/category (:func:`_ner_object`). ``cache`` (a persistent mention
+    cache) only changes WHERE mentions come from, never their content.
     """
     if faers_cases is None:
         return []
@@ -237,7 +252,7 @@ def build_observed_use_rows(
             }
             - {""}
         )
-        indication_mentions = _mine_indication_mentions(miss_texts, ner, devices)
+        indication_mentions = _mine_indication_mentions(miss_texts, ner, devices, cache)
 
     rows: list[dict[str, str]] = []
     pairs_seen = 0

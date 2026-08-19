@@ -63,11 +63,7 @@ func (s Store) ManifestPath(id string) string {
 // named) records the producing stage. The returned ref's uri/blake3/media_type/rows/
 // schema_fingerprint/manifest are what the downstream shaping stage consumes.
 func (s Store) Register(in RegisterInput) (ArtifactRef, error) {
-	id, err := blake3store.HashFile(in.Path)
-	if err != nil {
-		return ArtifactRef{}, err
-	}
-	sri, err := blake3store.SHA256SRI(in.Path)
+	id, sri, err := blake3store.HashFileWithSRI(in.Path) // one read of the file
 	if err != nil {
 		return ArtifactRef{}, err
 	}

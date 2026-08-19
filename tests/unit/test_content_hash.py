@@ -77,3 +77,14 @@ def test_sha256_sri_format(tmp_path: Path) -> None:
     assert sri.startswith("sha256-")
     # The SRI base64 must be a valid base64 payload (no newline, url-safe not required).
     assert "\n" not in sri
+
+
+def test_hash_file_with_sri_matches_the_two_single_hashers(tmp_path: Path) -> None:
+    payload = b"dailymed spl fragment" * 1000
+    path = tmp_path / "blob.bin"
+    path.write_bytes(payload)
+    # Small chunk window forces several read iterations through both hashers.
+    assert content_hash.hash_file_with_sri(path, chunk_size=4096) == (
+        content_hash.hash_file(path, chunk_size=4096),
+        content_hash.sha256_sri(path, chunk_size=4096),
+    )

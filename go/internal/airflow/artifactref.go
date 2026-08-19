@@ -1,6 +1,10 @@
 package airflow
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+)
 
 // ArtifactRef is the Go mirror of Python io/contracts.ArtifactRef. Paths are strings (XCom
 // carries JSON, not Path objects). Nullable fields (rows / schema_fingerprint / manifest) are
@@ -29,10 +33,20 @@ type Config struct {
 	MemoryBudgetGB int    `json:"memory_budget_gb"`
 }
 
+// RefsFileMediaType marks the single-file refs handoff: acquire_dailymed pushes ONE ref (its URI
+// a JSON file in the content-addressed store holding the full refs list) instead of inlining tens
+// of thousands of per-SPL-member refs in its XCom result, which stalled the Execution API
+// (ReadTimeouts under real data). Mirrors Python io/xcom.REFS_FILE_MEDIA_TYPE — keep in lockstep.
+const RefsFileMediaType = "application/vnd.dakp.refs+json"
+
 // DecodeArtifactRefs converts an XCom value (as returned by sdk.Client.GetXCom — an `any` holding
 // a decoded JSON array of objects) into typed ArtifactRefs. It round-trips through encoding/json
 // so the result is independent of whether the transport handed us map[string]any vs map[any]any,
 // or float64-vs-int numbers (the re-marshal normalizes integral floats before the typed decode).
+//
+// A one-element payload carrying the RefsFileMediaType sentinel is the single-file handoff: the
+// full refs list is read from the store JSON the sentinel points at. Any other payload decodes
+// inline (backward compatible with pre-handoff XComs and small lists).
 func DecodeArtifactRefs(v any) ([]ArtifactRef, error) {
 	if v == nil {
 		return nil, nil
@@ -44,6 +58,23 @@ func DecodeArtifactRefs(v any) ([]ArtifactRef, error) {
 	var refs []ArtifactRef
 	if err := json.Unmarshal(data, &refs); err != nil {
 		return nil, err
+	}
+	if len(refs) == 1 && refs[0].MediaType == RefsFileMediaType {
+		return decodeRefsFile(refs[0].URI)
+	}
+	return refs, nil
+}
+
+// decodeRefsFile reads the refs JSON file of the single-file handoff (the exact shape the Python
+// refs_to_xcom producer wrote) and decodes it into typed ArtifactRefs.
+func decodeRefsFile(path string) ([]ArtifactRef, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read refs file %s: %w", path, err)
+	}
+	var refs []ArtifactRef
+	if err := json.Unmarshal(data, &refs); err != nil {
+		return nil, fmt.Errorf("decode refs file %s: %w", path, err)
 	}
 	return refs, nil
 }

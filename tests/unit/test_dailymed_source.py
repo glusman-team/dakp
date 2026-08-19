@@ -14,6 +14,8 @@ from pathlib import Path
 import pytest
 
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
+from dakp_pipeline.io.xcom import REFS_FILE_MEDIA_TYPE, refs_from_xcom, refs_to_xcom
+from dakp_pipeline.paths import Workdir
 from dakp_pipeline.sources import dailymed
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
@@ -72,3 +74,30 @@ def test_real_download_parses_release_zip_urls_from_index() -> None:
         "https://dailymed-data.nlm.nih.gov/public-release-files/dm_spl_release_human_otc_part1.zip",
     ]
     assert "partial.zip" not in urls[0]
+
+
+def test_write_refs_manifest_round_trip(tmp_path: Path) -> None:
+    """The single-file XCom handoff: refs -> one store JSON -> ONE sentinel ref -> same refs back.
+
+    This is the shrink that keeps tens of thousands of per-SPL-member refs out of the XCom
+    payload: the DAG pushes only the returned sentinel ref, and consumers (refs_from_xcom; the
+    Go DecodeArtifactRefs mirror) resolve it back to the identical refs.
+    """
+    ctx = _ctx(tmp_path)
+    Workdir(ctx.workdir).create()
+    refs = [
+        ArtifactRef(uri=tmp_path / "a.xml.gz", blake3="b3:aaa", media_type="application/gzip"),
+        ArtifactRef(uri=tmp_path / "b.xml", blake3="b3:bbb", media_type="application/xml"),
+    ]
+
+    refs_ref = dailymed.write_refs_manifest(ctx, refs)
+
+    assert refs_ref.media_type == REFS_FILE_MEDIA_TYPE
+    assert refs_ref.blake3.startswith("b3:")
+    assert refs_ref.uri.exists()
+    # The XCom payload is ONE small dict; refs_from_xcom resolves it to the identical refs.
+    payload = refs_to_xcom([refs_ref])
+    assert len(payload) == 1
+    assert refs_from_xcom(payload) == refs
+    # Idempotent: identical refs re-ingest as a store cache hit (same content hash).
+    assert dailymed.write_refs_manifest(ctx, refs).blake3 == refs_ref.blake3

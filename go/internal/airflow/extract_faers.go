@@ -34,6 +34,10 @@ var faersWarningsColumns = []string{"quarter", "family", "code", "message", "cou
 // faersEvent prefixes every stat line the FAERS extractor emits (one stat per line).
 const faersEvent = "extract_faers"
 
+// faersTaskOperation is the task-level operation-index key for the already-done skip (the
+// per-artifact manifests keep their own operation names; see opindex.go).
+const faersTaskOperation = "extract_faers"
+
 // ExtractFAERS is the native Go implementation of the DAG's extract_faers stage. It mirrors
 // faers_ascii.FAERSASCIIExtractor semantics (DELETE-filtered, cross-quarter-deduped case join)
 // but runs as a **bounded-memory streaming pipeline** (plans/fix-faers-memory.md): quarters are
@@ -50,6 +54,14 @@ func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]Arti
 	}
 
 	store := Store{Workdir: cfg.Workdir}
+	upstreamIDs := upstreamInputIDs(inputs)
+	if !cfg.Force {
+		// Already-done skip: the same upstream artifacts were extracted before.
+		if cached := store.FindByOperation(faersTaskOperation, upstreamIDs); cached != nil {
+			Stat(ctx, faersEvent, "skipped_already_done", len(cached))
+			return cached, nil
+		}
+	}
 	faersDir := filepath.Join(store.InterimDir(), "faers")
 	if err := os.MkdirAll(faersDir, 0o755); err != nil {
 		return nil, err
@@ -207,8 +219,10 @@ func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]Arti
 	}
 	StatOutput(ctx, faersEvent, "warnings.parquet", warningsRef)
 
-	Stat(ctx, faersEvent, "output_refs", 5)
-	return []ArtifactRef{casesRef, tsvRef, deleteRef, dedupRef, warningsRef}, nil
+	refs := []ArtifactRef{casesRef, tsvRef, deleteRef, dedupRef, warningsRef}
+	Stat(ctx, faersEvent, "output_refs", len(refs))
+	store.RecordOperation(faersTaskOperation, upstreamIDs, refs)
+	return refs, nil
 }
 
 // mergeFAERSOutputs k-way-merges the per-quarter sorted runs and streams the merged rows into

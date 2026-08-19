@@ -12,6 +12,7 @@ Commands::
     uv run dakp up             # build+pack the Go bundle, start Airflow, run dakp_build, wait
     uv run dakp down           # stop the local Airflow started by `up`
     uv run dakp clean          # remove caches, coverage data, tmp/, and the Go worker binary
+    uv run dakp cache clear    # delete the persistent NER mention cache (<workdir>/cache/ner/)
 
 ``up`` is a faithful Python port of ``dakp_up.sh``: preflight-verifies the Airflow install
 (self-heals a corrupt venv), builds + packs the native Go bundle, starts Airflow standalone with the
@@ -176,10 +177,11 @@ def _airflow_env(airflow_home: Path, bundle_dir: Path, port: int) -> dict[str, s
             "AIRFLOW__API__HOST": "127.0.0.1",
             # MANDATORY: without this the task supervisor's Execution-API client defaults to localhost:8080.
             "AIRFLOW__CORE__EXECUTION_API_SERVER_URL": f"{base_url}/execution/",
-            # Full-build acquisition XComs are LARGE (one ArtifactRef per DailyMed SPL member across
-            # all releases); the task-SDK default 5s Execution-API timeout makes the Go extractors'
-            # upstream XCom read die with ReadTimeout under real data (extract_faers died too even at
-            # 300s while the API server was under load). Give the API very generous headroom.
+            # The Go extractors read their upstream acquisition XComs via the Execution API; under
+            # real-data load the task-SDK default 5s timeout died with ReadTimeout (extract_faers
+            # died even at 300s while the API server was busy). acquire_dailymed now pushes ONE
+            # refs-file ref (its tens of thousands of SPL member refs live in a single store
+            # JSON), but the API server still slows under full-build load — keep the headroom.
             "AIRFLOW__WORKERS__EXECUTION_API_TIMEOUT": "1000",
             "AIRFLOW__SDK__COORDINATORS": json.dumps(
                 {"go": {"classpath": "airflow.sdk.coordinators.executable.ExecutableCoordinator", "kwargs": {"executables_root": [str(bundle_dir)]}}}
@@ -265,7 +267,7 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
 
     # Imported here (not at module load) so `dakp --help` / `down` / `clean` stay Airflow-free, and
     # only after the preflight so a just-healed install imports cleanly.
-    from dakp_pipeline.dags.dakp_build import CONFIG_VARIABLE, DAG_ID, DOWNLOAD_POOL, EXTRACT_POOL
+    from dakp_pipeline.dags.dakp_build import CONFIG_VARIABLE, DAG_ID, DOWNLOAD_POOL, EXTRACT_POOL, NER_MINING_POOL
 
     env = _airflow_env(airflow_home, bundle_dir, port)
 
@@ -280,6 +282,15 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
         if pack.stderr:
             print(pack.stderr.strip()[-2000:])
         return 1
+    # The NER mention-cache server lives at <workdir>/bin/dakp-nercache (the client's default
+    # lookup). Optional: a failed build only disables mention caching, never the run.
+    nercache_bin = workdir / "bin" / "dakp-nercache"
+    nercache_bin.parent.mkdir(parents=True, exist_ok=True)
+    nercache = run_subprocess(["go", "build", "-o", str(nercache_bin), "./cmd/dakp-nercache"], cwd=_REPO_ROOT / "go", env=env)
+    if nercache.returncode != 0:
+        print("!!! dakp-nercache build failed (NER mention caching disabled; non-fatal)")
+        if nercache.stderr:
+            print(nercache.stderr.strip()[-2000:])
 
     # --- 2. start Airflow standalone (reuse if already up) ----------------------
     if api_up(base_url):
@@ -309,6 +320,7 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
     # The concurrency-bounding pools are not auto-created; tasks on a missing pool never schedule.
     run_subprocess(["uv", "run", "airflow", "pools", "set", DOWNLOAD_POOL, "4", "Concurrent source downloads (network I/O)"], env=env)
     run_subprocess(["uv", "run", "airflow", "pools", "set", EXTRACT_POOL, "4", "Concurrent raw->interim extracts (Go bundle)"], env=env)
+    run_subprocess(["uv", "run", "airflow", "pools", "set", NER_MINING_POOL, "1", "Serializes GLiNER mining across shape tasks"], env=env)
 
     # --- 4. set the per-run config Variable (shared by Python tasks + Go bundle) -
     # `--small` bounds the acquisition scope (quarter/release limit = _SMALL_SCOPE); otherwise null
@@ -415,9 +427,44 @@ def run_clean() -> int:
     return 0
 
 
+# --- cache (persistent NER mention cache) ------------------------------------------
+
+
+def run_cache_clear() -> int:
+    """Delete the persistent NER mention cache (``<workdir>/cache/ner/``). Returns an exit code.
+
+    A live ``dakp-nercache`` server (``server.json`` pid probe) is SIGTERMed first — Pebble
+    holds an exclusive directory lock, so deleting under a running server would corrupt
+    nothing but the server would keep serving the deleted store. If the server survives the
+    SIGTERM, the deletion is refused.
+    """
+    cache_dir = _DEFAULT_WORKDIR / "cache" / "ner"
+    server_file = cache_dir / "server.json"
+    if server_file.exists():
+        try:
+            pid = int(json.loads(server_file.read_text(encoding="utf-8")).get("pid", 0))
+        except (OSError, ValueError, AttributeError):
+            pid = 0
+        if pid and pid_alive(pid):
+            print(f">>> stopping live dakp-nercache server (pid {pid})")
+            terminate(pid)
+            sleep(2)
+            if pid_alive(pid):
+                print(f"!!! dakp-nercache pid {pid} survived SIGTERM; refusing to delete {cache_dir}")
+                return 1
+    if not cache_dir.exists():
+        print(f">>> no NER mention cache at {cache_dir}")
+        return 0
+    shutil.rmtree(cache_dir, ignore_errors=True)
+    print(f">>> cleared NER mention cache ({cache_dir})")
+    return 0
+
+
 # --- cyclopts app (console-script entry point: `dakp = dakp_pipeline.cli:app`) -----
 
 app = App(name="dakp", help="DAKP pipeline runner — one command runs the whole Airflow-native pipeline.")
+cache_app = App(name="cache", help="Manage DAKP's persistent caches.")
+app.command(cache_app)
 
 
 @app.command
@@ -451,12 +498,19 @@ def clean() -> None:
     raise SystemExit(run_clean())
 
 
+@cache_app.command
+def clear() -> None:
+    """Delete the persistent NER mention cache (stops a live cache server first)."""
+    raise SystemExit(run_cache_clear())
+
+
 __all__ = [
     "airflow_importable",
     "api_up",
     "app",
     "dag_registered",
     "pid_alive",
+    "run_cache_clear",
     "run_clean",
     "run_down",
     "run_state",

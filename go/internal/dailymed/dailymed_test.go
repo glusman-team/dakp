@@ -26,7 +26,7 @@ var b3IDRe = regexp.MustCompile(`^b3:[0-9a-f]{64}$`)
 // extractFixture runs the bounded-parallel extractor over the mock fixture.
 func extractFixture(t *testing.T, limit int) *Tables {
 	t.Helper()
-	tables, err := Extract(context.Background(), []string{mockFixture}, limit)
+	tables, err := Extract(context.Background(), []string{mockFixture}, nil, limit)
 	if err != nil {
 		t.Fatalf("Extract(%s): %v", mockFixture, err)
 	}
@@ -377,8 +377,37 @@ func TestWriteDirEmitsAllTables(t *testing.T) {
 }
 
 func TestExtractErrorsOnMissingFile(t *testing.T) {
-	if _, err := Extract(context.Background(), []string{"testdata/does_not_exist.xml.gz"}, 0); err == nil {
+	if _, err := Extract(context.Background(), []string{"testdata/does_not_exist.xml.gz"}, nil, 0); err == nil {
 		t.Error("Extract should error on a missing input file")
+	}
+}
+
+func TestExtractUsesProvidedSourceIDs(t *testing.T) {
+	// A provided id is used verbatim — the input file is never re-hashed.
+	provided := "b3:0000000000000000000000000000000000000000000000000000000000000000"
+	tables, err := Extract(context.Background(), []string{mockFixture}, []string{provided}, 4)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(tables.InputIDs) != 1 || tables.InputIDs[0] != provided {
+		t.Errorf("InputIDs = %v, want [%q]", tables.InputIDs, provided)
+	}
+
+	// An empty id falls back to hashing the file.
+	fallback, err := Extract(context.Background(), []string{mockFixture}, []string{""}, 4)
+	if err != nil {
+		t.Fatalf("Extract fallback: %v", err)
+	}
+	if len(fallback.InputIDs) != 1 || fallback.InputIDs[0] != fixtureSourceID {
+		t.Errorf("fallback InputIDs = %v, want [%q]", fallback.InputIDs, fixtureSourceID)
+	}
+
+	// The provided id flows into the source_record_ids (sets carry the source id).
+	if len(tables.Sets) == 0 || len(fallback.Sets) == 0 {
+		t.Fatal("fixture should produce set rows")
+	}
+	if tables.Sets[0][0] == fallback.Sets[0][0] {
+		t.Error("provided id did not change the source_record_id")
 	}
 }
 

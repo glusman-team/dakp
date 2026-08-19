@@ -5,9 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from dakp_pipeline.io import artifact_store, schemas
-from dakp_pipeline.io.artifact_store import ArtifactStore
-from dakp_pipeline.io.manifests import SCHEMA_VERSION, read_manifest
+from dakp_pipeline.io import schemas
+from dakp_pipeline.io.artifact_store import OP_INDEX_FILENAME, ArtifactStore, op_index_key
+from dakp_pipeline.io.contracts import ArtifactRef
+from dakp_pipeline.io.manifests import SCHEMA_VERSION, OperationBlock, read_manifest
 from dakp_pipeline.paths import Workdir
 
 
@@ -45,27 +46,27 @@ def test_ingest_copies_into_by_hash_and_writes_manifest(tmp_path: Path) -> None:
     assert alias_id == ref.blake3
 
 
-def test_ingest_cache_hit_skips_copy_and_secondary_hash(tmp_path: Path, monkeypatch) -> None:
+def test_ingest_cache_hit_skips_copy_and_reuses_stored_sri(tmp_path: Path) -> None:
     store = _store(tmp_path)
     src = tmp_path / "same.bin"
     src.write_bytes(b"identical bytes")
-    real_sri = artifact_store.sha256_sri
-    sri_calls: list[Path] = []
-
-    def record_sri(path: Path) -> str:
-        sri_calls.append(path)
-        return real_sri(path)
-
-    monkeypatch.setattr(artifact_store, "sha256_sri", record_sri)
     ref1, hit1 = store.ingest(src)
-    sri_calls.clear()
+    assert ref1.manifest is not None
+
+    # Corrupt the stored manifest's SRI; a cache hit must reuse the STORED SRI verbatim
+    # rather than the freshly computed one from the single-pass hash of the source.
+    manifest = read_manifest(ref1.manifest)
+    manifest.hash.sha256_sri = "sha256-stored-sentinel"
+    manifest.write(ref1.manifest)
+
     ref2, hit2 = store.ingest(src)
 
     assert hit1 is False
     assert hit2 is True  # identical content already present -> cache hit, no copy
-    assert sri_calls == []  # the BLAKE3 check is enough; reuse the stored SRI metadata
     assert ref1.blake3 == ref2.blake3
     assert ref1.uri == ref2.uri
+    assert ref2.manifest is not None
+    assert read_manifest(ref2.manifest).hash.sha256_sri == "sha256-stored-sentinel"
 
 
 def test_ingest_repairs_corrupt_cache_manifest(tmp_path: Path) -> None:
@@ -293,3 +294,128 @@ def test_write_cached_refs_refuses_a_member_outside_its_source_alias(tmp_path: P
     store, artifact_id = _fanout_store(tmp_path)
     with pytest.raises(ValueError, match="outside source alias"):
         store.write_cached_refs(_ALIAS, artifact_id, [f"{_ALIAS}::a.xml", "dailymed/other.zip::a.xml"])
+
+
+# --- operation index (already-done skip) ----------------------------------------
+#
+# ``find_by_operation`` backs the extract/shape "already done" skip: an O(1) read of the
+# ``_index.json`` sidecar keyed by operation + sorted input ids. The key spec is shared
+# byte-for-byte with Go (``go/internal/airflow/opindex.go``); the vector constants below are
+# asserted by ``opindex_test.go`` too, so the two implementations can never drift silently.
+
+
+def _registered(store: ArtifactStore, tmp_path: Path, name: str, operation: str, inputs: list[str]) -> ArtifactRef:
+    src = tmp_path / name
+    src.write_text(f"{name}\n", encoding="utf-8")
+    return store.register(src, media_type=schemas.TSV_MEDIA_TYPE, rows=1, inputs=inputs, operation=OperationBlock(name=operation))
+
+
+def test_op_index_key_matches_go_vectors() -> None:
+    """Cross-language pin: the same constants are asserted in go/internal/airflow/opindex_test.go."""
+    assert (
+        op_index_key("extract_dailymed", ["b3:" + "b" * 64, "b3:" + "a" * 64]) == "4f10631218994be14487284cf116f4ae374a0fc99ad572926a67436f77dd1ad6"
+    )
+    assert (
+        op_index_key("shape_approved_treats", ["b3:" + "c" * 64, "b3:" + "d" * 64, "b3:" + "e" * 64])
+        == "4c104fb4bd812ccdec9fb799a96e5c1209f2c5876eb064634157b001d533d644"
+    )
+    # Input order never fragments the cache (inputs are sorted before hashing).
+    inputs = ["b3:" + "b" * 64, "b3:" + "a" * 64]
+    assert op_index_key("extract_dailymed", inputs) == op_index_key("extract_dailymed", list(reversed(inputs)))
+
+
+def test_register_then_find_by_operation_round_trips(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    inputs = ["b3:" + "1" * 64, "b3:" + "2" * 64]
+    ref = _registered(store, tmp_path, "out.tsv", "extract_x", inputs)
+
+    hits = store.find_by_operation("extract_x", list(reversed(inputs)))  # order-insensitive
+    assert hits is not None
+    assert len(hits) == 1
+    hit = hits[0]
+    assert hit.uri == ref.uri
+    assert hit.blake3 == ref.blake3
+    assert hit.media_type == ref.media_type
+    assert hit.rows == 1
+    assert hit.manifest is not None
+    assert hit.manifest.exists()
+
+
+def test_record_operation_publishes_and_replaces_a_multi_output_set(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    inputs = ["b3:" + "1" * 64]
+    ref_a = _registered(store, tmp_path, "a.tsv", "extract_x_a", inputs)
+    ref_b = _registered(store, tmp_path, "b.tsv", "extract_x_b", inputs)
+
+    store.record_operation("extract_x", inputs, [ref_a, ref_b])
+    hits = store.find_by_operation("extract_x", inputs)
+    assert hits is not None
+    assert [hit.blake3 for hit in hits] == [ref_a.blake3, ref_b.blake3]  # ordered output set
+
+    # Re-recording replaces the entry wholesale (a re-run publishes the new artifact id).
+    src = tmp_path / "a.tsv"
+    src.write_text("a v2\n", encoding="utf-8")
+    ref_a2 = store.register(src, media_type=schemas.TSV_MEDIA_TYPE, rows=1, inputs=inputs, operation=OperationBlock(name="extract_x_a"))
+    store.record_operation("extract_x", inputs, [ref_a2, ref_b])
+    hits = store.find_by_operation("extract_x", inputs)
+    assert hits is not None
+    assert [hit.blake3 for hit in hits] == [ref_a2.blake3, ref_b.blake3]
+
+
+def test_find_by_operation_misses(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    inputs = ["b3:" + "1" * 64]
+    _registered(store, tmp_path, "a.tsv", "extract_x", inputs)
+
+    assert store.find_by_operation("extract_x", ["b3:" + "9" * 64]) is None  # changed inputs
+    assert store.find_by_operation("other_op", inputs) is None  # unknown operation
+    assert store.find_by_operation("extract_x", []) is None  # no inputs -> nothing to key on
+
+    # A corrupt index file reads as empty (the next registration rewrites it fresh).
+    (store.workdir.manifests / OP_INDEX_FILENAME).write_text("not json", encoding="utf-8")
+    assert store.find_by_operation("extract_x", inputs) is None
+
+
+def test_find_by_operation_prunes_stale_entries(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    inputs = ["b3:" + "1" * 64]
+    index_path = store.workdir.manifests / OP_INDEX_FILENAME
+
+    # A deleted artifact file turns the hit into a miss and prunes the entry.
+    ref = _registered(store, tmp_path, "a.tsv", "extract_x", inputs)
+    ref.uri.unlink()
+    assert store.find_by_operation("extract_x", inputs) is None
+    assert json.loads(index_path.read_text(encoding="utf-8"))["entries"] == {}
+
+    # Same for a deleted manifest.
+    ref2 = _registered(store, tmp_path, "a.tsv", "extract_x", inputs)
+    assert ref2.manifest is not None
+    ref2.manifest.unlink()
+    assert store.find_by_operation("extract_x", inputs) is None
+    assert json.loads(index_path.read_text(encoding="utf-8"))["entries"] == {}
+
+
+def test_find_by_operation_rejects_malformed_index_content(tmp_path: Path) -> None:
+    """Hand-corrupted entries are misses, never crashes: non-dict outputs, missing keys, odd shapes."""
+    store = _store(tmp_path)
+    inputs = ["b3:" + "1" * 64]
+    ref = _registered(store, tmp_path, "a.tsv", "extract_x", inputs)
+    index_path = store.workdir.manifests / OP_INDEX_FILENAME
+    key = op_index_key("extract_x", inputs)
+    base = {"operation": "extract_x", "inputs": sorted(inputs)}
+
+    # An outputs member that is not a dict -> miss.
+    index_path.write_text(json.dumps({"version": 1, "entries": {key: {**base, "outputs": ["not-a-dict"]}}}), encoding="utf-8")
+    assert store.find_by_operation("extract_x", inputs) is None
+
+    # An outputs member missing a required key -> miss AND the entry is pruned.
+    index_path.write_text(
+        json.dumps({"version": 1, "entries": {key: {**base, "outputs": [{"artifact_id": ref.blake3, "media_type": ref.media_type}]}}}),
+        encoding="utf-8",
+    )
+    assert store.find_by_operation("extract_x", inputs) is None
+    assert json.loads(index_path.read_text(encoding="utf-8"))["entries"] == {}
+
+    # A top-level "entries" that is not a dict reads as an empty index.
+    index_path.write_text(json.dumps({"version": 1, "entries": []}), encoding="utf-8")
+    assert store.find_by_operation("extract_x", inputs) is None
