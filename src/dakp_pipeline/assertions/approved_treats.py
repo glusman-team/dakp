@@ -92,17 +92,7 @@ _PREDICATE = "biolink:treats"
 _STATUS = "approved_for_condition"
 
 #: Case-table columns the FAERS candidate path reads (projection keeps production-scale reads cheap).
-_FAERS_CASE_COLUMNS = (
-    "nda",
-    "nda_raw",
-    "indication",
-    "ingredient",
-    "drugname",
-    "quarter",
-    "primaryid",
-    "drug_seq",
-    "source_record_id",
-)
+_FAERS_CASE_COLUMNS = ("nda", "nda_raw", "indication", "ingredient", "drugname", "quarter", "primaryid", "drug_seq", "source_record_id")
 
 #: One INFO progress line per this many mined indication sections (GLiNER is the slow step).
 _MINING_PROGRESS_EVERY = 500
@@ -122,14 +112,7 @@ class ApprovedTreatsShaper:
             quarter_urls = faers_quarter_urls(inputs)
             with MentionCache(ctx.workdir) as cache:
                 rows = build_approved_treats_rows(
-                    faers_cases,
-                    dailymed,
-                    drugsfda_map,
-                    disease_map,
-                    ner=ner,
-                    devices=devices,
-                    cache=cache,
-                    faers_quarter_urls=quarter_urls,
+                    faers_cases, dailymed, drugsfda_map, disease_map, ner=ner, devices=devices, cache=cache, faers_quarter_urls=quarter_urls
                 )
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_approved_treats")
 
@@ -363,9 +346,7 @@ def _object_attrs(text: str, disease_map: Mapping[str, Mapping[str, str]]) -> tu
 
 
 def _faers_candidates(
-    faers_cases: pl.DataFrame,
-    disease_map: Mapping[str, Mapping[str, str]],
-    quarter_urls: Mapping[str, str] | None = None,
+    faers_cases: pl.DataFrame, disease_map: Mapping[str, Mapping[str, str]], quarter_urls: Mapping[str, str] | None = None
 ) -> Iterator[dict[str, Any]]:
     """NDA-bearing FAERS pairs with all contributing report provenance retained.
 
@@ -373,6 +354,7 @@ def _faers_candidates(
     wins exactly as before. The grouped rich-row list additionally preserves every contributing
     report/drug line so approved-treat edges can expose the FAERS evidence that supplied them.
     """
+
     def _text_column(name: str) -> pl.Expr:
         return pl.col(name).fill_null("").cast(pl.Utf8) if name in faers_cases.columns else pl.lit("")
 
@@ -402,10 +384,7 @@ def _faers_candidates(
         )
         .filter((pl.col("norm_nda") != "") & (pl.col("indication") != ""))
         .group_by("norm_nda", "indication", maintain_order=True)
-        .agg(
-            pl.col("fallback_subject").first().alias("fallback_subject"),
-            pl.col("faers_row").unique().alias("faers_rows"),
-        )
+        .agg(pl.col("fallback_subject").first().alias("fallback_subject"), pl.col("faers_row").unique().alias("faers_rows"))
         .collect()
     )
     for rec in pairs.iter_rows(named=True):

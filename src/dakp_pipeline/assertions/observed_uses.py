@@ -131,20 +131,13 @@ class ObservedUsesShaper:
             # Projection: only the three columns the aggregation needs (the production case table
             # is tens of millions of rows wide; reading all 17 columns wastes gigabytes).
             faers_cases = find_faers_cases(
-                inputs,
-                columns=("drugname", "indication", "primaryid", "nda", "nda_raw", "quarter", "drug_seq", "source_record_id"),
+                inputs, columns=("drugname", "indication", "primaryid", "nda", "nda_raw", "quarter", "drug_seq", "source_record_id")
             )
             approved = find_table(inputs, "approved_treats_assertions.tsv")
             approved_pairs = _approved_pair_index(approved) if approved is not None else None
             with MentionCache(ctx.workdir) as cache:
                 rows = build_observed_use_rows(
-                    faers_cases,
-                    disease_map,
-                    approved_pairs,
-                    ner=ner,
-                    devices=devices,
-                    cache=cache,
-                    faers_quarter_urls=faers_quarter_urls(inputs),
+                    faers_cases, disease_map, approved_pairs, ner=ner, devices=devices, cache=cache, faers_quarter_urls=faers_quarter_urls(inputs)
                 )
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_faers_applied_to_treat")
 
@@ -263,9 +256,7 @@ def build_observed_use_rows(
             _text_column("source_record_id").alias("source_record_id"),
         )
         .filter((pl.col("drugname") != "") & (pl.col("indication") != ""))
-        .with_columns(
-            pl.struct(["primaryid", "nda", "nda_raw", "quarter", "drug_seq", "source_record_id"]).alias("faers_row")
-        )
+        .with_columns(pl.struct(["primaryid", "nda", "nda_raw", "quarter", "drug_seq", "source_record_id"]).alias("faers_row"))
         .group_by("drugname", "indication")
         .agg(
             pl.col("primaryid").filter(pl.col("primaryid") != "").n_unique().alias("distinct_cases"),

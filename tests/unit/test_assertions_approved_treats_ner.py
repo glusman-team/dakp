@@ -8,6 +8,9 @@ shaper's injected-vs-default NER resolution.
 
 from __future__ import annotations
 
+import sys
+import types
+from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -17,6 +20,8 @@ from dakp_pipeline.assertions import approved_treats
 from dakp_pipeline.assertions.approved_treats import ApprovedTreatsShaper, _mine_indication_mentions, build_approved_treats_rows
 from dakp_pipeline.assertions.evidence import DailyMedEvidence
 from dakp_pipeline.io.contracts import TaskContext
+from dakp_pipeline.ner import ner as ner_module
+from dakp_pipeline.ner.model_cache import ModelRef
 from dakp_pipeline.ner.ner import DiseaseNER
 
 
@@ -155,8 +160,21 @@ def test_production_ner_dispatches_multi_gpu(monkeypatch: pytest.MonkeyPatch) ->
     assert [row["object_text"] for row in rows] == ["asthma"]
 
 
-def test_production_ner_single_section_stays_sequential(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_production_ner_single_section_stays_sequential(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A single section is mined inline even with devices available (no pool for one item)."""
+    # Keep the inline production extract hermetic (no torch/model download): a fake gliner
+    # module plus a stubbed ensure_model, the same seam test_ner_edge.py uses.
+    fake_model = types.SimpleNamespace(predict_entities=lambda text, labels, threshold=0.0: [])
+    module = types.ModuleType("gliner")
+    module.GLiNER = type("GLiNER", (), {"from_pretrained": staticmethod(lambda *a, **kw: fake_model)})  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gliner", module)
+    monkeypatch.setattr(
+        ner_module,
+        "ensure_model",
+        lambda model_id, **kw: ModelRef(
+            model_id=model_id, source="huggingface", path=tmp_path, b3="b3:deadbeef", manifest=tmp_path / "manifest.json"
+        ),
+    )
     ev = _supported_evidence("indicated for asthma")
     ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"})
     monkeypatch.setattr(approved_treats, "_mine_multi_gpu", lambda *args: (_ for _ in ()).throw(AssertionError("must not dispatch")))

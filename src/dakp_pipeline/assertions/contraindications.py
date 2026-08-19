@@ -664,7 +664,9 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         supporting_spl_documents=sorted_pipe(dailymed_document_url(doc_id) for doc_id in agg["docs"]),
         supporting_spl_evidence=spl_evidence_pipe(agg["sets"], agg["docs"]),
         approval_ids=sorted_pipe(agg.get("approval_ids", [])),
-        edge_evidence=edge_evidence_pipe(spl_evidence_pipe(agg["sets"], agg["docs"]).split("|") if spl_evidence_pipe(agg["sets"], agg["docs"]) else []),
+        edge_evidence=edge_evidence_pipe(
+            spl_evidence_pipe(agg["sets"], agg["docs"]).split("|") if spl_evidence_pipe(agg["sets"], agg["docs"]) else []
+        ),
         source_score=_max_score(agg["scores"]),
         knowledge_level=KL_ASSERTION,
         agent_type=AT_TEXT_MINING,
