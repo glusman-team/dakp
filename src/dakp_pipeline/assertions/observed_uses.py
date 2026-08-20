@@ -57,8 +57,6 @@ import polars as pl
 
 from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_FAERS, join_pipe, match_diseases, row_for
 from dakp_pipeline.assertions.evidence import (
-    edge_evidence_pipe,
-    faers_evidence_id,
     faers_quarter_urls,
     faers_record_url,
     find_faers_cases,
@@ -131,7 +129,7 @@ class ObservedUsesShaper:
             # Projection: only the three columns the aggregation needs (the production case table
             # is tens of millions of rows wide; reading all 17 columns wastes gigabytes).
             faers_cases = find_faers_cases(
-                inputs, columns=("drugname", "indication", "primaryid", "nda", "nda_raw", "quarter", "drug_seq", "source_record_id")
+                inputs, columns=("drugname", "indication", "primaryid", "nda", "nda_raw", "quarter", "source_record_id")
             )
             approved = find_table(inputs, "approved_treats_assertions.tsv")
             approved_pairs = _approved_pair_index(approved) if approved is not None else None
@@ -252,11 +250,10 @@ def build_observed_use_rows(
             _text_column("nda").alias("nda"),
             _text_column("nda_raw").alias("nda_raw"),
             _text_column("quarter").alias("quarter"),
-            _text_column("drug_seq").alias("drug_seq"),
             _text_column("source_record_id").alias("source_record_id"),
         )
         .filter((pl.col("drugname") != "") & (pl.col("indication") != ""))
-        .with_columns(pl.struct(["primaryid", "nda", "nda_raw", "quarter", "drug_seq", "source_record_id"]).alias("faers_row"))
+        .with_columns(pl.struct(["primaryid", "nda", "nda_raw", "quarter", "source_record_id"]).alias("faers_row"))
         .group_by("drugname", "indication")
         .agg(
             pl.col("primaryid").filter(pl.col("primaryid") != "").n_unique().alias("distinct_cases"),
@@ -300,7 +297,6 @@ def build_observed_use_rows(
             if mention_obj is not None:
                 ner_resolved += 1
             obj = mention_obj or {"text": indication, "curie": "", "name": indication, "category": "Disease"}
-        evidence_ids: set[str] = set()
         source_records: set[str] = set()
         evidence_urls: set[str] = set()
         approval_values_by_norm: dict[str, set[str]] = {}
@@ -308,9 +304,7 @@ def build_observed_use_rows(
             row = raw or {}
             q = str(row.get("quarter") or "").strip()
             pid = str(row.get("primaryid") or "").strip()
-            seq = str(row.get("drug_seq") or "").strip()
             if q and pid:
-                evidence_ids.add(faers_evidence_id(q, pid, seq))
                 evidence_urls.add(faers_record_url(q, dict(faers_quarter_urls or {})))
             source_id = str(row.get("source_record_id") or "").strip()
             if source_id:
@@ -340,7 +334,7 @@ def build_observed_use_rows(
                 object_category=obj["category"],
                 case_count=int(rec["distinct_cases"]) + int(rec["anon_rows"]),
                 approval_ids=sorted_pipe(approval_values),
-                edge_evidence=edge_evidence_pipe(evidence_ids),
+                edge_evidence="",
                 supporting_faers_records=sorted_pipe(source_records),
                 supporting_faers_urls=sorted_pipe(evidence_urls),
                 clinical_approval_status=status,

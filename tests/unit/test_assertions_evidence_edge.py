@@ -17,7 +17,6 @@ import polars as pl
 from dakp_pipeline.assertions.evidence import (
     build_dailymed_evidence,
     build_drugsfda_ingredient_map,
-    faers_evidence_id,
     faers_quarter_url,
     faers_quarter_urls,
     find_faers_cases,
@@ -42,7 +41,7 @@ def _parquet(tmp_path: Path, name: str, data: dict[str, list[object]]) -> Artifa
     return _ref(path)
 
 
-# --- URI-safe FAERS evidence IDs and pipe encoding ------------------------------
+# --- FAERS quarter URLs and pipe encoding ---------------------------------------
 
 
 def test_faers_quarter_url_uses_exact_fda_zip_fallback() -> None:
@@ -80,19 +79,6 @@ def test_faers_quarter_urls_use_manifest_then_fallback(tmp_path: Path) -> None:
     corrupt = ArtifactRef(uri=loose, blake3=fallback.blake3, media_type="application/zip", manifest=corrupt_manifest)
     assert source_manifest_url(corrupt) == ""
     assert source_urls([]) == []
-
-
-def test_faers_evidence_id_is_uri_and_pipe_safe() -> None:
-    value = faers_evidence_id("24q3", "1002", "1")
-    assert value == "faers:24Q3:1002:1"
-    assert faers_evidence_id("24Q3", "1002") == "faers:24Q3:1002"
-    assert "|" not in value
-    assert "\\n" not in value
-
-    import pytest
-
-    with pytest.raises(ValueError, match="require non-empty"):
-        faers_evidence_id("24Q3", "")
 
 
 def test_sorted_pipe_rejects_delimiter_unsafe_values() -> None:

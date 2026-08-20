@@ -288,7 +288,7 @@ _TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
 # a slot the class actually holds:
 # * ``has_evidence`` (``list[str]``, range ``information content entity``) carries the
 #   sorted identifier union from the single ``edge_evidence`` column: ``dailymed:<spl_set_id>``
-#   for DailyMed labels and ``faers:<record_id>`` for contributing FAERS reports. One column,
+#   CURIEs for the backing DailyMed labels. One column,
 #   not two, because ANNOTATION NAMES MUST BE UNIQUE PER TABLE: Tablassert applies annotations
 #   as ``with_columns(pl.col(src).alias(name))`` in declaration order with no duplicate check,
 #   so a second ``has_evidence`` entry would SILENTLY overwrite the first. Human-readable URLs

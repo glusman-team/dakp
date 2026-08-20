@@ -91,7 +91,6 @@ def test_faers_candidates_retains_report_provenance(disease_map: dict[str, dict[
         }
     )
     candidate = next(_faers_candidates(cases, disease_map, {"24Q3": "https://example.test/faers-24q3.zip"}))
-    assert candidate["faers_evidence_ids"] == ["faers:24Q3:1001:1"]
     assert candidate["faers_source_records"] == ["24Q3:1001:1:hypercholesterolemia"]
     assert candidate["faers_urls"] == ["https://example.test/faers-24q3.zip"]
 

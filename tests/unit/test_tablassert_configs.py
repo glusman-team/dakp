@@ -88,8 +88,8 @@ EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
 # (``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``) actually declares, or Tablassert
 # relocates the value off the edge into the inlined supporting study's StudyResult description --
 # a junk drawer no translator-ingests source models. So: the common ``edge_evidence`` column maps to
-# ``has_evidence`` (ONE annotation, carrying the sorted ``dailymed:<spl_set_id>`` /
-# ``faers:<record_id>`` identifier union, because duplicate annotation names silently overwrite
+# ``has_evidence`` (ONE annotation, carrying the sorted ``dailymed:<spl_set_id>`` CURIEs, because
+# duplicate annotation names silently overwrite
 # each other), and ``case_count`` maps to ``evidence_count`` rather than the sibling-class-only
 # ``number_of_cases``. ``split_by: "|"``
 # makes the pipe-joined cells emit as real JSON arrays. ``approval_ids`` keeps its column name and,

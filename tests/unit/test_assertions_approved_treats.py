@@ -52,7 +52,7 @@ def test_faers_rule_keeps_approved_pairs_and_filters_unmapped(
     assert ibuprofen["object_curie"] == "HP:0002315"
     assert ibuprofen["predicate"] == "biolink:treats"
     assert "dailymed:SETID-IBUPROFEN-002" in ibuprofen["edge_evidence"]
-    assert "faers:" in ibuprofen["edge_evidence"]
+    assert "faers:" not in ibuprofen["edge_evidence"]
     assert ibuprofen["supporting_faers_records"]
     assert ibuprofen["supporting_faers_urls"]
 

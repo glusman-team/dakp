@@ -224,15 +224,16 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
 
 
 def test_edge_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> None:
-    """Unified DailyMed/FAERS evidence rides the edge in ONE ``has_evidence`` array.
+    """DailyMed evidence rides the edge in ONE ``has_evidence`` array.
 
     ``has_evidence`` is a real multivalued slot of the association class every DAKP edge resolves to
     (``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``), and the generated configs encode it
     with ``split_by: "|"`` — so DAKP's aggregated, pipe-joined cell arrives as a real JSON array of
-    legacy-form ``dailymed:<spl_set_id>`` and ``faers:<record_id>`` identifiers (sorted,
+    legacy-form ``dailymed:<spl_set_id>`` identifiers (sorted,
     deduped), never a
     one-element list holding a joined ``"a|b"`` blob (the silent corruption ``split_by`` exists to
-    prevent).
+    prevent). FAERS report provenance stays in the unannotated ``supporting_faers_*`` debug
+    columns and never enters ``has_evidence``.
 
     The negative half is the point of the change: nothing is relocated into the inlined supporting
     study any more. ``supporting_documents`` (deprecated in Biolink and declared by no association
@@ -253,7 +254,7 @@ def test_edge_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> 
         assert evidence
         for value in evidence:
             assert isinstance(value, str)
-            assert value.startswith((DAILYMED_SET_CURIE_PREFIX, "faers:")), f"unknown has_evidence identifier: {value!r}"
+            assert value.startswith(DAILYMED_SET_CURIE_PREFIX), f"unknown has_evidence identifier: {value!r}"
             assert "|" not in value, f"has_evidence kept a joined cell instead of splitting it: {value!r}"
             assert "#" not in value, f"has_evidence kept section granularity instead of set CURIEs: {value!r}"
         assert "supporting_documents" not in edge
@@ -271,10 +272,9 @@ def test_edge_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> 
     applied = [edge for edge in kgx_build.edges if edge["predicate"] == _APPLIED]
     assert applied, "expected FAERS applied_to_treat edges"
     for edge in applied:
-        evidence = edge.get("has_evidence")
-        assert isinstance(evidence, list)
-        assert evidence
-        assert all(value.startswith("faers:") for value in evidence)
+        # FAERS-only edges carry no has_evidence identifiers at all now.
+        evidence = edge.get("has_evidence") or []
+        assert all(not value.startswith("faers:") for value in evidence)
 
 
 def test_faers_case_count_rides_the_edge_as_evidence_count(kgx_build: KgxBuild) -> None:

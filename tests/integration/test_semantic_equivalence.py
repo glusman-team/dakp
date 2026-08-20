@@ -241,17 +241,17 @@ def test_all_edge_families_carry_identifier_provenance(built: dict[str, Any]) ->
     """Every family exposes the unified identifier-only evidence contract.
 
     Human-readable URLs remain in the source-specific debug columns; KGX ``has_evidence`` is
-    intentionally limited to the stable ``dailymed:`` / ``faers:`` identifiers.
+    intentionally limited to the stable ``dailymed:`` identifiers (``faers:`` report ids stay in
+    the debug columns only).
     """
     for rec in _family_rows(built["tables"], TREATS):
         evidence = str(rec.get("edge_evidence") or "")
         assert "dailymed:" in evidence
-        assert "faers:" in evidence
+        assert "faers:" not in evidence
         assert str(rec.get("supporting_faers_records") or "").strip()
         assert str(rec.get("supporting_faers_urls") or "").startswith("https://")
     for rec in _family_rows(built["tables"], APPLIED_TO_TREAT):
-        evidence = str(rec.get("edge_evidence") or "")
-        assert evidence.startswith("faers:")
+        assert not str(rec.get("edge_evidence") or "").strip()
         assert str(rec.get("approval_ids") or "").strip()
         assert str(rec.get("supporting_faers_records") or "").strip()
         assert str(rec.get("supporting_faers_urls") or "").startswith("https://")

@@ -30,7 +30,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 import polars as pl
 
@@ -144,30 +143,6 @@ def faers_record_url(quarter: Any, quarter_urls: dict[str, str] | None = None) -
 def edge_evidence_pipe(*identifier_lists: Iterable[Any]) -> str:
     """Encode the identifier-only union used for final Biolink ``has_evidence``."""
     return sorted_pipe(value for values in identifier_lists for value in values)
-
-
-def faers_evidence_id(quarter: Any, primaryid: Any, drug_seq: Any = "") -> str:
-    """Build a URI-safe, pipe-safe FAERS report evidence identifier.
-
-    The report id is stable across aggregation and identifies the contributing FAERS report
-    plus drug line: ``faers:<YYQn>:<primaryid>[:<drug_seq>]``. Components are percent-encoded
-    before joining, so raw source values can never inject the pipe list delimiter or URI control
-    characters. The indication remains in the TSV debug ``source_record_id`` column; it is not
-    needed to identify the report/drug line in this edge-level evidence identifier.
-    """
-    q = "" if quarter is None else str(quarter).strip().upper()
-    pid = "" if primaryid is None else str(primaryid).strip()
-    seq = "" if drug_seq is None else str(drug_seq).strip()
-    if not q or not pid:
-        raise ValueError("FAERS evidence IDs require non-empty quarter and primaryid")
-    # Validate the quarter before encoding so malformed source data cannot become a plausible id.
-    faers_quarter_url(q)
-    parts = [quote(value, safe="-._~") for value in (q, pid) if value]
-    if seq:
-        parts.append(quote(seq, safe="-._~"))
-    evidence_id = "faers:" + ":".join(parts)
-    _validate_pipe_safe(evidence_id, "FAERS evidence id")
-    return evidence_id
 
 
 def _validate_pipe_safe(value: str, label: str = "provenance value") -> str:
@@ -652,7 +627,6 @@ __all__ = [
     "dailymed_set_curie",
     "dailymed_set_url",
     "edge_evidence_pipe",
-    "faers_evidence_id",
     "faers_quarter_url",
     "faers_quarter_urls",
     "faers_record_url",
