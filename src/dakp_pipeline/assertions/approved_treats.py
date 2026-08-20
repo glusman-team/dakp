@@ -367,10 +367,7 @@ def _faers_candidates(
             indication.alias("indication"),
             pl.when(ingredient != "").then(ingredient).otherwise(drugname).str.strip_chars().alias("fallback_subject"),
             pl.struct(
-                quarter.alias("quarter"),
-                primaryid.alias("primaryid"),
-                source_record_id.alias("source_record_id"),
-                nda_raw.alias("nda_raw"),
+                quarter.alias("quarter"), primaryid.alias("primaryid"), source_record_id.alias("source_record_id"), nda_raw.alias("nda_raw")
             ).alias("faers_row"),
         )
         .filter((pl.col("norm_nda") != "") & (pl.col("indication") != ""))

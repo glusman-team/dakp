@@ -128,9 +128,7 @@ class ObservedUsesShaper:
             stats(logger, "shape_faers_applied_to_treat", inputs=len(inputs), disease_map_terms=len(disease_map))
             # Projection: only the three columns the aggregation needs (the production case table
             # is tens of millions of rows wide; reading all 17 columns wastes gigabytes).
-            faers_cases = find_faers_cases(
-                inputs, columns=("drugname", "indication", "primaryid", "nda", "nda_raw", "quarter", "source_record_id")
-            )
+            faers_cases = find_faers_cases(inputs, columns=("drugname", "indication", "primaryid", "nda", "nda_raw", "quarter", "source_record_id"))
             approved = find_table(inputs, "approved_treats_assertions.tsv")
             approved_pairs = _approved_pair_index(approved) if approved is not None else None
             with MentionCache(ctx.workdir) as cache:
