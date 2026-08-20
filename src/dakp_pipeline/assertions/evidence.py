@@ -526,14 +526,21 @@ def shape_config_fingerprint(ctx: TaskContext) -> str:
     is unchanged too: the lexical disease map content, the NER backend key material (model id
     + model content hash + backend config fingerprint via the Phase-2
     :func:`~dakp_pipeline.ner.mention_cache.ner_cache_material` helper when a production
-    backend is injected), and the contraindication keyword override. Run limits
+    backend is injected), and the contraindication keyword override. The assertion-table
+    schema fingerprints are folded in as well: a code change that adds, removes, or reorders
+    output columns (e.g. a new evidence column) MUST bust the skip — Tablassert configs are
+    generated from the CURRENT schema, so reusing a stale TSV shaped by an older one crashes
+    the build on the missing column. Run limits
     (``quarter_limit`` etc.) are deliberately absent — they act on acquisition/extraction,
     whose OUTPUT ids are already among the keyed inputs.
     """
     from dakp_pipeline.ner.mention_cache import ner_cache_material  # lazy: pulls in the NER stack
     from dakp_pipeline.ner.ner import DiseaseNER
 
-    material: dict[str, Any] = {"disease_map": ctx.params.get("disease_map") or {}}
+    material: dict[str, Any] = {
+        "disease_map": ctx.params.get("disease_map") or {},
+        "schemas": {table: schemas.schema_fingerprint(columns) for table, columns in schemas.ASSERTION_TABLES.items()},
+    }
     ner = ctx.params.get("ner")
     if isinstance(ner, DiseaseNER):
         material["ner"] = ner_cache_material(ner)

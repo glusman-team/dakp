@@ -24,6 +24,7 @@ from dakp_pipeline.assertions.evidence import (
     shape_operation_inputs,
     write_assertion_table,
 )
+from dakp_pipeline.io import schemas
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
@@ -152,6 +153,19 @@ def test_cached_shape_outputs_returns_refs_registered_by_write_assertion_table(c
 
     # Changed input ids miss too.
     assert cached_shape_outputs(_OPERATION, dailymed_refs[1:], ctx) is None
+
+
+def test_cached_shape_outputs_misses_when_the_assertion_schema_changes(
+    ctx: TaskContext, dailymed_refs: list[ArtifactRef], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_assertion_table("approved_treats_assertions", [], dailymed_refs, ctx, operation=_OPERATION)
+    assert cached_shape_outputs(_OPERATION, dailymed_refs, ctx) is not None
+
+    # A schema drift (e.g. a new evidence column) busts the skip: the stale TSV lacks the
+    # columns the freshly generated Tablassert configs reference.
+    drifted = {**schemas.ASSERTION_TABLES, "approved_treats_assertions": [*schemas.ASSERTION_TABLES["approved_treats_assertions"], "new_column"]}
+    monkeypatch.setattr(schemas, "ASSERTION_TABLES", drifted)
+    assert cached_shape_outputs(_OPERATION, dailymed_refs, ctx) is None
 
 
 def test_cached_shape_outputs_prunes_when_the_table_was_deleted(ctx: TaskContext, dailymed_refs: list[ArtifactRef], tmp_path: Path) -> None:
