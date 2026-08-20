@@ -40,6 +40,7 @@ from dakp_pipeline.assertions.contraindications import (
     _classify_mention,
     _classify_mentions,
     _contraindication_sentences,
+    _finalize_row,
     _max_score,
     _mention_local_span,
     _mine_multi_gpu,
@@ -1149,3 +1150,26 @@ def test_accumulate_skips_blank_evidence_text() -> None:
     assert agg["evidence_texts"] == []
     assert agg["sets"] == ["SET-A"]
     assert agg["scores"] == [0.9]
+
+
+def test_accumulate_sanitizes_pipe_delimiters_in_label_prose() -> None:
+    """Regression: mined label sentences legitimately contain ``|`` bullets and line breaks (real
+    DailyMed warnings prose crashed ``shape_contraindication_tables`` when the pipe reached the
+    sorted-pipe evidence encoder). Free-form text is sanitized, not rejected."""
+    aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
+    mention = Mention(text="asthma", start=0, end=6, type="disease", score=0.9)
+    _accumulate(
+        aggregated,
+        "SET-A",
+        "DOC-A",
+        "DrugX",
+        "UNII:X",
+        "asthma",
+        mention,
+        evidence_text="Do not use■Prohibited use for ethanol allergy| When using this product\navoid open flames",
+        context_text="patients with\tasthma|severe",
+    )
+    row = _finalize_row(next(iter(aggregated.values())))
+    assert row["evidence_text"] == "Do not use■Prohibited use for ethanol allergy When using this product avoid open flames"
+    assert row["disease_context_text"] == "patients with asthma severe"
+    assert "|" not in row["evidence_text"]

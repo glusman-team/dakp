@@ -76,6 +76,7 @@ from dakp_pipeline.assertions.evidence import (
     dailymed_set_url,
     edge_evidence_pipe,
     load_or_build_dailymed_evidence,
+    pipe_safe_text,
     sorted_pipe,
     spl_evidence_pipe,
     write_assertion_table,
@@ -618,8 +619,12 @@ def _accumulate(
     are mined mention text with CURIE/name/category left empty for Tablassert/fullmap to resolve.
     """
     # Context is part of the semantic identity: unconditional evidence must never inherit a
-    # conditional qualifier (or vice versa) merely because subject/object are equal.
-    key = (ingredient_name, object_text, context_text.strip())
+    # conditional qualifier (or vice versa) merely because subject/object are equal. Context and
+    # evidence carry raw label prose (``|`` bullets, line breaks), so they are sanitized before
+    # they enter pipe-encoded TSV cells — and before keying, so delimiter-only variants aggregate
+    # together instead of fragmenting rows.
+    context = pipe_safe_text(context_text)
+    key = (ingredient_name, object_text, context)
     agg = aggregated.setdefault(
         key,
         {
@@ -630,7 +635,7 @@ def _accumulate(
             "object_curie": "",
             "object_name": "",
             "object_category": "",
-            "disease_context_text": context_text.strip(),
+            "disease_context_text": context,
             "sets": [],
             "docs": [],
             "approval_ids": [],
@@ -642,8 +647,9 @@ def _accumulate(
     agg["docs"].append(doc_id)
     agg["approval_ids"].extend(approval_ids)
     agg["scores"].append(mention.score)
-    if evidence_text.strip():
-        agg["evidence_texts"].append(evidence_text.strip())
+    evidence = pipe_safe_text(evidence_text)
+    if evidence:
+        agg["evidence_texts"].append(evidence)
 
 
 def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:

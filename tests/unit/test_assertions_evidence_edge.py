@@ -22,6 +22,7 @@ from dakp_pipeline.assertions.evidence import (
     faers_quarter_urls,
     find_faers_cases,
     find_table,
+    pipe_safe_text,
     sorted_pipe,
     source_manifest_url,
     source_urls,
@@ -99,6 +100,15 @@ def test_sorted_pipe_rejects_delimiter_unsafe_values() -> None:
 
     with pytest.raises(ValueError, match="delimiter"):
         sorted_pipe(["faers:24Q3:1002|1"])
+
+
+def test_pipe_safe_text_collapses_delimiter_runs() -> None:
+    """Free-form label prose legitimately contains ``|`` bullets and line breaks — unlike
+    identifier provenance, it is sanitized (not rejected) before pipe-encoded TSV output."""
+    assert pipe_safe_text("Do not use|When using this product\nstop use") == "Do not use When using this product stop use"
+    assert pipe_safe_text("  a\t\r\n||b  ") == "a b"
+    assert pipe_safe_text(None) == ""
+    assert pipe_safe_text(42) == "42"
 
 
 # --- find_table: unreadable matching input is swallowed (103-104) ---------------

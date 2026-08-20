@@ -54,6 +54,7 @@ _NDA_DIGITS_RE = re.compile(r"[^0-9]+")
 _FAERS_QUARTER_RE = re.compile(r"^(?:(\d{4})|(\d{2}))Q([1-4])$", re.IGNORECASE)
 _FAERS_FILENAME_RE = re.compile(r"faers_ascii_(\d{2}|\d{4})q([1-4])\.zip", re.IGNORECASE)
 _PIPE_UNSAFE_RE = re.compile(r"[|\t\r\n]")
+_PIPE_UNSAFE_RUN_RE = re.compile(r"[|\s]+")
 
 #: Canonical FDA FAERS quarterly ZIP fallback. The FDA listing page is only a discovery
 #: page; the immutable quarter files live under this download base.
@@ -174,6 +175,16 @@ def _validate_pipe_safe(value: str, label: str = "provenance value") -> str:
     if _PIPE_UNSAFE_RE.search(value):
         raise ValueError(f"{label} contains a pipe/tab/newline delimiter: {value!r}")
     return value
+
+
+def pipe_safe_text(value: Any) -> str:
+    """Collapse pipe/whitespace runs in free-form text to single spaces and strip it.
+
+    Identifier provenance must stay pipe-safe verbatim (:func:`_validate_pipe_safe` rejects
+    offenders), but free-form display text mined from label prose legitimately contains ``|``
+    bullets and line breaks — sanitize it before it enters a pipe-encoded TSV cell.
+    """
+    return _PIPE_UNSAFE_RUN_RE.sub(" ", "" if value is None else str(value)).strip()
 
 
 #: DailyMed label page URL every SPL set evidence value links to (``<base><spl_set_id>``).
@@ -650,6 +661,7 @@ __all__ = [
     "load_or_build_dailymed_evidence",
     "merge_unique",
     "normalize_nda",
+    "pipe_safe_text",
     "shape_config_fingerprint",
     "shape_operation_inputs",
     "sorted_pipe",
