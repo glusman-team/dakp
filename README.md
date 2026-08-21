@@ -71,7 +71,8 @@ one adapted from the Translator ingest working group's DINGO-reviewed DAKP RIG i
 [NCATSTranslator/translator-ingests](https://github.com/NCATSTranslator/translator-ingests)
 (review issue #416), grounded in this repository's actual download URLs, sources, and pipeline
 behavior. `tables/graph.yaml` is generated from the pipeline's `_rig_config()` — regenerate
-it, never hand-edit.
+it by running the pipeline's generate task (`generate` in `src/dakp_pipeline/tablassert.py`,
+which rewrites `tables/graph.yaml`), never hand-edit.
 
 ## Prerequisites
 

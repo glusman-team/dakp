@@ -571,9 +571,9 @@ def test_rig_ingest_info_enrichment() -> None:
 
     DAKP CREATES knowledge (it builds assertion tables) rather than passing a source through, so
     ``translator_knowledge_creator`` must be EXPLICIT, not merely the model default. The included
-    and filtered content entries restate the pipeline's real scope gates (approval-number and
-    section-kind filters); the future considerations pin the disease-only qualifier policy and the
-    approval-status coercion. The upstream RIG's legacy KGX output files must stay rejected — no
+    content pins ALL FOUR mined section kinds; the filtered content pins the approved-treats-only
+    approval gate and the section-kind filter; the future considerations pin the disease-only
+    qualifier policy and the approval-status coercion. The upstream RIG's legacy KGX output files must stay rejected — no
     table section sources them, so Tablassert's RIG audit would fail the build. Asserting through
     BOTH the raw config and the installed ``RIGConfig`` model makes any drift fail loudly.
     """
@@ -586,14 +586,33 @@ def test_rig_ingest_info_enrichment() -> None:
     assert ingest["utility"]
     assert ingest["scope"]
     assert all(not entry["file_name"].startswith("drug_approvals_kg") for entry in ingest["relevant_files"])
-    # Included content keeps the DailyMed entry (now with fields_used) plus the FAERS entry.
+    # Included content keeps the DailyMed entry (all FOUR mined section kinds) plus the FAERS entry.
     included = ingest["included_content"]
     assert [entry["file_name"] for entry in included] == ["DailyMed SPL sections", "FAERS quarterly ASCII zips"]
-    assert included[0]["fields_used"]
-    assert all(entry["included_records"] for entry in included)
-    # Both scope filters are documented with non-empty records + rationale.
-    assert [entry["file_name"] for entry in ingest["filtered_content"]] == ["DailyMed SPL sets", "DailyMed SPL sections"]
-    assert all(entry["filtered_records"] and entry["rationale"] for entry in ingest["filtered_content"])
+    assert included[0]["included_records"] == (
+        "indications_and_usage (LOINC 34067-9), contraindications (LOINC 34070-3), boxed warnings (LOINC 34066-1), and "
+        "warnings/precautions (LOINC 43685-7, legacy 34071-1/42232-9) sections; FDA application numbers are carried "
+        "as provenance where available"
+    )
+    assert included[0]["fields_used"] == (
+        "indications_and_usage, contraindications, boxed-warning, and warnings/precautions section text, SPL set identifiers, FDA application numbers"
+    )
+    assert included[1]["included_records"] == "drug/indication case pairs; case counts"
+    # Both scope filters pinned: the approval gate is approved-treats-only (observed-use and
+    # text-mined contraindications are not approval-gated), and only the four mined section
+    # kinds survive the section filter.
+    filtered = ingest["filtered_content"]
+    assert [entry["file_name"] for entry in filtered] == ["DailyMed SPL indication sections", "DailyMed SPL sections"]
+    assert filtered[0]["filtered_records"] == "indication sections on SPL sets whose NDA lacks a DailyMed SPL approval"
+    assert filtered[0]["rationale"] == (
+        "approved-treats assertions require an FDA approval backing the indication; observed-use and "
+        "text-mined contraindication assertions are deliberately not approval-gated"
+    )
+    assert filtered[1]["filtered_records"] == (
+        "all SPL sections other than indications_and_usage (LOINC 34067-9), contraindications (LOINC 34070-3), "
+        "boxed warnings (LOINC 34066-1), and warnings/precautions (LOINC 43685-7, legacy 34071-1/42232-9)"
+    )
+    assert filtered[1]["rationale"] == "the remaining sections carry no treatment or contraindication evidence"
     # Considerations carry ContentCategories members; the first defers the medication-context
     # interaction assertion (disease_context_qualifier is intentionally disease-only).
     considerations = ingest["future_considerations"]
@@ -607,7 +626,7 @@ def test_rig_ingest_info_enrichment() -> None:
     assert info.included_content is not None
     assert [entry.file_name for entry in info.included_content] == ["DailyMed SPL sections", "FAERS quarterly ASCII zips"]
     assert info.filtered_content is not None
-    assert [entry.file_name for entry in info.filtered_content] == ["DailyMed SPL sets", "DailyMed SPL sections"]
+    assert [entry.file_name for entry in info.filtered_content] == ["DailyMed SPL indication sections", "DailyMed SPL sections"]
     assert info.future_considerations is not None
     assert info.future_considerations[0].category == "edge_content"
 

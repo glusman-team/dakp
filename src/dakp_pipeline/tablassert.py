@@ -156,8 +156,10 @@ GRAPH_DESCRIPTION = (
     "Drug Approvals Knowledge Provider: FDA-approved treatment relationships, "
     "FAERS-observed applied-to-treat uses, and contraindications text-mined from "
     "DailyMed, modeled from DailyMed, Drugs@FDA, and FAERS. "
-    "Every drug-disease edge carries its FDA approval status, FDA application numbers, "
-    "and the evidence identifiers backing it; FAERS-observed uses additionally carry case counts."
+    "Every edge carries the evidence identifiers backing it; approved-treats edges also carry "
+    "clinical approval status and FDA application numbers, FAERS-observed use edges add case "
+    "counts, and contraindication edges carry application numbers where available plus the "
+    "evidence prose backing them."
 )
 
 # --- RIG (Resource Ingest Guide) graph-config section -------------------------------
@@ -205,12 +207,14 @@ RIG_CITATIONS = (
 )
 #: RIG versioning statement. Interpolates the live package version so the prose can never drift
 #: from the version every build embeds in the graph config via ``graph_config(version=...)``.
-#: The freshness gate is the acquire-stage 7-day download-cache window (see README "acquire").
+#: Freshness gates (see README "acquire"): DailyMed and Drugs@FDA re-downloads use the
+#: acquire-stage 7-day download-cache window; FAERS is cache-first content-addressed, no age gate.
 RIG_DATA_VERSIONING_AND_RELEASES = (
     f"DAKP versions follow the Python package version (pyproject.toml, currently {__version__}); "
     "every build embeds it in the graph config via graph_config(version=...). Re-ingests track "
-    "the upstream cadence: FAERS quarterly ASCII extracts and DailyMed SPL releases, whose "
-    "re-downloads are freshness-gated to a 7-day cache window."
+    "the upstream cadence: FAERS quarterly ASCII extracts and DailyMed SPL releases. DailyMed "
+    "and Drugs@FDA re-downloads are freshness-gated to a 7-day cache window; FAERS downloads "
+    "are content-addressed and cache-first, with no age gate."
 )
 #: RIG ``supporting_data_source_info``: the upstream data sources a DAKP graph derives its
 #: knowledge from. Exactly the TWO edge-backed upstreams, adapted from the DINGO-reviewed
@@ -272,34 +276,47 @@ RIG_SUPPORTING_DATA_SOURCES: tuple[dict[str, Any], ...] = (
     },
 )
 #: RIG ``ingest_info.included_content``: the upstream record types DAKP pulls into the graph.
-#: ``fields_used`` names exactly what the assertion tables consume from SPL (section text,
-#: SPL set identifiers feeding ``has_evidence``, FDA application numbers feeding
-#: ``approval_ids``). Unlike ``relevant_files``, ``included_content`` is NOT
+#: ``fields_used`` names exactly what the assertion tables consume from SPL — the four mined
+#: section kinds' text (indications_and_usage, contraindications, boxed warnings,
+#: warnings/precautions), SPL set identifiers feeding ``has_evidence``, and FDA application
+#: numbers feeding ``approval_ids``. Unlike ``relevant_files``, ``included_content`` is NOT
 #: audit-cross-checked by Tablassert, so these entries document intent rather than gate the build.
 RIG_INCLUDED_CONTENT: tuple[dict[str, str], ...] = (
     {
         "file_name": "DailyMed SPL sections",
         "included_records": (
-            "indications_and_usage (LOINC 34067-9) and contraindications (LOINC 34070-3) sections on SPL sets bearing FDA approval numbers"
+            "indications_and_usage (LOINC 34067-9), contraindications (LOINC 34070-3), "
+            "boxed warnings (LOINC 34066-1), and warnings/precautions (LOINC 43685-7, legacy "
+            "34071-1/42232-9) sections; FDA application numbers are carried as provenance where available"
         ),
-        "fields_used": ("indications_and_usage and contraindications section text, SPL set identifiers, FDA application numbers"),
+        "fields_used": (
+            "indications_and_usage, contraindications, boxed-warning, and warnings/precautions section text, "
+            "SPL set identifiers, FDA application numbers"
+        ),
     },
     {"file_name": "FAERS quarterly ASCII zips", "included_records": "drug/indication case pairs; case counts"},
 )
 #: RIG ``ingest_info.filtered_content``: what DAKP deliberately drops from the upstream feeds,
-#: and why. Both entries restate the pipeline's actual scope gates: assertion modules admit only
-#: approval-bearing SPL sets (``assertions/approved_treats.py`` rule 2) and mine ONLY the two
-#: section kinds below (``assertions/contraindications.py`` passes 1 + 2).
+#: and why. Both entries restate the pipeline's actual scope gates: approved-treats assertions
+#: require an approval-backed indication (``assertions/approved_treats.py`` rule 2), and the
+#: assertion modules mine only the four section kinds listed in :data:`RIG_INCLUDED_CONTENT`
+#: (``assertions/contraindications.py`` passes 1-3).
 RIG_FILTERED_CONTENT: tuple[dict[str, str], ...] = (
     {
-        "file_name": "DailyMed SPL sets",
-        "filtered_records": "SPL sets bearing no FDA approval number",
-        "rationale": "DAKP asserts only FDA-approved relationships; unapproved labeling is out of scope",
+        "file_name": "DailyMed SPL indication sections",
+        "filtered_records": "indication sections on SPL sets whose NDA lacks a DailyMed SPL approval",
+        "rationale": (
+            "approved-treats assertions require an FDA approval backing the indication; observed-use and "
+            "text-mined contraindication assertions are deliberately not approval-gated"
+        ),
     },
     {
         "file_name": "DailyMed SPL sections",
-        "filtered_records": ("all SPL sections other than indications_and_usage (LOINC 34067-9) and contraindications (LOINC 34070-3)"),
-        "rationale": "the other sections carry no approvable treatment or contraindication assertions",
+        "filtered_records": (
+            "all SPL sections other than indications_and_usage (LOINC 34067-9), contraindications (LOINC 34070-3), "
+            "boxed warnings (LOINC 34066-1), and warnings/precautions (LOINC 43685-7, legacy 34071-1/42232-9)"
+        ),
+        "rationale": "the remaining sections carry no treatment or contraindication evidence",
     },
 )
 #: RIG ingest-level ``future_considerations``: content DAKP deliberately defers, each grounded in
