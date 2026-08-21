@@ -119,7 +119,7 @@ from dakp_pipeline.sources import faers as faers_source
 INFORES_DAKP = "infores:multiomics-drugapprovals"
 AGENT_TYPE = "manual_validation_of_automated_agent"
 
-GRAPH_NAME = "dakp"
+GRAPH_NAME = "Drug_Approvals_KP"
 #: Fallback ``fullmap`` written into ``graph.yaml`` when no real fullmap is configured (deferred
 #: runs, which never invoke ``build-kg``). Tablassert's ``Graph`` model REQUIRES a ``fullmap``
 #: field, and Tablassert reads the fullmap path FROM this field on a graph build (the

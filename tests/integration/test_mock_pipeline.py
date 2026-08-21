@@ -26,7 +26,7 @@ from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.sources import dailymed, drugsfda, faers
-from dakp_pipeline.tablassert import REPORT_NAME
+from dakp_pipeline.tablassert import GRAPH_NAME, REPORT_NAME
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -34,7 +34,7 @@ _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 def _fake_tablassert_run(assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
     """Stand-in for ../Tablassert following the REAL handoff contract.
 
-    Writes a real-mode handoff report plus a ``dakp_<version>.{nodes,edges}.ndjson`` pair under
+    Writes a real-mode handoff report plus a ``<name>_<version>.{nodes,edges}.ndjson`` pair under
     ``data/`` (exactly what a successful ``build-kg`` leaves behind), so the downstream legacy
     TSV export stage exercises its real branch against the fake output.
     """
@@ -42,8 +42,8 @@ def _fake_tablassert_run(assertion_refs: list[ArtifactRef], config_refs: list[Ar
     store = ArtifactStore(Workdir(ctx.workdir))
     data = Workdir(ctx.workdir).root / "data"
     data.mkdir(parents=True, exist_ok=True)
-    nodes = data / f"dakp_{__version__}.nodes.ndjson"
-    edges = data / f"dakp_{__version__}.edges.ndjson"
+    nodes = data / f"{GRAPH_NAME}_{__version__}.nodes.ndjson"
+    edges = data / f"{GRAPH_NAME}_{__version__}.edges.ndjson"
     nodes.write_text('{"id":"MONDO:0005154","name":"hypercholesterolemia","category":["biolink:Disease"]}\n', encoding="utf-8")
     edges.write_text(
         '{"id":"fake-edge","subject":"CHEBI:1000001","predicate":"biolink:treats","object":"MONDO:0005154",'
@@ -85,15 +85,15 @@ def test_full_pipeline_uses_mocked_sources(monkeypatch, tmp_path: Path) -> None:
 
     # The fake Tablassert wrote its KGX pair, and the legacy TSV stage retrofitted it.
     data = tmp_path / "work" / "data"
-    assert (data / f"dakp_{__version__}.nodes.ndjson").exists()
-    legacy_edges = (data / f"dakp_{__version__}.edges.tsv").read_text(encoding="utf-8").splitlines()
+    assert (data / f"{GRAPH_NAME}_{__version__}.nodes.ndjson").exists()
+    legacy_edges = (data / f"{GRAPH_NAME}_{__version__}.edges.tsv").read_text(encoding="utf-8").splitlines()
     assert legacy_edges[0].split("\t")[9:12] == ["approval", "N_cases", "supporting_spls"]
     # Subject CHEBI:1000001 is absent from the fake node set -> original_subject mention fallback;
     # object is resolved -> canonical node name; object_modifier is always NA.
     assert legacy_edges[1].split("\t")[4:7] == ["Examplestatin", "hypercholesterolemia", "NA"]
     assert legacy_edges[1].split("\t")[9:] == ["NDA1", "NA", "dailymed:set-1"]
     assert summary["legacy_tsv"]["exported"] is True
-    assert {file["name"] for file in summary["legacy_tsv"]["files"]} == {f"dakp_{__version__}.nodes", f"dakp_{__version__}.edges"}
+    assert {file["name"] for file in summary["legacy_tsv"]["files"]} == {f"{GRAPH_NAME}_{__version__}.nodes", f"{GRAPH_NAME}_{__version__}.edges"}
 
 
 def test_default_deferred_handoff_runs_clean(monkeypatch, tmp_path: Path) -> None:

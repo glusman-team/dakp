@@ -80,7 +80,7 @@ def test_generated_contraindication_config_keeps_nullable_and_qualified_edges(tm
 
     build_pipeline(graph, PipelineProgress(total_stages=6))
     version = dakp_tablassert.graph_config()["version"]
-    edges_path = tmp_path / "data" / f"dakp_{version}.edges.ndjson"  # rig.artifact_base_path = "data" (Tablassert >= 11)
+    edges_path = tmp_path / "data" / f"{dakp_tablassert.GRAPH_NAME}_{version}.edges.ndjson"  # rig.artifact_base_path = "data" (Tablassert >= 11)
     edges = [json.loads(line) for line in edges_path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
     assert len(edges) == 2

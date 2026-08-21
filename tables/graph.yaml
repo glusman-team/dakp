@@ -1,5 +1,5 @@
-name: dakp
-version: "0.1.0"
+name: Drug_Approvals_KP
+version: "1.0.0"
 fullmap: ".fullmap"
 rig:
   source_info:

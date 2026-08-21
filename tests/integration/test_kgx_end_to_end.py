@@ -8,7 +8,7 @@ Proves the FULL path works on a TINY, hermetic fullmap (no network):
    (Ibuprofen/Advil, Examplestatin, hypercholesterolemia, headache, pain, asthma, ...) to CURIEs;
 3. invoke a REAL ``tablassert build-kg`` through the DAKP :class:`TablassertRunner` (the installed
    ``tablassert`` CLI, real subprocess);
-4. load the produced KGX ``dakp_0.1.0.{nodes,edges}.ndjson`` and assert: nodes carry
+4. load the produced KGX ``Drug_Approvals_KP_1.0.0.{nodes,edges}.ndjson`` and assert: nodes carry
    ``id``/``name``/``category``; edges carry ``subject``/``predicate``/``object`` + DAKP provenance
    (``infores:multiomics-drugapprovals`` primary + the per-family upstream infores); all three edge
    families (``treats`` / ``applied_to_treat`` / ``contraindicated_in``) are present; and
