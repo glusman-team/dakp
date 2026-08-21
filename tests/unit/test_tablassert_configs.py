@@ -460,6 +460,14 @@ def test_graph_config_structure() -> None:
     assert rig["source_info"]["data_versioning_and_releases"]
     assert rig["source_info"]["terms_of_use_info"]
     assert all("https://" in location for location in rig["source_info"]["data_access_locations"])
+    # Supporting data sources: exactly the two edge-backed upstreams (no infores:medi — this
+    # rebuild text-mines contraindications from DailyMed SPL; no Drugs@FDA — it backs no edge).
+    supporting = rig["supporting_data_source_info"]
+    assert [entry["infores_id"] for entry in supporting] == ["infores:dailymed", "infores:faers"]
+    # Each entry's file location is the URL constant the acquisition layer actually downloads.
+    assert supporting[0]["relevant_files"][0]["location"] == tablassert_configs.dailymed_source.FULL_RELEASE_INDEX_URL
+    assert supporting[1]["relevant_files"][0]["location"] == tablassert_configs.faers_source.FDA_FAERS_INDEX_URL
+    assert all(entry["terms_of_use_info"]["terms_of_use_description"] for entry in supporting)
     assert rig["ingest_info"]["utility"]
     assert rig["ingest_info"]["scope"]
     assert rig["provenance_info"]["contributions"]
@@ -487,7 +495,12 @@ def test_rig_section_validates_directly_against_tablassert_rig_config() -> None:
     """
     from tablassert.models import RIGConfig
 
-    source = RIGConfig.model_validate(tablassert_configs.graph_config()["rig"]).source_info
+    rig = RIGConfig.model_validate(tablassert_configs.graph_config()["rig"])
+    source = rig.source_info
+    # Supporting upstreams validate as real RIGSupportingDataSourceInfo entries (infores CURIE +
+    # relevant-file URL checks included) and stay exactly the two edge-backed sources.
+    assert rig.supporting_data_source_info is not None
+    assert [entry.infores_id for entry in rig.supporting_data_source_info] == ["infores:dailymed", "infores:faers"]
     assert source.name == "Drug Approvals Knowledge Provider (DAKP)"
     assert source.citations is not None
     assert any("https://pmc.ncbi.nlm.nih.gov/articles/PMC11601480/" in citation for citation in source.citations)
@@ -497,6 +510,27 @@ def test_rig_section_validates_directly_against_tablassert_rig_config() -> None:
     assert source.data_provision_mechanisms == ["file_download"]
     assert source.data_formats == ["kgx"]
     assert source.source_status == "maintained_regular_updates"
+
+
+def test_rig_supporting_data_source_info_lists_only_edge_backed_upstreams() -> None:
+    """``supporting_data_source_info`` carries exactly the two edge-backed upstreams — never MEDI.
+
+    The legacy pipeline's translator-ingests RIG also listed ``infores:medi``, but this rebuild
+    has no MEDI source module (contraindications are text-mined from DailyMed SPL), so a MEDI
+    entry would be fabricated provenance while a dropped entry would under-attribute the edges.
+    Pinning the exact id set through BOTH the raw config and the installed ``Graph`` model (i.e.
+    the committed YAML shape) makes either drift fail loudly.
+    """
+    from tablassert.models import Graph
+
+    ids = [entry["infores_id"] for entry in tablassert_configs.graph_config()["rig"]["supporting_data_source_info"]]
+    assert ids == ["infores:dailymed", "infores:faers"]
+    assert "infores:medi" not in ids  # legacy-pipeline source; no MEDI module backs it in this rebuild
+
+    graph = Graph.model_validate(yaml.safe_load(tablassert_configs.graph_yaml()))
+    supporting = graph.rig.supporting_data_source_info
+    assert supporting is not None
+    assert [entry.infores_id for entry in supporting] == ids
 
 
 # --- emitted YAML is valid + faithful (round-trips through yaml.safe_load) --------

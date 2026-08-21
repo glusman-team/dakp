@@ -2,6 +2,38 @@ name: DRUG_APPROVALS_KP
 version: "1.0.0"
 fullmap: ".fullmap"
 rig:
+  supporting_data_source_info:
+    - infores_id: "infores:dailymed"
+      name: DailyMed
+      description: >-
+        DailyMed provides trustworthy information about marketed drugs in the
+        United States, based on FDA Structured Product Labeling (SPL)
+        documents. DAKP uses DailyMed to identify FDA-approved drug-indication
+        and drug-contraindication relationships.
+      terms_of_use_info:
+        terms_of_use_url: "https://dailymed.nlm.nih.gov/dailymed/"
+        terms_of_use_description: "DailyMed data are freely available and in the public domain."
+      relevant_files:
+        - file_name: "DailyMed Structured Product Labeling"
+          location: "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
+          description: >-
+            Structured product labeling (SPL) documents for FDA-approved drugs
+    - infores_id: "infores:faers"
+      name: "FDA Adverse Event Reporting System (FAERS)"
+      description: >-
+        FAERS contains adverse event reports, medication error reports, and
+        product quality complaints submitted to the FDA. DAKP uses FAERS to
+        derive drug-disease usage relationships and case counts, including
+        on-label and off-label use.
+      terms_of_use_info:
+        terms_of_use_url: "https://www.fda.gov/drugs/questions-and-answers-fdas-adverse-event-reporting-system-faers/fda-adverse-event-reporting-system-faers-quarterly-data-extract-files"
+        terms_of_use_description: >-
+          FAERS data files are in the public domain and freely available for
+          download.
+      relevant_files:
+        - file_name: "FAERS Quarterly Data Files"
+          location: "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
+          description: "Quarterly data files containing adverse event reports"
   source_info:
     infores_id: "infores:multiomics-drugapprovals"
     name: "Drug Approvals Knowledge Provider (DAKP)"

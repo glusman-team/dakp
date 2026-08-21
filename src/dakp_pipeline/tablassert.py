@@ -90,6 +90,7 @@ real Tablassert required.
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import os
@@ -194,13 +195,74 @@ RIG_DATA_VERSIONING_AND_RELEASES = (
     "the upstream cadence: FAERS quarterly ASCII extracts and DailyMed SPL releases, whose "
     "re-downloads are freshness-gated to a 7-day cache window."
 )
+#: RIG ``supporting_data_source_info``: the upstream data sources a DAKP graph derives its
+#: knowledge from. Exactly the TWO edge-backed upstreams, adapted from the DINGO-reviewed
+#: ``supporting_data_source_info`` of the upstream ``NCATSTranslator/translator-ingests`` DAKP
+#: RIG (names, descriptions, public-domain terms assessments), with each ``relevant_files[0]``
+#: location swapped for the URL constant DAKP's acquisition layer actually downloads, so the
+#: documented provenance can never drift from the download source. Unlike ``ingest_info``'s
+#: ``relevant_files`` (filtered per graph to the tables present and audit-cross-checked against
+#: table section sources), this section is free-form and always complete.
+#: NO ``infores:medi`` entry: this rebuild has no MEDI source module (``src/dakp_pipeline/sources/``
+#: is dailymed, drugsfda, faers only); contraindications are text-mined from DailyMed SPL
+#: (``_TABLE_SPECS`` upstream ``("infores:dailymed",)``, agent ``text_mining_agent``). MEDI
+#: belonged to the legacy pipeline — adopting it would be fabricated provenance.
+#: NO Drugs@FDA entry either: only the two EDGE-BACKED upstreams are listed; Drugs@FDA enriches
+#: assertions at build time (application joins) but backs no edge as a supporting source.
+RIG_SUPPORTING_DATA_SOURCES: tuple[dict[str, Any], ...] = (
+    {
+        "infores_id": "infores:dailymed",
+        "name": "DailyMed",
+        "description": (
+            "DailyMed provides trustworthy information about marketed drugs in the United States, "
+            "based on FDA Structured Product Labeling (SPL) documents. DAKP uses DailyMed to "
+            "identify FDA-approved drug-indication and drug-contraindication relationships."
+        ),
+        "terms_of_use_info": {
+            "terms_of_use_url": "https://dailymed.nlm.nih.gov/dailymed/",
+            "terms_of_use_description": "DailyMed data are freely available and in the public domain.",
+        },
+        "relevant_files": [
+            {
+                "file_name": "DailyMed Structured Product Labeling",
+                "location": dailymed_source.FULL_RELEASE_INDEX_URL,
+                "description": "Structured product labeling (SPL) documents for FDA-approved drugs",
+            }
+        ],
+    },
+    {
+        "infores_id": "infores:faers",
+        "name": "FDA Adverse Event Reporting System (FAERS)",
+        "description": (
+            "FAERS contains adverse event reports, medication error reports, and product quality "
+            "complaints submitted to the FDA. DAKP uses FAERS to derive drug-disease usage "
+            "relationships and case counts, including on-label and off-label use."
+        ),
+        "terms_of_use_info": {
+            "terms_of_use_url": (
+                "https://www.fda.gov/drugs/questions-and-answers-fdas-adverse-event-reporting-system-faers/"
+                "fda-adverse-event-reporting-system-faers-quarterly-data-extract-files"
+            ),
+            "terms_of_use_description": "FAERS data files are in the public domain and freely available for download.",
+        },
+        "relevant_files": [
+            {
+                "file_name": "FAERS Quarterly Data Files",
+                "location": faers_source.FDA_FAERS_INDEX_URL,
+                "description": "Quarterly data files containing adverse event reports",
+            }
+        ],
+    },
+)
 
 
 def _rig_config(tables: list[str]) -> dict[str, Any]:
     """The required ``rig:`` graph-config section (Tablassert >= 11), all constants.
 
     Shape verified against ``tablassert.models.RIGConfig`` (pinned directly by
-    ``test_rig_section_validates_directly_against_tablassert_rig_config``): ``source_info``
+    ``test_rig_section_validates_directly_against_tablassert_rig_config``):
+    ``supporting_data_source_info`` (the two edge-backed upstreams,
+    :data:`RIG_SUPPORTING_DATA_SOURCES`), ``source_info``
     (infores id, full source name, description + citation, non-empty terms-of-use assessment,
     URL-bearing data access locations, versioning story, source status),
     ``ingest_info`` (authored utility/scope, upstream relevant files + included content),
@@ -227,6 +289,8 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
         # in upstream, at assertion-build time), so the RIG audit would reject it.
     ]
     return {
+        # Deep copies: the returned config dict must never alias the module-level constants.
+        "supporting_data_source_info": [copy.deepcopy(entry) for entry in RIG_SUPPORTING_DATA_SOURCES],
         "source_info": {
             "infores_id": INFORES_DAKP,
             "name": RIG_SOURCE_NAME,
