@@ -533,6 +533,52 @@ def test_rig_supporting_data_source_info_lists_only_edge_backed_upstreams() -> N
     assert [entry.infores_id for entry in supporting] == ids
 
 
+def test_rig_ingest_info_enrichment() -> None:
+    """``ingest_info`` pins the explicit category, included/filtered content, and considerations.
+
+    DAKP CREATES knowledge (it builds assertion tables) rather than passing a source through, so
+    ``translator_knowledge_creator`` must be EXPLICIT, not merely the model default. The included
+    and filtered content entries restate the pipeline's real scope gates (approval-number and
+    section-kind filters); the future considerations pin the disease-only qualifier policy and the
+    approval-status coercion. The upstream RIG's legacy KGX output files must stay rejected — no
+    table section sources them, so Tablassert's RIG audit would fail the build. Asserting through
+    BOTH the raw config and the installed ``RIGConfig`` model makes any drift fail loudly.
+    """
+    from tablassert.models import RIGConfig
+
+    ingest = tablassert_configs.graph_config()["rig"]["ingest_info"]
+    assert ingest["ingest_categories"] == ["translator_knowledge_creator"]
+    # Kept grounded fields stay untouched, and the upstream RIG's legacy KGX-file relevant_files
+    # never appear (pipeline OUTPUT artifacts, not inputs).
+    assert ingest["utility"]
+    assert ingest["scope"]
+    assert all(not entry["file_name"].startswith("drug_approvals_kg") for entry in ingest["relevant_files"])
+    # Included content keeps the DailyMed entry (now with fields_used) plus the FAERS entry.
+    included = ingest["included_content"]
+    assert [entry["file_name"] for entry in included] == ["DailyMed SPL sections", "FAERS quarterly ASCII zips"]
+    assert included[0]["fields_used"]
+    assert all(entry["included_records"] for entry in included)
+    # Both scope filters are documented with non-empty records + rationale.
+    assert [entry["file_name"] for entry in ingest["filtered_content"]] == ["DailyMed SPL sets", "DailyMed SPL sections"]
+    assert all(entry["filtered_records"] and entry["rationale"] for entry in ingest["filtered_content"])
+    # Considerations carry ContentCategories members; the first defers the medication-context
+    # interaction assertion (disease_context_qualifier is intentionally disease-only).
+    considerations = ingest["future_considerations"]
+    assert considerations[0]["category"] == "edge_content"
+    assert "disease_context_qualifier" in considerations[0]["consideration"]
+
+    # The same facts must survive the installed Tablassert model (enum members coerce to their
+    # plain string values at validation time).
+    info = RIGConfig.model_validate(tablassert_configs.graph_config()["rig"]).ingest_info
+    assert info.ingest_categories == ["translator_knowledge_creator"]
+    assert info.included_content is not None
+    assert [entry.file_name for entry in info.included_content] == ["DailyMed SPL sections", "FAERS quarterly ASCII zips"]
+    assert info.filtered_content is not None
+    assert [entry.file_name for entry in info.filtered_content] == ["DailyMed SPL sets", "DailyMed SPL sections"]
+    assert info.future_considerations is not None
+    assert info.future_considerations[0].category == "edge_content"
+
+
 # --- emitted YAML is valid + faithful (round-trips through yaml.safe_load) --------
 
 

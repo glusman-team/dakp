@@ -254,6 +254,61 @@ RIG_SUPPORTING_DATA_SOURCES: tuple[dict[str, Any], ...] = (
         ],
     },
 )
+#: RIG ``ingest_info.included_content``: the upstream record types DAKP pulls into the graph.
+#: ``fields_used`` names exactly what the assertion tables consume from SPL (section text,
+#: SPL set identifiers feeding ``has_evidence``, FDA application numbers feeding
+#: ``approval_ids``). Unlike ``relevant_files``, ``included_content`` is NOT
+#: audit-cross-checked by Tablassert, so these entries document intent rather than gate the build.
+RIG_INCLUDED_CONTENT: tuple[dict[str, str], ...] = (
+    {
+        "file_name": "DailyMed SPL sections",
+        "included_records": (
+            "indications_and_usage (LOINC 34067-9) and contraindications (LOINC 34070-3) sections on SPL sets bearing FDA approval numbers"
+        ),
+        "fields_used": ("indications_and_usage and contraindications section text, SPL set identifiers, FDA application numbers"),
+    },
+    {"file_name": "FAERS quarterly ASCII zips", "included_records": "drug/indication case pairs; case counts"},
+)
+#: RIG ``ingest_info.filtered_content``: what DAKP deliberately drops from the upstream feeds,
+#: and why. Both entries restate the pipeline's actual scope gates: assertion modules admit only
+#: approval-bearing SPL sets (``assertions/approved_treats.py`` rule 2) and mine ONLY the two
+#: section kinds below (``assertions/contraindications.py`` passes 1 + 2).
+RIG_FILTERED_CONTENT: tuple[dict[str, str], ...] = (
+    {
+        "file_name": "DailyMed SPL sets",
+        "filtered_records": "SPL sets bearing no FDA approval number",
+        "rationale": "DAKP asserts only FDA-approved relationships; unapproved labeling is out of scope",
+    },
+    {
+        "file_name": "DailyMed SPL sections",
+        "filtered_records": ("all SPL sections other than indications_and_usage (LOINC 34067-9) and contraindications (LOINC 34070-3)"),
+        "rationale": "the other sections carry no approvable treatment or contraindication assertions",
+    },
+)
+#: RIG ingest-level ``future_considerations``: content DAKP deliberately defers, each grounded in
+#: code — the medication-context note is the ``_TABLE_QUALIFIERS`` disease-only policy, and the
+#: status-coercion note is the ``ClinicalApprovalStatusEnum`` membership rule documented in
+#: ``assertions/observed_uses.py``.
+RIG_INGEST_FUTURE_CONSIDERATIONS: tuple[dict[str, str], ...] = (
+    {
+        "category": "edge_content",
+        "consideration": (
+            "A drug-drug chemical-entity interaction assertion for medication context (currently "
+            "the disease_context_qualifier is intentionally disease-only; medications belong in a "
+            "future interaction assertion)"
+        ),
+        "relevant_files": "DailyMed SPL contraindication sections",
+    },
+    {
+        "category": "edge_property_content",
+        "consideration": (
+            "clinical_approval_status is a first-class Biolink ClinicalApprovalStatusEnum field, "
+            "so values outside the enum cannot be preserved: the legacy FAERS observed_use status "
+            "is coerced to not_provided (degraded mode). Revisit if Biolink adds a dedicated "
+            "observation status."
+        ),
+    },
+)
 
 
 def _rig_config(tables: list[str]) -> dict[str, Any]:
@@ -265,7 +320,8 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
     :data:`RIG_SUPPORTING_DATA_SOURCES`), ``source_info``
     (infores id, full source name, description + citation, non-empty terms-of-use assessment,
     URL-bearing data access locations, versioning story, source status),
-    ``ingest_info`` (authored utility/scope, upstream relevant files + included content),
+    ``ingest_info`` (explicit ingest category, authored utility/scope, per-table upstream
+    relevant files + included/filtered content + future considerations),
     ``provenance_info`` (contributions), and the artifact base URL/path pair.
 
     ``relevant_files`` is filtered to the upstream URLs of the tables actually IN this graph:
@@ -287,6 +343,11 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
         },
         # No Drugs@FDA entry: no assertion table declares it as a section source (it is joined
         # in upstream, at assertion-build time), so the RIG audit would reject it.
+        # REJECTED from the upstream ``NCATSTranslator/translator-ingests`` DAKP RIG: its legacy
+        # KGX-file ``relevant_files`` (``drug_approvals_kg_{edges,nodes}.jsonl.gz`` at
+        # db.systemsbiology.net) are legacy pipeline OUTPUT artifacts, not inputs; no table
+        # section sources them here, so Tablassert's RIG audit would fail the build
+        # (``rig-validation-failed``).
     ]
     return {
         # Deep copies: the returned config dict must never alias the module-level constants.
@@ -314,6 +375,10 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
             "source_status": "maintained_regular_updates",
         },
         "ingest_info": {
+            # Explicit even though it equals the ``RIGIngestInfo`` default: DAKP CREATES
+            # knowledge (the assertion tables this pipeline builds) rather than passing a source
+            # through, and the upstream DAKP RIG declares the same category.
+            "ingest_categories": ["translator_knowledge_creator"],
             "utility": (
                 "Provides FDA-approved drug-disease treatment relationships, FAERS-observed "
                 "applied-to-treat uses, and SPL-mined contraindications for Translator querying."
@@ -324,15 +389,9 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
                 "DailyMed SPL sections; all other content of the upstream feeds is out of scope."
             ),
             "relevant_files": [entry for entry in relevant_files if entry["location"] in included_urls],
-            "included_content": [
-                {
-                    "file_name": "DailyMed SPL sections",
-                    "included_records": (
-                        "indications_and_usage (LOINC 34067-9) and contraindications (LOINC 34070-3) "
-                        "sections on SPL sets bearing FDA approval numbers"
-                    ),
-                }
-            ],
+            "included_content": [copy.deepcopy(entry) for entry in RIG_INCLUDED_CONTENT],
+            "filtered_content": [copy.deepcopy(entry) for entry in RIG_FILTERED_CONTENT],
+            "future_considerations": [copy.deepcopy(entry) for entry in RIG_INGEST_FUTURE_CONSIDERATIONS],
         },
         "provenance_info": {
             "contributions": [

@@ -67,6 +67,8 @@ rig:
       re-downloads are freshness-gated to a 7-day cache window.
     source_status: maintained_regular_updates
   ingest_info:
+    ingest_categories:
+      - translator_knowledge_creator
     utility: >-
       Provides FDA-approved drug-disease treatment relationships,
       FAERS-observed applied-to-treat uses, and SPL-mined contraindications
@@ -92,6 +94,38 @@ rig:
         included_records: >-
           indications_and_usage (LOINC 34067-9) and contraindications (LOINC
           34070-3) sections on SPL sets bearing FDA approval numbers
+        fields_used: >-
+          indications_and_usage and contraindications section text, SPL set
+          identifiers, FDA application numbers
+      - file_name: "FAERS quarterly ASCII zips"
+        included_records: "drug/indication case pairs; case counts"
+    filtered_content:
+      - file_name: "DailyMed SPL sets"
+        filtered_records: "SPL sets bearing no FDA approval number"
+        rationale: >-
+          DAKP asserts only FDA-approved relationships; unapproved labeling is
+          out of scope
+      - file_name: "DailyMed SPL sections"
+        filtered_records: >-
+          all SPL sections other than indications_and_usage (LOINC 34067-9) and
+          contraindications (LOINC 34070-3)
+        rationale: >-
+          the other sections carry no approvable treatment or contraindication
+          assertions
+    future_considerations:
+      - category: edge_content
+        consideration: >-
+          A drug-drug chemical-entity interaction assertion for medication
+          context (currently the disease_context_qualifier is intentionally
+          disease-only; medications belong in a future interaction assertion)
+        relevant_files: "DailyMed SPL contraindication sections"
+      - category: edge_property_content
+        consideration: >-
+          clinical_approval_status is a first-class Biolink
+          ClinicalApprovalStatusEnum field, so values outside the enum cannot be
+          preserved: the legacy FAERS observed_use status is coerced to
+          not_provided (degraded mode). Revisit if Biolink adds a dedicated
+          observation status.
   provenance_info:
     contributions:
       - "DAKP pipeline (https://github.com/glusman-team/dakp): source acquisition, assertion modeling"
