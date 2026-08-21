@@ -16,6 +16,7 @@ sibling ``../Tablassert`` checkout is never imported or required.
 
 from __future__ import annotations
 
+import copy
 import importlib
 import importlib.util
 import json
@@ -454,9 +455,20 @@ def test_graph_config_structure() -> None:
         assert legacy_key not in graph
     rig = graph["rig"]
     assert rig["source_info"]["infores_id"] == INFORES_DAKP
+    assert rig["source_info"]["name"] == "Drug Approvals Knowledge Provider (DAKP)"  # full title, not the bare acronym
     assert rig["source_info"]["description"]  # the former top-level graph description moved here
+    assert any("https://pmc.ncbi.nlm.nih.gov/articles/PMC11601480/" in citation for citation in rig["source_info"]["citations"])
+    assert rig["source_info"]["data_versioning_and_releases"]
     assert rig["source_info"]["terms_of_use_info"]
     assert all("https://" in location for location in rig["source_info"]["data_access_locations"])
+    # Supporting data sources: exactly the two edge-backed upstreams (no infores:medi — this
+    # rebuild text-mines contraindications from DailyMed SPL; no Drugs@FDA — it backs no edge).
+    supporting = rig["supporting_data_source_info"]
+    assert [entry["infores_id"] for entry in supporting] == ["infores:dailymed", "infores:faers"]
+    # Each entry's file location is the URL constant the acquisition layer actually downloads.
+    assert supporting[0]["relevant_files"][0]["location"] == tablassert_configs.dailymed_source.FULL_RELEASE_INDEX_URL
+    assert supporting[1]["relevant_files"][0]["location"] == tablassert_configs.faers_source.FDA_FAERS_INDEX_URL
+    assert all(entry["terms_of_use_info"]["terms_of_use_description"] for entry in supporting)
     assert rig["ingest_info"]["utility"]
     assert rig["ingest_info"]["scope"]
     assert rig["provenance_info"]["contributions"]
@@ -470,6 +482,217 @@ def test_graph_config_validates_against_installed_tablassert() -> None:
 
     graph = Graph.model_validate(yaml.safe_load(tablassert_configs.graph_yaml()))
     assert graph.rig.source_info.infores_id == INFORES_DAKP
+
+
+def test_rig_section_validates_directly_against_tablassert_rig_config() -> None:
+    """The ``rig:`` section passes the installed Tablassert's ``RIGConfig`` on its own.
+
+    Guards against Tablassert schema drift: the Graph-level ``model_validate`` test validates the
+    rig only as one nested field, so a RIG-schema change that renames or drops a source-info field
+    (citations, versioning) could hide behind ``Graph`` defaults. Validating the section DIRECTLY
+    pins the exact boundary Tablassert enforces when composing the RIG, and the content asserts
+    below pin the enriched human-authored facts — a schema rename must fail loudly here, not
+    silently shrink the generated RIG.
+    """
+    from tablassert.models import RIGConfig
+
+    rig = RIGConfig.model_validate(tablassert_configs.graph_config()["rig"])
+    source = rig.source_info
+    # Supporting upstreams validate as real RIGSupportingDataSourceInfo entries (infores CURIE +
+    # relevant-file URL checks included) and stay exactly the two edge-backed sources.
+    assert rig.supporting_data_source_info is not None
+    assert [entry.infores_id for entry in rig.supporting_data_source_info] == ["infores:dailymed", "infores:faers"]
+    assert source.name == "Drug Approvals Knowledge Provider (DAKP)"
+    assert source.citations is not None
+    assert any("https://pmc.ncbi.nlm.nih.gov/articles/PMC11601480/" in citation for citation in source.citations)
+    assert source.data_versioning_and_releases
+    # Kept fields must stay untouched: terms of use, access locations, mechanisms, formats, status.
+    assert source.terms_of_use_info.terms_of_use_url == "https://www.nlm.nih.gov/terms.html"
+    assert source.data_provision_mechanisms == ["file_download"]
+    assert source.data_formats == ["kgx"]
+    assert source.source_status == "maintained_regular_updates"
+
+
+def test_tablassert_rig_config_rejects_unknown_keys_and_bad_source_status() -> None:
+    """The installed ``RIGConfig`` schema really BITES: unknown keys and bad enums are rejected.
+
+    Guards the fail-loudly contract: every positive test above only proves the rig section is
+    ACCEPTED. If a future Tablassert relaxed to permissive extras (or a free-form source
+    status), those tests would keep passing while DINGO's RIG expectations silently stopped
+    being enforced. Mutating DEEP COPIES of the generated rig section (never ``_rig_config``
+    itself) must therefore raise: an unknown ``source_info`` key AND an out-of-enum
+    ``source_status`` each fail validation with an error naming the offending field.
+    """
+    from pydantic import ValidationError
+    from tablassert.models import RIGConfig
+
+    rig = tablassert_configs.graph_config()["rig"]
+
+    with_unknown_key = copy.deepcopy(rig)
+    with_unknown_key["source_info"]["not_a_rig_field"] = "surprise"
+    with pytest.raises(ValidationError) as extra_exc:
+        RIGConfig.model_validate(with_unknown_key)
+    assert "source_info.not_a_rig_field" in str(extra_exc.value)
+    assert "Extra inputs are not permitted" in str(extra_exc.value)
+
+    with_bad_status = copy.deepcopy(rig)
+    with_bad_status["source_info"]["source_status"] = "maintained_never"
+    with pytest.raises(ValidationError) as status_exc:
+        RIGConfig.model_validate(with_bad_status)
+    assert "source_info.source_status" in str(status_exc.value)
+
+    # The generator itself is untouched: the pristine section still validates.
+    assert RIGConfig.model_validate(rig).source_info.source_status == "maintained_regular_updates"
+
+
+def test_rig_supporting_data_source_info_lists_only_edge_backed_upstreams() -> None:
+    """``supporting_data_source_info`` carries exactly the two edge-backed upstreams — never MEDI.
+
+    The legacy pipeline's translator-ingests RIG also listed ``infores:medi``, but this rebuild
+    has no MEDI source module (contraindications are text-mined from DailyMed SPL), so a MEDI
+    entry would be fabricated provenance while a dropped entry would under-attribute the edges.
+    Pinning the exact id set through BOTH the raw config and the installed ``Graph`` model (i.e.
+    the committed YAML shape) makes either drift fail loudly.
+    """
+    from tablassert.models import Graph
+
+    ids = [entry["infores_id"] for entry in tablassert_configs.graph_config()["rig"]["supporting_data_source_info"]]
+    assert ids == ["infores:dailymed", "infores:faers"]
+    assert "infores:medi" not in ids  # legacy-pipeline source; no MEDI module backs it in this rebuild
+
+    graph = Graph.model_validate(yaml.safe_load(tablassert_configs.graph_yaml()))
+    supporting = graph.rig.supporting_data_source_info
+    assert supporting is not None
+    assert [entry.infores_id for entry in supporting] == ids
+
+
+def test_rig_ingest_info_enrichment() -> None:
+    """``ingest_info`` pins the explicit category, included/filtered content, and considerations.
+
+    DAKP CREATES knowledge (it builds assertion tables) rather than passing a source through, so
+    ``translator_knowledge_creator`` must be EXPLICIT, not merely the model default. The included
+    content pins ALL FOUR mined section kinds; the filtered content pins the approved-treats-only
+    approval gate and the section-kind filter; the future considerations pin the disease-only
+    qualifier policy and the approval-status coercion. The upstream RIG's legacy KGX output files must stay rejected — no
+    table section sources them, so Tablassert's RIG audit would fail the build. Asserting through
+    BOTH the raw config and the installed ``RIGConfig`` model makes any drift fail loudly.
+    """
+    from tablassert.models import RIGConfig
+
+    ingest = tablassert_configs.graph_config()["rig"]["ingest_info"]
+    assert ingest["ingest_categories"] == ["translator_knowledge_creator"]
+    # Kept grounded fields stay untouched, and the upstream RIG's legacy KGX-file relevant_files
+    # never appear (pipeline OUTPUT artifacts, not inputs).
+    assert ingest["utility"]
+    assert ingest["scope"]
+    assert all(not entry["file_name"].startswith("drug_approvals_kg") for entry in ingest["relevant_files"])
+    # Included content keeps the DailyMed entry (all FOUR mined section kinds) plus the FAERS entry.
+    included = ingest["included_content"]
+    assert [entry["file_name"] for entry in included] == ["DailyMed SPL sections", "FAERS quarterly ASCII zips"]
+    assert included[0]["included_records"] == (
+        "indications_and_usage (LOINC 34067-9), contraindications (LOINC 34070-3), boxed warnings (LOINC 34066-1), and "
+        "warnings/precautions (LOINC 43685-7, legacy 34071-1/42232-9) sections; FDA application numbers are carried "
+        "as provenance where available"
+    )
+    assert included[0]["fields_used"] == (
+        "indications_and_usage, contraindications, boxed-warning, and warnings/precautions section text, SPL set identifiers, FDA application numbers"
+    )
+    assert included[1]["included_records"] == "drug/indication case pairs; case counts"
+    # Both scope filters pinned: the approval gate is approved-treats-only (observed-use and
+    # text-mined contraindications are not approval-gated), and only the four mined section
+    # kinds survive the section filter.
+    filtered = ingest["filtered_content"]
+    assert [entry["file_name"] for entry in filtered] == ["DailyMed SPL indication sections", "DailyMed SPL sections"]
+    assert filtered[0]["filtered_records"] == "indication sections on SPL sets whose NDA lacks a DailyMed SPL approval"
+    assert filtered[0]["rationale"] == (
+        "approved-treats assertions require an FDA approval backing the indication; observed-use and "
+        "text-mined contraindication assertions are deliberately not approval-gated"
+    )
+    assert filtered[1]["filtered_records"] == (
+        "all SPL sections other than indications_and_usage (LOINC 34067-9), contraindications (LOINC 34070-3), "
+        "boxed warnings (LOINC 34066-1), and warnings/precautions (LOINC 43685-7, legacy 34071-1/42232-9)"
+    )
+    assert filtered[1]["rationale"] == "the remaining sections carry no treatment or contraindication evidence"
+    # Considerations carry ContentCategories members; the first defers the medication-context
+    # interaction assertion (disease_context_qualifier is intentionally disease-only).
+    considerations = ingest["future_considerations"]
+    assert considerations[0]["category"] == "edge_content"
+    assert "disease_context_qualifier" in considerations[0]["consideration"]
+
+    # The same facts must survive the installed Tablassert model (enum members coerce to their
+    # plain string values at validation time).
+    info = RIGConfig.model_validate(tablassert_configs.graph_config()["rig"]).ingest_info
+    assert info.ingest_categories == ["translator_knowledge_creator"]
+    assert info.included_content is not None
+    assert [entry.file_name for entry in info.included_content] == ["DailyMed SPL sections", "FAERS quarterly ASCII zips"]
+    assert info.filtered_content is not None
+    assert [entry.file_name for entry in info.filtered_content] == ["DailyMed SPL indication sections", "DailyMed SPL sections"]
+    assert info.future_considerations is not None
+    assert info.future_considerations[0].category == "edge_content"
+
+
+def test_rig_provenance_info_credits_named_contributors_and_artifacts() -> None:
+    """``provenance_info`` keeps the DINGO-reviewed contributors verbatim and adds Skye Lane Goetz.
+
+    The three upstream contributor statements must survive VERBATIM (the upstream RIG passed
+    DINGO review with them), and Skye Lane Goetz is credited because she authored the upstream
+    Tablassert feature this pipeline's provenance override requires (SkyeAv/Tablassert#104)
+    and co-authored the cited preprint (PMC11601480). People precede the pipeline/tooling
+    statements. ``RIGProvenanceInfo`` has ONLY ``contributions`` + ``artifacts``, so
+    validating through the installed model also proves no invented keys slip in.
+    """
+    from tablassert.models import RIGConfig
+
+    provenance = tablassert_configs.graph_config()["rig"]["provenance_info"]
+    contributions = provenance["contributions"]
+    assert contributions == [
+        "Gwenlyn Glusman - code author, domain expertise, data modeling",
+        "Matthew Brush - data modeling",
+        "Sierra Moxon - code, data modeling",
+        "Skye Lane Goetz - code author, pipeline engineering, Tablassert integration",
+        "DAKP pipeline (https://github.com/glusman-team/dakp): source acquisition, assertion modeling",
+        "Tablassert: KGX and RIG generation",
+    ]
+    assert "Skye Lane Goetz - code author, pipeline engineering, Tablassert integration" in contributions
+    assert provenance["artifacts"] == [
+        "DAKP pipeline repository: https://github.com/glusman-team/dakp",
+        (
+            "Upstream DINGO-reviewed DAKP RIG: https://github.com/NCATSTranslator/translator-ingests/blob/main/src/"
+            "translator_ingest/ingests/dakp/dakp_rig.yaml"
+        ),
+        "RIG review issue: https://github.com/NCATSTranslator/translator-ingests/issues/416",
+    ]
+
+    info = RIGConfig.model_validate(tablassert_configs.graph_config()["rig"]).provenance_info
+    assert info.contributions == contributions
+    assert info.artifacts == provenance["artifacts"]
+
+
+def test_rig_target_info_pins_modeling_considerations_and_rejects_type_summaries() -> None:
+    """``target_info`` carries ONLY the two ``RIGTargetInfoExtras`` fields, never type summaries.
+
+    The upstream RIG's ``target_info.edge_type_info`` / ``node_type_info`` are rejected
+    wholesale: Tablassert GENERATES node/edge type summaries from the observed build, so
+    hand-authored summaries would both fail validation and drift from the graph. The
+    consideration categories must be exact ``ModelingCategories`` members. Asserting through
+    BOTH the raw config and the installed ``RIGConfig`` model makes any drift fail loudly.
+    """
+    from tablassert.models import RIGConfig
+
+    target = tablassert_configs.graph_config()["rig"]["target_info"]
+    assert set(target) == {"future_considerations", "additional_notes"}
+    considerations = target["future_considerations"]
+    assert [entry["category"] for entry in considerations] == ["qualifiers", "edge_properties"]
+    assert "disease_context_qualifier" in considerations[0]["consideration"]
+    assert "approval_ids" in considerations[1]["consideration"]
+    assert any("generated by Tablassert" in note for note in target["additional_notes"])
+
+    info = RIGConfig.model_validate(tablassert_configs.graph_config()["rig"]).target_info
+    assert info is not None
+    assert info.future_considerations is not None
+    # ``use_enum_values``: validated ModelingCategories members compare as plain strings.
+    assert [entry.category for entry in info.future_considerations] == ["qualifiers", "edge_properties"]
+    assert info.additional_notes == target["additional_notes"]
 
 
 # --- emitted YAML is valid + faithful (round-trips through yaml.safe_load) --------

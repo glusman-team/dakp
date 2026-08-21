@@ -90,6 +90,7 @@ real Tablassert required.
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import os
@@ -154,7 +155,11 @@ _INFORES_RECORD_URLS: dict[str, list[str]] = {
 GRAPH_DESCRIPTION = (
     "Drug Approvals Knowledge Provider: FDA-approved treatment relationships, "
     "FAERS-observed applied-to-treat uses, and contraindications text-mined from "
-    "DailyMed, modeled from DailyMed, Drugs@FDA, and FAERS."
+    "DailyMed, modeled from DailyMed, Drugs@FDA, and FAERS. "
+    "Every edge carries the evidence identifiers backing it; approved-treats edges also carry "
+    "clinical approval status and FDA application numbers, FAERS-observed use edges add case "
+    "counts, and contraindication edges carry application numbers where available plus the "
+    "evidence prose backing them."
 )
 
 # --- RIG (Resource Ingest Guide) graph-config section -------------------------------
@@ -165,6 +170,23 @@ GRAPH_DESCRIPTION = (
 # ``relevant_files`` / ``included_content`` entries and the observed target summaries itself,
 # so only human-authored facts live here. The edge primary knowledge source derives from
 # ``rig.source_info.infores_id`` — it is no longer a graph-level key.
+#
+# Content is ADAPTED from the DINGO-reviewed upstream DAKP RIG — ``NCATSTranslator/
+# translator-ingests`` ``src/translator_ingest/ingests/dakp/dakp_rig.yaml`` (review issue
+# #416; both linked in :data:`RIG_PROVENANCE_ARTIFACTS`) — keeping the reviewed facts and
+# rejecting four upstream parts, each grounded in this repository:
+# * the ``infores:medi`` source entry: MEDI belongs to the LEGACY pipeline; this rebuild has
+#   no MEDI source module, so adopting it would be fabricated provenance (details on
+#   :data:`RIG_SUPPORTING_DATA_SOURCES`);
+# * the ``source_info`` CC BY 4.0 data-license claim: this repository carries NO evidence of
+#   a CC BY 4.0 data license (the code license is Apache-2.0 and the upstream feeds are US
+#   government public-domain data), so ``terms_of_use_info`` records the NLM/FDA terms instead;
+# * the legacy KGX-file ``relevant_files``: legacy-pipeline OUTPUT artifacts no table section
+#   sources; listing them would trip Tablassert's RIG audit (``rig-validation-failed``, see
+#   ``_rig_config``);
+# * the ``target_info`` node/edge type summaries: Tablassert GENERATES those from the observed
+#   build, so hand-authored ones would fail validation and drift (details on
+#   :data:`RIG_TARGET_FUTURE_CONSIDERATIONS`).
 
 #: Public URL prefix the generated KGX artifacts are published under; Tablassert appends each
 #: ``.nodes.ndjson`` / ``.edges.ndjson`` name to build RIG file locations. The GitHub repo URL
@@ -173,15 +195,225 @@ RIG_ARTIFACT_BASE_URL = "https://github.com/glusman-team/dakp"
 #: Workdir-relative directory ``build-kg`` writes the KGX + RIG artifacts into (the runner's cwd
 #: is the workdir root, so outputs stay in ``./data`` as before).
 RIG_ARTIFACT_BASE_PATH = "data"
+#: Full human-readable RIG source name — the bare acronym is ambiguous outside this repository,
+#: and downstream ingest maintainers index sources by this name.
+RIG_SOURCE_NAME = "Drug Approvals Knowledge Provider (DAKP)"
+#: RIG citations: the DAKP method preprint with its resolvable PMC landing page, so ingest
+#: maintainers can trace how the graph is produced. ``RIGSourceInfo.citations`` takes free-text,
+#: URL-bearing strings.
+RIG_CITATIONS = (
+    "Generating Biomedical Knowledge Graphs from Knowledge Bases, Registries, and Multiomic Data "
+    "(preprint): https://pmc.ncbi.nlm.nih.gov/articles/PMC11601480/",
+)
+#: RIG versioning statement. Interpolates the live package version so the prose can never drift
+#: from the version every build embeds in the graph config via ``graph_config(version=...)``.
+#: Freshness gates (see README "acquire"): DailyMed and Drugs@FDA re-downloads use the
+#: acquire-stage 7-day download-cache window; FAERS is cache-first content-addressed, no age gate.
+RIG_DATA_VERSIONING_AND_RELEASES = (
+    f"DAKP versions follow the Python package version (pyproject.toml, currently {__version__}); "
+    "every build embeds it in the graph config via graph_config(version=...). Re-ingests track "
+    "the upstream cadence: FAERS quarterly ASCII extracts and DailyMed SPL releases. DailyMed "
+    "and Drugs@FDA re-downloads are freshness-gated to a 7-day cache window; FAERS downloads "
+    "are content-addressed and cache-first, with no age gate."
+)
+#: RIG ``supporting_data_source_info``: the upstream data sources a DAKP graph derives its
+#: knowledge from. Exactly the TWO edge-backed upstreams, adapted from the DINGO-reviewed
+#: ``supporting_data_source_info`` of the upstream ``NCATSTranslator/translator-ingests`` DAKP
+#: RIG (names, descriptions, public-domain terms assessments), with each ``relevant_files[0]``
+#: location swapped for the URL constant DAKP's acquisition layer actually downloads, so the
+#: documented provenance can never drift from the download source. Unlike ``ingest_info``'s
+#: ``relevant_files`` (filtered per graph to the tables present and audit-cross-checked against
+#: table section sources), this section is free-form and always complete.
+#: NO ``infores:medi`` entry: this rebuild has no MEDI source module (``src/dakp_pipeline/sources/``
+#: is dailymed, drugsfda, faers only); contraindications are text-mined from DailyMed SPL
+#: (``_TABLE_SPECS`` upstream ``("infores:dailymed",)``, agent ``text_mining_agent``). MEDI
+#: belonged to the legacy pipeline — adopting it would be fabricated provenance.
+#: NO Drugs@FDA entry either: only the two EDGE-BACKED upstreams are listed; Drugs@FDA enriches
+#: assertions at build time (application joins) but backs no edge as a supporting source.
+RIG_SUPPORTING_DATA_SOURCES: tuple[dict[str, Any], ...] = (
+    {
+        "infores_id": "infores:dailymed",
+        "name": "DailyMed",
+        "description": (
+            "DailyMed provides trustworthy information about marketed drugs in the United States, "
+            "based on FDA Structured Product Labeling (SPL) documents. DAKP uses DailyMed to "
+            "identify FDA-approved drug-indication and drug-contraindication relationships."
+        ),
+        "terms_of_use_info": {
+            "terms_of_use_url": "https://dailymed.nlm.nih.gov/dailymed/",
+            "terms_of_use_description": "DailyMed data are freely available and in the public domain.",
+        },
+        "relevant_files": [
+            {
+                "file_name": "DailyMed Structured Product Labeling",
+                "location": dailymed_source.FULL_RELEASE_INDEX_URL,
+                "description": "Structured product labeling (SPL) documents for FDA-approved drugs",
+            }
+        ],
+    },
+    {
+        "infores_id": "infores:faers",
+        "name": "FDA Adverse Event Reporting System (FAERS)",
+        "description": (
+            "FAERS contains adverse event reports, medication error reports, and product quality "
+            "complaints submitted to the FDA. DAKP uses FAERS to derive drug-disease usage "
+            "relationships and case counts, including on-label and off-label use."
+        ),
+        "terms_of_use_info": {
+            "terms_of_use_url": (
+                "https://www.fda.gov/drugs/questions-and-answers-fdas-adverse-event-reporting-system-faers/"
+                "fda-adverse-event-reporting-system-faers-quarterly-data-extract-files"
+            ),
+            "terms_of_use_description": "FAERS data files are in the public domain and freely available for download.",
+        },
+        "relevant_files": [
+            {
+                "file_name": "FAERS Quarterly Data Files",
+                "location": faers_source.FDA_FAERS_INDEX_URL,
+                "description": "Quarterly data files containing adverse event reports",
+            }
+        ],
+    },
+)
+#: RIG ``ingest_info.included_content``: the upstream record types DAKP pulls into the graph.
+#: ``fields_used`` names exactly what the assertion tables consume from SPL — the four mined
+#: section kinds' text (indications_and_usage, contraindications, boxed warnings,
+#: warnings/precautions), SPL set identifiers feeding ``has_evidence``, and FDA application
+#: numbers feeding ``approval_ids``. Unlike ``relevant_files``, ``included_content`` is NOT
+#: audit-cross-checked by Tablassert, so these entries document intent rather than gate the build.
+RIG_INCLUDED_CONTENT: tuple[dict[str, str], ...] = (
+    {
+        "file_name": "DailyMed SPL sections",
+        "included_records": (
+            "indications_and_usage (LOINC 34067-9), contraindications (LOINC 34070-3), "
+            "boxed warnings (LOINC 34066-1), and warnings/precautions (LOINC 43685-7, legacy "
+            "34071-1/42232-9) sections; FDA application numbers are carried as provenance where available"
+        ),
+        "fields_used": (
+            "indications_and_usage, contraindications, boxed-warning, and warnings/precautions section text, "
+            "SPL set identifiers, FDA application numbers"
+        ),
+    },
+    {"file_name": "FAERS quarterly ASCII zips", "included_records": "drug/indication case pairs; case counts"},
+)
+#: RIG ``ingest_info.filtered_content``: what DAKP deliberately drops from the upstream feeds,
+#: and why. Both entries restate the pipeline's actual scope gates: approved-treats assertions
+#: require an approval-backed indication (``assertions/approved_treats.py`` rule 2), and the
+#: assertion modules mine only the four section kinds listed in :data:`RIG_INCLUDED_CONTENT`
+#: (``assertions/contraindications.py`` passes 1-3).
+RIG_FILTERED_CONTENT: tuple[dict[str, str], ...] = (
+    {
+        "file_name": "DailyMed SPL indication sections",
+        "filtered_records": "indication sections on SPL sets whose NDA lacks a DailyMed SPL approval",
+        "rationale": (
+            "approved-treats assertions require an FDA approval backing the indication; observed-use and "
+            "text-mined contraindication assertions are deliberately not approval-gated"
+        ),
+    },
+    {
+        "file_name": "DailyMed SPL sections",
+        "filtered_records": (
+            "all SPL sections other than indications_and_usage (LOINC 34067-9), contraindications (LOINC 34070-3), "
+            "boxed warnings (LOINC 34066-1), and warnings/precautions (LOINC 43685-7, legacy 34071-1/42232-9)"
+        ),
+        "rationale": "the remaining sections carry no treatment or contraindication evidence",
+    },
+)
+#: RIG ingest-level ``future_considerations``: content DAKP deliberately defers, each grounded in
+#: code — the medication-context note is the ``_TABLE_QUALIFIERS`` disease-only policy, and the
+#: status-coercion note is the ``ClinicalApprovalStatusEnum`` membership rule documented in
+#: ``assertions/observed_uses.py``.
+RIG_INGEST_FUTURE_CONSIDERATIONS: tuple[dict[str, str], ...] = (
+    {
+        "category": "edge_content",
+        "consideration": (
+            "A drug-drug chemical-entity interaction assertion for medication context (currently "
+            "the disease_context_qualifier is intentionally disease-only; medications belong in a "
+            "future interaction assertion)"
+        ),
+        "relevant_files": "DailyMed SPL contraindication sections",
+    },
+    {
+        "category": "edge_property_content",
+        "consideration": (
+            "clinical_approval_status is a first-class Biolink ClinicalApprovalStatusEnum field, "
+            "so values outside the enum cannot be preserved: the legacy FAERS observed_use status "
+            "is coerced to not_provided (degraded mode). Revisit if Biolink adds a dedicated "
+            "observation status."
+        ),
+    },
+)
+
+
+#: RIG ``provenance_info.contributions``: the PEOPLE first, then the pipeline/tooling
+#: statements. The first three are VERBATIM from the DINGO-reviewed upstream
+#: ``NCATSTranslator/translator-ingests`` DAKP RIG. Skye Lane Goetz is added because she
+#: authored the upstream Tablassert feature this pipeline's provenance override requires
+#: (``ManualProvenance.upstream_source_record_urls``, SkyeAv/Tablassert#104) and co-authored
+#: the cited DAKP method preprint (PMC11601480).
+RIG_CONTRIBUTIONS: tuple[str, ...] = (
+    "Gwenlyn Glusman - code author, domain expertise, data modeling",
+    "Matthew Brush - data modeling",
+    "Sierra Moxon - code, data modeling",
+    "Skye Lane Goetz - code author, pipeline engineering, Tablassert integration",
+    "DAKP pipeline (https://github.com/glusman-team/dakp): source acquisition, assertion modeling",
+    "Tablassert: KGX and RIG generation",
+)
+#: RIG ``provenance_info.artifacts``: external provenance artifacts — this pipeline's
+#: repository, the upstream DINGO-reviewed DAKP RIG this one descends from, and that RIG's
+#: review ticket.
+RIG_PROVENANCE_ARTIFACTS: tuple[str, ...] = (
+    "DAKP pipeline repository: https://github.com/glusman-team/dakp",
+    "Upstream DINGO-reviewed DAKP RIG: https://github.com/NCATSTranslator/translator-ingests/blob/main/src/translator_ingest/ingests/dakp/dakp_rig.yaml",
+    "RIG review issue: https://github.com/NCATSTranslator/translator-ingests/issues/416",
+)
+#: RIG ``target_info`` modeling future considerations. The upstream DAKP RIG's
+#: ``target_info.edge_type_info`` / ``node_type_info`` are REJECTED wholesale: Tablassert's
+#: ``RIGTargetInfoExtras`` accepts ONLY ``future_considerations`` + ``additional_notes``
+#: because node/edge type summaries are GENERATED by Tablassert from the observed build —
+#: hand-written summaries would fail validation and drift from the graph. Categories are
+#: exact ``tablassert.enums.ModelingCategories`` members.
+RIG_TARGET_FUTURE_CONSIDERATIONS: tuple[dict[str, str], ...] = (
+    {
+        "category": "qualifiers",
+        "consideration": (
+            "disease_context_qualifier is intentionally disease-only and sparse-nullable; revisit when a chemical-entity interaction assertion exists"
+        ),
+    },
+    {
+        "category": "edge_properties",
+        "consideration": (
+            "approval_ids stays a curated top-level edge field (Tablassert >= 12 carve-out); "
+            "monitor whether Biolink gains a standard slot for FDA application numbers"
+        ),
+    },
+)
+#: RIG ``target_info.additional_notes``: records that the type summaries are machine-generated
+#: per build, so nobody re-authors them here.
+RIG_TARGET_ADDITIONAL_NOTES: tuple[str, ...] = (
+    "Node and edge type summaries are generated by Tablassert from the observed build, not authored in this configuration.",
+)
 
 
 def _rig_config(tables: list[str]) -> dict[str, Any]:
     """The required ``rig:`` graph-config section (Tablassert >= 11), all constants.
 
-    Shape verified against ``tablassert.models.RIGConfig``: ``source_info`` (infores id,
-    non-empty terms-of-use assessment, URL-bearing data access locations, source status),
-    ``ingest_info`` (authored utility/scope, upstream relevant files + included content),
-    ``provenance_info`` (contributions), and the artifact base URL/path pair.
+    Content is ADAPTED from the DINGO-reviewed upstream DAKP RIG (``NCATSTranslator/
+    translator-ingests`` ``src/translator_ingest/ingests/dakp/dakp_rig.yaml``, review issue
+    #416); the full adoption/rejection rationale lives in the section-header comment above
+    the RIG constants.
+
+    Shape verified against ``tablassert.models.RIGConfig`` (pinned directly by
+    ``test_rig_section_validates_directly_against_tablassert_rig_config``):
+    ``supporting_data_source_info`` (the two edge-backed upstreams,
+    :data:`RIG_SUPPORTING_DATA_SOURCES`), ``source_info``
+    (infores id, full source name, description + citation, non-empty terms-of-use assessment,
+    URL-bearing data access locations, versioning story, source status),
+    ``ingest_info`` (explicit ingest category, authored utility/scope, per-table upstream
+    relevant files + included/filtered content + future considerations),
+    ``target_info`` (modeling future considerations + generated-summary note; upstream type
+    summaries rejected), ``provenance_info`` (named contributors + pipeline/tooling
+    contributions, provenance artifact links), and the artifact base URL/path pair.
 
     ``relevant_files`` is filtered to the upstream URLs of the tables actually IN this graph:
     Tablassert's RIG audit fails the build when a configured relevant-file matches no table
@@ -202,12 +434,20 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
         },
         # No Drugs@FDA entry: no assertion table declares it as a section source (it is joined
         # in upstream, at assertion-build time), so the RIG audit would reject it.
+        # REJECTED from the upstream ``NCATSTranslator/translator-ingests`` DAKP RIG: its legacy
+        # KGX-file ``relevant_files`` (``drug_approvals_kg_{edges,nodes}.jsonl.gz`` at
+        # db.systemsbiology.net) are legacy pipeline OUTPUT artifacts, not inputs; no table
+        # section sources them here, so Tablassert's RIG audit would fail the build
+        # (``rig-validation-failed``).
     ]
     return {
+        # Deep copies: the returned config dict must never alias the module-level constants.
+        "supporting_data_source_info": [copy.deepcopy(entry) for entry in RIG_SUPPORTING_DATA_SOURCES],
         "source_info": {
             "infores_id": INFORES_DAKP,
-            "name": "DAKP",
+            "name": RIG_SOURCE_NAME,
             "description": GRAPH_DESCRIPTION,
+            "citations": list(RIG_CITATIONS),
             "terms_of_use_info": {
                 "terms_of_use_url": "https://www.nlm.nih.gov/terms.html",
                 "terms_of_use_description": (
@@ -222,9 +462,14 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
             ],
             "data_provision_mechanisms": ["file_download"],
             "data_formats": ["kgx"],
+            "data_versioning_and_releases": RIG_DATA_VERSIONING_AND_RELEASES,
             "source_status": "maintained_regular_updates",
         },
         "ingest_info": {
+            # Explicit even though it equals the ``RIGIngestInfo`` default: DAKP CREATES
+            # knowledge (the assertion tables this pipeline builds) rather than passing a source
+            # through, and the upstream DAKP RIG declares the same category.
+            "ingest_categories": ["translator_knowledge_creator"],
             "utility": (
                 "Provides FDA-approved drug-disease treatment relationships, FAERS-observed "
                 "applied-to-treat uses, and SPL-mined contraindications for Translator querying."
@@ -235,22 +480,15 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
                 "DailyMed SPL sections; all other content of the upstream feeds is out of scope."
             ),
             "relevant_files": [entry for entry in relevant_files if entry["location"] in included_urls],
-            "included_content": [
-                {
-                    "file_name": "DailyMed SPL sections",
-                    "included_records": (
-                        "indications_and_usage (LOINC 34067-9) and contraindications (LOINC 34070-3) "
-                        "sections on SPL sets bearing FDA approval numbers"
-                    ),
-                }
-            ],
+            "included_content": [copy.deepcopy(entry) for entry in RIG_INCLUDED_CONTENT],
+            "filtered_content": [copy.deepcopy(entry) for entry in RIG_FILTERED_CONTENT],
+            "future_considerations": [copy.deepcopy(entry) for entry in RIG_INGEST_FUTURE_CONSIDERATIONS],
         },
-        "provenance_info": {
-            "contributions": [
-                "DAKP pipeline (https://github.com/glusman-team/dakp): source acquisition, assertion modeling",
-                "Tablassert: KGX and RIG generation",
-            ]
+        "target_info": {
+            "future_considerations": [copy.deepcopy(entry) for entry in RIG_TARGET_FUTURE_CONSIDERATIONS],
+            "additional_notes": list(RIG_TARGET_ADDITIONAL_NOTES),
         },
+        "provenance_info": {"contributions": list(RIG_CONTRIBUTIONS), "artifacts": list(RIG_PROVENANCE_ARTIFACTS)},
         "artifact_base_url": RIG_ARTIFACT_BASE_URL,
         "artifact_base_path": RIG_ARTIFACT_BASE_PATH,
     }

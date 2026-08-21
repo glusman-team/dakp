@@ -63,6 +63,18 @@ acquire ─▶ extract ─▶ NER ─▶ aggregate ─▶ Tablassert KGX handoff
 | observed-use | `biolink:applied_to_treat` | drug → disease/phenotype |
 | contraindication | `biolink:contraindicated_in` | drug → disease/phenotype |
 
+## Resource Ingest Guide (RIG)
+
+A Resource Ingest Guide is the Translator-standard document telling ingest maintainers how a
+knowledge source is produced, what it contains, and who to credit. The graph config carries
+one adapted from the Translator ingest working group's DINGO-reviewed DAKP RIG in
+[NCATSTranslator/translator-ingests](https://github.com/NCATSTranslator/translator-ingests)
+(review issue #416), grounded in this repository's actual download URLs, sources, and pipeline
+behavior. `tables/graph.yaml` is generated from the pipeline's `_rig_config()` — regenerate
+it, never hand-edit: the pipeline's `generate` task (`src/dakp_pipeline/tablassert.py`)
+rewrites it into the run workdir, and the committed copy at the repo root must byte-equal
+that output (the test suite enforces the match).
+
 ## Prerequisites
 
 - [`uv`](https://docs.astral.sh/uv/) — `uv sync` installs every Python dependency (Airflow 3,
