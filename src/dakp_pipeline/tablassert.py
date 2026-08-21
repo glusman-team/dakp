@@ -154,7 +154,9 @@ _INFORES_RECORD_URLS: dict[str, list[str]] = {
 GRAPH_DESCRIPTION = (
     "Drug Approvals Knowledge Provider: FDA-approved treatment relationships, "
     "FAERS-observed applied-to-treat uses, and contraindications text-mined from "
-    "DailyMed, modeled from DailyMed, Drugs@FDA, and FAERS."
+    "DailyMed, modeled from DailyMed, Drugs@FDA, and FAERS. "
+    "Every drug-disease edge carries its FDA approval status, FDA application numbers, "
+    "and the evidence identifiers backing it; FAERS-observed uses additionally carry case counts."
 )
 
 # --- RIG (Resource Ingest Guide) graph-config section -------------------------------
@@ -173,13 +175,34 @@ RIG_ARTIFACT_BASE_URL = "https://github.com/glusman-team/dakp"
 #: Workdir-relative directory ``build-kg`` writes the KGX + RIG artifacts into (the runner's cwd
 #: is the workdir root, so outputs stay in ``./data`` as before).
 RIG_ARTIFACT_BASE_PATH = "data"
+#: Full human-readable RIG source name — the bare acronym is ambiguous outside this repository,
+#: and downstream ingest maintainers index sources by this name.
+RIG_SOURCE_NAME = "Drug Approvals Knowledge Provider (DAKP)"
+#: RIG citations: the DAKP method preprint with its resolvable PMC landing page, so ingest
+#: maintainers can trace how the graph is produced. ``RIGSourceInfo.citations`` takes free-text,
+#: URL-bearing strings.
+RIG_CITATIONS = (
+    "Generating Biomedical Knowledge Graphs from Knowledge Bases, Registries, and Multiomic Data "
+    "(preprint): https://pmc.ncbi.nlm.nih.gov/articles/PMC11601480/",
+)
+#: RIG versioning statement. Interpolates the live package version so the prose can never drift
+#: from the version every build embeds in the graph config via ``graph_config(version=...)``.
+#: The freshness gate is the acquire-stage 7-day download-cache window (see README "acquire").
+RIG_DATA_VERSIONING_AND_RELEASES = (
+    f"DAKP versions follow the Python package version (pyproject.toml, currently {__version__}); "
+    "every build embeds it in the graph config via graph_config(version=...). Re-ingests track "
+    "the upstream cadence: FAERS quarterly ASCII extracts and DailyMed SPL releases, whose "
+    "re-downloads are freshness-gated to a 7-day cache window."
+)
 
 
 def _rig_config(tables: list[str]) -> dict[str, Any]:
     """The required ``rig:`` graph-config section (Tablassert >= 11), all constants.
 
-    Shape verified against ``tablassert.models.RIGConfig``: ``source_info`` (infores id,
-    non-empty terms-of-use assessment, URL-bearing data access locations, source status),
+    Shape verified against ``tablassert.models.RIGConfig`` (pinned directly by
+    ``test_rig_section_validates_directly_against_tablassert_rig_config``): ``source_info``
+    (infores id, full source name, description + citation, non-empty terms-of-use assessment,
+    URL-bearing data access locations, versioning story, source status),
     ``ingest_info`` (authored utility/scope, upstream relevant files + included content),
     ``provenance_info`` (contributions), and the artifact base URL/path pair.
 
@@ -206,8 +229,9 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
     return {
         "source_info": {
             "infores_id": INFORES_DAKP,
-            "name": "DAKP",
+            "name": RIG_SOURCE_NAME,
             "description": GRAPH_DESCRIPTION,
+            "citations": list(RIG_CITATIONS),
             "terms_of_use_info": {
                 "terms_of_use_url": "https://www.nlm.nih.gov/terms.html",
                 "terms_of_use_description": (
@@ -222,6 +246,7 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
             ],
             "data_provision_mechanisms": ["file_download"],
             "data_formats": ["kgx"],
+            "data_versioning_and_releases": RIG_DATA_VERSIONING_AND_RELEASES,
             "source_status": "maintained_regular_updates",
         },
         "ingest_info": {

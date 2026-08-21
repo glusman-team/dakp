@@ -454,7 +454,10 @@ def test_graph_config_structure() -> None:
         assert legacy_key not in graph
     rig = graph["rig"]
     assert rig["source_info"]["infores_id"] == INFORES_DAKP
+    assert rig["source_info"]["name"] == "Drug Approvals Knowledge Provider (DAKP)"  # full title, not the bare acronym
     assert rig["source_info"]["description"]  # the former top-level graph description moved here
+    assert any("https://pmc.ncbi.nlm.nih.gov/articles/PMC11601480/" in citation for citation in rig["source_info"]["citations"])
+    assert rig["source_info"]["data_versioning_and_releases"]
     assert rig["source_info"]["terms_of_use_info"]
     assert all("https://" in location for location in rig["source_info"]["data_access_locations"])
     assert rig["ingest_info"]["utility"]
@@ -470,6 +473,30 @@ def test_graph_config_validates_against_installed_tablassert() -> None:
 
     graph = Graph.model_validate(yaml.safe_load(tablassert_configs.graph_yaml()))
     assert graph.rig.source_info.infores_id == INFORES_DAKP
+
+
+def test_rig_section_validates_directly_against_tablassert_rig_config() -> None:
+    """The ``rig:`` section passes the installed Tablassert's ``RIGConfig`` on its own.
+
+    Guards against Tablassert schema drift: the Graph-level ``model_validate`` test validates the
+    rig only as one nested field, so a RIG-schema change that renames or drops a source-info field
+    (citations, versioning) could hide behind ``Graph`` defaults. Validating the section DIRECTLY
+    pins the exact boundary Tablassert enforces when composing the RIG, and the content asserts
+    below pin the enriched human-authored facts — a schema rename must fail loudly here, not
+    silently shrink the generated RIG.
+    """
+    from tablassert.models import RIGConfig
+
+    source = RIGConfig.model_validate(tablassert_configs.graph_config()["rig"]).source_info
+    assert source.name == "Drug Approvals Knowledge Provider (DAKP)"
+    assert source.citations is not None
+    assert any("https://pmc.ncbi.nlm.nih.gov/articles/PMC11601480/" in citation for citation in source.citations)
+    assert source.data_versioning_and_releases
+    # Kept fields must stay untouched: terms of use, access locations, mechanisms, formats, status.
+    assert source.terms_of_use_info.terms_of_use_url == "https://www.nlm.nih.gov/terms.html"
+    assert source.data_provision_mechanisms == ["file_download"]
+    assert source.data_formats == ["kgx"]
+    assert source.source_status == "maintained_regular_updates"
 
 
 # --- emitted YAML is valid + faithful (round-trips through yaml.safe_load) --------

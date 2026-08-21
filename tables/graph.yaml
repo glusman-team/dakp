@@ -4,12 +4,16 @@ fullmap: ".fullmap"
 rig:
   source_info:
     infores_id: "infores:multiomics-drugapprovals"
-    name: DAKP
+    name: "Drug Approvals Knowledge Provider (DAKP)"
     description: >-
       Drug Approvals Knowledge Provider: FDA-approved treatment
       relationships, FAERS-observed applied-to-treat uses, and
       contraindications text-mined from DailyMed, modeled from DailyMed,
-      Drugs@FDA, and FAERS.
+      Drugs@FDA, and FAERS. Every drug-disease edge carries its FDA approval
+      status, FDA application numbers, and the evidence identifiers backing
+      it; FAERS-observed uses additionally carry case counts.
+    citations:
+      - "Generating Biomedical Knowledge Graphs from Knowledge Bases, Registries, and Multiomic Data (preprint): https://pmc.ncbi.nlm.nih.gov/articles/PMC11601480/"
     terms_of_use_info:
       terms_of_use_url: "https://www.nlm.nih.gov/terms.html"
       terms_of_use_description: >-
@@ -23,6 +27,12 @@ rig:
       - file_download
     data_formats:
       - kgx
+    data_versioning_and_releases: >-
+      DAKP versions follow the Python package version (pyproject.toml,
+      currently 1.0.0); every build embeds it in the graph config via
+      graph_config(version=...). Re-ingests track the upstream cadence:
+      FAERS quarterly ASCII extracts and DailyMed SPL releases, whose
+      re-downloads are freshness-gated to a 7-day cache window.
     source_status: maintained_regular_updates
   ingest_info:
     utility: >-
