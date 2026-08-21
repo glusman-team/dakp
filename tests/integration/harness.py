@@ -7,8 +7,9 @@ outside the coverage ``source`` (``src/``), and adds no run-config concepts of i
 explicit ``params`` it forwards to :func:`dakp_pipeline.runtime.build_context`.
 
 WHY a harness and not per-test wiring: the four end-to-end integration tests (semantic-equivalence,
-offline-pipeline, prod-smoke, KGX) all run the identical acquire -> extract -> shape -> Tablassert ->
-contract/regression -> summary sequence. Centralizing it in one place means a stage signature
+offline-pipeline, prod-smoke, KGX) all run the identical acquire -> extract -> MEDliNER export ->
+shape -> Tablassert -> contract/regression -> summary sequence. Centralizing it in one place means
+a stage signature
 change touches one call site, the byte-determinism re-run uses the exact same path as the first
 run, and monkeypatch boundaries stay identical across tests.
 
@@ -33,6 +34,7 @@ from typing import Any
 import pytest
 
 from dakp_pipeline import legacy_tsv as _legacy_tsv
+from dakp_pipeline import medliner_export as _medliner_export
 from dakp_pipeline import tablassert as _tablassert
 from dakp_pipeline import translator
 from dakp_pipeline.assertions import approved_treats, contraindications, observed_uses
@@ -60,6 +62,9 @@ class StageResult:
     workdir: Workdir
     tables: dict[str, TableOutput] = field(default_factory=dict)
     build_summary: Path | None = None
+    #: The three MEDliNER export-bundle refs ([manifest, candidates, gold]); empty if the
+    #: export stage did not run.
+    medliner_export_refs: list[ArtifactRef] = field(default_factory=list)
 
     def table(self, name: str) -> TableOutput:
         if name not in self.tables:
@@ -98,13 +103,15 @@ def install_fixture_fetchers(monkeypatch: pytest.MonkeyPatch) -> None:
 def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: Mapping[str, Any] | None = None) -> StageResult:
     """Wire the DAKP stages exactly as the Airflow DAG does, end-to-end.
 
-    Stages: acquire -> extract -> shape assertions -> generate Tablassert configs -> Tablassert
-    handoff -> legacy TSV export -> translator contract + regression -> build summary. The same
-    sequence the DAG drives; the only difference is this runs Airflow-free in-process so the
-    tests exercise the real stage functions (and the pure-Python reference extractors) with full
-    monkeypatch control. ``params`` carries the explicit run behavior (``run_tablassert``,
-    ``quarter_limit``, ``release_limit``, ``fullmap``); fetchers run their real branches unless a
-    test monkeypatches them (see :func:`install_fixture_fetchers`).
+    Stages: acquire -> extract -> MEDliNER export -> shape assertions -> generate Tablassert
+    configs -> Tablassert handoff -> legacy TSV export -> translator contract + regression ->
+    build summary. The same sequence the DAG drives (the MEDliNER export branches off the
+    DailyMed + FAERS extracts as a leaf hand-off the summary does not wait on); the only
+    difference is this runs Airflow-free in-process so the tests exercise the real stage
+    functions (and the pure-Python reference extractors) with full monkeypatch control.
+    ``params`` carries the explicit run behavior (``run_tablassert``, ``quarter_limit``,
+    ``release_limit``, ``fullmap``); fetchers run their real branches unless a test
+    monkeypatches them (see :func:`install_fixture_fetchers`).
     """
     wd = Workdir(Path(workdir))
     wd.create()
@@ -121,6 +128,11 @@ def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: 
     dm_ext = spl_xml.extract(dm_raw, ctx)
     faers_ext = faers_ascii.extract(faers_raw, ctx)
     drugsfda_ext = drugsfda_products.extract(drugsfda_raw, ctx)
+
+    # 2b. MEDliNER training-data export: a leaf hand-off bundle consuming ONLY the DailyMed +
+    # FAERS extracts (the DAG's `medliner` group runs it in parallel with the shape stage, and
+    # the build summary is not gated on it).
+    medliner_refs = _medliner_export.export([*dm_ext, *faers_ext], ctx)
 
     # 3. Shape assertion tables (uncompressed TSV, Tablassert-facing). Observed-uses consumes the
     # produced approved-treats table for its approval-status cross-reference (as the DAG wires it).
@@ -144,7 +156,7 @@ def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: 
     build_summary = write_build_summary(wd, assertion_refs, kgx_refs, report, regression_report, legacy_tsv_refs=legacy_refs)
 
     tables = {ref.uri.stem: TableOutput(ref.uri.stem, ref.uri, ref.rows or 0) for ref in assertion_refs}
-    return StageResult(workdir=wd, tables=tables, build_summary=build_summary)
+    return StageResult(workdir=wd, tables=tables, build_summary=build_summary, medliner_export_refs=medliner_refs)
 
 
 __all__ = ["StageResult", "TableOutput", "install_fixture_fetchers", "run_stages"]

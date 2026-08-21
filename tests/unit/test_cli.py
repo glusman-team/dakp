@@ -15,9 +15,13 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from dakp_pipeline import cli
+from dakp_pipeline.paths import Workdir
+
+_FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
 # --- helpers ----------------------------------------------------------------------
 
@@ -610,4 +614,147 @@ def test_cache_clear_refuses_when_the_server_survives_sigterm(
 def test_cache_clear_command_raises_systemexit(sandbox: Path) -> None:
     with pytest.raises(SystemExit) as excinfo:
         cli.clear()
+    assert excinfo.value.code == 0
+
+
+# --- export-medliner (MEDliNER training-data bundle) ------------------------------
+
+
+def _write_interim_tables(workdir: Path) -> None:
+    """Materialize the two interim tables the export consumes (minimal but real parquets)."""
+    interim = Workdir(workdir).interim
+    (interim / "dailymed").mkdir(parents=True, exist_ok=True)
+    (interim / "faers").mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "spl_document_id": ["set-1", "set-2"],
+            "loinc_code": ["34070-3", "34067-9"],
+            "section_text": ["Contraindicated in patients with active liver disease.", "For the treatment of headache."],
+        }
+    ).write_parquet(interim / "dailymed" / "spl_documents.parquet")
+    pl.DataFrame(
+        {
+            "quarter": ["24Q3", "24Q3"],
+            "primaryid": ["1001", "1002"],
+            "drugname": ["EXAMPLESTATIN", "EXAMPLESTATIN"],
+            "indication": ["headache", "hypercholesterolemia"],
+        }
+    ).write_parquet(interim / "faers" / "cases.parquet")
+
+
+def test_export_medliner_happy_path_copies_to_out(sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Default mode exports from a materialized workdir — no acquisition, no downloads."""
+    workdir = sandbox / "materialized"
+    _write_interim_tables(workdir)
+    out = sandbox / "bundle"
+
+    code = cli.run_export_medliner(out=str(out), workdir=str(workdir))
+
+    assert code == 0
+    assert "bundle ready" in capsys.readouterr().out
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == "dakp.medliner.export.v1"
+    # 2 DailyMed sections (one per export LOINC) + 2 FAERS indications.
+    assert manifest["files"]["candidates.jsonl"]["rows"] == 4
+    assert manifest["task_counts"] == {"contraindication": 1, "indication": 3}
+    assert manifest["family_counts"] == {"dailymed": 2, "faers": 2}
+    # The store copy (where the export stage writes) exists alongside the --out copy.
+    assert (workdir / "data" / "store" / "medliner-export" / "manifest.json").exists()
+
+
+def test_export_medliner_default_out_is_the_store_bundle(sandbox: Path) -> None:
+    """Without --out/--workdir the bundle stays where the export stage wrote it (no copy)."""
+    _write_interim_tables(sandbox / "work")  # the sandbox fixture points _DEFAULT_WORKDIR here
+
+    code = cli.run_export_medliner()
+
+    assert code == 0
+    bundle = sandbox / "work" / "data" / "store" / "medliner-export"
+    assert sorted(path.name for path in bundle.iterdir()) == ["candidates.jsonl", "manifest.json", "ner_gold.json"]
+
+
+def test_export_medliner_missing_interim_tables_fail_loudly(sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """An unmaterialized workdir is a loud error naming BOTH tables — never a download."""
+    code = cli.run_export_medliner()
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "!!!" in out
+    assert "dailymed/spl_documents.parquet" in out
+    assert "faers/cases.parquet" in out
+    assert "never downloads" in out
+    assert not (sandbox / "work" / "data" / "store" / "medliner-export").exists()  # no partial bundle
+
+
+def test_export_medliner_names_only_the_missing_table(sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """When one interim table exists, the error names exactly the one that is missing."""
+    interim = sandbox / "work" / "data" / "interim" / "dailymed"
+    interim.mkdir(parents=True)
+    (interim / "spl_documents.parquet").write_bytes(b"payload")
+
+    code = cli.run_export_medliner()
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "faers/cases.parquet" in out
+    assert out.count(".parquet") == 1  # only the missing table is named
+
+
+def test_export_medliner_fixtures_runs_reference_extractors_offline(
+    monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--fixtures runs the REAL reference extractors over the committed pipeline fixtures.
+
+    WHY: the offline path must produce the identical bundle shape a materialized workdir does,
+    with no network — it is also the documented way to regenerate MEDliNER's sample bundle.
+    """
+    monkeypatch.setattr(cli, "_DEFAULT_FIXTURE_ROOT", _FIXTURE_ROOT)  # restore the real fixtures
+
+    code = cli.run_export_medliner(fixtures=True)
+
+    assert code == 0
+    assert "bundle ready" in capsys.readouterr().out
+    bundle = sandbox / "work" / "data" / "store" / "medliner-export"
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == "dakp.medliner.export.v1"
+    assert manifest["files"]["candidates.jsonl"]["rows"] > 0
+    assert manifest["family_counts"]["dailymed"] > 0
+    assert manifest["family_counts"]["faers"] > 0
+    # The reference extractors materialized the interim layer on the way through.
+    assert (sandbox / "work" / "data" / "interim" / "dailymed" / "spl_documents.parquet").exists()
+    assert (sandbox / "work" / "data" / "interim" / "faers" / "cases.parquet").exists()
+
+
+def test_export_medliner_fixtures_missing_fixture_raises_loudly(sandbox: Path) -> None:
+    """A missing fixture file surfaces as a loud FileNotFoundError from ctx.fixture.
+
+    The sandbox points _DEFAULT_FIXTURE_ROOT at an absent dir; the error must propagate rather
+    than producing a silently empty bundle.
+    """
+    with pytest.raises(FileNotFoundError, match="fixture not found"):
+        cli.run_export_medliner(fixtures=True)
+
+
+def test_copy_export_bundle_overwrites_only_the_known_files(tmp_path: Path) -> None:
+    """An already-populated --out dir: the three bundle files overwrite; nothing else is touched."""
+    src = tmp_path / "src"
+    src.mkdir()
+    for name, body in (("manifest.json", "{}"), ("candidates.jsonl", '{"a": 1}\n'), ("ner_gold.json", '{"gold": true}')):
+        (src / name).write_text(body, encoding="utf-8")
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "unrelated.txt").write_text("keep me", encoding="utf-8")
+    (out / "manifest.json").write_text("stale", encoding="utf-8")
+
+    paths = cli.copy_export_bundle(src, out)
+
+    assert set(paths) == {"manifest.json", "candidates.jsonl", "ner_gold.json"}
+    assert (out / "manifest.json").read_text(encoding="utf-8") == "{}"
+    assert (out / "unrelated.txt").read_text(encoding="utf-8") == "keep me"
+
+
+def test_export_medliner_command_raises_systemexit(sandbox: Path) -> None:
+    _write_interim_tables(sandbox / "work")
+    with pytest.raises(SystemExit) as excinfo:
+        cli.export_medliner()
     assert excinfo.value.code == 0

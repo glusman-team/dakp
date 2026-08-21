@@ -50,7 +50,7 @@ CONFIG_VARIABLE = "dakp_config"
 _DAG_DOC_MD = """
 ### DAKP build stages
 
-The DAG is organized into six visual TaskGroups while preserving the historical task IDs:
+The DAG is organized into seven visual TaskGroups while preserving the historical task IDs:
 
 1. **acquire** — network/model acquisition, bounded by `dakp_download`.
 2. **extract** — native Go SDK stubs on the `golang` queue, bounded by `dakp_extract`.
@@ -60,7 +60,10 @@ The DAG is organized into six visual TaskGroups while preserving the historical 
 4. **tablassert** — config generation and optional real Tablassert KGX handoff.
 5. **export** — retrofit the KGX pair into the legacy DAKP TSV schema (skipped when the handoff
    was deferred — no fullmap means no KGX to convert).
-6. **summary** — terminal translator validation/regression/build-summary task.
+6. **medliner** — export the MEDliNER training-data bundle from the DailyMed + FAERS extracts;
+   a leaf hand-off artifact (no shape-stage dependency, default pool; the build summary does not
+   wait on it).
+7. **summary** — terminal translator validation/regression/build-summary task.
 
 The `dakp_extract` pool has 4 slots; each extract consumes the default 1 slot, so DailyMed, FAERS,
 and Drugs@FDA all extract concurrently. (The streaming FAERS rewrite — plans/fix-faers-memory.md —
@@ -73,6 +76,7 @@ _EXTRACT_DOC_MD = """Native Go SDK bundle extraction; heavy payloads stay in the
 _SHAPE_DOC_MD = """Shape interim artifacts into DAKP assertion TSVs without moving table bytes through XCom."""
 _TABLASSERT_DOC_MD = """Generate Tablassert configs and optionally run the installed Tablassert CLI."""
 _EXPORT_DOC_MD = """Convert the Tablassert KGX ndjson pair into the legacy DAKP `.nodes.tsv` / `.edges.tsv` schema."""
+_MEDLINER_DOC_MD = """Export the MEDliNER training-data bundle (`dakp.medliner.export.v1`) from the DailyMed + FAERS extracts."""
 _SUMMARY_DOC_MD = """Terminal build-summary stage: translator validation, regression checks, and report JSON."""
 
 
@@ -392,6 +396,30 @@ def _build_export_stage(kgx: Any) -> Any:
         return export_legacy_tsv(kgx)
 
 
+def _build_medliner_stage(extracts: ExtractOutputs) -> Any:
+    """Create the MEDliNER-export TaskGroup and return its task handle.
+
+    The bundle is a leaf hand-off artifact: it consumes ONLY the DailyMed + FAERS extract XComs
+    (no shape-stage dependency), runs on the default pool (no GPU/network scarcity), and nothing
+    downstream — notably not ``write_build_summary`` — waits on it.
+    """
+    with TaskGroup(group_id="medliner", prefix_group_id=False, tooltip="MEDliNER training-data export", doc_md=_MEDLINER_DOC_MD):
+
+        @task(doc_md="Export the MEDliNER training-data bundle from the DailyMed + FAERS extracts.")
+        def export_medliner_training_data(
+            dm_ext: Any, faers_ext: Any
+        ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+            from dakp_pipeline import medliner_export
+
+            ctx = _ctx()
+            with step(logger, "task export_medliner_training_data"):
+                refs = medliner_export.export([*_refs_from_xcom(dm_ext), *_refs_from_xcom(faers_ext)], ctx)
+                stats(logger, "task export_medliner_training_data", output_refs=len(refs))
+                return _refs_to_xcom(refs)
+
+        return export_medliner_training_data(extracts.dailymed, extracts.faers)
+
+
 def _build_summary_stage(assertions: AssertionOutputs, kgx: Any, legacy_tsv_refs_task: Any) -> Any:
     """Create the terminal summary TaskGroup and return its task handle."""
     with TaskGroup(group_id="summary", prefix_group_id=False, tooltip="Build summary", doc_md=_SUMMARY_DOC_MD):
@@ -430,10 +458,15 @@ def _build_summary_stage(assertions: AssertionOutputs, kgx: Any, legacy_tsv_refs
 
 @dag(dag_id=DAG_ID, start_date=datetime(2026, 1, 1), schedule=None, catchup=False, tags=["dakp", "drug-approvals"], doc_md=_DAG_DOC_MD)
 def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies execute only under an Airflow runtime
-    """Full DAKP build DAG: acquire -> extract (native Go) -> shape -> Tablassert handoff -> legacy TSV export -> summary."""
+    """Full DAKP build DAG: acquire -> extract (native Go) -> shape -> Tablassert handoff -> legacy TSV export -> summary.
+
+    The MEDliNER training-data export branches off the DailyMed + FAERS extracts as a leaf
+    hand-off (parallel with shape onward; the summary does not wait on it).
+    """
     acquired = _build_acquire_stage()
     extracted = _build_extract_stage(acquired)
     assertions = _build_shape_stage(extracted, acquired.ner_models)
+    _build_medliner_stage(extracted)
     tablassert_outputs = _build_tablassert_stage(assertions)
     legacy_tsv = _build_export_stage(tablassert_outputs.kgx)
     _build_summary_stage(assertions, tablassert_outputs.kgx, legacy_tsv)

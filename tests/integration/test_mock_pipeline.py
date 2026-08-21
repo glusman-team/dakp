@@ -23,7 +23,9 @@ from harness import install_fixture_fetchers, run_stages
 
 from dakp_pipeline import __version__
 from dakp_pipeline.io.artifact_store import ArtifactStore
+from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
+from dakp_pipeline.medliner_export import CANDIDATES_FILENAME, GOLD_FILENAME, MANIFEST_FILENAME, OUT_DIRNAME, SCHEMA_VERSION, gold_path
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.sources import dailymed, drugsfda, faers
 from dakp_pipeline.tablassert import GRAPH_NAME, REPORT_NAME
@@ -119,3 +121,38 @@ def test_default_deferred_handoff_runs_clean(monkeypatch, tmp_path: Path) -> Non
     # Deferred handoff => no KGX to retrofit: empty legacy_tsv section, no TSV pair.
     assert summary["legacy_tsv"] == {"exported": False, "files": []}
     assert list((tmp_path / "work" / "data").glob("*.nodes.tsv")) == []
+
+
+def test_fixture_run_exports_a_valid_medliner_bundle(monkeypatch, tmp_path: Path) -> None:
+    """US-002: the fixture pipeline run produces a valid MEDliNER training-data bundle.
+
+    WHY: in the DAG the ``medliner`` stage is a leaf branch off the DailyMed + FAERS extracts;
+    this guards that full offline path (real reference extractors -> export) end-to-end: the
+    manifest carries the export schema, the recorded blake3 hashes re-verify against the written
+    files (contract R7), and every ``candidates.jsonl`` line parses into a row with a legal
+    task/family (contract R3/R4).
+    """
+    install_fixture_fetchers(monkeypatch)
+    result = run_stages(fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "work")
+
+    # The export registered exactly the three bundle files ([manifest, candidates, gold]).
+    assert [ref.uri.name for ref in result.medliner_export_refs] == [MANIFEST_FILENAME, CANDIDATES_FILENAME, GOLD_FILENAME]
+    bundle = result.medliner_export_refs[0].uri.parent
+    assert bundle == Workdir(tmp_path / "work").store / OUT_DIRNAME
+    assert sorted(path.name for path in bundle.iterdir()) == sorted([MANIFEST_FILENAME, CANDIDATES_FILENAME, GOLD_FILENAME])
+
+    manifest = json.loads((bundle / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == SCHEMA_VERSION
+    # R7: the recorded hashes reproduce against the written files.
+    assert manifest["files"][CANDIDATES_FILENAME]["blake3"] == hash_file(bundle / CANDIDATES_FILENAME)
+    assert manifest["files"][GOLD_FILENAME]["blake3"] == hash_file(bundle / GOLD_FILENAME)
+
+    # Every candidates.jsonl line parses; counts in the manifest match the parseable rows.
+    lines = (bundle / CANDIDATES_FILENAME).read_text(encoding="utf-8").splitlines()
+    assert len(lines) == manifest["files"][CANDIDATES_FILENAME]["rows"] > 0
+    rows = [json.loads(line) for line in lines]
+    assert {"contraindication", "indication"} == {row["task"] for row in rows}
+    assert manifest["task_counts"] == {task: sum(row["task"] == task for row in rows) for task in ("contraindication", "indication")}
+    assert manifest["family_counts"] == {family: sum(row["source_family"] == family for row in rows) for family in ("dailymed", "faers")}
+    # R6: the gold file is a byte-identical copy of the committed benchmark.
+    assert (bundle / GOLD_FILENAME).read_bytes() == gold_path().read_bytes()

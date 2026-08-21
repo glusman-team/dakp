@@ -29,6 +29,18 @@ uv run dakp up --fullmap /path/to/fullmap.redb
 waits, and prints the build summary. `uv run dakp down` stops the local Airflow. Without
 `--fullmap`, the Tablassert handoff is deferred (a manifest is written) — never an error.
 
+To export the MEDliNER training-data bundle without running Airflow:
+
+```bash
+uv run dakp export-medliner --out /path/to/bundle                 # from a materialized workdir (after `dakp up`)
+uv run dakp export-medliner --fixtures --out tmp/medliner-bundle  # offline: reference extractors over the committed fixtures
+```
+
+The default mode reads the already-extracted interim tables and never downloads — missing
+tables are a loud error naming them. `--fixtures` first runs the pure-Python reference
+extractors over the committed pipeline fixtures (fully offline); it is also the documented way
+to regenerate MEDliNER's committed sample bundle.
+
 ## The Pipeline
 
 ```text
@@ -54,6 +66,11 @@ acquire ─▶ extract ─▶ NER ─▶ aggregate ─▶ Tablassert KGX handoff
   (`<workdir>/data/dakp_<version>.{nodes,edges}.tsv`: 3-column nodes, 12-column edges, `NA`
   fills, comma-joined multi-values) for the internal service that still consumes it. The task
   skips cleanly when the handoff was deferred (no `--fullmap` → no KGX to convert).
+- **MEDliNER export** — `export_medliner_training_data` (the `medliner` TaskGroup) hands the
+  annotation corpus to MEDliNER as a self-describing, deterministic `dakp.medliner.export.v1`
+  bundle (`manifest.json` + `candidates.jsonl` + the NER gold benchmark) under
+  `<workdir>/data/store/medliner-export`. It consumes only the DailyMed and FAERS extracts, so
+  it runs alongside the shape stage and never gates the build summary.
 
 ## Output Tables
 

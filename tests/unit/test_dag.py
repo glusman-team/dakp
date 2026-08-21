@@ -1,10 +1,11 @@
 """DAG wiring tests for the Airflow-native ``dakp_build`` DAG (Airflow 3 is a hard dependency).
 
 The DAG always imports and constructs (no optional-extra guard). These tests assert the module
-constants, the 14-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
+constants, the 15-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
 three ``extract_*`` tasks are native Go SDK stubs routed to the ``golang`` queue, that
-acquisition/extraction resource pools let those tasks run concurrently, and that the three
-GLiNER-mining shape tasks serialize on the 1-slot ``ner_mining`` pool.
+acquisition/extraction resource pools let those tasks run concurrently, that the three
+GLiNER-mining shape tasks serialize on the 1-slot ``ner_mining`` pool, and that the MEDliNER
+export task branches off the DailyMed + FAERS extracts as a default-pool leaf.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ _EXPECTED_TASK_IDS = {
     "generate_tablassert_configs",
     "run_tablassert",
     "export_legacy_tsv",
+    "export_medliner_training_data",
     "write_build_summary",
 }
 
@@ -37,6 +39,7 @@ _EXPECTED_GROUP_MEMBERS = {
     "shape": {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"},
     "tablassert": {"generate_tablassert_configs", "run_tablassert"},
     "export": {"export_legacy_tsv"},
+    "medliner": {"export_medliner_training_data"},
     "summary": {"write_build_summary"},
 }
 
@@ -119,8 +122,19 @@ def test_dag_task_graph(dakp_build) -> None:
     assert upstream("export_legacy_tsv") == {"run_tablassert"}
     assert upstream("write_build_summary") == shapes | {"run_tablassert", "export_legacy_tsv"}
 
-    # The summary is terminal.
+    # The MEDliNER export branches off the DailyMed + FAERS extracts ONLY (no shape-stage
+    # dependency) and is a leaf: nothing — notably not write_build_summary — waits on the bundle.
+    assert upstream("export_medliner_training_data") == {"extract_dailymed", "extract_faers"}
+    assert downstream("export_medliner_training_data") == set()
+
+    # The summary and the MEDliNER export are terminal.
     assert downstream("write_build_summary") == set()
+
+
+def test_medliner_export_task_uses_the_default_pool(dakp_build) -> None:
+    """The export reads two interim tables and writes JSON files — no scarce resource to bound,
+    so it stays on the default pool (never the download/extract/NER pools)."""
+    assert dakp_build.dag_obj.get_task("export_medliner_training_data").pool == "default_pool"
 
 
 def test_summary_tolerates_a_skipped_export(dakp_build) -> None:
