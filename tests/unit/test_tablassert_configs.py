@@ -16,6 +16,7 @@ sibling ``../Tablassert`` checkout is never imported or required.
 
 from __future__ import annotations
 
+import copy
 import importlib
 import importlib.util
 import json
@@ -510,6 +511,38 @@ def test_rig_section_validates_directly_against_tablassert_rig_config() -> None:
     assert source.data_provision_mechanisms == ["file_download"]
     assert source.data_formats == ["kgx"]
     assert source.source_status == "maintained_regular_updates"
+
+
+def test_tablassert_rig_config_rejects_unknown_keys_and_bad_source_status() -> None:
+    """The installed ``RIGConfig`` schema really BITES: unknown keys and bad enums are rejected.
+
+    Guards the fail-loudly contract: every positive test above only proves the rig section is
+    ACCEPTED. If a future Tablassert relaxed to permissive extras (or a free-form source
+    status), those tests would keep passing while DINGO's RIG expectations silently stopped
+    being enforced. Mutating DEEP COPIES of the generated rig section (never ``_rig_config``
+    itself) must therefore raise: an unknown ``source_info`` key AND an out-of-enum
+    ``source_status`` each fail validation with an error naming the offending field.
+    """
+    from pydantic import ValidationError
+    from tablassert.models import RIGConfig
+
+    rig = tablassert_configs.graph_config()["rig"]
+
+    with_unknown_key = copy.deepcopy(rig)
+    with_unknown_key["source_info"]["not_a_rig_field"] = "surprise"
+    with pytest.raises(ValidationError) as extra_exc:
+        RIGConfig.model_validate(with_unknown_key)
+    assert "source_info.not_a_rig_field" in str(extra_exc.value)
+    assert "Extra inputs are not permitted" in str(extra_exc.value)
+
+    with_bad_status = copy.deepcopy(rig)
+    with_bad_status["source_info"]["source_status"] = "maintained_never"
+    with pytest.raises(ValidationError) as status_exc:
+        RIGConfig.model_validate(with_bad_status)
+    assert "source_info.source_status" in str(status_exc.value)
+
+    # The generator itself is untouched: the pristine section still validates.
+    assert RIGConfig.model_validate(rig).source_info.source_status == "maintained_regular_updates"
 
 
 def test_rig_supporting_data_source_info_lists_only_edge_backed_upstreams() -> None:

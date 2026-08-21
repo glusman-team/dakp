@@ -168,6 +168,23 @@ GRAPH_DESCRIPTION = (
 # ``relevant_files`` / ``included_content`` entries and the observed target summaries itself,
 # so only human-authored facts live here. The edge primary knowledge source derives from
 # ``rig.source_info.infores_id`` — it is no longer a graph-level key.
+#
+# Content is ADAPTED from the DINGO-reviewed upstream DAKP RIG — ``NCATSTranslator/
+# translator-ingests`` ``src/translator_ingest/ingests/dakp/dakp_rig.yaml`` (review issue
+# #416; both linked in :data:`RIG_PROVENANCE_ARTIFACTS`) — keeping the reviewed facts and
+# rejecting four upstream parts, each grounded in this repository:
+# * the ``infores:medi`` source entry: MEDI belongs to the LEGACY pipeline; this rebuild has
+#   no MEDI source module, so adopting it would be fabricated provenance (details on
+#   :data:`RIG_SUPPORTING_DATA_SOURCES`);
+# * the ``source_info`` CC BY 4.0 data-license claim: this repository carries NO evidence of
+#   a CC BY 4.0 data license (the code license is Apache-2.0 and the upstream feeds are US
+#   government public-domain data), so ``terms_of_use_info`` records the NLM/FDA terms instead;
+# * the legacy KGX-file ``relevant_files``: legacy-pipeline OUTPUT artifacts no table section
+#   sources; listing them would trip Tablassert's RIG audit (``rig-validation-failed``, see
+#   ``_rig_config``);
+# * the ``target_info`` node/edge type summaries: Tablassert GENERATES those from the observed
+#   build, so hand-authored ones would fail validation and drift (details on
+#   :data:`RIG_TARGET_FUTURE_CONSIDERATIONS`).
 
 #: Public URL prefix the generated KGX artifacts are published under; Tablassert appends each
 #: ``.nodes.ndjson`` / ``.edges.ndjson`` name to build RIG file locations. The GitHub repo URL
@@ -363,6 +380,11 @@ RIG_TARGET_ADDITIONAL_NOTES: tuple[str, ...] = (
 
 def _rig_config(tables: list[str]) -> dict[str, Any]:
     """The required ``rig:`` graph-config section (Tablassert >= 11), all constants.
+
+    Content is ADAPTED from the DINGO-reviewed upstream DAKP RIG (``NCATSTranslator/
+    translator-ingests`` ``src/translator_ingest/ingests/dakp/dakp_rig.yaml``, review issue
+    #416); the full adoption/rejection rationale lives in the section-header comment above
+    the RIG constants.
 
     Shape verified against ``tablassert.models.RIGConfig`` (pinned directly by
     ``test_rig_section_validates_directly_against_tablassert_rig_config``):
