@@ -444,7 +444,7 @@ def test_committed_table_configs_match_generator_output(monkeypatch: pytest.Monk
 
 def test_graph_config_structure() -> None:
     graph = tablassert_configs.graph_config()
-    assert graph["name"] == "Drug_Approvals_KP"
+    assert graph["name"] == "DRUG_APPROVALS_KP"
     assert isinstance(graph["version"], str)
     assert graph["version"]
     assert graph["fullmap"] == ".fullmap"  # default placeholder; generate() writes the real ctx fullmap path
@@ -488,7 +488,7 @@ def test_table_yaml_is_valid_and_faithful(table: str) -> None:
 def test_graph_yaml_is_valid_and_faithful() -> None:
     loaded = yaml.safe_load(tablassert_configs.graph_yaml())
     assert loaded == tablassert_configs.graph_config()
-    assert loaded["name"] == "Drug_Approvals_KP"
+    assert loaded["name"] == "DRUG_APPROVALS_KP"
 
 
 # --- runtime generation into the workdir ------------------------------------------
@@ -509,7 +509,7 @@ def test_generate_writes_graph_and_table_configs(tmp_path: Path) -> None:
         assert ref.uri.parent == workdir.root / "tables"
 
     graph_text = refs[0].uri.read_text(encoding="utf-8")
-    assert "name: Drug_Approvals_KP" in graph_text
+    assert "name: DRUG_APPROVALS_KP" in graph_text
     assert "tables/approved_treats.yaml" in graph_text
     assert "tables/faers_applied_to_treat.yaml" in graph_text
     assert "tables/contraindications.yaml" in graph_text
