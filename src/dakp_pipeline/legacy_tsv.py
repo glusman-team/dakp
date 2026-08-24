@@ -4,9 +4,9 @@ An internal service still consumes the pre-rewrite ``druginfo`` TSV pair
 (``drug_approvals_kg_nodes_v0.5.3.tsv.gz`` / ``..._edges_...``) — three node columns
 (``id``/``name``/``category``) and twelve edge columns. DAKP's own compiler was retired
 (US-004); the graph now comes out of the Tablassert handoff as KGX ndjson
-(``data/dakp_<version>.{nodes,edges}.ndjson``), so the old pair no longer exists. This stage
+(``data/DRUG_APPROVALS_KP_<version>.{nodes,edges}.ndjson``), so the old pair no longer exists. This stage
 converts that ndjson pair back into the legacy schema — same stem and directory, extension
-swapped: ``<workdir>/data/dakp_<version>.nodes.tsv`` / ``.edges.tsv`` (plain TSV, like every
+swapped: ``<workdir>/data/DRUG_APPROVALS_KP_<version>.nodes.tsv`` / ``.edges.tsv`` (plain TSV, like every
 other DAKP tabular output).
 
 The conversion semantics are the ORIGINAL ones, recovered from the deleted legacy producer
@@ -55,6 +55,7 @@ from typing import Any
 
 import polars as pl
 
+from dakp_pipeline import __version__
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
@@ -62,7 +63,7 @@ from dakp_pipeline.io.manifests import OperationBlock
 from dakp_pipeline.io.schemas import TSV_MEDIA_TYPE, write_tsv
 from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.tablassert import REPORT_NAME
+from dakp_pipeline.tablassert import GRAPH_NAME, REPORT_NAME
 from dakp_pipeline.translator import read_kgx_jsonl
 
 #: Legacy node contract: ``id  name  category``.
@@ -185,8 +186,10 @@ def export(kgx_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
     Reads the Tablassert handoff report among ``kgx_refs`` (the single ref ``run_tablassert``
     returns): a deferred report means no ``build-kg`` ran and there is no ndjson to convert, so
     the stage returns an empty ref list — never an error, mirroring the deferred-handoff
-    convention. A real (successful) handoff must have left exactly one ``*.nodes.ndjson`` and one
-    ``*.edges.ndjson`` under ``<workdir>/data``; anything else is a loud ``RuntimeError``.
+    convention. A real (successful) handoff must have left the current graph/version pair
+    ``DRUG_APPROVALS_KP_<version>.nodes.ndjson`` and ``.edges.ndjson`` under ``<workdir>/data``.
+    Stale KGX files from an earlier graph/version are ignored; a missing current pair is a loud
+    ``RuntimeError``.
 
     Writes ``<ndjson stem>.nodes.tsv`` / ``.edges.tsv`` beside their ndjson sources, registers
     both with the artifact store (provenance inputs = the ndjson content hashes), and returns
@@ -205,8 +208,9 @@ def export(kgx_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
     workdir = Workdir(ctx.workdir)
     data_dir = workdir.root / "data"
     with step(logger, event):
-        nodes_ndjson = _single_glob(data_dir, "*.nodes.ndjson")
-        edges_ndjson = _single_glob(data_dir, "*.edges.ndjson")
+        kgx_stem = f"{GRAPH_NAME}_{__version__}"
+        nodes_ndjson = _single_glob(data_dir, f"{kgx_stem}.nodes.ndjson")
+        edges_ndjson = _single_glob(data_dir, f"{kgx_stem}.edges.ndjson")
         nodes = read_kgx_jsonl(nodes_ndjson)
         edges = read_kgx_jsonl(edges_ndjson)
         nodes_path = nodes_ndjson.with_suffix(".tsv")

@@ -3,8 +3,8 @@
 Covers the converter semantics recovered from the original ``jsonlines2tsv.py`` (first-element
 node categories, ``NA`` fills, comma-joined multi-values, canonical-name-first endpoint names,
 int/str case counts) and the stage entry point (deferred -> ``[]``, real -> the TSV pair written
-beside the ndjson sources + registered, loud ``RuntimeError`` guards on a missing report or an
-ambiguous ndjson glob).
+beside the ndjson sources + registered, loud ``RuntimeError`` guards on a missing report or
+missing current graph/version pair).
 """
 
 from __future__ import annotations
@@ -15,11 +15,12 @@ from typing import Any
 
 import pytest
 
+from dakp_pipeline import __version__
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.legacy_tsv import EDGES_HEADER, NA, NODES_HEADER, convert_edges, convert_nodes, export
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.tablassert import REPORT_NAME
+from dakp_pipeline.tablassert import GRAPH_NAME, REPORT_NAME
 
 # Reference records mirroring the two sample rows the internal service consumes (v0.5.3):
 # CHEBI:4875/Etanercept treats+applied MONDO:0008383/rheumatoid arthritis.
@@ -164,8 +165,8 @@ def _report_ref(workdir: Workdir, mode: str) -> ArtifactRef:
 def _write_kgx(workdir: Workdir) -> tuple[Path, Path]:
     """Drop exactly one KGX ndjson pair under data/, like a successful build-kg."""
     data = workdir.root / "data"
-    nodes_path = data / "dakp_0.1.0.nodes.ndjson"
-    edges_path = data / "dakp_0.1.0.edges.ndjson"
+    nodes_path = data / f"{GRAPH_NAME}_{__version__}.nodes.ndjson"
+    edges_path = data / f"{GRAPH_NAME}_{__version__}.edges.ndjson"
     nodes_path.write_text("".join(json.dumps(node) + "\n" for node in _NODES), encoding="utf-8")
     edges_path.write_text("".join(json.dumps(edge) + "\n" for edge in _EDGES), encoding="utf-8")
     return nodes_path, edges_path
@@ -196,11 +197,11 @@ def test_export_real_handoff_writes_the_legacy_pair(tmp_path: Path) -> None:
     for ref, ndjson in zip(refs, (nodes_ndjson, edges_ndjson), strict=True):
         assert hash_file(ndjson) in (json.loads(ref.manifest.read_text(encoding="utf-8"))["inputs"] if ref.manifest else [])
 
-    nodes_lines = (workdir.root / "data" / "dakp_0.1.0.nodes.tsv").read_text(encoding="utf-8").splitlines()
+    nodes_lines = (workdir.root / "data" / f"{GRAPH_NAME}_{__version__}.nodes.tsv").read_text(encoding="utf-8").splitlines()
     assert nodes_lines[0].split("\t") == NODES_HEADER
     assert nodes_lines[1].split("\t") == ["CHEBI:4875", "Etanercept", "biolink:ChemicalEntity"]
 
-    edges_lines = (workdir.root / "data" / "dakp_0.1.0.edges.tsv").read_text(encoding="utf-8").splitlines()
+    edges_lines = (workdir.root / "data" / f"{GRAPH_NAME}_{__version__}.edges.tsv").read_text(encoding="utf-8").splitlines()
     assert edges_lines[0].split("\t") == EDGES_HEADER
     assert edges_lines[1].split("\t")[4] == "Etanercept"  # subject_name
     assert edges_lines[1].split("\t")[10] == "269572"  # N_cases
@@ -224,17 +225,21 @@ def test_export_with_two_handoff_reports_raises(tmp_path: Path) -> None:
 def test_export_with_missing_ndjson_raises(tmp_path: Path) -> None:
     workdir = Workdir(tmp_path)
     workdir.create()
-    _write_kgx(workdir)
-    (workdir.root / "data" / "dakp_0.1.0.edges.ndjson").unlink()
-    with pytest.raises(RuntimeError, match=r"'\*\.edges\.ndjson'.*found 0"):
+    _, edges_ndjson = _write_kgx(workdir)
+    edges_ndjson.unlink()
+    with pytest.raises(RuntimeError, match=rf"'{GRAPH_NAME}_{__version__}\.edges\.ndjson'.*found 0"):
         export([_report_ref(workdir, "real")], _ctx(workdir))
 
 
-def test_export_with_ambiguous_ndjson_glob_raises(tmp_path: Path) -> None:
+def test_export_ignores_stale_kgx_pairs(tmp_path: Path) -> None:
     workdir = Workdir(tmp_path)
     workdir.create()
-    nodes_ndjson, _ = _write_kgx(workdir)
-    (workdir.root / "data" / "dakp_9.9.9.nodes.ndjson").write_text(json.dumps(_NODES[0]) + "\n", encoding="utf-8")
-    with pytest.raises(RuntimeError, match=r"'\*\.nodes\.ndjson'.*found 2"):
-        export([_report_ref(workdir, "real")], _ctx(workdir))
-    assert nodes_ndjson.exists()
+    nodes_ndjson, edges_ndjson = _write_kgx(workdir)
+    data = workdir.root / "data"
+    for stem in ("dakp_0.1.0", "DRUG_APPROVALS_KP_1.0.0"):
+        (data / f"{stem}.nodes.ndjson").write_text(json.dumps(_NODES[0]) + "\n", encoding="utf-8")
+        (data / f"{stem}.edges.ndjson").write_text(json.dumps(_EDGES[0]) + "\n", encoding="utf-8")
+
+    refs = export([_report_ref(workdir, "real")], _ctx(workdir))
+
+    assert [ref.uri for ref in refs] == [nodes_ndjson.with_suffix(".tsv"), edges_ndjson.with_suffix(".tsv")]

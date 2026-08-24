@@ -13,7 +13,7 @@ edges: id  subject  predicate  object  subject_name  object_name  object_modifie
 408826a1-…  CHEBI:4875  biolink:applied_to_treat  MONDO:0008383  Etanercept  rheumatoid arthritis  NA  observation  manual_validation_of_automated_agent  NA  269572  NA
 ```
 
-DAKP now ends at the Tablassert handoff (`data/dakp_<version>.{nodes,edges}.ndjson`), so those TSVs
+DAKP now ends at the Tablassert handoff (`data/DRUG_APPROVALS_KP_<version>.{nodes,edges}.ndjson`), so those TSVs
 no longer exist. **New DAG stage**: convert the KGX ndjson pair produced by `run_tablassert` into a
 `.nodes.tsv` + `.edges.tsv` pair in the old schema, so the old service keeps working off fresh builds.
 
@@ -46,9 +46,9 @@ Node category keeps the `biolink:` prefix (the legacy sample carries it).
 ### Output location / naming — confirmed
 
 Same stem and directory as the KGX files, extension swapped: the ndjson pair
-`<workdir>/data/dakp_<version>.nodes.ndjson` / `.edges.ndjson` (written by `tablassert build-kg`
+`<workdir>/data/DRUG_APPROVALS_KP_<version>.nodes.ndjson` / `.edges.ndjson` (written by `tablassert build-kg`
 with cwd = workdir root, `rig.artifact_base_path = "data"`) yields
-**`<workdir>/data/dakp_<version>.nodes.tsv`** and **`<workdir>/data/dakp_<version>.edges.tsv`** —
+**`<workdir>/data/DRUG_APPROVALS_KP_<version>.nodes.tsv`** and **`<workdir>/data/DRUG_APPROVALS_KP_<version>.edges.tsv`** —
 plain uncompressed TSV, mirroring DAKP's uncompressed-TSV convention.
 
 ## Approach
@@ -61,8 +61,9 @@ plain uncompressed TSV, mirroring DAKP's uncompressed-TSV convention.
    - `export(kgx_refs, ctx) -> list[ArtifactRef]` — the stage entry point:
      - locate the handoff report among `kgx_refs` (by `tablassert.REPORT_NAME`);
      - **deferred handoff ⇒ return `[]`** (never an error — mirrors the deferred-handoff convention);
-     - glob `Workdir(ctx.workdir).root / "data"` for exactly one `*.nodes.ndjson` + one
-       `*.edges.ndjson` (more/fewer → `RuntimeError`, loud — a real successful build must have them);
+     - locate the current `DRUG_APPROVALS_KP_<version>.nodes.ndjson` + `.edges.ndjson` pair under
+       `Workdir(ctx.workdir).root / "data"` (missing → `RuntimeError`, loud); stale files from prior
+       graph/version outputs are ignored;
      - convert via `translator.read_kgx_jsonl`, write `<stem>.nodes.tsv` / `<stem>.edges.tsv`
        (`ndjson_path.with_suffix(".tsv")`), register both with `ArtifactStore`
        (`text/tab-separated-values`, inputs = ndjson blake3s, operation `export_legacy_tsv`), stats-log.
@@ -112,7 +113,7 @@ plain uncompressed TSV, mirroring DAKP's uncompressed-TSV convention.
 - [x] `harness.py`: mirror the stage
 - [x] Unit tests: converter semantics (first-category, NA fills, comma joins, name fallback chain,
       int/str `evidence_count`, empty-list → NA, deferred → `[]`, real → files + contents,
-      zero/two ndjson globs raise)
+      missing current graph/version pair raises, stale graph/version pairs are ignored)
 - [x] `test_dag.py` / `test_runtime_edge.py` updates; e2e legacy-TSV assertions
 - [x] README note
 
@@ -123,7 +124,7 @@ plain uncompressed TSV, mirroring DAKP's uncompressed-TSV convention.
   skip onto the terminal summary task under the default `all_success` rule; the skipped task's
   XCom then resolves to `None`, which `refs_from_xcom` already maps to `[]`.
 * **Harness fidelity:** the two offline integration fakes now follow the REAL handoff contract —
-  `test_mock_pipeline._fake_tablassert_run` writes a real-mode report + a `dakp_<version>` ndjson
+  `test_mock_pipeline._fake_tablassert_run` writes a real-mode report + a `DRUG_APPROVALS_KP_<version>` ndjson
   pair (so the export stage's real branch runs offline), and `test_prod_smoke._fake_tablassert_subprocess`
   writes the ndjson pair under `cwd/data/` (so the real runner + export both run on faked output).
 * Verified: full suite green at the 100% branch-coverage gate; the real-tablassert e2e (tiny
@@ -139,7 +140,7 @@ uv run pytest -q --cov          # 100% branch-coverage gate
 uv run ruff check && uv run ruff format --check && uv run pyright
 ```
 
-Manual: `dakp up --small --fullmap <path>` then inspect `data/dakp_*.nodes.tsv` / `.edges.tsv` —
+Manual: `dakp up --small --fullmap <path>` then inspect `data/DRUG_APPROVALS_KP_*.nodes.tsv` / `.edges.tsv` —
 header row exactly `id  name  category` / the 12-column edge header; `object_modifier` all `NA`;
 treats rows carry comma-joined `approval`, applied rows carry `N_cases`, contra/treats rows carry
 comma-joined `supporting_spls` CURIEs; deferred run (no `--fullmap`) shows `export_legacy_tsv`
