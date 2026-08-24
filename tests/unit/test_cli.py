@@ -658,7 +658,7 @@ def test_export_medliner_happy_path_copies_to_out(sandbox: Path, capsys: pytest.
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == "dakp.medliner.export.v1"
     # 2 DailyMed sections (one per export LOINC) + 2 FAERS indications.
-    assert manifest["files"]["candidates.jsonl"]["rows"] == 4
+    assert manifest["files"]["candidates.ndjson"]["rows"] == 4
     assert manifest["task_counts"] == {"contraindication": 1, "indication": 3}
     assert manifest["family_counts"] == {"dailymed": 2, "faers": 2}
     # The store copy (where the export stage writes) exists alongside the --out copy.
@@ -673,7 +673,7 @@ def test_export_medliner_default_out_is_the_store_bundle(sandbox: Path) -> None:
 
     assert code == 0
     bundle = sandbox / "work" / "data" / "store" / "medliner-export"
-    assert sorted(path.name for path in bundle.iterdir()) == ["candidates.jsonl", "manifest.json", "ner_gold.json"]
+    assert sorted(path.name for path in bundle.iterdir()) == ["candidates.ndjson", "manifest.json", "ner_gold.json"]
 
 
 def test_export_medliner_missing_interim_tables_fail_loudly(sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -720,7 +720,7 @@ def test_export_medliner_fixtures_runs_reference_extractors_offline(
     bundle = sandbox / "work" / "data" / "store" / "medliner-export"
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == "dakp.medliner.export.v1"
-    assert manifest["files"]["candidates.jsonl"]["rows"] > 0
+    assert manifest["files"]["candidates.ndjson"]["rows"] > 0
     assert manifest["family_counts"]["dailymed"] > 0
     assert manifest["family_counts"]["faers"] > 0
     # The reference extractors materialized the interim layer on the way through.
@@ -742,7 +742,7 @@ def test_copy_export_bundle_overwrites_only_the_known_files(tmp_path: Path) -> N
     """An already-populated --out dir: the three bundle files overwrite; nothing else is touched."""
     src = tmp_path / "src"
     src.mkdir()
-    for name, body in (("manifest.json", "{}"), ("candidates.jsonl", '{"a": 1}\n'), ("ner_gold.json", '{"gold": true}')):
+    for name, body in (("manifest.json", "{}"), ("candidates.ndjson", '{"a": 1}\n'), ("ner_gold.json", '{"gold": true}')):
         (src / name).write_text(body, encoding="utf-8")
     out = tmp_path / "out"
     out.mkdir()
@@ -751,7 +751,7 @@ def test_copy_export_bundle_overwrites_only_the_known_files(tmp_path: Path) -> N
 
     paths = cli.copy_export_bundle(src, out)
 
-    assert set(paths) == {"manifest.json", "candidates.jsonl", "ner_gold.json"}
+    assert set(paths) == {"manifest.json", "candidates.ndjson", "ner_gold.json"}
     assert (out / "manifest.json").read_text(encoding="utf-8") == "{}"
     assert (out / "unrelated.txt").read_text(encoding="utf-8") == "keep me"
 

@@ -129,7 +129,7 @@ def test_fixture_run_exports_a_valid_medliner_bundle(monkeypatch, tmp_path: Path
     WHY: in the DAG the ``medliner`` stage is a leaf branch off the DailyMed + FAERS extracts;
     this guards that full offline path (real reference extractors -> export) end-to-end: the
     manifest carries the export schema, the recorded blake3 hashes re-verify against the written
-    files (contract R7), and every ``candidates.jsonl`` line parses into a row with a legal
+    files (contract R7), and every ``candidates.ndjson`` line parses into a row with a legal
     task/family (contract R3/R4).
     """
     install_fixture_fetchers(monkeypatch)
@@ -147,7 +147,7 @@ def test_fixture_run_exports_a_valid_medliner_bundle(monkeypatch, tmp_path: Path
     assert manifest["files"][CANDIDATES_FILENAME]["blake3"] == hash_file(bundle / CANDIDATES_FILENAME)
     assert manifest["files"][GOLD_FILENAME]["blake3"] == hash_file(bundle / GOLD_FILENAME)
 
-    # Every candidates.jsonl line parses; counts in the manifest match the parseable rows.
+    # Every candidates.ndjson line parses; counts in the manifest match the parseable rows.
     lines = (bundle / CANDIDATES_FILENAME).read_text(encoding="utf-8").splitlines()
     assert len(lines) == manifest["files"][CANDIDATES_FILENAME]["rows"] > 0
     rows = [json.loads(line) for line in lines]

@@ -164,7 +164,7 @@ def test_write_bundle_writes_exactly_three_files_with_a_verbatim_gold(tmp_path: 
 
 
 def test_write_bundle_is_byte_identical_for_shuffled_input_order(tmp_path: Path) -> None:
-    """R5: shuffling the input rows must not change one byte of candidates.jsonl."""
+    """R5: shuffling the input rows must not change one byte of candidates.ndjson."""
     rows = [
         *_sample_rows(),
         {"text": "HEADACHE", "task": "indication", "source_family": "faers", "source_record_id": "9999", "source_uri": faers_record_url("24Q2")},

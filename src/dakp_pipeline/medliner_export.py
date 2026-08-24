@@ -6,7 +6,7 @@ bundle — a single directory with exactly three files:
 * ``manifest.json`` — schema ``dakp.medliner.export.v1``: schema strings, ``generated_at``,
   per-file blake3 hashes + counts, task/family counts, and the blake3 ids of the consumed
   interim tables.
-* ``candidates.jsonl`` — candidate annotation texts in MEDliNER's raw-candidate shape
+* ``candidates.ndjson`` — candidate annotation texts in MEDliNER's raw-candidate shape
   (``CandidateText`` field names only, so rows round-trip through MEDliNER without loss),
   deduped on ``(task, normalized text)`` and deterministically sorted so identical inputs
   produce byte-identical output regardless of input row order.
@@ -62,11 +62,11 @@ GOLD_SCHEMA_VERSION = "dakp.ner.gold.v1"
 OUT_DIRNAME = "medliner-export"
 
 MANIFEST_FILENAME = "manifest.json"
-CANDIDATES_FILENAME = "candidates.jsonl"
+CANDIDATES_FILENAME = "candidates.ndjson"
 GOLD_FILENAME = "ner_gold.json"
 
 _JSON_MEDIA_TYPE = "application/json"
-_JSONL_MEDIA_TYPE = "application/x-ndjson"
+_NDJSON_MEDIA_TYPE = "application/x-ndjson"
 
 _OPERATION = "export_medliner"
 _DAILYMED_TABLE = "spl_documents.parquet"
@@ -192,7 +192,7 @@ def dedupe_sort(rows: Iterable[Mapping[str, str]]) -> list[dict[str, str]]:
 
     The retained row is the first in :func:`_sort_key` order (its verbatim ``text`` and
     provenance survive); output lines follow the same sorted order, so identical input sets
-    yield byte-identical ``candidates.jsonl`` regardless of input row order.
+    yield byte-identical ``candidates.ndjson`` regardless of input row order.
     """
     winners: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -274,9 +274,9 @@ def write_bundle(out_dir: Path, candidate_rows: Iterable[Mapping[str, str]], gol
     """Write the three-file bundle into ``out_dir``; returns the paths keyed by filename.
 
     Validates the gold benchmark BEFORE any file is written (export contract R6), then writes
-    the deduped+sorted ``candidates.jsonl``, a byte-identical copy of the gold, and the
+    the deduped+sorted ``candidates.ndjson``, a byte-identical copy of the gold, and the
     manifest. Existing files are overwritten cleanly (idempotent re-run). Zero candidate rows
-    is legal and yields an empty ``candidates.jsonl`` with 0 counts.
+    is legal and yields an empty ``candidates.ndjson`` with 0 counts.
     """
     _load_gold(gold_src)
     rows = dedupe_sort(candidate_rows)
@@ -333,7 +333,7 @@ def export(inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
         operation = OperationBlock(name=_OPERATION)
         input_ids = sorted({dailymed_ref.blake3, faers_ref.blake3})
         manifest_ref = store.register(paths[MANIFEST_FILENAME], media_type=_JSON_MEDIA_TYPE, inputs=input_ids, operation=operation)
-        candidates_ref = store.register(candidates_path, media_type=_JSONL_MEDIA_TYPE, rows=rows_written, inputs=input_ids, operation=operation)
+        candidates_ref = store.register(candidates_path, media_type=_NDJSON_MEDIA_TYPE, rows=rows_written, inputs=input_ids, operation=operation)
         gold_ref = store.register(paths[GOLD_FILENAME], media_type=_JSON_MEDIA_TYPE, inputs=input_ids, operation=operation)
         stats(logger, _OPERATION, out_dir=str(out_dir), candidates=rows_written, manifest_blake3=manifest_ref.blake3)
     return [manifest_ref, candidates_ref, gold_ref]

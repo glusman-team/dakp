@@ -68,7 +68,7 @@ acquire ─▶ extract ─▶ NER ─▶ aggregate ─▶ Tablassert KGX handoff
   skips cleanly when the handoff was deferred (no `--fullmap` → no KGX to convert).
 - **MEDliNER export** — `export_medliner_training_data` (the `medliner` TaskGroup) hands the
   annotation corpus to MEDliNER as a self-describing, deterministic `dakp.medliner.export.v1`
-  bundle (`manifest.json` + `candidates.jsonl` + the NER gold benchmark) under
+  bundle (`manifest.json` + `candidates.ndjson` + the NER gold benchmark) under
   `<workdir>/data/store/medliner-export`. It consumes only the DailyMed and FAERS extracts, so
   it runs alongside the shape stage and never gates the build summary.
 
