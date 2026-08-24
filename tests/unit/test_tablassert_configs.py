@@ -466,15 +466,46 @@ def test_off_label_subject_denylist_reindex() -> None:
     # Methanol poison-exposure reports (FAERS ingredients "METHANOL" and FAERS's own misspelling
     # "METHYL ALCHOL") must never become applied_to_treat edges — the chemical is the exposure,
     # not a treatment. "GENERIC DRUG"/"GENERIC DRUGS" are FAERS verbatim placeholders naming no
-    # real substance. Emitted as ANDed ``source.reindex`` ``ne`` filters on the subject_text
-    # column (A) so Tablassert drops the rows at load time, before entity resolution. Also
+    # real substance, and "PLACEBO" is the control arm, which by definition treats nothing.
+    # Emitted as ANDed ``source.reindex`` ``ne`` filters on the subject_text column (A) so
+    # Tablassert drops the rows at load time, before entity resolution. Tablassert's ``ne`` is an
+    # exact case-SENSITIVE compare, so every entry ships one filter per casing rendering (upper /
+    # lower / title / sentence, deduplicated) — the denylist is case-insensitive in effect. Also
     # exercises the Reindex model through Section validation (comparator must be a str for ne).
     from tablassert.models import Section
 
     table = "faers_applied_to_treat_assertions"
     section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
-    filters = [(entry.column, str(entry.comparison), entry.comparator) for entry in section.source.reindex or []]
-    assert filters == [("A", "ne", "METHYL ALCHOL"), ("A", "ne", "METHANOL"), ("A", "ne", "GENERIC DRUG"), ("A", "ne", "GENERIC DRUGS")]
+    filters = [(entry.column, str(entry.comparison), str(entry.comparator)) for entry in section.source.reindex or []]
+    expected = [
+        "METHYL ALCHOL",
+        "methyl alchol",
+        "Methyl Alchol",
+        "Methyl alchol",
+        "METHANOL",
+        "methanol",
+        "Methanol",  # single word: title == sentence case, deduplicated to one filter
+        "GENERIC DRUG",
+        "generic drug",
+        "Generic Drug",
+        "Generic drug",
+        "GENERIC DRUGS",
+        "generic drugs",
+        "Generic Drugs",
+        "Generic drugs",
+        "PLACEBO",
+        "placebo",
+        "Placebo",
+    ]
+    assert filters == [("A", "ne", comparator) for comparator in expected]
+
+    # Every denylisted name is covered in all four renderings a FAERS reporter may have typed:
+    # casefolded, the emitted comparators are exactly the denylist (no entry left case-sensitive).
+    denylisted = tablassert_configs._TABLE_SUBJECT_DENYLIST[table]
+    assert {comparator.casefold() for _column, _comparison, comparator in filters} == {name.casefold() for name in denylisted}
+    for name in denylisted:
+        renderings = {comparator for _column, _comparison, comparator in filters if comparator.casefold() == name.casefold()}
+        assert renderings == {name.upper(), name.lower(), name.title(), name.capitalize()}
 
     # The denylist is off-label-only: the on-label and contraindication tables stay untouched.
     for other in TABLES:

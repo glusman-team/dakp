@@ -499,11 +499,12 @@ _TABLE_ORDER = ("approved_treats_assertions", "faers_applied_to_treat_assertions
 # off-label table aggregates methanol poison-exposure reports where the chemical is the EXPOSURE,
 # not a treatment — an ``applied_to_treat`` edge for it is semantically wrong ("METHYL ALCHOL" is
 # FAERS's own spelling of the ingredient). "GENERIC DRUG"/"GENERIC DRUGS" are FAERS verbatim
-# drug-name placeholders that name no real substance. Reindex conditions AND together: a row
-# survives only when its subject_text matches none of the denylist (exact, case-sensitive string
-# compare).
+# drug-name placeholders that name no real substance, and "PLACEBO" is the control arm: by
+# definition it treats nothing. Entries are written in their canonical uppercase form and matched
+# case-insensitively (see :func:`_casing_variants`). Reindex conditions AND together: a row
+# survives only when its subject_text matches no denylist entry in any emitted casing.
 _TABLE_SUBJECT_DENYLIST: dict[str, tuple[str, ...]] = {
-    "faers_applied_to_treat_assertions": ("METHYL ALCHOL", "METHANOL", "GENERIC DRUG", "GENERIC DRUGS")
+    "faers_applied_to_treat_assertions": ("METHYL ALCHOL", "METHANOL", "GENERIC DRUG", "GENERIC DRUGS", "PLACEBO")
 }
 
 # assertion table -> (config basename, predicate, knowledge_level, agent_type). Knowledge levels
@@ -721,6 +722,22 @@ def excel_column(index: int) -> str:
     return letters
 
 
+def _casing_variants(name: str) -> tuple[str, ...]:
+    """Casing renderings of a :data:`_TABLE_SUBJECT_DENYLIST` entry, canonical uppercase first.
+
+    Tablassert's ``ne`` reindex filter is polars ``!=`` — an exact, case-SENSITIVE string compare
+    (``tablassert.lib.reindex``, ``cast=False`` for ``eq``/``ne``) — and the ``Comparisons`` enum
+    has no case-insensitive member, so case-insensitive denial has to be spelled out as one ``ne``
+    per rendering. FAERS ``drugname`` is reporter-entered free text carried through verbatim as
+    ``subject_text``: uppercase dominates, with title ("Generic Drug"), sentence ("Generic drug")
+    and lower renderings all occurring in practice, so those four cover the realistic space.
+    Deduplicated (single-word entries collapse title into sentence case) and order-stable so the
+    committed configs stay byte-reproducible. Known gap: a mid-word oddity ("PLaCEBO") still slips
+    through — closing it needs a case-insensitive comparison in Tablassert itself.
+    """
+    return tuple(dict.fromkeys((name.upper(), name.lower(), name.title(), name.capitalize())))
+
+
 def column_letter(table: str, column: str) -> str:
     """Excel-style letter for ``column`` in ``table``'s ordered contract (KeyError if absent)."""
     columns = schemas.columns_for(table)
@@ -745,7 +762,8 @@ def table_config(table: str) -> dict[str, Any]:
     to ``Disease`` (not the object's broader Disease/PhenotypicFeature list), and is nullable so
     absent or unresolved context omits only the qualifier rather than deleting the edge. A table
     with a :data:`_TABLE_SUBJECT_DENYLIST` entry additionally carries ``source.reindex`` ``ne``
-    filters that drop those subject_text rows before entity resolution.
+    filters — one per :func:`_casing_variants` rendering of each entry — that drop those
+    subject_text rows before entity resolution.
     """
     _basename, predicate, knowledge_level, agent_type = _TABLE_SPECS[table]  # KeyError for unknown tables
     annotations: list[dict[str, Any]] = []
@@ -785,7 +803,10 @@ def table_config(table: str) -> dict[str, Any]:
     source: dict[str, Any] = {"kind": "text", "local": f"data/tabular/{table}.tsv", "url": [_TABLE_SOURCE_URLS[table]], "delimiter": "\t"}
     denylist = _TABLE_SUBJECT_DENYLIST.get(table)
     if denylist:
-        source["reindex"] = [{"column": column_letter(table, SUBJECT_COLUMN), "comparison": "ne", "comparator": name} for name in denylist]
+        subject_letter = column_letter(table, SUBJECT_COLUMN)
+        source["reindex"] = [
+            {"column": subject_letter, "comparison": "ne", "comparator": variant} for name in denylist for variant in _casing_variants(name)
+        ]
     return {
         "source": source,
         "statement": statement,

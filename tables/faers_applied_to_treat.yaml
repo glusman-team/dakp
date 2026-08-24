@@ -11,13 +11,55 @@ template:
         comparator: "METHYL ALCHOL"
       - column: A
         comparison: ne
+        comparator: "methyl alchol"
+      - column: A
+        comparison: ne
+        comparator: "Methyl Alchol"
+      - column: A
+        comparison: ne
+        comparator: "Methyl alchol"
+      - column: A
+        comparison: ne
         comparator: METHANOL
+      - column: A
+        comparison: ne
+        comparator: methanol
+      - column: A
+        comparison: ne
+        comparator: Methanol
       - column: A
         comparison: ne
         comparator: "GENERIC DRUG"
       - column: A
         comparison: ne
+        comparator: "generic drug"
+      - column: A
+        comparison: ne
+        comparator: "Generic Drug"
+      - column: A
+        comparison: ne
+        comparator: "Generic drug"
+      - column: A
+        comparison: ne
         comparator: "GENERIC DRUGS"
+      - column: A
+        comparison: ne
+        comparator: "generic drugs"
+      - column: A
+        comparison: ne
+        comparator: "Generic Drugs"
+      - column: A
+        comparison: ne
+        comparator: "Generic drugs"
+      - column: A
+        comparison: ne
+        comparator: PLACEBO
+      - column: A
+        comparison: ne
+        comparator: placebo
+      - column: A
+        comparison: ne
+        comparator: Placebo
   statement:
     subject:
       method: column
