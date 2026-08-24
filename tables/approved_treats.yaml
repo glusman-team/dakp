@@ -17,7 +17,6 @@ template:
         - AccessibleDnaRegion
         - Activity
         - AdministrativeEntity
-        - AffinityMeasurement
         - Agent
         - AnatomicalEntity
         - Article
@@ -144,6 +143,7 @@ template:
         - ProteinDomain
         - ProteinFamily
         - ProteinIsoform
+        - ProteinLigandAssayResult
         - Publication
         - RNAProduct
         - RNAProductIsoform
@@ -181,7 +181,6 @@ template:
         - AccessibleDnaRegion
         - Activity
         - AdministrativeEntity
-        - AffinityMeasurement
         - Agent
         - AnatomicalEntity
         - Article
@@ -308,6 +307,7 @@ template:
         - ProteinDomain
         - ProteinFamily
         - ProteinIsoform
+        - ProteinLigandAssayResult
         - Publication
         - RNAProduct
         - RNAProductIsoform

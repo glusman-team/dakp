@@ -344,6 +344,14 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
         # Release mode: `tablassert build-kg --release` emits the slim, significant-only graph
         # (drops biolink:not_significant edges before resolution). Always on for DAKP builds.
         "release": True,
+        # QC mode: `tablassert build-kg --qc` runs the SapBERT embedding audit (12.0) plus
+        # 13.0's stage-7 fail-the-build assertions on the final NDJSON (empty-or-null-values,
+        # unnamed/unidentified nodes, incomplete-edges). Always on for DAKP builds.
+        "qc": True,
+        # `tablassert build-kg --threads 70`: worker count for the parallel fullmap reads behind
+        # entity resolution. Fixed at 70 for the wenceslaus build host (leaves headroom for the
+        # Airflow workers + Go extractors; Tablassert's auto would claim every core).
+        "tablassert_threads": 70,
         "log_level": log_level,
         "fullmap": fullmap,
     }

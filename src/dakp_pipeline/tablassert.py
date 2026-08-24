@@ -55,7 +55,7 @@ The real runner (:class:`TablassertRunner`) shells out to the installed ``tablas
 (a CORE dependency installed by the single ``uv sync``) and captures stdout / exit code into
 a handoff report; the deferred runner (:class:`DeferredTablassertRunner`) writes a
 deferred-handoff report without ever touching Tablassert (used when no fullmap triggers the
-real handoff, and in tests). DAKP requires Tablassert >= 12.1: the graph config carries the
+real handoff, and in tests). DAKP requires Tablassert >= 13.0: the graph config carries the
 fullmap path (the ``build-kg --fullmap`` flag was removed in Tablassert 8.1), the 8.2
 Biolink-valid KGX modeling (``sources[]`` retrieval provenance, first-class evidence slots)
 is what the emitted configs target, 9.1's per-row ``split_by`` (made the ONLY multivalued
@@ -65,10 +65,15 @@ the graph config's ``rig:`` section mandatory while dropping the flat
 primary source now derives from ``rig.source_info.infores_id``), and 12.0 keeps ``approval_ids``
 as a curated TOP-LEVEL edge field instead of folding it into ``supporting_text`` and stops
 fabricating an empty supporting study for publication-less sections like DAKP's; 12.1 adds
-``ManualProvenance.upstream_source_record_urls`` (SkyeAv/Tablassert#104) — the provenance
-override DAKP emits requires it, so the floor is 12.1. Fullmaps must
-be ``tablassert.fullmap.v5`` redb files — the on-disk format since Tablassert 8.2; older ones
-(v1-v4) are rejected on read.
+``ManualProvenance.upstream_source_record_urls`` (SkyeAv/Tablassert#104), which the provenance
+override emits unconditionally. 13.0 (biolink-model 4.4.4) renames the
+``AffinityMeasurement`` config class to ``ProteinLigandAssayResult`` — the generated
+``avoid:``/``prioritize:`` lists assume the new name — reworks the inlined supporting study
+(``Study.id`` is the publication CURIE or config stem, no ``#`` composition), and adds the
+stage-7 ``--qc`` fail-the-build assertions (empty-or-null-values, unnamed/unidentified
+nodes, incomplete-edges) the production build now runs. Fullmaps must
+be ``tablassert.fullmap.v5`` redb files — the on-disk format since Tablassert 8.2, unchanged
+in 13.0; older ones (v1-v4) are rejected on read.
 
 The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it is
 on ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout override (the
@@ -737,19 +742,12 @@ def table_config(table: str) -> dict[str, Any]:
             "override": {
                 "upstream_resource_ids": list(upstream),
                 # Per-upstream download URLs: each supporting infores entry carries its own
-                # dataset's URL; the primary DAKP entry stays bare (no record to download). Only
-                # emitted when the installed Tablassert models the slot (post-12.0.0,
-                # SkyeAv/Tablassert#104 — see :func:`upstream_record_urls_supported`); on stock
-                # 12.0.0 the key is extra-forbidden and ``source.url`` lands on the primary entry.
-                **(
-                    {
-                        "upstream_source_record_urls": {
-                            resource: _INFORES_RECORD_URLS[resource] for resource in upstream if resource in _INFORES_RECORD_URLS
-                        }
-                    }
-                    if upstream_record_urls_supported()
-                    else {}
-                ),
+                # dataset's URL; the primary DAKP entry stays bare (no record to download).
+                # Requires Tablassert >= 12.1 (SkyeAv/Tablassert#104) — guaranteed by the
+                # >= 13.0.0 floor, so no feature probe.
+                "upstream_source_record_urls": {
+                    resource: _INFORES_RECORD_URLS[resource] for resource in upstream if resource in _INFORES_RECORD_URLS
+                },
                 "knowledge_level": knowledge_level,
                 "agent_type": agent_type,
             }
@@ -1018,24 +1016,6 @@ def qc_runtime_available() -> bool:
     return importlib.util.find_spec("sentence_transformers") is not None
 
 
-def upstream_record_urls_supported() -> bool:
-    """True when the installed Tablassert models ``ManualProvenance.upstream_source_record_urls``.
-
-    The slot ships in the Tablassert release FOLLOWING 12.0.0 (SkyeAv/Tablassert#104) — a
-    checkout built from that unreleased tree also reports 12.0.0, so the version string cannot
-    gate this; the model fields can. Stock 12.0.0 (today's PyPI latest, and what CI installs)
-    rejects the key as an extra override input, so :func:`table_config` emits it only when this
-    probe passes; without it the config degrades to the pre-#104 shape, where Tablassert places
-    ``source.url`` on the primary ``sources[]`` entry as the edge ``source_record_urls`` — the
-    shape main was green on before 5052c74.
-    """
-    if not tablassert_available():
-        return False
-    from tablassert.models import ManualProvenance  # lazy: keep this module's own import light
-
-    return "upstream_source_record_urls" in ManualProvenance.model_fields
-
-
 def _command_prefix(tablassert_dir: str | None) -> list[str]:
     """argv prefix that launches the ``tablassert`` CLI.
 
@@ -1107,13 +1087,17 @@ class TablassertRunner:
 
     tablassert_dir: str | None = None
 
-    def build_command(self, graph_yaml: Path, *, tablassert_dir: str | None = None, qc: bool = False, release: bool = False) -> list[str]:
+    def build_command(
+        self, graph_yaml: Path, *, tablassert_dir: str | None = None, qc: bool = False, release: bool = False, threads: int | None = None
+    ) -> list[str]:
         """The exact Tablassert invocation (pure; testable without spawning a process)."""
         command = [*_command_prefix(tablassert_dir), "build-kg", str(graph_yaml)]
         if qc:
             command.append("--qc")
         if release:
             command.append("--release")
+        if threads is not None:
+            command.extend(["--threads", str(threads)])
         return command
 
     def run(self, assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
@@ -1144,12 +1128,24 @@ class TablassertRunner:
         if qc_requested and not qc:
             logger.warning("{}: --qc requested but the QC audit runtime (sentence-transformers) is not importable; running without --qc", event)
         release = bool(ctx.params.get("release"))
+        # Worker count for the parallel fullmap reads behind entity resolution; absent => Tablassert auto.
+        threads_value = ctx.params.get("tablassert_threads")
+        threads = int(str(threads_value)) if threads_value is not None else None
 
-        command = self.build_command(graph_yaml, tablassert_dir=tablassert_dir, qc=qc, release=release)
+        command = self.build_command(graph_yaml, tablassert_dir=tablassert_dir, qc=qc, release=release, threads=threads)
         cwd = Workdir(ctx.workdir).root
 
         with step(logger, event):
-            stats(logger, event, graph_config=str(graph_yaml), fullmap=fullmap, qc=qc, release=release, tablassert_dir=tablassert_dir or "-")
+            stats(
+                logger,
+                event,
+                graph_config=str(graph_yaml),
+                fullmap=fullmap,
+                qc=qc,
+                release=release,
+                threads=threads,
+                tablassert_dir=tablassert_dir or "-",
+            )
             stats(logger, event, command=" ".join(command))
             completed = stream_subprocess(command, cwd=cwd)
         status = "ok" if completed.returncode == 0 else "failed"
@@ -1170,6 +1166,7 @@ class TablassertRunner:
                 "tablassert_dir": tablassert_dir,
                 "qc": qc,
                 "release": release,
+                "threads": threads,
             }
         )
         refs = [_write_report(report, assertion_refs, ctx)]
@@ -1240,5 +1237,4 @@ __all__ = [
     "tablassert_available",
     "table_config",
     "table_yaml",
-    "upstream_record_urls_supported",
 ]

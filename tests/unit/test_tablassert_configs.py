@@ -43,7 +43,6 @@ from dakp_pipeline.tablassert import (
     category_avoid_list,
     qc_runtime_available,
     tablassert_available,
-    upstream_record_urls_supported,
 )
 from dakp_pipeline.tablassert import run as run_tablassert
 
@@ -231,12 +230,8 @@ def test_table_config_structure(table: str) -> None:
     assert "infores" not in override  # the DAKP infores is graph-level only (Tablassert >= 8.0.1 forbids it here)
     assert override["upstream_resource_ids"] == upstream
     # Edge source_record_urls live on the per-upstream supporting entries, not the primary DAKP
-    # entry — but only on Tablassert releases that model the slot (post-12.0.0); stock 12.0.0
-    # forbids the key and keeps the URLs on the primary entry via source.url.
-    if upstream_record_urls_supported():
-        assert override["upstream_source_record_urls"] == {resource: EXPECTED_UPSTREAM_RECORD_URLS[resource] for resource in upstream}
-    else:
-        assert "upstream_source_record_urls" not in override
+    # entry — emitted unconditionally (the #104 slot is guaranteed by the >= 13.0.0 floor).
+    assert override["upstream_source_record_urls"] == {resource: EXPECTED_UPSTREAM_RECORD_URLS[resource] for resource in upstream}
     assert override["knowledge_level"] == knowledge_level
     assert override["agent_type"] == agent_type
     assert "publication" not in config["provenance"]
@@ -427,12 +422,12 @@ def test_table_yaml_validates_against_tablassert_section_model(table: str) -> No
     assert [str(qualifier.qualifier) for qualifier in model_qualifiers] == list(EXPECTED_QUALIFIERS[table])
 
 
-def test_committed_table_configs_match_generator_output(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_committed_table_configs_match_generator_output() -> None:
     # The committed ``tables/*.yaml`` must byte-equal the generator output (regenerate, never
-    # hand-diverge). They are committed in the WITH-``upstream_source_record_urls`` form (the
-    # canonical new-Tablassert shape), so pin the probe ON: on a stock 12.0.0 install the generator
-    # would otherwise omit the key and byte-diverge from the committed files.
-    monkeypatch.setattr(tablassert_configs, "upstream_record_urls_supported", lambda: True)
+    # hand-diverge). The generator emits ``upstream_source_record_urls`` unconditionally (the
+    # #104 slot is guaranteed by the >= 13.0.0 floor) and derives the ``avoid`` lists from the
+    # installed Tablassert's Biolink enum, so any Biolink churn (e.g. 13.0's
+    # ``AffinityMeasurement`` -> ``ProteinLigandAssayResult`` rename) requires a regeneration.
     repo_tables = Path(__file__).resolve().parents[2] / "tables"
     for table in TABLES:
         basename = tablassert_configs._TABLE_SPECS[table][0]
@@ -802,29 +797,6 @@ def test_qc_runtime_available_reflects_importability(monkeypatch: pytest.MonkeyP
     assert qc_runtime_available() is False
 
 
-def test_upstream_record_urls_supported_reflects_installed_model() -> None:
-    """The probe tracks the installed ManualProvenance, not the version string (a post-12.0.0
-    checkout also reports 12.0.0, so the field set is the only truthful signal)."""
-    from tablassert.models import ManualProvenance
-
-    assert upstream_record_urls_supported() is ("upstream_source_record_urls" in ManualProvenance.model_fields)
-
-
-def test_upstream_record_urls_supported_false_when_tablassert_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tablassert_configs, "tablassert_available", lambda: False)
-    assert upstream_record_urls_supported() is False
-
-
-def test_table_config_omits_upstream_record_urls_on_stock_tablassert(monkeypatch: pytest.MonkeyPatch) -> None:
-    """On a Tablassert without the #104 slot the override must omit the key entirely —
-    pydantic rejects extra override inputs, which is what broke CI on stock 12.0.0."""
-    monkeypatch.setattr(tablassert_configs, "upstream_record_urls_supported", lambda: False)
-    for table in TABLES:
-        override = tablassert_configs.table_config(table)["provenance"]["override"]
-        assert "upstream_source_record_urls" not in override
-        assert set(override) == {"upstream_resource_ids", "knowledge_level", "agent_type"}
-
-
 # --- runner: command construction (pure; no process spawned) ----------------------
 
 
@@ -849,6 +821,12 @@ def test_build_command_appends_qc_and_release_flags(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(shutil, "which", lambda name: None)
     command = TablassertRunner().build_command(Path("graph.yaml"), qc=True, release=True)
     assert command == ["uv", "run", "tablassert", "build-kg", "graph.yaml", "--qc", "--release"]
+
+
+def test_build_command_appends_threads(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    command = TablassertRunner().build_command(Path("graph.yaml"), threads=70)
+    assert command == ["uv", "run", "tablassert", "build-kg", "graph.yaml", "--threads", "70"]
 
 
 def test_resolve_tablassert_dir_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1042,6 +1020,26 @@ def test_real_runner_appends_release_flag(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     assert "--release" in seen[0]
     assert _read_report(workdir)["release"] is True
+
+
+def test_real_runner_appends_threads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    workdir = Workdir(tmp_path / "work")
+    workdir.create()
+    assertion_refs = _assertion_refs(workdir)
+    config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
+
+    seen: list[list[str]] = []
+
+    def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        seen.append(command)
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    _patch_installed(monkeypatch)
+    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, tablassert_threads=70, fullmap="data/fullmap"))
+
+    assert seen[0][-2:] == ["--threads", "70"]
+    assert _read_report(workdir)["threads"] == 70
 
 
 # --- module-level dispatch --------------------------------------------------------
