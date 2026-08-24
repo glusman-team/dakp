@@ -16,15 +16,13 @@ The configs match the ACTUAL current Tablassert schema (verified against
   silently dropped, so the ``template:`` wrapper is mandatory;
 * ``source.kind: text`` with a tab ``delimiter`` and the uncompressed assertion ``.tsv``
   as ``source.local``. ``source.url`` is required by the model and records the table's REAL
-  upstream dataset URL (:data:`_TABLE_SOURCE_URLS`) — never a placeholder. On the edge it no
-  longer lands on the primary ``sources[]`` entry: with the override's
-  ``upstream_source_record_urls`` mapping (:data:`_INFORES_RECORD_URLS`), Tablassert attaches
-  each upstream's download URL to that upstream's own ``supporting_data_source`` entry
-  (``infores:dailymed`` / ``infores:faers``) and leaves the primary
-  ``infores:multiomics-drugapprovals`` entry bare; ``source.url`` then serves the RIG. Tablassert
+  upstream dataset URL (:data:`_TABLE_SOURCE_URLS`) — never a placeholder. It serves the RIG
+  only: edge provenance comes entirely from the explicit ``override.sources`` template
+  (:data:`_TABLE_SOURCES`), which carries no dataset-level URLs (they are irrelevant
+  per-edge). Tablassert
   8.2.1+ models ``source.url`` as a ``list`` of one or more URLs per section and DAKP assertion
   rows aggregate across quarters, releases, and applications, so no per-row URL is truthful at
-  row granularity; the dataset-level URLs are the honest record, and per-row precision
+  row granularity; the dataset-level URLs are the honest RIG record, and per-row precision
   stays on the edge via ``has_evidence`` (SPL set links) and ``approval_ids`` (FDA application
   numbers);
 * column-encoded ``statement.subject`` / ``statement.object`` / ``statement.predicate``
@@ -33,11 +31,12 @@ The configs match the ACTUAL current Tablassert schema (verified against
   Tablassert's full Biolink ``Categories`` enum, so no off-allow-list category can ever
   resolve into the graph (``prioritize`` alone is only a soft ranking boost);
 * a ``provenance.override`` (:class:`~tablassert.models.ManualProvenance`) block carrying
-  the DINGO-conventional upstream infores chain, ``knowledge_level`` and ``agent_type``
+  ``knowledge_level`` and ``agent_type``
   (the DAKP ``infores`` is graph-level only since Tablassert >= 8.0.1 forbids it in the override;
-  no ``publication`` — the override replaces repo/publication provenance), plus
-  ``upstream_source_record_urls`` re-homing the edge ``source_record_urls`` from the primary
-  DAKP entry onto the per-upstream entries (:data:`_INFORES_RECORD_URLS`);
+  no ``publication`` — the override replaces repo/publication provenance), plus the explicit
+  ``sources`` template (:data:`_TABLE_SOURCES`) replicating the legacy DAKP edge-provenance
+  shape — the DAKP wrapper entry carries the gestalt ``{edge_id}`` record-URL template
+  (:data:`GESTALT_RECORD_URL_TEMPLATE`), resolved by Tablassert on the final edges;
 * column-encoded ``statement.qualifiers`` where an assertion column carries the qualifier's entity
   (per-table :data:`_TABLE_QUALIFIERS`). A Tablassert qualifier is a node encoding resolved through
   the fullmap alongside subject/object (an unmatched qualifier value drops the whole edge), so a
@@ -55,7 +54,7 @@ The real runner (:class:`TablassertRunner`) shells out to the installed ``tablas
 (a CORE dependency installed by the single ``uv sync``) and captures stdout / exit code into
 a handoff report; the deferred runner (:class:`DeferredTablassertRunner`) writes a
 deferred-handoff report without ever touching Tablassert (used when no fullmap triggers the
-real handoff, and in tests). DAKP requires Tablassert >= 13.0: the graph config carries the
+real handoff, and in tests). DAKP requires Tablassert >= 14.0: the graph config carries the
 fullmap path (the ``build-kg --fullmap`` flag was removed in Tablassert 8.1), the 8.2
 Biolink-valid KGX modeling (``sources[]`` retrieval provenance, first-class evidence slots)
 is what the emitted configs target, 9.1's per-row ``split_by`` (made the ONLY multivalued
@@ -64,14 +63,15 @@ the graph config's ``rig:`` section mandatory while dropping the flat
 ``primary_knowledge_source`` edge column (nested ``sources[]`` provenance only — the edge
 primary source now derives from ``rig.source_info.infores_id``), and 12.0 keeps ``approval_ids``
 as a curated TOP-LEVEL edge field instead of folding it into ``supporting_text`` and stops
-fabricating an empty supporting study for publication-less sections like DAKP's; 12.1 adds
-``ManualProvenance.upstream_source_record_urls`` (SkyeAv/Tablassert#104), which the provenance
-override emits unconditionally. 13.0 (biolink-model 4.4.4) renames the
+fabricating an empty supporting study for publication-less sections like DAKP's. 13.0 (biolink-model 4.4.4) renames the
 ``AffinityMeasurement`` config class to ``ProteinLigandAssayResult`` — the generated
 ``avoid:``/``prioritize:`` lists assume the new name — reworks the inlined supporting study
 (``Study.id`` is the publication CURIE or config stem, no ``#`` composition), and adds the
 stage-7 ``--qc`` fail-the-build assertions (empty-or-null-values, unnamed/unidentified
-nodes, incomplete-edges) the production build now runs. Fullmaps must
+nodes, incomplete-edges) the production build now runs. 14.0 adds the explicit
+``override.sources`` template (SkyeAv/Tablassert#116) with post-dedup ``{edge_id}``
+resolution — what DAKP's legacy-shaped edge provenance requires, so 14.0 is the floor.
+Fullmaps must
 be ``tablassert.fullmap.v5`` redb files — the on-disk format since Tablassert 8.2, unchanged
 in 13.0; older ones (v1-v4) are rejected on read.
 
@@ -138,9 +138,9 @@ FULLMAP_DEFAULT = ".fullmap"
 
 #: Real upstream dataset URL recorded as each table's ``source.url`` — the constants the
 #: acquisition layer itself uses, so provenance can never drift from what was downloaded.
-#: ``source.url`` is the section's RIG/audit record; on the edge, Tablassert places the URLs
-#: per-upstream via the override's ``upstream_source_record_urls`` (:data:`_INFORES_RECORD_URLS`),
-#: leaving the primary DAKP ``sources[]`` entry bare. Approved-treats and contraindication
+#: ``source.url`` is the section's RIG/audit record ONLY: edges get their provenance from the
+#: explicit ``override.sources`` template (:data:`_TABLE_SOURCES`), which carries no
+#: dataset-level URLs. Approved-treats and contraindication
 #: rows are extracted from DailyMed SPL releases (the DailyMed full-release index); FAERS
 #: observed-use rows from the FAERS quarterly ASCII extracts (the FDA quarterly-data listing).
 _TABLE_SOURCE_URLS: dict[str, str] = {
@@ -148,23 +148,13 @@ _TABLE_SOURCE_URLS: dict[str, str] = {
     "faers_applied_to_treat_assertions": faers_source.FDA_FAERS_INDEX_URL,
     "contraindication_assertions": dailymed_source.FULL_RELEASE_INDEX_URL,
 }
-#: Download URL each upstream infores entry carries as its own ``source_record_urls`` on every
-#: edge where it appears as a ``supporting_data_source``. The primary
-#: ``infores:multiomics-drugapprovals`` entry deliberately carries none — DAKP is the
-#: transforming resource, not a downloadable record. Shipped in Tablassert 12.1.0
-#: (``ManualProvenance.upstream_source_record_urls``, SkyeAv/Tablassert#104).
-_INFORES_RECORD_URLS: dict[str, list[str]] = {
-    "infores:dailymed": [dailymed_source.FULL_RELEASE_INDEX_URL],
-    "infores:faers": [faers_source.FDA_FAERS_INDEX_URL],
-}
 GRAPH_DESCRIPTION = (
     "Drug Approvals Knowledge Provider: FDA-approved treatment relationships, "
     "FAERS-observed applied-to-treat uses, and contraindications text-mined from "
     "DailyMed, modeled from DailyMed, Drugs@FDA, and FAERS. "
     "Every edge carries the evidence identifiers backing it; approved-treats edges also carry "
     "clinical approval status and FDA application numbers, FAERS-observed use edges add case "
-    "counts, and contraindication edges carry application numbers where available plus the "
-    "evidence prose backing them."
+    "counts, and contraindication edges carry application numbers where available."
 )
 
 # --- RIG (Resource Ingest Guide) graph-config section -------------------------------
@@ -230,9 +220,10 @@ RIG_DATA_VERSIONING_AND_RELEASES = (
 #: ``relevant_files`` (filtered per graph to the tables present and audit-cross-checked against
 #: table section sources), this section is free-form and always complete.
 #: NO ``infores:medi`` entry: this rebuild has no MEDI source module (``src/dakp_pipeline/sources/``
-#: is dailymed, drugsfda, faers only); contraindications are text-mined from DailyMed SPL
-#: (``_TABLE_SPECS`` upstream ``("infores:dailymed",)``, agent ``text_mining_agent``). MEDI
-#: belonged to the legacy pipeline — adopting it would be fabricated provenance.
+#: is dailymed, drugsfda, faers only); contraindications are mined from DailyMed SPL. MEDI
+#: belonged to the legacy pipeline — listing it HERE would be fabricated provenance (the
+#: edge-level ``sources[]`` template still carries its legacy ``infores:medi`` entry for
+#: shape parity; see :data:`_TABLE_SOURCES`).
 #: NO Drugs@FDA entry either: only the two EDGE-BACKED upstreams are listed; Drugs@FDA enriches
 #: assertions at build time (application joins) but backs no edge as a supporting source.
 RIG_SUPPORTING_DATA_SOURCES: tuple[dict[str, Any], ...] = (
@@ -353,8 +344,9 @@ RIG_INGEST_FUTURE_CONSIDERATIONS: tuple[dict[str, str], ...] = (
 #: RIG ``provenance_info.contributions``: the PEOPLE first, then the pipeline/tooling
 #: statements. The first three are VERBATIM from the DINGO-reviewed upstream
 #: ``NCATSTranslator/translator-ingests`` DAKP RIG. Skye Lane Goetz is added because she
-#: authored the upstream Tablassert feature this pipeline's provenance override requires
-#: (``ManualProvenance.upstream_source_record_urls``, SkyeAv/Tablassert#104) and co-authored
+#: authored the upstream Tablassert features this pipeline's provenance override requires
+#: (``ManualProvenance.upstream_source_record_urls``, SkyeAv/Tablassert#104, and the explicit
+#: ``override.sources`` template, SkyeAv/Tablassert#116) and co-authored
 #: the cited DAKP method preprint (PMC11601480).
 RIG_CONTRIBUTIONS: tuple[str, ...] = (
     "Gwenlyn Glusman - code author, domain expertise, data modeling",
@@ -506,27 +498,70 @@ _TABLE_ORDER = ("approved_treats_assertions", "faers_applied_to_treat_assertions
 # the rows are dropped at Tablassert LOAD time and can never reach the final KGX output. The FAERS
 # off-label table aggregates methanol poison-exposure reports where the chemical is the EXPOSURE,
 # not a treatment — an ``applied_to_treat`` edge for it is semantically wrong ("METHYL ALCHOL" is
-# FAERS's own spelling of the ingredient). Reindex conditions AND together: a row survives only
-# when its subject_text matches none of the denylist (exact, case-sensitive string compare).
-_TABLE_SUBJECT_DENYLIST: dict[str, tuple[str, ...]] = {"faers_applied_to_treat_assertions": ("METHYL ALCHOL", "METHANOL")}
-
-# assertion table -> (config basename, predicate, upstream infores chain, knowledge_level,
-# agent_type). Upstream order + knowledge_level match the DINGO translator-ingest provenance
-# contract (../DINGO/tests/unit/ingests/dakp/test_dakp.py): treats = knowledge_assertion over
-# dailymed|faers; applied_to_treat = observation over faers|dailymed (current FAERS
-# label/status behavior); contraindicated_in = knowledge_assertion text-mined from DailyMed
-# (dailymed upstream, text_mining_agent — matches the DAKP RIG).
-_TABLE_SPECS: dict[str, tuple[str, str, tuple[str, ...], str, str]] = {
-    "approved_treats_assertions": ("approved_treats", "treats", ("infores:dailymed", "infores:faers"), "knowledge_assertion", AGENT_TYPE),
-    "faers_applied_to_treat_assertions": (
-        "faers_applied_to_treat",
-        "applied_to_treat",
-        ("infores:faers", "infores:dailymed"),
-        "observation",
-        AGENT_TYPE,
-    ),
-    "contraindication_assertions": ("contraindications", "contraindicated_in", ("infores:dailymed",), "knowledge_assertion", "text_mining_agent"),
+# FAERS's own spelling of the ingredient). "GENERIC DRUG"/"GENERIC DRUGS" are FAERS verbatim
+# drug-name placeholders that name no real substance. Reindex conditions AND together: a row
+# survives only when its subject_text matches none of the denylist (exact, case-sensitive string
+# compare).
+_TABLE_SUBJECT_DENYLIST: dict[str, tuple[str, ...]] = {
+    "faers_applied_to_treat_assertions": ("METHYL ALCHOL", "METHANOL", "GENERIC DRUG", "GENERIC DRUGS")
 }
+
+# assertion table -> (config basename, predicate, knowledge_level, agent_type). Knowledge levels
+# match the DINGO translator-ingest provenance contract
+# (../DINGO/tests/unit/ingests/dakp/test_dakp.py): treats = knowledge_assertion;
+# applied_to_treat = observation; contraindicated_in = knowledge_assertion mined from DailyMed.
+# Every family uses ``AGENT_TYPE`` — the agent type the legacy DAKP KG shipped on all three
+# predicates (``manual_validation_of_automated_agent``).
+_TABLE_SPECS: dict[str, tuple[str, str, str, str]] = {
+    "approved_treats_assertions": ("approved_treats", "treats", "knowledge_assertion", AGENT_TYPE),
+    "faers_applied_to_treat_assertions": ("faers_applied_to_treat", "applied_to_treat", "observation", AGENT_TYPE),
+    "contraindication_assertions": ("contraindications", "contraindicated_in", "knowledge_assertion", AGENT_TYPE),
+}
+
+#: Per-edge record URL template carried by the ``infores:multiomics-drugapprovals`` sources
+#: entry — the gestalt viewer deep-links each edge by its own id. ``{edge_id}`` is resolved by
+#: Tablassert in a post-dedup sweep of the final edges ndjson (``override.sources``,
+#: SkyeAv/Tablassert#116).
+GESTALT_RECORD_URL_TEMPLATE = "https://db.systemsbiology.net/gestalt/cgi-pub/KGinfo.pl?id={edge_id}"
+
+# assertion table -> the explicit ``provenance.override.sources`` template, recovered from the
+# shipped legacy ``drug_approvals_kg_edges.jsonl``: (resource_id, role, upstream ids) in legacy
+# entry order. The DAKP entry always carries the gestalt record URL; the remaining entries carry
+# no ``source_record_urls`` (dataset-level URLs are irrelevant per-edge). Contraindication edges
+# keep the legacy ``infores:medi`` primary entry even though this rebuild has no MEDI source
+# module — edge-shape parity only; the RIG deliberately stays MEDI-free (see the
+# ``RIG_SUPPORTING_DATA_SOURCES`` comment). Requires Tablassert >= 14.0 (SkyeAv/Tablassert#116).
+_TABLE_SOURCES: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
+    "approved_treats_assertions": (
+        (INFORES_DAKP, "primary_knowledge_source", ("infores:dailymed", "infores:faers")),
+        ("infores:faers", "supporting_data_source", ()),
+        ("infores:dailymed", "supporting_data_source", ()),
+    ),
+    "faers_applied_to_treat_assertions": (
+        (INFORES_DAKP, "aggregator_knowledge_source", ("infores:dailymed", "infores:faers")),
+        ("infores:faers", "primary_knowledge_source", ()),
+        ("infores:dailymed", "supporting_data_source", ()),
+    ),
+    "contraindication_assertions": (
+        (INFORES_DAKP, "aggregator_knowledge_source", ("infores:dailymed", "infores:medi")),
+        ("infores:medi", "primary_knowledge_source", ("infores:dailymed",)),
+        ("infores:dailymed", "supporting_data_source", ()),
+    ),
+}
+
+
+def _sources_template(table: str) -> list[dict[str, Any]]:
+    """The table's explicit ``override.sources`` entries (the DAKP entry gets the gestalt URL)."""
+    entries: list[dict[str, Any]] = []
+    for resource_id, role, upstream in _TABLE_SOURCES[table]:
+        entry: dict[str, Any] = {"resource_id": resource_id, "resource_role": role}
+        if upstream:
+            entry["upstream_resource_ids"] = list(upstream)
+        if resource_id == INFORES_DAKP:
+            entry["source_record_urls"] = [GESTALT_RECORD_URL_TEMPLATE]
+        entries.append(entry)
+    return entries
+
 
 # assertion column -> (annotation name, multivalued separator), per table. Every DAKP edge resolves
 # to ``biolink:ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` (Tablassert derives the
@@ -585,7 +620,9 @@ _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
     "contraindication_assertions": (
         ("approval_ids", "approval_ids", "|"),
         ("edge_evidence", "has_evidence", "|"),
-        ("evidence_text", "supporting_text", "|"),
+        # ``evidence_text`` (the SPL contraindication prose) is deliberately NOT annotated: mapped
+        # to ``supporting_text`` it buried every edge under full sentences, making the KGX output
+        # unreadable. The column stays in the assertion TSV as provenance; only the edge drops it.
         ("source_score", "source_score", None),
     ),
 }
@@ -710,7 +747,7 @@ def table_config(table: str) -> dict[str, Any]:
     with a :data:`_TABLE_SUBJECT_DENYLIST` entry additionally carries ``source.reindex`` ``ne``
     filters that drop those subject_text rows before entity resolution.
     """
-    _basename, predicate, upstream, knowledge_level, agent_type = _TABLE_SPECS[table]  # KeyError for unknown tables
+    _basename, predicate, knowledge_level, agent_type = _TABLE_SPECS[table]  # KeyError for unknown tables
     annotations: list[dict[str, Any]] = []
     for column, annotation, split_by in _TABLE_ANNOTATIONS[table]:
         entry: dict[str, Any] = {"annotation": annotation, "method": "column", "encoding": column_letter(table, column)}
@@ -754,14 +791,13 @@ def table_config(table: str) -> dict[str, Any]:
         "statement": statement,
         "provenance": {
             "override": {
-                "upstream_resource_ids": list(upstream),
-                # Per-upstream download URLs: each supporting infores entry carries its own
-                # dataset's URL; the primary DAKP entry stays bare (no record to download).
-                # Requires Tablassert >= 12.1 (SkyeAv/Tablassert#104) — guaranteed by the
-                # >= 13.0.0 floor, so no feature probe.
-                "upstream_source_record_urls": {
-                    resource: _INFORES_RECORD_URLS[resource] for resource in upstream if resource in _INFORES_RECORD_URLS
-                },
+                # Explicit ``sources`` list replicating the legacy DAKP edge-provenance shape
+                # exactly (DAKP wrapper entry with the gestalt record-URL template, then the
+                # per-resource entries); Tablassert >= 14.0 uses it verbatim on every edge and
+                # resolves the ``{edge_id}`` placeholder post-build. No dataset-level record
+                # URLs anywhere: they are irrelevant per-edge, and the section ``source.url``
+                # stays RIG-only.
+                "sources": _sources_template(table),
                 "knowledge_level": knowledge_level,
                 "agent_type": agent_type,
             }
@@ -1231,6 +1267,7 @@ __all__ = [
     "AGENT_TYPE",
     "DEFAULT_TABLASERT_DIR",
     "FULLMAP_DEFAULT",
+    "GESTALT_RECORD_URL_TEMPLATE",
     "GRAPH_DESCRIPTION",
     "GRAPH_NAME",
     "INFORES_DAKP",

@@ -58,7 +58,7 @@ _EDGES: list[dict[str, Any]] = [
         "predicate": "biolink:contraindicated_in",
         "object": "Y:2",
         "knowledge_level": "knowledge_assertion",
-        "agent_type": "text_mining_agent",
+        "agent_type": "manual_validation_of_automated_agent",
         "evidence_count": "7",
         "has_evidence": [],
     },

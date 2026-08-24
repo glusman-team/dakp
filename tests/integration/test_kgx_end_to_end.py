@@ -18,12 +18,14 @@ The whole module SKIPS when ``tablassert`` is not importable (dependencies not y
 runs once ``uv sync`` has materialized the runtime. ``tests/`` is outside the coverage ``source``,
 so the skip does not affect the 100% ``src/`` coverage gate.
 
-Provenance shape (Tablassert >= 11): edges carry NO flat ``primary_knowledge_source`` scalar —
-retrieval provenance lives only in the ``sources`` list of RetrievalSource entries; the primary
-entry carries ``upstream_resource_ids`` and NO ``source_record_urls`` (those moved per-upstream with
-``ManualProvenance.upstream_source_record_urls``, SkyeAv/Tablassert#104), each upstream infores
-appears as a ``supporting_data_source`` entry carrying its own dataset download URL — exactly the
-canonical Translator contract ``validate_kgx`` checks.
+Provenance shape (Tablassert >= 14.0, explicit ``override.sources``, SkyeAv/Tablassert#116): edges
+carry NO flat ``primary_knowledge_source`` scalar — retrieval provenance lives only in the
+``sources`` list, which replicates the shipped legacy DAKP edge provenance VERBATIM: the
+``infores:multiomics-drugapprovals`` wrapper entry (primary for ``treats``, aggregator for
+``applied_to_treat``/``contraindicated_in``) carries the gestalt per-edge record URL with the
+edge's OWN id resolved in place of ``{edge_id}``; FAERS is the primary entry for
+``applied_to_treat`` and ``infores:medi`` for ``contraindicated_in`` (legacy shape parity — this
+rebuild has no MEDI module); no entry carries a dataset-level URL.
 """
 
 from __future__ import annotations
@@ -41,8 +43,8 @@ from dakp_pipeline import legacy_tsv
 from dakp_pipeline.assertions.evidence import DAILYMED_SET_CURIE_PREFIX
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.tablassert import _INFORES_RECORD_URLS, TablassertRunner
-from dakp_pipeline.translator import EDGE_FAMILIES, INFORES_DAKP, read_kgx_jsonl, validate_kgx
+from dakp_pipeline.tablassert import GESTALT_RECORD_URL_TEMPLATE, TablassertRunner
+from dakp_pipeline.translator import INFORES_DAKP, read_kgx_jsonl, validate_kgx
 
 # Skip the WHOLE module when tablassert is not importable (deps not installed). tiny_fullmap imports
 # tablassert only inside its child build process, so importing it above is safe even when absent.
@@ -171,15 +173,40 @@ def test_three_edge_families_present(kgx_build: KgxBuild) -> None:
     assert predicates == {_TREATS, _APPLIED, _CONTRA}
 
 
+# predicate -> the legacy DAKP ``sources`` shape the explicit ``override.sources`` template
+# (Tablassert >= 14.0, SkyeAv/Tablassert#116) stamps on every edge of that family:
+# (resource_id, resource_role, upstream_resource_ids-or-None) in legacy entry order. The DAKP
+# wrapper entry additionally carries the gestalt record URL with the edge's own id resolved;
+# NO entry carries a dataset-level URL.
+EXPECTED_SOURCES_BY_PREDICATE: dict[str, list[tuple[str, str, list[str] | None]]] = {
+    _TREATS: [
+        (INFORES_DAKP, "primary_knowledge_source", ["infores:dailymed", "infores:faers"]),
+        ("infores:faers", "supporting_data_source", None),
+        ("infores:dailymed", "supporting_data_source", None),
+    ],
+    _APPLIED: [
+        (INFORES_DAKP, "aggregator_knowledge_source", ["infores:dailymed", "infores:faers"]),
+        ("infores:faers", "primary_knowledge_source", None),
+        ("infores:dailymed", "supporting_data_source", None),
+    ],
+    _CONTRA: [
+        (INFORES_DAKP, "aggregator_knowledge_source", ["infores:dailymed", "infores:medi"]),
+        ("infores:medi", "primary_knowledge_source", ["infores:dailymed"]),
+        ("infores:dailymed", "supporting_data_source", None),
+    ],
+}
+
+
 def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
-    """RAW Tablassert edges carry the canonical Translator provenance shape directly.
+    """RAW Tablassert edges replicate the shipped legacy DAKP provenance shape exactly.
 
     NO flat ``primary_knowledge_source`` scalar (removed in Tablassert 11.0): retrieval
-    provenance lives only in the ``sources`` RetrievalSource list — the primary entry
-    (``infores:multiomics-drugapprovals``) carries the edge family's upstream infores but NO
-    ``source_record_urls`` (DAKP is the transforming resource, not a downloadable record);
-    each upstream infores appears as its own ``supporting_data_source`` entry carrying that
-    dataset's REAL download URL (never the retired ``example.invalid`` placeholder).
+    provenance lives only in the ``sources`` RetrievalSource list — the explicit
+    ``override.sources`` template (SkyeAv/Tablassert#116), which is the legacy shape: the DAKP
+    wrapper entry (primary for treats, aggregator for the mined families) carries the gestalt
+    per-edge record URL with ``{edge_id}`` resolved to the edge's own id; FAERS is the primary
+    entry for ``applied_to_treat`` and ``infores:medi`` for ``contraindicated_in``; no entry
+    carries a dataset-level URL (they are irrelevant per-edge).
     """
     assert kgx_build.edges, "build-kg produced no edges"
     for edge in kgx_build.edges:
@@ -188,29 +215,25 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
             value = edge.get(field_name)
             assert isinstance(value, str)
             assert value
-        # The flat scalar is gone (Tablassert >= 11); the primary source is the sources entry.
+        # The flat scalar is gone (Tablassert >= 11); the primary source is a sources entry.
         assert "primary_knowledge_source" not in edge
-        # Retrieval provenance: primary entry carries the family's upstream infores, no URLs.
         sources = edge.get("sources")
         assert isinstance(sources, list)
         assert sources
-        primary_entry = next(entry for entry in sources if entry.get("resource_role") == "primary_knowledge_source")
-        assert primary_entry.get("resource_id") == INFORES_DAKP
-        family = EDGE_FAMILIES[edge["predicate"]]
-        assert frozenset(primary_entry.get("upstream_resource_ids") or []) == family.required_upstream
-        # Each upstream infores is its own supporting entry carrying that dataset's REAL download
-        # URL (SkyeAv/Tablassert#104, guaranteed by the >= 13.0.0 floor); the primary DAKP entry
-        # stays bare — DAKP is the transforming resource, not a downloadable record.
-        supporting = {entry.get("resource_id"): entry for entry in sources if entry.get("resource_role") == "supporting_data_source"}
-        assert set(supporting) == set(family.required_upstream)
-        assert not primary_entry.get("source_record_urls")
-        for resource, entry in supporting.items():
-            record_urls = entry.get("source_record_urls")
-            assert isinstance(record_urls, list)
-            assert record_urls == _INFORES_RECORD_URLS[resource]
-            for url in record_urls:
-                assert url.startswith("https://")
-                assert "example.invalid" not in url
+        # Entry order and roles match the legacy shape exactly; no empty keys anywhere.
+        assert [(entry.get("resource_id"), entry.get("resource_role"), entry.get("upstream_resource_ids")) for entry in sources] == [
+            (resource_id, role, upstream) for resource_id, role, upstream in EXPECTED_SOURCES_BY_PREDICATE[edge["predicate"]]
+        ]
+        for entry in sources:
+            assert all(value != [] for value in entry.values()), f"empty list leaked onto the edge: {entry}"
+            assert "example.invalid" not in str(entry)
+        dakp_entry = next(entry for entry in sources if entry.get("resource_id") == INFORES_DAKP)
+        # The gestalt viewer deep-link resolved the template to THIS edge's id.
+        assert dakp_entry.get("source_record_urls") == [GESTALT_RECORD_URL_TEMPLATE.replace("{edge_id}", edge["id"])]
+        # No dataset-level record URLs on any other entry.
+        for entry in sources:
+            if entry is not dakp_entry:
+                assert "source_record_urls" not in entry
 
 
 def test_edge_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> None:

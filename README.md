@@ -25,7 +25,7 @@ For a full production run with the KGX handoff:
 uv run dakp up --fullmap /path/to/fullmap.redb
 ```
 
-`dakp up` builds the native Go bundle, starts a local Airflow, triggers the `dakp_build` DAG,
+`dakp up` builds the native Go bundle, starts a local Airflow, triggers the `dakp_build_v3` DAG,
 waits, and prints the build summary. `uv run dakp down` stops the local Airflow. Without
 `--fullmap`, the Tablassert handoff is deferred (a manifest is written) — never an error.
 

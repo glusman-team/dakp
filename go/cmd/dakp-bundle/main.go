@@ -10,7 +10,7 @@
 // The DAG structure and task dependencies still live in Python (dags/dakp_build.py) as
 // @task.stub(queue="golang") declarations — a documented Go SDK limitation (the Execution API does
 // not yet carry DAG structure for non-Python languages). This bundle registers the Go
-// implementations of those stub tasks; the dag_id ("dakp_build") and each task_id MUST match the
+// implementations of those stub tasks; the dag_id ("dakp_build_v3") and each task_id MUST match the
 // Python stub DAG. Task ids are set explicitly via AddTaskWithName so the Go functions keep
 // idiomatic camelCase names.
 //
@@ -39,7 +39,7 @@ import (
 )
 
 // dagID must match the Python stub DAG's dag_id (dags/dakp_build.py: DAG_ID).
-const dagID = "dakp_build"
+const dagID = "dakp_build_v3"
 
 // Task ids — must match the @task.stub function names in the Python DAG.
 const (

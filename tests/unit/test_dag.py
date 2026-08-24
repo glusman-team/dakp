@@ -1,7 +1,7 @@
-"""DAG wiring tests for the Airflow-native ``dakp_build`` DAG (Airflow 3 is a hard dependency).
+"""DAG wiring tests for the Airflow-native ``dakp_build_v3`` DAG (Airflow 3 is a hard dependency).
 
 The DAG always imports and constructs (no optional-extra guard). These tests assert the module
-constants, the 15-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
+constants, the 16-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
 three ``extract_*`` tasks are native Go SDK stubs routed to the ``golang`` queue, that
 acquisition/extraction resource pools let those tasks run concurrently, that the three
 GLiNER-mining shape tasks serialize on the 1-slot ``ner_mining`` pool, and that the MEDliNER
@@ -27,6 +27,7 @@ _EXPECTED_TASK_IDS = {
     "generate_tablassert_configs",
     "run_tablassert",
     "export_legacy_tsv",
+    "publish_release_artifacts",
     "export_medliner_training_data",
     "write_build_summary",
 }
@@ -38,14 +39,14 @@ _EXPECTED_GROUP_MEMBERS = {
     "extract": _GO_STUB_IDS,
     "shape": {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"},
     "tablassert": {"generate_tablassert_configs", "run_tablassert"},
-    "export": {"export_legacy_tsv"},
+    "export": {"export_legacy_tsv", "publish_release_artifacts"},
     "medliner": {"export_medliner_training_data"},
     "summary": {"write_build_summary"},
 }
 
 
 def test_module_constants(dakp_build) -> None:
-    assert dakp_build.DAG_ID == "dakp_build"
+    assert dakp_build.DAG_ID == "dakp_build_v3"
     assert dakp_build.GO_QUEUE == "golang"
     assert dakp_build.DOWNLOAD_POOL == "dakp_download"
     assert dakp_build.EXTRACT_POOL == "dakp_extract"
@@ -55,7 +56,7 @@ def test_module_constants(dakp_build) -> None:
 
 def test_dag_object_and_task_ids(dakp_build) -> None:
     dag = dakp_build.dag_obj
-    assert dag.dag_id == "dakp_build"
+    assert dag.dag_id == "dakp_build_v3"
     assert {t.task_id for t in dag.tasks} == _EXPECTED_TASK_IDS
 
 
@@ -120,6 +121,10 @@ def test_dag_task_graph(dakp_build) -> None:
     assert upstream("run_tablassert") == shapes | {"generate_tablassert_configs"}
     # The legacy TSV export consumes the handoff (its report ref tells it real vs deferred).
     assert upstream("export_legacy_tsv") == {"run_tablassert"}
+    # The release publish joins the KGX handoff, the legacy TSV pair, and the graph configs —
+    # and is a leaf (nothing downstream waits on the published artifacts).
+    assert upstream("publish_release_artifacts") == {"run_tablassert", "export_legacy_tsv", "generate_tablassert_configs"}
+    assert downstream("publish_release_artifacts") == set()
     assert upstream("write_build_summary") == shapes | {"run_tablassert", "export_legacy_tsv"}
 
     # The MEDliNER export branches off the DailyMed + FAERS extracts ONLY (no shape-stage

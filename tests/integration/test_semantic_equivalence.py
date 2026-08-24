@@ -220,10 +220,10 @@ def test_applied_to_treat_carries_the_off_label_signal(built: dict[str, Any]) ->
 
 
 def test_contraindications_are_knowledge_assertions_text_mined(built: dict[str, Any]) -> None:
-    """contraindicated_in is a knowledge_assertion mined from DailyMed (agent_type text_mining_agent)."""
+    """contraindicated_in is a knowledge_assertion mined from DailyMed (legacy agent_type)."""
     for rec in _family_rows(built["tables"], CONTRAINDICATED_IN):
         assert str(rec.get("knowledge_level")) == "knowledge_assertion"
-        assert str(rec.get("agent_type")) == "text_mining_agent"
+        assert str(rec.get("agent_type")) == "manual_validation_of_automated_agent"
 
 
 # --- 5. evidence fields: FDA approval/NDA, FAERS case counts, SPL support ---------

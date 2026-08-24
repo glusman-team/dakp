@@ -125,7 +125,7 @@ def test_acquire_all_runs_every_source(tmp_path: Path, monkeypatch: pytest.Monke
 
 
 def test_dag_module_importable_and_acquisition_wired(dakp_build) -> None:
-    assert dakp_build.DAG_ID == "dakp_build"
+    assert dakp_build.DAG_ID == "dakp_build_v3"
     assert dakp_build.DOWNLOAD_POOL == "dakp_download"
     # The acquisition tasks are present in the constructed DAG (they delegate to acquire.*, whose
     # fetcher delegation is covered by test_acquire_source_helpers_delegate_to_fetcher).

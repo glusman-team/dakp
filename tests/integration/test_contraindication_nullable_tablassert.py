@@ -64,7 +64,7 @@ def test_generated_contraindication_config_keeps_nullable_and_qualified_edges(tm
             predicate="biolink:contraindicated_in",
             subject_category="ChemicalEntity",
             knowledge_level="knowledge_assertion",
-            agent_type="text_mining_agent",
+            agent_type="manual_validation_of_automated_agent",
             primary_knowledge_source="infores:multiomics-drugapprovals",
             upstream_resource_ids="infores:dailymed",
         )
@@ -85,4 +85,8 @@ def test_generated_contraindication_config_keeps_nullable_and_qualified_edges(tm
 
     assert len(edges) == 2
     assert {edge.get("disease_context_qualifier") for edge in edges} == {"MONDO:0005148", None}
-    assert all("supporting_text" in edge for edge in edges)
+    # The SPL evidence prose is deliberately NOT on the edges (full sentences under
+    # ``supporting_text`` made them unreadable); ``evidence_text`` stays in the assertion TSV.
+    for edge in edges:
+        supporting = edge.get("supporting_text") or []
+        assert not any("Contraindicated" in entry for entry in supporting)

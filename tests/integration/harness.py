@@ -35,6 +35,7 @@ import pytest
 
 from dakp_pipeline import legacy_tsv as _legacy_tsv
 from dakp_pipeline import medliner_export as _medliner_export
+from dakp_pipeline import release as _release
 from dakp_pipeline import tablassert as _tablassert
 from dakp_pipeline import translator
 from dakp_pipeline.assertions import approved_treats, contraindications, observed_uses
@@ -65,6 +66,9 @@ class StageResult:
     #: The three MEDliNER export-bundle refs ([manifest, candidates, gold]); empty if the
     #: export stage did not run.
     medliner_export_refs: list[ArtifactRef] = field(default_factory=list)
+    #: The legacy-named release copies (nodes/edges ndjson + tsv, graph yaml); empty on a
+    #: deferred Tablassert handoff.
+    release_refs: list[ArtifactRef] = field(default_factory=list)
 
     def table(self, name: str) -> TableOutput:
         if name not in self.tables:
@@ -104,8 +108,8 @@ def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: 
     """Wire the DAKP stages exactly as the Airflow DAG does, end-to-end.
 
     Stages: acquire -> extract -> MEDliNER export -> shape assertions -> generate Tablassert
-    configs -> Tablassert handoff -> legacy TSV export -> translator contract + regression ->
-    build summary. The same sequence the DAG drives (the MEDliNER export branches off the
+    configs -> Tablassert handoff -> legacy TSV export -> release publish (legacy names) ->
+    translator contract + regression -> build summary. The same sequence the DAG drives (the MEDliNER export branches off the
     DailyMed + FAERS extracts as a leaf hand-off the summary does not wait on); the only
     difference is this runs Airflow-free in-process so the tests exercise the real stage
     functions (and the pure-Python reference extractors) with full monkeypatch control.
@@ -150,13 +154,17 @@ def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: 
     # 6. Legacy TSV export (retrofit the KGX pair into the old DAKP TSV schema; [] when deferred).
     legacy_refs = _legacy_tsv.export(kgx_refs, ctx)
 
+    # 6b. Release naming: copy the final ndjson/tsv pair + graph config to the legacy
+    # ``drug_approvals_kg_*_v<version>`` names (the DAG's publish_release_artifacts task).
+    release_refs = _release.publish(kgx_refs, legacy_refs, config_refs, ctx)
+
     # 7. Translator-readiness contract + regression + build summary.
     report = translator.validate(assertion_refs)
     regression_report = translator.check_assertion_tables(assertion_refs)
     build_summary = write_build_summary(wd, assertion_refs, kgx_refs, report, regression_report, legacy_tsv_refs=legacy_refs)
 
     tables = {ref.uri.stem: TableOutput(ref.uri.stem, ref.uri, ref.rows or 0) for ref in assertion_refs}
-    return StageResult(workdir=wd, tables=tables, build_summary=build_summary, medliner_export_refs=medliner_refs)
+    return StageResult(workdir=wd, tables=tables, build_summary=build_summary, medliner_export_refs=medliner_refs, release_refs=release_refs)
 
 
 __all__ = ["StageResult", "TableOutput", "install_fixture_fetchers", "run_stages"]

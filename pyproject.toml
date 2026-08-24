@@ -1,6 +1,6 @@
 [project]
 name = "dakp-pipeline"
-version = "1.1.0"
+version = "1.2.0"
 description = "Drug Approvals Knowledge Provider (DAKP) rebuild: reproducible, content-addressed pipeline producing DailyMed / Drugs@FDA / FAERS / MEDI treatment and contraindication assertion tables for Tablassert."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -57,7 +57,7 @@ dependencies = [
     "pendulum>=3",
     "polars>=1.30.0",
     "pydantic>=2.12.0",
-    "tablassert[qc]>=13.0.0,<14",
+    "tablassert[qc]>=14.0.0,<15",
     # torch is transitive (gliner, sentence-transformers via tablassert[qc]) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host
     # (wenceslaus: 4x Tesla P100-PCIE-16GB, compute capability 6.0, CUDA 12.8 driver) force it:

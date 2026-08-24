@@ -61,7 +61,8 @@ def test_provenance_columns_are_dailymed_text_mining(dailymed_refs: list[Artifac
     for row in rows:
         assert row["predicate"] == "biolink:contraindicated_in"
         assert row["knowledge_level"] == "knowledge_assertion"
-        assert row["agent_type"] == "text_mining_agent"
+        # Legacy DAKP shipped manual_validation_of_automated_agent on all three predicates.
+        assert row["agent_type"] == "manual_validation_of_automated_agent"
         assert row["primary_knowledge_source"] == "infores:multiomics-drugapprovals"
         # Text-mined from DailyMed only — NO MEDI anywhere in the provenance.
         assert row["upstream_resource_ids"] == "infores:dailymed"
@@ -142,5 +143,5 @@ def test_shaper_writes_uncompressed_tsv_with_contract_columns(dailymed_refs: lis
     assert row["object_curie"] == ""
     assert row["disease_context_text"] == ""
     assert row["evidence_text"] == "Contraindicated in patients with asthma or known hypersensitivity to ibuprofen."
-    assert row["agent_type"] == "text_mining_agent"
+    assert row["agent_type"] == "manual_validation_of_automated_agent"
     assert row["upstream_resource_ids"] == "infores:dailymed"

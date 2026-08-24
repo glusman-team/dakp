@@ -59,19 +59,50 @@ TABLES = ("approved_treats_assertions", "faers_applied_to_treat_assertions", "co
 INFORES_DAKP = "infores:multiomics-drugapprovals"
 AGENT_TYPE = "manual_validation_of_automated_agent"
 
-# assertion table -> (config basename, predicate, upstream chain, knowledge_level, agent_type):
-# the DINGO translator-ingest provenance contract (../DINGO/tests/unit/ingests/dakp/test_dakp.py).
-# Contraindications are text-mined from DailyMed (dailymed upstream, text_mining_agent).
+# assertion table -> (config basename, predicate, knowledge_level, agent_type). Every family
+# uses the legacy DAKP agent type (``manual_validation_of_automated_agent``), shipped on all
+# three predicates by the legacy DAKP KG.
 EXPECTED_PROVENANCE = {
-    "approved_treats_assertions": ("approved_treats", "treats", ["infores:dailymed", "infores:faers"], "knowledge_assertion", AGENT_TYPE),
-    "faers_applied_to_treat_assertions": (
-        "faers_applied_to_treat",
-        "applied_to_treat",
-        ["infores:faers", "infores:dailymed"],
-        "observation",
-        AGENT_TYPE,
-    ),
-    "contraindication_assertions": ("contraindications", "contraindicated_in", ["infores:dailymed"], "knowledge_assertion", "text_mining_agent"),
+    "approved_treats_assertions": ("approved_treats", "treats", "knowledge_assertion", AGENT_TYPE),
+    "faers_applied_to_treat_assertions": ("faers_applied_to_treat", "applied_to_treat", "observation", AGENT_TYPE),
+    "contraindication_assertions": ("contraindications", "contraindicated_in", "knowledge_assertion", AGENT_TYPE),
+}
+
+# assertion table -> the explicit ``override.sources`` template (resource_id, role, upstream ids)
+# in legacy entry order, mirroring ``tablassert_configs._TABLE_SOURCES``. The DAKP wrapper entry
+# carries the gestalt ``{edge_id}`` record-URL template; no other entry carries record URLs.
+GESTALT_URL_TEMPLATE = "https://db.systemsbiology.net/gestalt/cgi-pub/KGinfo.pl?id={edge_id}"
+EXPECTED_SOURCES = {
+    "approved_treats_assertions": [
+        {
+            "resource_id": INFORES_DAKP,
+            "resource_role": "primary_knowledge_source",
+            "upstream_resource_ids": ["infores:dailymed", "infores:faers"],
+            "source_record_urls": [GESTALT_URL_TEMPLATE],
+        },
+        {"resource_id": "infores:faers", "resource_role": "supporting_data_source"},
+        {"resource_id": "infores:dailymed", "resource_role": "supporting_data_source"},
+    ],
+    "faers_applied_to_treat_assertions": [
+        {
+            "resource_id": INFORES_DAKP,
+            "resource_role": "aggregator_knowledge_source",
+            "upstream_resource_ids": ["infores:dailymed", "infores:faers"],
+            "source_record_urls": [GESTALT_URL_TEMPLATE],
+        },
+        {"resource_id": "infores:faers", "resource_role": "primary_knowledge_source"},
+        {"resource_id": "infores:dailymed", "resource_role": "supporting_data_source"},
+    ],
+    "contraindication_assertions": [
+        {
+            "resource_id": INFORES_DAKP,
+            "resource_role": "aggregator_knowledge_source",
+            "upstream_resource_ids": ["infores:dailymed", "infores:medi"],
+            "source_record_urls": [GESTALT_URL_TEMPLATE],
+        },
+        {"resource_id": "infores:medi", "resource_role": "primary_knowledge_source", "upstream_resource_ids": ["infores:dailymed"]},
+        {"resource_id": "infores:dailymed", "resource_role": "supporting_data_source"},
+    ],
 }
 
 # assertion table -> {qualifier slot: assertion column backing it}. Only tables whose columns carry
@@ -112,25 +143,19 @@ EXPECTED_ANNOTATIONS = {
     "contraindication_assertions": {
         "approval_ids": ("approval_ids", "|"),
         "has_evidence": ("edge_evidence", "|"),
-        "supporting_text": ("evidence_text", "|"),
+        # ``evidence_text`` is deliberately NOT annotated onto ``supporting_text`` (full SPL
+        # sentences made the edges unreadable); the column stays TSV-only provenance.
         "source_score": ("source_score", None),
     },
 }
 
 # assertion table -> the REAL upstream dataset URL recorded as ``source.url`` (never a placeholder;
-# with ``upstream_source_record_urls`` set, Tablassert keeps it for the RIG and places the edge
-# ``sources[].source_record_urls`` per-upstream instead of on the primary DAKP entry).
+# RIG/audit record only — edge provenance comes from the explicit ``override.sources`` template,
+# which carries no dataset-level URLs).
 EXPECTED_SOURCE_URLS = {
     "approved_treats_assertions": "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm",
     "faers_applied_to_treat_assertions": "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html",
     "contraindication_assertions": "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm",
-}
-
-# upstream infores -> the download URL that infores' supporting entry carries as its own
-# ``source_record_urls`` on every edge where it appears (mirrors tablassert_configs._INFORES_RECORD_URLS).
-EXPECTED_UPSTREAM_RECORD_URLS = {
-    "infores:dailymed": ["https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"],
-    "infores:faers": ["https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"],
 }
 
 
@@ -201,7 +226,7 @@ def test_column_letter_unknown_column_raises() -> None:
 
 @pytest.mark.parametrize("table", TABLES)
 def test_table_config_structure(table: str) -> None:
-    _basename, predicate, upstream, knowledge_level, agent_type = EXPECTED_PROVENANCE[table]
+    _basename, predicate, knowledge_level, agent_type = EXPECTED_PROVENANCE[table]
     config = tablassert_configs.table_config(table)
 
     # text source over the uncompressed assertion TSV (tab delimiter; url required by the model).
@@ -225,13 +250,14 @@ def test_table_config_structure(table: str) -> None:
     assert statement["object"]["prioritize"] == ["Disease", "PhenotypicFeature"]
     assert statement["object"]["avoid"] == category_avoid_list(OBJECT_PRIORITIZE)
 
-    # ManualProvenance override matching the DINGO conventions (no publication alongside override).
+    # ManualProvenance override matching the legacy DAKP edge-provenance shape (no publication
+    # alongside override).
     override = config["provenance"]["override"]
     assert "infores" not in override  # the DAKP infores is graph-level only (Tablassert >= 8.0.1 forbids it here)
-    assert override["upstream_resource_ids"] == upstream
-    # Edge source_record_urls live on the per-upstream supporting entries, not the primary DAKP
-    # entry — emitted unconditionally (the #104 slot is guaranteed by the >= 13.0.0 floor).
-    assert override["upstream_source_record_urls"] == {resource: EXPECTED_UPSTREAM_RECORD_URLS[resource] for resource in upstream}
+    # The explicit sources template (Tablassert >= 14.0, SkyeAv/Tablassert#116) replicates the
+    # legacy edge provenance verbatim — including the gestalt {edge_id} record-URL template on
+    # the DAKP entry — and carries NO dataset-level record URLs anywhere.
+    assert override["sources"] == EXPECTED_SOURCES[table]
     assert override["knowledge_level"] == knowledge_level
     assert override["agent_type"] == agent_type
     assert "publication" not in config["provenance"]
@@ -424,8 +450,9 @@ def test_table_yaml_validates_against_tablassert_section_model(table: str) -> No
 
 def test_committed_table_configs_match_generator_output() -> None:
     # The committed ``tables/*.yaml`` must byte-equal the generator output (regenerate, never
-    # hand-diverge). The generator emits ``upstream_source_record_urls`` unconditionally (the
-    # #104 slot is guaranteed by the >= 13.0.0 floor) and derives the ``avoid`` lists from the
+    # hand-diverge). The generator emits the explicit ``override.sources`` template
+    # unconditionally (the #116 slot is guaranteed by the >= 14.0.0 floor) and derives the
+    # ``avoid`` lists from the
     # installed Tablassert's Biolink enum, so any Biolink churn (e.g. 13.0's
     # ``AffinityMeasurement`` -> ``ProteinLigandAssayResult`` rename) requires a regeneration.
     repo_tables = Path(__file__).resolve().parents[2] / "tables"
@@ -438,7 +465,8 @@ def test_committed_table_configs_match_generator_output() -> None:
 def test_off_label_subject_denylist_reindex() -> None:
     # Methanol poison-exposure reports (FAERS ingredients "METHANOL" and FAERS's own misspelling
     # "METHYL ALCHOL") must never become applied_to_treat edges — the chemical is the exposure,
-    # not a treatment. Emitted as ANDed ``source.reindex`` ``ne`` filters on the subject_text
+    # not a treatment. "GENERIC DRUG"/"GENERIC DRUGS" are FAERS verbatim placeholders naming no
+    # real substance. Emitted as ANDed ``source.reindex`` ``ne`` filters on the subject_text
     # column (A) so Tablassert drops the rows at load time, before entity resolution. Also
     # exercises the Reindex model through Section validation (comparator must be a str for ne).
     from tablassert.models import Section
@@ -446,7 +474,7 @@ def test_off_label_subject_denylist_reindex() -> None:
     table = "faers_applied_to_treat_assertions"
     section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
     filters = [(entry.column, str(entry.comparison), entry.comparator) for entry in section.source.reindex or []]
-    assert filters == [("A", "ne", "METHYL ALCHOL"), ("A", "ne", "METHANOL")]
+    assert filters == [("A", "ne", "METHYL ALCHOL"), ("A", "ne", "METHANOL"), ("A", "ne", "GENERIC DRUG"), ("A", "ne", "GENERIC DRUGS")]
 
     # The denylist is off-label-only: the on-label and contraindication tables stay untouched.
     for other in TABLES:

@@ -59,8 +59,9 @@ Provenance: contraindications are text-mined from DailyMed. The unannotated
 the single column Tablassert encodes as Biolink ``has_evidence`` (the legacy DAKP KG evidence
 form; see :func:`~dakp_pipeline.assertions.evidence.spl_evidence_pipe`).
 ``primary_knowledge_source = infores:multiomics-drugapprovals``,
-``upstream_resource_ids = infores:dailymed``, ``agent_type = text_mining_agent`` (the DAKP RIG
-lists ``text_mining_agent`` for ``contraindicated_in``), ``knowledge_level = knowledge_assertion``.
+``upstream_resource_ids = infores:dailymed``, ``agent_type = manual_validation_of_automated_agent``
+(the agent type the legacy DAKP KG shipped on all three predicates),
+``knowledge_level = knowledge_assertion``.
 """
 
 from __future__ import annotations
@@ -70,7 +71,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from dakp_pipeline.assertions import INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, row_for
+from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, row_for
 from dakp_pipeline.assertions.evidence import (
     dailymed_document_url,
     dailymed_set_url,
@@ -97,9 +98,6 @@ _TABLE = "contraindication_assertions"
 _PREDICATE = "biolink:contraindicated_in"
 #: One INFO progress line per this many mined contraindication sections (GLiNER is the slow step).
 _MINING_PROGRESS_EVERY = 500
-
-#: Agent type for text-mined contraindications (matches the DAKP RIG ``contraindicated_in``).
-AT_TEXT_MINING = "text_mining_agent"
 
 #: Broad sentence filter used only to avoid sending ordinary indication prose to NER. The
 #: stricter positive-trigger classifier below decides whether a mention becomes a hard edge.
@@ -675,7 +673,7 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         ),
         source_score=_max_score(agg["scores"]),
         knowledge_level=KL_ASSERTION,
-        agent_type=AT_TEXT_MINING,
+        agent_type=AT_MANUAL,
         primary_knowledge_source=INFORES_DAKP,
         upstream_resource_ids=INFORES_DAILYMED,
     )
@@ -691,7 +689,6 @@ def _max_score(scores: list[float]) -> str:
 transform = ContraindicationsShaper().transform
 
 __all__ = [
-    "AT_TEXT_MINING",
     "CONTRAINDICATION_GPUS",
     "DEFAULT_CONTRA_KEYWORDS",
     "ContraWorkItem",
