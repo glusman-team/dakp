@@ -502,6 +502,14 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
 # Canonical emission order for the three assertion tables.
 _TABLE_ORDER = ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions")
 
+# assertion table -> subject_text row exclusions, emitted as ``source.reindex`` ``ne`` filters so
+# the rows are dropped at Tablassert LOAD time and can never reach the final KGX output. The FAERS
+# off-label table aggregates methanol poison-exposure reports where the chemical is the EXPOSURE,
+# not a treatment — an ``applied_to_treat`` edge for it is semantically wrong ("METHYL ALCHOL" is
+# FAERS's own spelling of the ingredient). Reindex conditions AND together: a row survives only
+# when its subject_text matches none of the denylist (exact, case-sensitive string compare).
+_TABLE_SUBJECT_DENYLIST: dict[str, tuple[str, ...]] = {"faers_applied_to_treat_assertions": ("METHYL ALCHOL", "METHANOL")}
+
 # assertion table -> (config basename, predicate, upstream infores chain, knowledge_level,
 # agent_type). Upstream order + knowledge_level match the DINGO translator-ingest provenance
 # contract (../DINGO/tests/unit/ingests/dakp/test_dakp.py): treats = knowledge_assertion over
@@ -698,7 +706,9 @@ def table_config(table: str) -> dict[str, Any]:
     the hard allow-list guard computed by :func:`category_avoid_list` from the side's ``prioritize``
     tuple. Qualifier values use their own category guard: contraindication context is constrained
     to ``Disease`` (not the object's broader Disease/PhenotypicFeature list), and is nullable so
-    absent or unresolved context omits only the qualifier rather than deleting the edge.
+    absent or unresolved context omits only the qualifier rather than deleting the edge. A table
+    with a :data:`_TABLE_SUBJECT_DENYLIST` entry additionally carries ``source.reindex`` ``ne``
+    filters that drop those subject_text rows before entity resolution.
     """
     _basename, predicate, upstream, knowledge_level, agent_type = _TABLE_SPECS[table]  # KeyError for unknown tables
     annotations: list[dict[str, Any]] = []
@@ -735,8 +745,12 @@ def table_config(table: str) -> dict[str, Any]:
     }
     if qualifiers:  # no backing column => no ``qualifiers`` key (Tablassert treats absent and empty alike; keep configs minimal)
         statement["qualifiers"] = qualifiers
+    source: dict[str, Any] = {"kind": "text", "local": f"data/tabular/{table}.tsv", "url": [_TABLE_SOURCE_URLS[table]], "delimiter": "\t"}
+    denylist = _TABLE_SUBJECT_DENYLIST.get(table)
+    if denylist:
+        source["reindex"] = [{"column": column_letter(table, SUBJECT_COLUMN), "comparison": "ne", "comparator": name} for name in denylist]
     return {
-        "source": {"kind": "text", "local": f"data/tabular/{table}.tsv", "url": [_TABLE_SOURCE_URLS[table]], "delimiter": "\t"},
+        "source": source,
         "statement": statement,
         "provenance": {
             "override": {

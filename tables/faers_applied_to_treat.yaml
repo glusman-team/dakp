@@ -5,6 +5,13 @@ template:
     url:
       - "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
     delimiter: "\t"
+    reindex:
+      - column: A
+        comparison: ne
+        comparator: "METHYL ALCHOL"
+      - column: A
+        comparison: ne
+        comparator: METHANOL
   statement:
     subject:
       method: column

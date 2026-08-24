@@ -435,6 +435,27 @@ def test_committed_table_configs_match_generator_output() -> None:
     assert (repo_tables / "graph.yaml").read_text(encoding="utf-8") == tablassert_configs.graph_yaml()
 
 
+def test_off_label_subject_denylist_reindex() -> None:
+    # Methanol poison-exposure reports (FAERS ingredients "METHANOL" and FAERS's own misspelling
+    # "METHYL ALCHOL") must never become applied_to_treat edges — the chemical is the exposure,
+    # not a treatment. Emitted as ANDed ``source.reindex`` ``ne`` filters on the subject_text
+    # column (A) so Tablassert drops the rows at load time, before entity resolution. Also
+    # exercises the Reindex model through Section validation (comparator must be a str for ne).
+    from tablassert.models import Section
+
+    table = "faers_applied_to_treat_assertions"
+    section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
+    filters = [(entry.column, str(entry.comparison), entry.comparator) for entry in section.source.reindex or []]
+    assert filters == [("A", "ne", "METHYL ALCHOL"), ("A", "ne", "METHANOL")]
+
+    # The denylist is off-label-only: the on-label and contraindication tables stay untouched.
+    for other in TABLES:
+        if other == table:
+            continue
+        other_section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(other))["template"])
+        assert other_section.source.reindex is None
+
+
 # --- graph config structure -------------------------------------------------------
 
 
