@@ -388,7 +388,7 @@ def test_force_bypasses_the_skip_and_rebuilds(ctx: TaskContext, tmp_path: Path) 
     bundle = Workdir(ctx.workdir).store / OUT_DIRNAME / CANDIDATES_FILENAME
     bundle.write_text("", encoding="utf-8")  # a rebuild must restore this
 
-    forced = TaskContext(**{**vars(ctx), "params": {**ctx.params, "force": True}})
+    forced = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**dict(ctx.params), "force": True})
     export([dailymed, cases], forced)
 
     assert "case text" in bundle.read_text(encoding="utf-8")
