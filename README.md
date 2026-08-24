@@ -43,8 +43,9 @@ to regenerate MEDliNER's committed sample bundle.
 
 ## The Pipeline
 
-```text
-acquire ─▶ extract ─▶ NER ─▶ aggregate ─▶ Tablassert KGX handoff ─▶ legacy TSV export
+```mermaid
+flowchart LR
+    acquire --> extract --> NER --> aggregate --> tablassert["Tablassert KGX handoff"] --> legacy["legacy TSV export"]
 ```
 
 - **acquire** — real downloaders for DailyMed full releases, Drugs@FDA, and FAERS quarterly
