@@ -21,7 +21,16 @@ The stage entry point :func:`export` is Airflow-free and offline-safe (pure tabl
 JSON/JSONL writes; no network, no GLiNER/torch). A missing ``spl_documents.parquet`` or
 FAERS case table is a loud error naming the file; a missing/corrupt gold benchmark fails
 before ANY bundle file is written. A table that yields zero exportable rows is legal and
-produces a valid bundle with 0 counts.
+produces a valid bundle with 0 counts. Re-running over unchanged inputs returns the
+previously registered refs without touching the bundle, unless ``ctx.params["force"]``.
+
+Both inputs are far larger than what they contribute, so the narrowing happens in polars
+before anything becomes a Python object: ``spl_documents.parquet`` holds one row per SPL
+section of every type (the two export LOINCs are ~5% of rows and ~2.5% of the section text),
+and the production FAERS case table is 15-25 M rows whose ``indication`` column has only a
+few thousand distinct values. See :func:`read_dailymed_sections` and
+:func:`reduce_faers_frame`; both are output-identical to the naive full read plus
+:func:`dedupe_sort`, and the tests pin that.
 """
 
 from __future__ import annotations
@@ -37,14 +46,7 @@ from typing import Any
 
 import polars as pl
 
-from dakp_pipeline.assertions.evidence import (
-    CONTRAINDICATION_LOINC,
-    INDICATION_LOINC,
-    dailymed_document_url,
-    faers_record_url,
-    find_faers_cases,
-    find_table,
-)
+from dakp_pipeline.assertions.evidence import CONTRAINDICATION_LOINC, INDICATION_LOINC, dailymed_document_url, faers_record_url, find_faers_cases
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
@@ -71,6 +73,10 @@ _NDJSON_MEDIA_TYPE = "application/x-ndjson"
 _OPERATION = "export_medliner"
 _DAILYMED_TABLE = "spl_documents.parquet"
 _FAERS_CASES_TABLE = "cases.parquet"
+#: The only ``spl_documents.parquet`` columns the export reads. The table carries one row per
+#: SPL *section* of every type, so the unprojected read materializes ~1.1 GB of ``section_text``
+#: for sections this export discards (``42229-5`` spl_unclassified alone is ~290 MB).
+_DAILYMED_COLUMNS: tuple[str, ...] = ("spl_document_id", "loinc_code", "section_text")
 #: Column projection for the case-table read: all the export needs is the indication string,
 #: the primaryid provenance, and the quarter for the FDA source URL.
 _FAERS_CASES_COLUMNS: tuple[str, ...] = ("quarter", "primaryid", "drugname", "indication")
@@ -102,6 +108,29 @@ def gold_path() -> Path:
         msg = f"medliner_export: NER gold benchmark is missing: {path}"
         raise FileNotFoundError(msg)
     return path
+
+
+def read_dailymed_sections(path: Path) -> pl.DataFrame | None:
+    """Read only the export-LOINC sections of ``spl_documents.parquet``, projected to 3 columns.
+
+    Equivalent to reading the whole table and letting :func:`select_dailymed_rows` skip the
+    other LOINCs, but the skipping happens in the parquet reader instead of in Python, so the
+    ~95% of section text that is about to be discarded is never decoded. Falls back to a full
+    read when the table lacks the expected columns, so an older schema still exports.
+    """
+    try:
+        scan = pl.scan_parquet(path)
+        available = set(scan.collect_schema().names())
+        if not set(_DAILYMED_COLUMNS) <= available:
+            return scan.collect(engine="streaming")
+        return (
+            scan.select(_DAILYMED_COLUMNS)
+            .filter(pl.col("loinc_code").cast(pl.Utf8).fill_null("").str.strip_chars().is_in(list(_TASK_BY_LOINC)))
+            .collect(engine="streaming")
+        )
+    except Exception as exc:
+        logger.warning("skipping unreadable input {} ({})", path, exc)
+        return None
 
 
 def _normalized(text: str) -> str:
@@ -140,13 +169,60 @@ def select_dailymed_rows(table: pl.DataFrame) -> list[dict[str, str]]:
     return rows
 
 
+def reduce_faers_frame(table: pl.DataFrame) -> pl.DataFrame:
+    """Collapse duplicate FAERS indication strings before any of them becomes a Python dict.
+
+    The production case table is 15-25 M rows and its ``indication`` column has only a few
+    thousand distinct values, so building one dict per row and letting :func:`dedupe_sort`
+    discard 98% of them costs seconds and gigabytes for nothing. This does the collapse in
+    polars and hands :func:`select_faers_rows` only the rows that can still win.
+
+    Winner selection matches :func:`_sort_key` exactly. Rows are grouped on the *verbatim*
+    stripped text -- a strictly finer key than ``_sort_key``'s normalized text, so this can
+    only under-collapse, and the global :func:`dedupe_sort` still runs afterwards. Within a
+    group the kept row minimizes ``(source_record_id, quarter)``; ``faers_record_url`` embeds
+    a zero-padded year and quarter digit, so minimal quarter label is minimal ``source_uri``.
+    """
+    if "indication" not in table.columns:
+        return table
+    has_record = "primaryid" in table.columns
+    ordering = ["_text", *(["_record"] if has_record else []), *(["quarter"] if "quarter" in table.columns else [])]
+    return (
+        table.lazy()
+        .with_columns(
+            _text=pl.col("indication").cast(pl.Utf8).fill_null("").str.strip_chars(),
+            **({"_record": pl.col("primaryid").cast(pl.Utf8).fill_null("").str.strip_chars()} if has_record else {}),
+        )
+        .filter(pl.col("_text") != "")
+        .sort(ordering, nulls_last=True)
+        .unique(subset=["_text"], keep="first", maintain_order=True)
+        .drop("_text", "_record", strict=False)
+        .collect(engine="streaming")
+    )
+
+
+def _quarter_urls(table: pl.DataFrame) -> dict[str, str]:
+    """One validated FDA quarter URL per distinct quarter label in ``table``.
+
+    ``faers_record_url`` runs a regex, an ``int`` parse and an f-string per call; over 20 M
+    rows that is ~20 M recomputations of one of ~80 strings. Building the map from the distinct
+    labels keeps the loud ``ValueError`` on a malformed quarter -- it just raises once instead
+    of on the first offending row.
+    """
+    if "quarter" not in table.columns:
+        return {}
+    labels = table.get_column("quarter").unique().to_list()
+    return {("" if label is None else str(label).strip().upper()): faers_record_url(label) for label in labels}
+
+
 def select_faers_rows(table: pl.DataFrame) -> list[dict[str, str]]:
     """FAERS candidate rows: one indication row per case row with non-blank ``indication``.
 
-    Duplicate indication strings collapse later in :func:`dedupe_sort` (deterministic
-    ``primaryid`` winner); ``source_uri`` is the FDA FAERS quarter URL
-    (``faers_record_url`` form).
+    Duplicate indication strings collapse in :func:`reduce_faers_frame` (when the caller
+    pre-reduces) and again in :func:`dedupe_sort`; ``source_uri`` is the FDA FAERS quarter URL
+    (``faers_record_url`` form), resolved through a per-quarter map rather than per row.
     """
+    quarter_urls = _quarter_urls(_nonblank_indications(table))
     rows: list[dict[str, str]] = []
     for rec in table.iter_rows(named=True):
         text = str(rec.get("indication") or "").strip()
@@ -159,10 +235,21 @@ def select_faers_rows(table: pl.DataFrame) -> list[dict[str, str]]:
                 "task": "indication",
                 "source_family": "faers",
                 "source_record_id": record_id,
-                "source_uri": faers_record_url(rec.get("quarter")),
+                "source_uri": faers_record_url(rec.get("quarter"), quarter_urls),
             }
         )
     return rows
+
+
+def _nonblank_indications(table: pl.DataFrame) -> pl.DataFrame:
+    """The rows :func:`select_faers_rows` will actually emit, so quarter validation matches it.
+
+    A malformed quarter on a row whose indication is blank is skipped today and must stay
+    skipped: validating every distinct quarter in the raw table would turn it into an error.
+    """
+    if "indication" not in table.columns:
+        return table
+    return table.filter(pl.col("indication").cast(pl.Utf8).fill_null("").str.strip_chars() != "")
 
 
 # --- dedupe + determinism -------------------------------------------------------------
@@ -243,15 +330,27 @@ def _load_gold(path: Path) -> dict[str, Any]:
 # --- bundle assembly -------------------------------------------------------------------
 
 
-def build_manifest(candidates_path: Path, gold_path: Path, input_refs: Iterable[ArtifactRef]) -> dict[str, Any]:
+def build_manifest(
+    candidates_path: Path,
+    gold_path: Path,
+    input_refs: Iterable[ArtifactRef],
+    *,
+    rows: Iterable[Mapping[str, str]] | None = None,
+    gold: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Assemble ``manifest.json`` from the payload files as written (export contract R2).
 
     Blake3 hashes are computed over the bundle's own files, so R7 self-consistency holds by
     construction; ``generated_at`` is the only non-deterministic field. Both ``task_counts``
     keys and both ``family_counts`` keys are always present.
+
+    ``rows`` and ``gold`` let the caller pass the payload it just wrote. The counts are
+    identical either way -- the file is serialized straight from ``rows`` -- but re-reading and
+    re-parsing a multi-megabyte NDJSON to count its own lines is pure waste. Omit them and the
+    payload is read back from disk, which is what an external caller wants.
     """
-    rows = [json.loads(line) for line in candidates_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    gold = _load_gold(gold_path)
+    rows = list(rows) if rows is not None else [json.loads(line) for line in candidates_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    gold = gold if gold is not None else _load_gold(gold_path)
     gold_cases = gold.get("cases")
     task_tally = Counter(str(row.get("task")) for row in rows)
     family_tally = Counter(str(row.get("source_family")) for row in rows)
@@ -278,7 +377,7 @@ def write_bundle(out_dir: Path, candidate_rows: Iterable[Mapping[str, str]], gol
     manifest. Existing files are overwritten cleanly (idempotent re-run). Zero candidate rows
     is legal and yields an empty ``candidates.ndjson`` with 0 counts.
     """
-    _load_gold(gold_src)
+    gold = _load_gold(gold_src)
     rows = dedupe_sort(candidate_rows)
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = {
@@ -286,9 +385,11 @@ def write_bundle(out_dir: Path, candidate_rows: Iterable[Mapping[str, str]], gol
         GOLD_FILENAME: out_dir / GOLD_FILENAME,
         MANIFEST_FILENAME: out_dir / MANIFEST_FILENAME,
     }
-    paths[CANDIDATES_FILENAME].write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+    # Streamed rather than joined: the joined form holds the whole payload in memory twice.
+    with paths[CANDIDATES_FILENAME].open("w", encoding="utf-8") as handle:
+        handle.writelines(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
     shutil.copyfile(gold_src, paths[GOLD_FILENAME])
-    manifest = build_manifest(paths[CANDIDATES_FILENAME], paths[GOLD_FILENAME], list(input_refs))
+    manifest = build_manifest(paths[CANDIDATES_FILENAME], paths[GOLD_FILENAME], list(input_refs), rows=rows, gold=gold)
     paths[MANIFEST_FILENAME].write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return paths
 
@@ -316,7 +417,15 @@ def export(inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
         if faers_ref is None:
             msg = f"medliner_export: missing FAERS case table {_FAERS_CASES_TABLE} among the input refs"
             raise RuntimeError(msg)
-        dailymed_table = find_table([dailymed_ref], _DAILYMED_TABLE)
+        store = ArtifactStore(Workdir(ctx.workdir))
+        input_ids = sorted({dailymed_ref.blake3, faers_ref.blake3})
+        # Every other expensive stage in this pipeline skips on unchanged inputs; the export
+        # already registers usable index entries, it just never consulted them.
+        cached = None if ctx.params.get("force") else store.find_by_operation(_OPERATION, input_ids)
+        if cached is not None:
+            stats(logger, _OPERATION, skipped="inputs unchanged", outputs=len(cached))
+            return cached
+        dailymed_table = read_dailymed_sections(dailymed_ref.uri)
         if dailymed_table is None:
             msg = f"medliner_export: unreadable DailyMed interim table {dailymed_ref.uri}"
             raise RuntimeError(msg)
@@ -324,14 +433,16 @@ def export(inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
         if faers_table is None:
             msg = f"medliner_export: unusable FAERS case table {faers_ref.uri} (needs drugname/indication columns)"
             raise RuntimeError(msg)
+        faers_table = reduce_faers_frame(faers_table)
+        stats(logger, _OPERATION, dailymed_sections=dailymed_table.height, faers_distinct_indications=faers_table.height)
         candidate_rows = [*select_dailymed_rows(dailymed_table), *select_faers_rows(faers_table)]
         out_dir = Workdir(ctx.workdir).store / OUT_DIRNAME
         paths = write_bundle(out_dir, candidate_rows, gold_path(), [dailymed_ref, faers_ref])
         candidates_path = paths[CANDIDATES_FILENAME]
-        rows_written = len(candidates_path.read_text(encoding="utf-8").splitlines())
-        store = ArtifactStore(Workdir(ctx.workdir))
+        # The manifest was written from the same rows, so its count is the file's line count;
+        # reading the whole NDJSON back to re-count it is a full extra pass over the payload.
+        rows_written = int(json.loads(paths[MANIFEST_FILENAME].read_text(encoding="utf-8"))["files"][CANDIDATES_FILENAME]["rows"])
         operation = OperationBlock(name=_OPERATION)
-        input_ids = sorted({dailymed_ref.blake3, faers_ref.blake3})
         manifest_ref = store.register(paths[MANIFEST_FILENAME], media_type=_JSON_MEDIA_TYPE, inputs=input_ids, operation=operation)
         candidates_ref = store.register(candidates_path, media_type=_NDJSON_MEDIA_TYPE, rows=rows_written, inputs=input_ids, operation=operation)
         gold_ref = store.register(paths[GOLD_FILENAME], media_type=_JSON_MEDIA_TYPE, inputs=input_ids, operation=operation)
@@ -351,6 +462,8 @@ __all__ = [
     "dedupe_sort",
     "export",
     "gold_path",
+    "read_dailymed_sections",
+    "reduce_faers_frame",
     "select_dailymed_rows",
     "select_faers_rows",
     "write_bundle",
