@@ -410,7 +410,7 @@ template:
       knowledge_level: observation
       agent_type: manual_validation_of_automated_agent
   annotations:
-    - annotation: evidence_count
+    - annotation: number_of_cases
       method: column
       encoding: J
     - annotation: FDA_regulatory_approvals

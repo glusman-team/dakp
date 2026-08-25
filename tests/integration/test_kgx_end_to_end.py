@@ -290,20 +290,19 @@ def test_edge_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> 
         assert all(not value.startswith("faers:") for value in evidence)
 
 
-def test_faers_case_count_rides_the_edge_as_evidence_count(kgx_build: KgxBuild) -> None:
-    """The FAERS case count rides the edge as ``evidence_count``, not a study description.
+def test_faers_case_count_rides_the_edge_as_number_of_cases(kgx_build: KgxBuild) -> None:
+    """The FAERS case count rides the edge as ``number_of_cases``, the literal Biolink slot.
 
-    ``number_of_cases`` is the literal Biolink slot, and ``statement.category_override`` pins
-    classes that declare it — but Tablassert's study-size classifier claims the NAME
-    (``coerce.study_size_target("number_of_cases") == "study_size"``), so the clean phase renames
-    it and the count lands on the inlined supporting study as ``Study.study_size`` instead of on
-    the edge. ``evidence_count`` is on ``Association`` itself and no classifier claims it, so the
-    count stays where a consumer can query it. The last assertion is the guard: if Tablassert ever
-    stops coercing the name, this keeps failing until DAKP moves to the precise slot.
+    ``statement.category_override`` pins classes that declare it, and Tablassert 15.1's
+    ``STUDY_SIZE_EXEMPT_PATTERN`` (SkyeAv/Tablassert#119) stops the study-size classifier from
+    renaming the column onto ``Study.study_size`` — before 15.1 the count had to ride as
+    ``evidence_count`` because ``coerce.study_size_target("number_of_cases")`` returned
+    ``"study_size"``. The last assertion is the guard: if Tablassert ever coerces the name again,
+    this keeps failing until DAKP falls back to the alias.
 
     On the JSON type: Tablassert reads TSV cells as text and numerically coerces only the
     p-value / effect-size / study-size columns (``lib.numeric_columns``), so the count arrives as
-    the string ``"1"`` even though ``format_numeric`` already knows ``evidence_count`` is an int
+    the string ``"1"`` even though ``format_numeric`` already knows ``number_of_cases`` is an int
     slot (``biolink.numeric_slot_kind``). Biolink's pydantic models are lax, so the string still
     validates against the integer-ranged slot. Accept either shape: widening Tablassert's
     ``numeric_columns`` to the count slots turns this into a real int without editing this test.
@@ -313,11 +312,11 @@ def test_faers_case_count_rides_the_edge_as_evidence_count(kgx_build: KgxBuild) 
     applied = [edge for edge in kgx_build.edges if edge["predicate"] == _APPLIED]
     assert applied, "expected FAERS applied_to_treat edges in the build"
     for edge in applied:
-        count = edge.get("evidence_count")
-        assert isinstance(count, int | str), f"evidence_count missing or oddly typed: {count!r}"
+        count = edge.get("number_of_cases")
+        assert isinstance(count, int | str), f"number_of_cases missing or oddly typed: {count!r}"
         assert int(count) > 0
-        assert "number_of_cases" not in edge
-    assert study_size_target("number_of_cases") == "study_size", "Tablassert no longer coerces the name; use the precise slot"
+        assert "evidence_count" not in edge
+    assert study_size_target("number_of_cases") is None, "Tablassert coerces the name again; fall back to the evidence_count alias"
 
 
 def test_fda_regulatory_approvals_ride_the_edge_as_a_top_level_json_array(kgx_build: KgxBuild) -> None:
@@ -398,5 +397,5 @@ def test_legacy_tsv_pair_matches_the_old_schema(kgx_build: KgxBuild) -> None:
         assert row["knowledge_level"] == edge["knowledge_level"]
         assert row["agent_type"] == edge["agent_type"]
         assert row["approval"] == (",".join(edge["FDA_regulatory_approvals"]) if "FDA_regulatory_approvals" in edge else "NA")
-        assert row["N_cases"] == (str(edge["evidence_count"]) if "evidence_count" in edge else "NA")
+        assert row["N_cases"] == (str(edge["number_of_cases"]) if "number_of_cases" in edge else "NA")
         assert row["supporting_spls"] == (",".join(edge["publications"]) if "publications" in edge else "NA")

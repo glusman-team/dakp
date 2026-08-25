@@ -106,14 +106,15 @@ EXPECTED_SOURCES = {
 }
 
 # assertion table -> {qualifier slot: assertion column backing it}. Only tables whose columns carry
-# a qualifier entity get entries (see ``_TABLE_QUALIFIERS`` for the per-table justification). ALL
-# empty today: contraindication context was the one qualifier, and the association class
-# ``OBJECT_CATEGORY_OVERRIDE`` pins for ``FDA_regulatory_approvals`` does not declare
-# ``disease_context_qualifier`` (the TODO on ``_TABLE_QUALIFIERS``).
+# a qualifier entity get entries (see ``_TABLE_QUALIFIERS`` for the per-table justification). The
+# contraindication context qualifier rides Tablassert 15.1's ``CLASS_FIELD_OVERRIDES`` grant
+# (SkyeAv/Tablassert#120): the association classes ``OBJECT_CATEGORY_OVERRIDE`` pins for
+# ``FDA_regulatory_approvals`` do not natively declare ``disease_context_qualifier`` — the grant
+# keeps it on the edge anyway.
 EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
     "approved_treats_assertions": {},
     "faers_applied_to_treat_assertions": {},
-    "contraindication_assertions": {},
+    "contraindication_assertions": {"disease_context_qualifier": "disease_context_text"},
 }
 
 # assertion table -> {annotation name: (assertion column it encodes, multivalued separator)}.
@@ -124,8 +125,10 @@ EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
 # a junk drawer no translator-ingests source models. So: the common ``edge_evidence`` column maps to
 # ``publications`` (ONE annotation, carrying the sorted ``dailymed:<spl_set_id>`` CURIEs, because
 # duplicate annotation names silently overwrite
-# each other), and ``case_count`` maps to ``evidence_count``: the literal ``number_of_cases`` slot
-# is claimed by Tablassert's study-size classifier, which renames it onto ``Study.study_size``. ``split_by: "|"``
+# each other), and ``case_count`` maps to ``number_of_cases`` — the literal Biolink slot, reachable
+# since Tablassert 15.1's ``STUDY_SIZE_EXEMPT_PATTERN`` (#119) stopped the study-size classifier
+# from renaming it onto ``Study.study_size`` (DAKP used the ``evidence_count`` alias before that).
+# ``split_by: "|"``
 # makes the pipe-joined cells emit as real JSON arrays. ``FDA_regulatory_approvals`` is the Biolink
 # slot for FDA application numbers (declared by ``EntityToDiseaseAssociation`` /
 # ``EntityToPhenotypicFeatureAssociation``) and the name ``NCATSTranslator/translator-ingests``
@@ -139,7 +142,7 @@ EXPECTED_ANNOTATIONS = {
         "clinical_approval_status": ("clinical_approval_status", None),
     },
     "faers_applied_to_treat_assertions": {
-        "evidence_count": ("case_count", None),
+        "number_of_cases": ("case_count", None),
         "FDA_regulatory_approvals": ("FDA_regulatory_approvals", "|"),
         "publications": ("edge_evidence", "|"),
         "clinical_approval_status": ("clinical_approval_status", None),
@@ -313,8 +316,7 @@ def test_declared_qualifier_emits_a_column_encoding() -> None:
 
 
 def test_qualifier_slots_are_valid_biolink_qualifiers() -> None:
-    # No table declares a qualifier today, so this guards whatever the first one to come back is:
-    # every emitted qualifier slot must be a real member of the installed Tablassert's Biolink
+    # Every emitted qualifier slot must be a real member of the installed Tablassert's Biolink
     # ``Qualifiers`` enum — and never ``species_context_qualifier`` (Tablassert auto-derives that
     # one from the taxon constraint and rejects manual declarations at config load).
     from tablassert.biolink import Qualifiers
@@ -324,6 +326,21 @@ def test_qualifier_slots_are_valid_biolink_qualifiers() -> None:
         for qualifier, _column in tablassert_configs._TABLE_QUALIFIERS[table]:
             assert qualifier in valid
             assert qualifier != "species_context_qualifier"
+
+
+def test_disease_context_qualifier_survives_the_pinned_association_classes() -> None:
+    # The contraindication table pins EntityToDiseaseAssociation / EntityToPhenotypicFeatureAssociation
+    # (for ``FDA_regulatory_approvals``), and Biolink declares ``disease_context_qualifier`` only on
+    # the chemical-to-disease lineage — the qualifier rides Tablassert 15.1's ``CLASS_FIELD_OVERRIDES``
+    # grant (SkyeAv/Tablassert#120) instead. Pin the grant here so a Tablassert downgrade (<15.1, or a
+    # release that drops the override) fails at TEST time rather than silently pruning the qualifier
+    # off every contraindication edge at build time.
+    from tablassert.biolink import CLASS_FIELD_OVERRIDES
+
+    for pinned in ("EntityToDiseaseAssociation", "EntityToPhenotypicFeatureAssociation"):
+        assert "disease_context_qualifier" in CLASS_FIELD_OVERRIDES.get(pinned, frozenset()), (
+            f"{pinned} lost the disease_context_qualifier grant — the contraindication qualifier requires tablassert>=15.1"
+        )
 
 
 @pytest.mark.parametrize("table", TABLES)

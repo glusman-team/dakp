@@ -39,9 +39,9 @@ The configs match the ACTUAL current Tablassert schema (verified against
   (:data:`GESTALT_RECORD_URL_TEMPLATE`), resolved by Tablassert on the final edges;
 * column-encoded ``statement.qualifiers`` where an assertion column carries the qualifier's entity
   (per-table :data:`_TABLE_QUALIFIERS`). A Tablassert qualifier is a node encoding resolved through
-  the fullmap alongside subject/object (an unmatched qualifier value drops the whole edge), so a
-  qualifier is only emitted where a dense, resolvable column backs it, and it mirrors the backing
-  side's category allow-list so it resolves to exactly the same CURIE as the node it qualifies;
+  the fullmap alongside subject/object; the contraindication context qualifier is ``nullable``, so
+  a blank or unresolvable context omits only the qualifier rather than dropping the edge, and it
+  carries its own Disease-only category allow-list (narrower than the object's);
 * column-encoded evidence ``annotations`` (aggregated evidence columns carry ``split_by: "|"``
   so pipe-joined assertion cells emit as real JSON arrays, not joined scalars).
 
@@ -316,8 +316,8 @@ RIG_FILTERED_CONTENT: tuple[dict[str, str], ...] = (
     },
 )
 #: RIG ingest-level ``future_considerations``: content DAKP deliberately defers, each grounded in
-#: code — the medication-context note is the ``_TABLE_QUALIFIERS`` disease-only policy (see its
-#: TODO: the qualifier is not emitted at all while the pinned class cannot hold it), and the
+#: code — the medication-context note is the ``_TABLE_QUALIFIERS`` disease-only policy (the
+#: qualifier is emitted; only medications are excluded from it), and the
 #: status-coercion note is the ``ClinicalApprovalStatusEnum`` membership rule documented in
 #: ``assertions/observed_uses.py``.
 RIG_INGEST_FUTURE_CONSIDERATIONS: tuple[dict[str, str], ...] = (
@@ -375,10 +375,11 @@ RIG_TARGET_FUTURE_CONSIDERATIONS: tuple[dict[str, str], ...] = (
     {
         "category": "qualifiers",
         "consideration": (
-            "disease_context_qualifier is not emitted: Biolink declares it only on "
-            "ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation, while FDA_regulatory_approvals is declared only on the "
-            "EntityToDisease/EntityToPhenotypicFeature classes these edges are pinned to, so a contraindication edge can carry one or the "
-            "other; the disease context stays in the assertion table. Revisit if Biolink widens either slot"
+            "disease_context_qualifier is emitted on contraindication edges via Tablassert's CLASS_FIELD_OVERRIDES grant "
+            "(SkyeAv/Tablassert#120), which is deliberately ahead of the pinned Biolink model: Biolink declares the slot only on "
+            "ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation, while these edges pin EntityToDisease/EntityToPhenotypicFeature "
+            "for FDA_regulatory_approvals. Drop reliance on the grant once upstream Biolink widens disease_context_qualifier to the "
+            "entity-to-disease classes"
         ),
     },
     {
@@ -604,14 +605,13 @@ def _sources_template(table: str) -> list[dict[str, Any]]:
 # * ``clinical_approval_status`` is a first-class enum-typed field on the association class, so its
 #   values must be ``ClinicalApprovalStatusEnum`` members (see the enum-membership note in
 #   ``assertions/observed_uses.py``);
-# * ``evidence_count`` (integer) takes the FAERS case count. The literal slot is
-#   ``number_of_cases``, and :data:`OBJECT_CATEGORY_OVERRIDE` now pins classes that declare it —
-#   but the name is unusable anyway: Tablassert's study-size classifier claims it
-#   (``coerce.study_size_target("number_of_cases") == "study_size"``), so the clean phase renames
-#   it before the edge is assembled and the count lands on the inlined supporting study as
-#   ``Study.study_size`` — verified against a real ``build-kg``, and warned about at config time.
-#   ``evidence_count`` is on ``Association`` — "the number of evidence instances that are
-#   connected to an association" — so the count stays on the edge where a consumer can query it;
+# * ``number_of_cases`` (integer) takes the FAERS case count — the literal Biolink slot ("cases
+#   carrying the phenotype/disease"), declared by the classes :data:`OBJECT_CATEGORY_OVERRIDE`
+#   pins. Until 15.1 the NAME was unusable: Tablassert's study-size classifier claimed it
+#   (``coerce.study_size_target("number_of_cases") == "study_size"``), so the clean phase renamed
+#   it and the count landed on the inlined supporting study as ``Study.study_size``. 15.1's
+#   ``STUDY_SIZE_EXEMPT_PATTERN`` (SkyeAv/Tablassert#119) exempts the exact slot, so the column
+#   reaches the edge as ``number_of_cases`` — DAKP used the ``evidence_count`` alias before that;
 # * ``FDA_regulatory_approvals`` (FDA application numbers) IS a Biolink slot — "numbers that
 #   identify specific drug applications", multivalued, declared by ``EntityToDiseaseAssociation``
 #   and ``EntityToPhenotypicFeatureAssociation``, the classes
@@ -634,7 +634,7 @@ _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
         ("clinical_approval_status", "clinical_approval_status", None),
     ),
     "faers_applied_to_treat_assertions": (
-        ("case_count", "evidence_count", None),
+        ("case_count", "number_of_cases", None),
         ("FDA_regulatory_approvals", "FDA_regulatory_approvals", "|"),
         ("edge_evidence", "publications", "|"),
         ("clinical_approval_status", "clinical_approval_status", None),
@@ -675,22 +675,16 @@ OBJECT_CATEGORY_OVERRIDE: dict[str, str] = {"Disease": "EntityToDiseaseAssociati
 # Per-table biolink statement qualifiers: (qualifier slot, backing assertion column). Emitted as
 # ``statement.qualifiers`` entries ONLY where a column actually carries the qualifier's entity.
 # Validity is two-layered: the slot must be a member of the installed Tablassert's Biolink
-# ``Qualifiers`` enum and the association class must support it — the second layer is why every
-# table is currently EMPTY.
-#
-# TODO(disease-context-qualifier): restore the contraindication context qualifier. Biolink declares
-# ``disease_context_qualifier`` on ``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` ONLY,
-# and :data:`OBJECT_CATEGORY_OVERRIDE` pins ``EntityToDiseaseAssociation`` /
+# ``Qualifiers`` enum and the association class must support it. The second layer is met for the
+# contraindication context qualifier by Tablassert 15.1's ``CLASS_FIELD_OVERRIDES``
+# (SkyeAv/Tablassert#120): Biolink declares ``disease_context_qualifier`` on
+# ``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` ONLY, while
+# :data:`OBJECT_CATEGORY_OVERRIDE` pins ``EntityToDiseaseAssociation`` /
 # ``EntityToPhenotypicFeatureAssociation`` — the only classes declaring
-# ``FDA_regulatory_approvals`` — so a contraindication edge can carry the approvals or the
-# qualifier, never both, and emitting both would let ``prune_to_class`` null the qualifier into
-# the pruned column. Approvals win for now (deliberate, revisit when the constraint lifts):
-# * if Biolink widens ``disease_context_qualifier`` to the entity-to-disease classes (or widens
-#   ``FDA_regulatory_approvals`` to the chemical-to-disease one), re-add the entry below and drop
-#   the override for this table respectively;
-# * ``disease_context_text`` KEEPS its assertion-TSV column either way, so no extracted context is
-#   lost — it is only absent from the KGX edge. The qualifier was disease-only by design;
-#   medications belong in a future chemical-entity interaction assertion, not this slot.
+# ``FDA_regulatory_approvals`` — so without the grant a contraindication edge could carry the
+# approvals or the qualifier, never both (``prune_to_class`` would null the qualifier into the
+# pruned column). The grant is deliberately ahead of the pinned Biolink model; drop this note
+# once upstream Biolink widens the slot to the entity-to-disease classes.
 _TABLE_QUALIFIERS: dict[str, tuple[tuple[str, str], ...]] = {
     # ``clinical_approval_status`` ("approved_for_condition") is the Biolink ClinicalApprovalStatusEnum
     # ASSOCIATION slot, not a qualifier slot — no ``Qualifiers`` member expresses approval status, so
@@ -704,9 +698,11 @@ _TABLE_QUALIFIERS: dict[str, tuple[tuple[str, str], ...]] = {
     # contract; it is an adverse reaction rather than a disease context, so it is not a substitute.
     "faers_applied_to_treat_assertions": (),
     # ``disease_context_text`` is a distinct disease from the contraindicated object only when the
-    # extractor's explicit template classifier populated it; blank cells were valid and nullable.
-    # Empty per the TODO above: the pinned association class cannot hold the qualifier.
-    "contraindication_assertions": (),
+    # extractor's explicit template classifier populated it; blank cells are valid and the qualifier
+    # is emitted ``nullable``, so an unconditional contraindication keeps its edge minus only the
+    # qualifier. Disease-only by design: medications belong in a future chemical-entity interaction
+    # assertion, not this slot.
+    "contraindication_assertions": (("disease_context_qualifier", "disease_context_text"),),
 }
 
 _GENERATE_OPERATION = "generate_tablassert_configs"

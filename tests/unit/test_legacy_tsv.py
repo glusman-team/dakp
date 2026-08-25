@@ -38,7 +38,7 @@ _EDGES: list[dict[str, Any]] = [
         "object": "MONDO:0008383",
         "knowledge_level": "observation",
         "agent_type": "manual_validation_of_automated_agent",
-        "evidence_count": 269572,
+        "number_of_cases": 269572,
     },
     {
         "id": "8ccfd259",
@@ -59,7 +59,7 @@ _EDGES: list[dict[str, Any]] = [
         "object": "Y:2",
         "knowledge_level": "knowledge_assertion",
         "agent_type": "manual_validation_of_automated_agent",
-        "evidence_count": "7",
+        "number_of_cases": "7",
         "publications": [],
     },
 ]
@@ -132,7 +132,7 @@ def test_convert_edges_totals_on_odd_shapes() -> None:
         "predicate": "biolink:treats",
         "object": "MONDO:0008383",
         "FDA_regulatory_approvals": "NDA1|NDA2",
-        "evidence_count": 3,
+        "number_of_cases": 3,
         "publications": "dailymed:one",
     }
     nodes = [*_NODES, {"name": "ghost", "category": ["biolink:Disease"]}]

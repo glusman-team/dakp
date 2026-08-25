@@ -139,13 +139,15 @@ rig:
     future_considerations:
       - category: qualifiers
         consideration: >-
-          disease_context_qualifier is not emitted: Biolink declares it only on
-          ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation, while
-          FDA_regulatory_approvals is declared only on the
-          EntityToDisease/EntityToPhenotypicFeature classes these edges are
-          pinned to, so a contraindication edge can carry one or the other; the
-          disease context stays in the assertion table. Revisit if Biolink
-          widens either slot
+          disease_context_qualifier is emitted on contraindication edges via
+          Tablassert's CLASS_FIELD_OVERRIDES grant (SkyeAv/Tablassert#120),
+          which is deliberately ahead of the pinned Biolink model: Biolink
+          declares the slot only on
+          ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation, while these
+          edges pin EntityToDisease/EntityToPhenotypicFeature for
+          FDA_regulatory_approvals. Drop reliance on the grant once upstream
+          Biolink widens disease_context_qualifier to the entity-to-disease
+          classes
       - category: edge_properties
         consideration: >-
           FDA application numbers are emitted on the Biolink
