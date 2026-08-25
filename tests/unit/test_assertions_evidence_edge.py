@@ -15,8 +15,10 @@ from pathlib import Path
 import polars as pl
 
 from dakp_pipeline.assertions.evidence import (
+    application_type_prefix,
     build_dailymed_evidence,
     build_drugsfda_ingredient_map,
+    build_fda_approval_index,
     faers_quarter_url,
     faers_quarter_urls,
     find_faers_cases,
@@ -25,6 +27,7 @@ from dakp_pipeline.assertions.evidence import (
     sorted_pipe,
     source_manifest_url,
     source_urls,
+    split_application_number,
 )
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef
@@ -314,3 +317,123 @@ def test_drugsfda_ingredient_map_skips_rows_missing_nda_or_ingredient(tmp_path: 
     )
     mapping = build_drugsfda_ingredient_map([products])
     assert mapping == {"12345": {"EXAMPLESTATIN"}}
+
+
+# --- FDA application-number expansion (FDAApprovalIndex) ------------------------
+
+
+def test_split_application_number_and_type_prefix() -> None:
+    # The three shapes the sources actually write: SPL's prefixed extension, Drugs@FDA's spaced
+    # lowercase prefix, and FAERS's bare (prefix- and zero-stripped) number.
+    assert split_application_number("BLA125514") == ("BLA", "125514")
+    assert split_application_number("bla 0042") == ("BLA", "0042")
+    assert split_application_number("125514") == ("", "125514")
+    assert split_application_number("no digits here") == ("", "")
+    assert split_application_number(None) == ("", "")
+    # Leading zeros are display, not join key: NDA017977 is the FDA form, "17977" the join key.
+    assert split_application_number("NDA017977") == ("NDA", "017977")
+    # The SPL <code> element carries an NCI Thesaurus code; a curated column carries the prefix.
+    assert application_type_prefix("C73585") == "BLA"
+    assert application_type_prefix("C73605") == "NDA"  # NDA authorized generic
+    assert application_type_prefix("nda") == "NDA"
+    assert application_type_prefix("") == ""
+    assert application_type_prefix(None) == ""
+
+
+def test_fda_approval_index_expands_faers_numbers_from_drugsfda(tmp_path: Path) -> None:
+    # The truncated-approval bug: FAERS reports pembrolizumab's application as "125514", which is
+    # only an identifier once the type prefix is restored -> "BLA125514". Drugs@FDA is the
+    # register that knows the type; DailyMed carries no SPL approval for this one.
+    applications = _parquet(
+        tmp_path,
+        "applications.parquet",
+        {
+            "appl_no": ["125514", "017977"],
+            "appl_no_raw": ["BLA125514", "NDA017977"],
+            "appl_no_stripped": ["125514", "17977"],
+            "appl_type": ["BLA", "NDA"],
+        },
+    )
+    index = build_fda_approval_index([applications])
+
+    assert index.expand("125514") == ["BLA125514"]
+    assert index.expand("0125514") == ["BLA125514"]  # any FAERS spelling normalizes to one entry
+    assert index.expand("17977") == ["NDA017977"]  # padding restored from the register
+    assert index.expand_all(["17977", "125514", "125514"]) == ["BLA125514", "NDA017977"]
+    # Numbers in no register keep their own recorded form rather than being dropped.
+    assert index.expand("099999") == ["099999"]
+    assert index.expand("ANDA065432") == ["ANDA065432"]
+    assert index.expand("") == []
+    assert index.expand("not a number") == []
+
+
+def test_fda_approval_index_prefers_drugsfda_over_dailymed_and_keeps_ambiguous_spl_prefixes(tmp_path: Path) -> None:
+    # DailyMed embeds the prefix in the approval id itself and the <code> element holds an NCI
+    # code, never a prefix: concatenating the two produced "C73584ANDA089160".
+    approvals = _parquet(
+        tmp_path,
+        "spl_approvals.parquet",
+        {
+            "approval_id": ["ANDA089160", "NDA012345", "ANDA012345", "022329"],
+            "approval_code": ["ANDA089160", "NDA012345", "ANDA012345", "022329"],
+            "approval_type": ["C73584", "C73594", "C73584", "C73594"],
+            "spl_set_id": ["SET-A", "SET-B", "SET-C", "SET-D"],
+        },
+    )
+    products = _parquet(
+        tmp_path, "products.parquet", {"appl_no": ["089160"], "appl_no_raw": ["ANDA089160"], "appl_no_stripped": ["89160"], "appl_type": ["ANDA"]}
+    )
+    index = build_fda_approval_index([approvals, products])
+
+    assert index.expand("89160") == ["ANDA089160"]  # Drugs@FDA wins; never the NCI code
+    # One number, two label prefixes and no Drugs@FDA entry: legacy emitted every prefix it saw
+    # (Biolink's own example is ranitidine's ANADA200536/ANDA200536), and so does this.
+    assert index.expand("12345") == ["ANDA012345", "NDA012345"]
+    # An id with no prefix of its own falls back to the NCI code's application type.
+    assert index.expand("22329") == ["NDA022329"]
+
+
+def test_dailymed_display_never_concatenates_the_nci_application_code(tmp_path: Path) -> None:
+    """Real SPL rows: the id already carries the prefix, ``approval_type`` is an NCI code.
+
+    Concatenating the two produced ``C73584ANDA089160`` on every production build; the fixtures
+    hid it by writing a friendly ``"NDA"`` into the type column.
+    """
+    approvals = _parquet(
+        tmp_path,
+        "spl_approvals.parquet",
+        {
+            "approval_id": ["ANDA089160", "BLA103795", "022329"],
+            "approval_code": ["ANDA089160", "BLA103795", "022329"],
+            "approval_type": ["C73584", "C73585", "C73594"],
+            "spl_set_id": ["SET-A", "SET-B", "SET-C"],
+        },
+    )
+    evidence = build_dailymed_evidence([approvals])
+
+    assert evidence.approval_display["89160"] == "ANDA089160"
+    assert evidence.approval_display["103795"] == "BLA103795"
+    # No prefix on the id: the NCI code supplies it, and the padding is kept.
+    assert evidence.approval_display["22329"] == "NDA022329"
+
+
+def test_fda_approval_index_dedupes_repeated_labels_and_skips_unusable_rows(tmp_path: Path) -> None:
+    # An application number appears on every label that bears it, so the same display form
+    # arrives many times; and a row with no number, or with a number no source types, contributes
+    # nothing rather than a prefix-less entry.
+    approvals = _parquet(
+        tmp_path,
+        "spl_approvals.parquet",
+        {
+            "approval_id": ["NDA012345", "NDA012345", "022329", "", "no digits"],
+            "approval_code": ["NDA012345", "NDA012345", "022329", "", "no digits"],
+            "approval_type": ["C73594", "C73594", "", "C73594", "C73594"],
+            "spl_set_id": ["SET-A", "SET-B", "SET-C", "SET-D", "SET-E"],
+        },
+    )
+    index = build_fda_approval_index([approvals])
+
+    assert index.displays["12345"] == ("NDA012345",)  # the repeat adds nothing
+    assert "22329" not in index.displays  # no prefix anywhere: not an expansion, left alone
+    assert index.expand("022329") == ["022329"]
+    assert len(index.displays) == 1

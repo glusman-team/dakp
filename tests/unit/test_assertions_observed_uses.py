@@ -11,7 +11,7 @@ from pathlib import Path
 
 import polars as pl
 
-from dakp_pipeline.assertions.evidence import find_faers_cases
+from dakp_pipeline.assertions.evidence import FDAApprovalIndex, find_faers_cases
 from dakp_pipeline.assertions.observed_uses import ObservedUsesShaper, _approved_pair_index, build_observed_use_rows, is_non_disease_indication
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
@@ -55,10 +55,36 @@ def test_observed_use_retains_faers_report_and_nda_provenance(disease_map: dict[
     assert len(rows) == 1
     row = rows[0]
     assert row["case_count"] == "2"
-    assert row["approval_ids"] == "017977"
+    # No approval index supplied: the number is emitted exactly as FAERS recorded it.
+    assert row["FDA_regulatory_approvals"] == "017977"
     assert row["edge_evidence"] == ""  # faers: report ids no longer ride has_evidence
     assert row["supporting_faers_records"] == "24Q2:1002:2:headache|24Q3:1001:1:headache"
     assert row["supporting_faers_urls"] == "https://example.test/faers-24q2.zip|https://example.test/faers-24q3.zip"
+
+
+def test_observed_use_expands_faers_numbers_to_the_fda_display_form(disease_map: dict[str, dict[str, str]]) -> None:
+    """FAERS strips both the type prefix and the leading zeros; the index puts them back.
+
+    The reported bug: pembrolizumab's ``applied_to_treat`` edge carried ``125514``, which
+    resolves to nothing — the FDA application is ``BLA125514``.
+    """
+    cases = pl.DataFrame(
+        {
+            "drugname": ["Keytruda", "Keytruda", "Keytruda"],
+            "indication": ["headache", "headache", "headache"],
+            "primaryid": ["1001", "1002", "1003"],
+            "nda": ["125514", "0125514", "17977"],
+            "nda_raw": ["125514", "0125514", "17977"],
+            "quarter": ["24Q3", "24Q3", "24Q3"],
+            "source_record_id": ["a", "b", "c"],
+        }
+    )
+    index = FDAApprovalIndex({"125514": ("BLA125514",), "17977": ("NDA017977",)})
+    rows = build_observed_use_rows(cases, disease_map, approved_pairs=set(), approvals=index)
+
+    assert len(rows) == 1
+    # Both FAERS spellings of 125514 collapse to the single FDA form, sorted with the other.
+    assert rows[0]["FDA_regulatory_approvals"] == "BLA125514|NDA017977"
 
 
 def test_case_count_falls_back_to_rows_without_primaryid(disease_map: dict[str, dict[str, str]]) -> None:

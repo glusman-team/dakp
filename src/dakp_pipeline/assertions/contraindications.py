@@ -73,6 +73,7 @@ from typing import Any
 
 from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, row_for
 from dakp_pipeline.assertions.evidence import (
+    build_fda_approval_index,
     dailymed_document_url,
     dailymed_set_url,
     edge_evidence_pipe,
@@ -476,6 +477,7 @@ def build_contraindication_rows(
     (:func:`~dakp_pipeline.assertions.evidence.load_or_build_dailymed_evidence`).
     """
     evidence = load_or_build_dailymed_evidence(inputs, ctx)
+    approvals = build_fda_approval_index(inputs)
     kw = keywords or DEFAULT_CONTRA_KEYWORDS
 
     # Pass 1 work items: contraindication sections (all text is relevant), retaining the
@@ -592,7 +594,7 @@ def build_contraindication_rows(
                     mention,
                     decision.evidence_text,
                     decision.context_text,
-                    evidence.approval_ids_for_sets([set_id]),
+                    approvals.expand_all(evidence.approval_ids_for_sets([set_id])),
                 )
 
     stats(logger, "shape_contraindications", mentions_mined=mentions_mined, assertions=len(aggregated))
@@ -609,7 +611,7 @@ def _accumulate(
     mention: Mention,
     evidence_text: str = "",
     context_text: str = "",
-    approval_ids: Iterable[str] = (),
+    approvals: Iterable[str] = (),
 ) -> None:
     """Add one observation to the ``(subject, object, disease-context)`` aggregate.
 
@@ -636,14 +638,14 @@ def _accumulate(
             "disease_context_text": context,
             "sets": [],
             "docs": [],
-            "approval_ids": [],
+            "FDA_regulatory_approvals": [],
             "scores": [],
             "evidence_texts": [],
         },
     )
     agg["sets"].append(set_id)
     agg["docs"].append(doc_id)
-    agg["approval_ids"].extend(approval_ids)
+    agg["FDA_regulatory_approvals"].extend(approvals)
     agg["scores"].append(mention.score)
     evidence = pipe_safe_text(evidence_text)
     if evidence:
@@ -667,7 +669,7 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         supporting_spl_sets=sorted_pipe(dailymed_set_url(set_id) for set_id in agg["sets"]),
         supporting_spl_documents=sorted_pipe(dailymed_document_url(doc_id) for doc_id in agg["docs"]),
         supporting_spl_evidence=spl_evidence_pipe(agg["sets"], agg["docs"]),
-        approval_ids=sorted_pipe(agg.get("approval_ids", [])),
+        FDA_regulatory_approvals=sorted_pipe(agg.get("FDA_regulatory_approvals", [])),
         edge_evidence=edge_evidence_pipe(
             spl_evidence_pipe(agg["sets"], agg["docs"]).split("|") if spl_evidence_pipe(agg["sets"], agg["docs"]) else []
         ),

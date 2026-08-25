@@ -49,7 +49,7 @@ _EDGES: list[dict[str, Any]] = [
         "original_object": "headache",
         "knowledge_level": "knowledge_assertion",
         "agent_type": "manual_validation_of_automated_agent",
-        "approval_ids": ["NDA012345", "ANDA065432"],
+        "FDA_regulatory_approvals": ["NDA012345", "ANDA065432"],
         "has_evidence": ["dailymed:set-a", "dailymed:set-b"],
     },
     {
@@ -131,7 +131,7 @@ def test_convert_edges_totals_on_odd_shapes() -> None:
         "subject": "CHEBI:5855",
         "predicate": "biolink:treats",
         "object": "MONDO:0008383",
-        "approval_ids": "NDA1|NDA2",
+        "FDA_regulatory_approvals": "NDA1|NDA2",
         "evidence_count": 3,
         "has_evidence": "dailymed:one",
     }

@@ -123,25 +123,26 @@ EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
 # duplicate annotation names silently overwrite
 # each other), and ``case_count`` maps to ``evidence_count`` rather than the sibling-class-only
 # ``number_of_cases``. ``split_by: "|"``
-# makes the pipe-joined cells emit as real JSON arrays. ``approval_ids`` keeps its column name and,
-# under Tablassert >= 12, reaches the edge as a curated TOP-LEVEL pass-through field (it is on
-# Tablassert's edge allow-list as a known-pending Biolink slot, so it no longer folds); DAKP
-# splits it with ``split_by`` so the edge carries the legacy ``approvals`` JSON-ARRAY shape;
+# makes the pipe-joined cells emit as real JSON arrays. ``FDA_regulatory_approvals`` is the Biolink
+# slot for FDA application numbers (declared by ``EntityToDiseaseAssociation`` /
+# ``EntityToPhenotypicFeatureAssociation``) and the name ``NCATSTranslator/translator-ingests``
+# maps DAKP's approvals onto, so the column and the annotation share it; DAKP splits it with
+# ``split_by`` so the edge carries the legacy ``approvals`` JSON-ARRAY shape;
 # ``source_score`` still folds into ``supporting_text``.
 EXPECTED_ANNOTATIONS = {
     "approved_treats_assertions": {
-        "approval_ids": ("approval_ids", "|"),
+        "FDA_regulatory_approvals": ("FDA_regulatory_approvals", "|"),
         "has_evidence": ("edge_evidence", "|"),
         "clinical_approval_status": ("clinical_approval_status", None),
     },
     "faers_applied_to_treat_assertions": {
         "evidence_count": ("case_count", None),
-        "approval_ids": ("approval_ids", "|"),
+        "FDA_regulatory_approvals": ("FDA_regulatory_approvals", "|"),
         "has_evidence": ("edge_evidence", "|"),
         "clinical_approval_status": ("clinical_approval_status", None),
     },
     "contraindication_assertions": {
-        "approval_ids": ("approval_ids", "|"),
+        "FDA_regulatory_approvals": ("FDA_regulatory_approvals", "|"),
         "has_evidence": ("edge_evidence", "|"),
         # ``evidence_text`` is deliberately NOT annotated onto ``supporting_text`` (full SPL
         # sentences made the edges unreadable); the column stays TSV-only provenance.
@@ -374,6 +375,21 @@ def _dakp_association_classes(table: str) -> set[type]:
     }
 
 
+#: Annotated Biolink slots DAKP's CURRENT edge category cannot hold, exempted from the guard
+#: below with a named reason and an expiry condition.
+#:
+#: ``FDA_regulatory_approvals`` ("numbers that identify specific drug applications") is declared
+#: by ``EntityToDiseaseAssociation`` / ``EntityToPhenotypicFeatureAssociation`` — the classes the
+#: legacy KG emitted (``ref/legacy/bin/dakp-postprocess2jsonlBL.py``) and the ones
+#: ``NCATSTranslator/translator-ingests`` instantiates for DAKP edges (``ingests/dakp/dakp.py``).
+#: DAKP resolves to ``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` instead, and that
+#: category is derived by Tablassert from the (subject role, object role) pair alone
+#: (``lib.edge_tables``) with no per-config override as of Tablassert 14.0.0. Delete this set —
+#: and the exemption branch — as soon as Tablassert can express the association category, and
+#: emit the override from ``_TABLE_SPECS`` at the same time.
+PENDING_CATEGORY_SLOTS = frozenset({"FDA_regulatory_approvals"})
+
+
 @pytest.mark.parametrize("table", TABLES)
 def test_annotation_slots_survive_dakp_association_class(table: str) -> None:
     """Every annotated Biolink slot is one DAKP's association class can actually hold.
@@ -394,7 +410,25 @@ def test_annotation_slots_survive_dakp_association_class(table: str) -> None:
                 continue  # deliberately folded into ``supporting_text`` (e.g. ``source_score``)
             if name in KNOWN_PENDING_EDGE_FIELDS:
                 continue  # curated Tablassert pass-through; no association class declares it
+            if name in PENDING_CATEGORY_SLOTS:
+                continue  # blocked on the Tablassert association-category override (see below)
             assert name in slots, f"{name} is not a slot of {cls.__name__}; it would be relocated onto the supporting study"
+
+
+def test_pending_category_slots_are_declared_by_the_target_association_classes() -> None:
+    """The exempted slots are real, and name the classes DAKP's category must move to.
+
+    This is the other half of :data:`PENDING_CATEGORY_SLOTS`: the exemption is only defensible
+    while the slot genuinely exists on the association classes DAKP is heading for. If Biolink
+    ever drops it from them, this fails and the exemption must be re-argued rather than silently
+    carried.
+    """
+    import biolink_model.datamodel.pydanticmodel_v2 as bm
+    from tablassert.biolink import class_fields
+
+    for name in PENDING_CATEGORY_SLOTS:
+        for cls in (bm.EntityToDiseaseAssociation, bm.EntityToPhenotypicFeatureAssociation):
+            assert name in class_fields(cls), f"{name} is not a slot of {cls.__name__}"
 
 
 # --- category guard (hard allow-lists via Tablassert ``avoid``) -------------------
@@ -759,7 +793,7 @@ def test_rig_target_info_pins_modeling_considerations_and_rejects_type_summaries
     considerations = target["future_considerations"]
     assert [entry["category"] for entry in considerations] == ["qualifiers", "edge_properties"]
     assert "disease_context_qualifier" in considerations[0]["consideration"]
-    assert "approval_ids" in considerations[1]["consideration"]
+    assert "FDA_regulatory_approvals" in considerations[1]["consideration"]
     assert any("generated by Tablassert" in note for note in target["additional_notes"])
 
     info = RIGConfig.model_validate(tablassert_configs.graph_config()["rig"]).target_info

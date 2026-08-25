@@ -144,7 +144,7 @@ def _fake_tablassert_subprocess(command: list[str], cwd: Path | None = None) -> 
     (data / f"{GRAPH_NAME}_{__version__}.edges.ndjson").write_text(
         '{"id":"fake-edge","subject":"CHEBI:1000001","predicate":"biolink:treats","object":"MONDO:0005154",'
         '"knowledge_level":"knowledge_assertion","agent_type":"manual_validation_of_automated_agent",'
-        '"approval_ids":["NDA1"]}\n',
+        '"FDA_regulatory_approvals":["NDA1"]}\n',
         encoding="utf-8",
     )
     (data / f"{GRAPH_NAME}_{__version__}.RIG.yaml").write_text(f"source_info:\n  name: {GRAPH_NAME}\n", encoding="utf-8")

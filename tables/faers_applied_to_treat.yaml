@@ -410,7 +410,7 @@ template:
     - annotation: evidence_count
       method: column
       encoding: J
-    - annotation: approval_ids
+    - annotation: FDA_regulatory_approvals
       method: column
       encoding: P
       split_by: "|"

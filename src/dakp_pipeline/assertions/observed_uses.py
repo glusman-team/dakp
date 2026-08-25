@@ -57,6 +57,8 @@ import polars as pl
 
 from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_FAERS, join_pipe, match_diseases, row_for
 from dakp_pipeline.assertions.evidence import (
+    FDAApprovalIndex,
+    build_fda_approval_index,
     faers_quarter_urls,
     faers_record_url,
     find_faers_cases,
@@ -131,9 +133,17 @@ class ObservedUsesShaper:
             faers_cases = find_faers_cases(inputs, columns=("drugname", "indication", "primaryid", "nda", "nda_raw", "quarter", "source_record_id"))
             approved = find_table(inputs, "approved_treats_assertions.tsv")
             approved_pairs = _approved_pair_index(approved) if approved is not None else None
+            approvals = build_fda_approval_index(inputs)
             with MentionCache(ctx.workdir) as cache:
                 rows = build_observed_use_rows(
-                    faers_cases, disease_map, approved_pairs, ner=ner, devices=devices, cache=cache, faers_quarter_urls=faers_quarter_urls(inputs)
+                    faers_cases,
+                    disease_map,
+                    approved_pairs,
+                    approvals=approvals,
+                    ner=ner,
+                    devices=devices,
+                    cache=cache,
+                    faers_quarter_urls=faers_quarter_urls(inputs),
                 )
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_faers_applied_to_treat")
 
@@ -209,6 +219,7 @@ def build_observed_use_rows(
     disease_map: Mapping[str, Mapping[str, str]],
     approved_pairs: set[tuple[str, str]] | None = None,
     *,
+    approvals: FDAApprovalIndex | None = None,
     ner: DiseaseNER | None = None,
     devices: Sequence[str] | None = None,
     cache: MentionCache | None = None,
@@ -231,9 +242,14 @@ def build_observed_use_rows(
     distinct normalized string (:func:`_mine_indication_mentions`); a single unambiguous mention
     supplies the object text/name/category (:func:`_ner_object`). ``cache`` (a persistent mention
     cache) only changes WHERE mentions come from, never their content.
+
+    ``approvals`` expands the FAERS application numbers, which FAERS records with both the
+    application-type prefix and the leading zeros stripped (``125514``), back to the FDA form
+    every other source uses (``BLA125514``). Without it the bare FAERS number is emitted.
     """
     if faers_cases is None:
         return []
+    approvals = approvals if approvals is not None else FDAApprovalIndex()
 
     def _text_column(name: str) -> pl.Expr:
         return pl.col(name).fill_null("").cast(pl.Utf8) if name in faers_cases.columns else pl.lit("")
@@ -311,7 +327,10 @@ def build_observed_use_rows(
             norm_nda = normalize_nda(raw_nda)
             if norm_nda:
                 approval_values_by_norm.setdefault(norm_nda, set()).add(raw_nda)
-        approval_values = [min(values) for values in approval_values_by_norm.values()]
+        # One expansion per DISTINCT application number: the FAERS spellings of a number
+        # (``125514``/``0125514``) all normalize to the same key, and the index answers with the
+        # FDA display form(s) for that key.
+        approval_values = approvals.expand_all(min(values) for values in approval_values_by_norm.values())
         if approved_pairs is None:
             status = _STATUS_NOT_PROVIDED
         elif (normalize_text(drug), normalize_text(obj["text"])) in approved_pairs:
@@ -331,7 +350,7 @@ def build_observed_use_rows(
                 object_name=obj["name"],
                 object_category=obj["category"],
                 case_count=int(rec["distinct_cases"]) + int(rec["anon_rows"]),
-                approval_ids=sorted_pipe(approval_values),
+                FDA_regulatory_approvals=sorted_pipe(approval_values),
                 edge_evidence="",
                 supporting_faers_records=sorted_pipe(source_records),
                 supporting_faers_urls=sorted_pipe(evidence_urls),

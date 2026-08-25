@@ -230,9 +230,9 @@ def test_contraindications_are_knowledge_assertions_text_mined(built: dict[str, 
 
 
 def test_treats_carries_fda_approval_and_spl_evidence(built: dict[str, Any]) -> None:
-    """Legacy ``approval`` (NDA) + ``supporting_spls`` survive as approval_ids + supporting_spl_*."""
+    """Legacy ``approval`` (NDA) + ``supporting_spls`` survive as FDA_regulatory_approvals + supporting_spl_*."""
     for rec in _family_rows(built["tables"], TREATS):
-        assert str(rec.get("approval_ids")).strip(), "treats row missing FDA approval/NDA id"
+        assert str(rec.get("FDA_regulatory_approvals")).strip(), "treats row missing FDA approval/NDA id"
         assert str(rec.get("supporting_spl_sets")).strip(), "treats row missing supporting SPL set"
         assert str(rec.get("supporting_spl_documents")).strip(), "treats row missing supporting SPL document"
 
@@ -252,12 +252,12 @@ def test_all_edge_families_carry_identifier_provenance(built: dict[str, Any]) ->
         assert str(rec.get("supporting_faers_urls") or "").startswith("https://")
     for rec in _family_rows(built["tables"], APPLIED_TO_TREAT):
         assert not str(rec.get("edge_evidence") or "").strip()
-        assert str(rec.get("approval_ids") or "").strip()
+        assert str(rec.get("FDA_regulatory_approvals") or "").strip()
         assert str(rec.get("supporting_faers_records") or "").strip()
         assert str(rec.get("supporting_faers_urls") or "").startswith("https://")
     for rec in _family_rows(built["tables"], CONTRAINDICATED_IN):
         assert str(rec.get("edge_evidence") or "").startswith("dailymed:")
-        assert str(rec.get("approval_ids") or "").strip()
+        assert str(rec.get("FDA_regulatory_approvals") or "").strip()
 
 
 def test_applied_to_treat_carries_faers_case_counts(built: dict[str, Any]) -> None:

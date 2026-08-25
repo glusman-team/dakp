@@ -39,7 +39,7 @@ APPROVED_TREATS_COLUMNS = [
     "object_curie",
     "object_name",
     "object_category",
-    "approval_ids",
+    "FDA_regulatory_approvals",
     "supporting_spl_sets",
     "supporting_spl_documents",
     "supporting_spl_evidence",
@@ -69,7 +69,7 @@ FAERS_APPLIED_TO_TREAT_COLUMNS = [
     "agent_type",
     "primary_knowledge_source",
     "upstream_resource_ids",
-    "approval_ids",
+    "FDA_regulatory_approvals",
     "edge_evidence",
     "supporting_faers_records",
     "supporting_faers_urls",
@@ -95,7 +95,7 @@ CONTRAINDICATION_COLUMNS = [
     "agent_type",
     "primary_knowledge_source",
     "upstream_resource_ids",
-    "approval_ids",
+    "FDA_regulatory_approvals",
     "edge_evidence",
 ]
 

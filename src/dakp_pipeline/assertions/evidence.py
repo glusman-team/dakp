@@ -6,13 +6,16 @@ Pure, testable building blocks used by every assertion shaper:
   (``12345``) while DailyMed/Drugs@FDA store the padded FDA form (``012345``); every
   cross-source NDA join goes through :func:`normalize_nda`.
 * **Provenance column assembly** — deduplicated, deterministically sorted, pipe-joined
-  lists (the Translator list-encoding convention) for ``approval_ids``,
+  lists (the Translator list-encoding convention) for ``FDA_regulatory_approvals``,
   ``supporting_spl_sets``, ``supporting_spl_documents``, and ``supporting_spl_evidence`` —
   the ``dailymed:<spl_set_id>`` CURIEs of the backing SPL sets that Tablassert encodes as
   Biolink ``has_evidence`` (the legacy DAKP KG evidence form).
 * **SPL-support joining** — index DailyMed SPL approvals/ingredients/sections and
   Drugs@FDA application→ingredient lookups so shapers can ask "which SPL sets support
   this approval?" without re-scanning frames.
+* **FDA application-number expansion** — :class:`FDAApprovalIndex` turns the prefix-stripped
+  number a source records (FAERS ``125514``) back into the FDA form every consumer expects
+  (``BLA125514``), the ``FDA_regulatory_approvals`` edge values.
 * **Table resolution + output writing** — find interim parquet tables among
   ``inputs`` and register the uncompressed assertion TSV.
 
@@ -50,6 +53,20 @@ BOXED_WARNING_LOINC = "34066-1"  # boxed_warning
 WARNINGS_LOINCS = frozenset({"43685-7", "34071-1", "42232-9"})  # warnings_and_precautions / warnings / precautions
 
 _NDA_DIGITS_RE = re.compile(r"[^0-9]+")
+#: An FDA application number as the sources write it: an optional letter prefix naming the
+#: application TYPE (``NDA``/``ANDA``/``BLA``) immediately followed by the number. Ported from
+#: the legacy ``split_prefix_number`` (``ref/legacy/bin/uselist2kg.py``), widened so a bare
+#: number (FAERS) parses too.
+_APPLICATION_NUMBER_RE = re.compile(r"([A-Za-z]*)\s*(\d+)")
+#: NCI Thesaurus application-type codes as they appear in the SPL approval ``<code>`` element
+#: (``codeSystem 2.16.840.1.113883.3.26.1.1``). DailyMed writes the human prefix into the
+#: approval id itself, so this is only the fallback for a label whose id carries none.
+_NCI_APPLICATION_TYPES = {
+    "C73584": "ANDA",  # abbreviated new drug application
+    "C73585": "BLA",  # biologics license application
+    "C73594": "NDA",  # new drug application
+    "C73605": "NDA",  # NDA authorized generic
+}
 _FAERS_QUARTER_RE = re.compile(r"^(?:(\d{4})|(\d{2}))Q([1-4])$", re.IGNORECASE)
 _FAERS_FILENAME_RE = re.compile(r"faers_ascii_(\d{2}|\d{4})q([1-4])\.zip", re.IGNORECASE)
 _PIPE_UNSAFE_RE = re.compile(r"[|\t\r\n]")
@@ -72,6 +89,125 @@ def normalize_nda(value: Any) -> str:
     """
     digits = _NDA_DIGITS_RE.sub("", "" if value is None else str(value))
     return digits.lstrip("0")
+
+
+def application_type_prefix(approval_type: Any) -> str:
+    """The letter prefix an SPL approval type column implies (``""`` when it implies none).
+
+    DailyMed writes an NCI Thesaurus code (``C73584``) into the approval ``<code>`` element;
+    the simplified fixture (and any source that curates the column) writes the letter prefix
+    itself (``NDA``). Both are accepted; anything else contributes no prefix.
+    """
+    code = ("" if approval_type is None else str(approval_type)).strip().upper()
+    if code in _NCI_APPLICATION_TYPES:
+        return _NCI_APPLICATION_TYPES[code]
+    return code if code.isalpha() else ""
+
+
+def split_application_number(value: Any) -> tuple[str, str]:
+    """Split an FDA application number into ``(type prefix, digits)``.
+
+    ``"BLA125514"`` -> ``("BLA", "125514")``; ``"bla 0042"`` -> ``("BLA", "0042")``; a bare
+    FAERS number ``"125514"`` -> ``("", "125514")``; anything with no digits -> ``("", "")``.
+    Leading zeros are PRESERVED: they are part of the FDA display form (``NDA017977``), unlike
+    the :func:`normalize_nda` join key.
+    """
+    match = _APPLICATION_NUMBER_RE.search("" if value is None else str(value))
+    if match is None:
+        return "", ""
+    return match.group(1).upper(), match.group(2)
+
+
+# --- FDA application-number display forms ---------------------------------------
+
+
+@dataclass(frozen=True)
+class FDAApprovalIndex:
+    """Normalized application number -> the display forms ``<type><number>`` it is known by.
+
+    The truncated-approval fix. FAERS records application numbers with the type prefix AND the
+    leading zeros stripped (``125514``), which is not an identifier anyone can resolve: the FDA
+    form is ``BLA125514``. Legacy DAKP rebuilt the prefix from a number -> prefix map
+    (``ref/legacy/bin/uselist2kg.py``); this index is the same idea with Drugs@FDA as the
+    authoritative source, keyed by :func:`normalize_nda` so FAERS (stripped), DailyMed (padded),
+    and Drugs@FDA (padded) all hit the same entry.
+    """
+
+    displays: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def expand(self, value: Any) -> list[str]:
+        """Return the FDA display forms for one raw application number.
+
+        Falls back to the value's own ``<prefix><digits>`` when the number is in no FDA
+        register — an unexpandable number is still real provenance, so it is emitted as it was
+        recorded rather than dropped (legacy dropped the whole edge instead).
+        """
+        norm = normalize_nda(value)
+        if not norm:
+            return []
+        known = self.displays.get(norm)
+        if known:
+            return list(known)
+        prefix, digits = split_application_number(value)
+        return [f"{prefix}{digits}"] if digits else []
+
+    def expand_all(self, values: Iterable[Any]) -> list[str]:
+        """Sorted unique display forms for many raw application numbers."""
+        return merge_unique(display for value in values for display in self.expand(value))
+
+
+def _index_display(displays: dict[str, list[str]], number: Any, prefix: str, *, authoritative: bool) -> None:
+    """Record one ``<prefix><number>`` display form under its normalized join key.
+
+    Drugs@FDA is authoritative: its entry replaces anything DailyMed contributed for that
+    number. DailyMed entries accumulate, because a number genuinely can carry more than one
+    prefix across labels (Biolink's own example: ranitidine's ``ANADA200536``/``ANDA200536``);
+    legacy emitted every prefix it saw, and so does this.
+    """
+    norm = normalize_nda(number)
+    _prefix, digits = split_application_number(number)
+    if not norm or not digits or not prefix:
+        return
+    display = f"{prefix}{digits}"
+    if authoritative:
+        displays[norm] = [display]
+    elif display not in displays.setdefault(norm, []):
+        displays[norm].append(display)
+
+
+def build_fda_approval_index(inputs: Iterable[ArtifactRef]) -> FDAApprovalIndex:
+    """Index every FDA application number DAKP can see, with its ``<type><number>`` display form.
+
+    Two registers, in precedence order:
+
+    * **Drugs@FDA** (``applications.parquet``, then ``products.parquet``) — the authoritative
+      FDA application register: ``appl_type`` + ``appl_no`` are separate, curated columns, and
+      in a full production build it covers ~94% of the distinct application numbers FAERS
+      reports with no number carrying two types.
+    * **DailyMed SPL** (``spl_approvals.parquet``) — the label's own ``approval/id/@extension``,
+      which already embeds the prefix (``ANDA089160``). Covers ~26% of FAERS numbers, and 25 of
+      them carry conflicting prefixes (label typos: ``BN``, ``KGX``, ``NAD``), so it only fills
+      gaps Drugs@FDA leaves. The SPL ``<code>`` element is an NCI Thesaurus code
+      (``C73584``), NOT a letter prefix — :data:`_NCI_APPLICATION_TYPES` maps it for the rare
+      label whose id has no prefix of its own.
+    """
+    displays: dict[str, list[str]] = {}
+    approvals = find_table(inputs, "spl_approvals.parquet")
+    if approvals is not None:
+        for rec in approvals.iter_rows(named=True):
+            raw = rec.get("approval_id") or rec.get("approval_code")
+            prefix, _digits = split_application_number(raw)
+            _index_display(displays, raw, prefix or application_type_prefix(rec.get("approval_type")), authoritative=False)
+    for table in ("applications.parquet", "products.parquet"):
+        frame = find_table(inputs, table)
+        if frame is None or "appl_type" not in frame.columns:
+            continue
+        for rec in frame.iter_rows(named=True):
+            number = rec.get("appl_no") or rec.get("appl_no_raw") or rec.get("appl_no_stripped")
+            _index_display(displays, number, str(rec.get("appl_type") or "").strip().upper(), authoritative=True)
+    index = FDAApprovalIndex({norm: tuple(sorted(set(forms))) for norm, forms in displays.items()})
+    stats(logger, "fda_approval_index", application_numbers=len(index.displays))
+    return index
 
 
 # --- provenance column assembly -------------------------------------------------
@@ -396,11 +532,16 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
             evidence.approval_sets.setdefault(norm, set()).add(set_id)
             approval_id = str(rec.get("approval_id") or "").strip()
             approval_code = str(rec.get("approval_code") or "").strip()
-            approval_type = str(rec.get("approval_type") or "").strip()
-            # Legacy-KG display form: application type + number (``BLA103795``); without a
-            # type the number alone is the display value.
+            approval_type = str(rec.get("approval_type") or "").strip().upper()
+            # Legacy-KG display form: application type + number (``BLA103795``). The SPL writes
+            # the type INTO the id (``ANDA089160``), so the id is already the display form; the
+            # ``approval_type`` column is the NCI Thesaurus code from the label's ``<code>``
+            # element (``C73584``) and must never be concatenated onto the number. It only
+            # supplies the prefix for the rare label whose id carries none.
             base = approval_id or approval_code
-            display = f"{approval_type}{base}" if base and approval_type else (base or norm)
+            prefix, digits = split_application_number(base)
+            prefix = prefix or application_type_prefix(approval_type)
+            display = f"{prefix}{digits}" if digits else (base or norm)
             evidence.approval_display.setdefault(norm, display)
             evidence.approval_ids_by_set.setdefault(set_id, set()).add(display)
 

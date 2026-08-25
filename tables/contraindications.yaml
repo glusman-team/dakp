@@ -520,7 +520,7 @@ template:
       knowledge_level: knowledge_assertion
       agent_type: manual_validation_of_automated_agent
   annotations:
-    - annotation: approval_ids
+    - annotation: FDA_regulatory_approvals
       method: column
       encoding: T
       split_by: "|"

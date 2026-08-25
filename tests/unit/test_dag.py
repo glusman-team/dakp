@@ -110,11 +110,19 @@ def test_dag_task_graph(dakp_build) -> None:
     assert upstream("extract_faers") == {"acquire_faers"}
     assert upstream("extract_drugsfda") == {"acquire_drugsfda"}
 
-    # Shapers join the extracts (treatment: dm+drugsfda+faers + NER models; uses: faers+dm + the
-    # produced approved-treats table + NER models; contraindication: dm + NER models).
+    # Shapers join the extracts (treatment: dm+drugsfda+faers + NER models; uses: faers+dm+drugsfda
+    # + the produced approved-treats table + NER models; contraindication: dm+drugsfda + NER
+    # models). Every shaper takes Drugs@FDA: it is the FDA application register that expands the
+    # prefix-stripped application numbers into their FDA form for FDA_regulatory_approvals.
     assert upstream("shape_treatment_tables") == {"extract_dailymed", "extract_drugsfda", "extract_faers", "acquire_ner_models"}
-    assert upstream("shape_faers_use_tables") == {"extract_faers", "extract_dailymed", "shape_treatment_tables", "acquire_ner_models"}
-    assert upstream("shape_contraindication_tables") == {"extract_dailymed", "acquire_ner_models"}
+    assert upstream("shape_faers_use_tables") == {
+        "extract_faers",
+        "extract_dailymed",
+        "extract_drugsfda",
+        "shape_treatment_tables",
+        "acquire_ner_models",
+    }
+    assert upstream("shape_contraindication_tables") == {"extract_dailymed", "extract_drugsfda", "acquire_ner_models"}
 
     shapes = {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"}
     assert upstream("generate_tablassert_configs") == shapes

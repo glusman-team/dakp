@@ -23,8 +23,8 @@ The configs match the ACTUAL current Tablassert schema (verified against
   8.2.1+ models ``source.url`` as a ``list`` of one or more URLs per section and DAKP assertion
   rows aggregate across quarters, releases, and applications, so no per-row URL is truthful at
   row granularity; the dataset-level URLs are the honest RIG record, and per-row precision
-  stays on the edge via ``has_evidence`` (SPL set links) and ``approval_ids`` (FDA application
-  numbers);
+  stays on the edge via ``has_evidence`` (SPL set links) and ``FDA_regulatory_approvals`` (FDA
+  application numbers);
 * column-encoded ``statement.subject`` / ``statement.object`` / ``statement.predicate``
   with drug / disease ``prioritize`` categories plus a HARD category allow-list each:
   ``avoid`` is emitted as the sorted complement of the side's allow-list over the installed
@@ -61,8 +61,8 @@ is what the emitted configs target, 9.1's per-row ``split_by`` (made the ONLY mu
 annotation encoding in 10.0) is what DAKP's pipe-joined evidence cells need, 11.0 makes
 the graph config's ``rig:`` section mandatory while dropping the flat
 ``primary_knowledge_source`` edge column (nested ``sources[]`` provenance only — the edge
-primary source now derives from ``rig.source_info.infores_id``), and 12.0 keeps ``approval_ids``
-as a curated TOP-LEVEL edge field instead of folding it into ``supporting_text`` and stops
+primary source now derives from ``rig.source_info.infores_id``), and 12.0 keeps a curated FDA-application-number
+edge field TOP-LEVEL instead of folding it into ``supporting_text`` and stops
 fabricating an empty supporting study for publication-less sections like DAKP's. 13.0 (biolink-model 4.4.4) renames the
 ``AffinityMeasurement`` config class to ``ProteinLigandAssayResult`` — the generated
 ``avoid:``/``prioritize:`` lists assume the new name — reworks the inlined supporting study
@@ -275,7 +275,7 @@ RIG_SUPPORTING_DATA_SOURCES: tuple[dict[str, Any], ...] = (
 #: ``fields_used`` names exactly what the assertion tables consume from SPL — the four mined
 #: section kinds' text (indications_and_usage, contraindications, boxed warnings,
 #: warnings/precautions), SPL set identifiers feeding ``has_evidence``, and FDA application
-#: numbers feeding ``approval_ids``. Unlike ``relevant_files``, ``included_content`` is NOT
+#: numbers feeding ``FDA_regulatory_approvals``. Unlike ``relevant_files``, ``included_content`` is NOT
 #: audit-cross-checked by Tablassert, so these entries document intent rather than gate the build.
 RIG_INCLUDED_CONTENT: tuple[dict[str, str], ...] = (
     {
@@ -380,8 +380,9 @@ RIG_TARGET_FUTURE_CONSIDERATIONS: tuple[dict[str, str], ...] = (
     {
         "category": "edge_properties",
         "consideration": (
-            "approval_ids stays a curated top-level edge field (Tablassert >= 12 carve-out); "
-            "monitor whether Biolink gains a standard slot for FDA application numbers"
+            "FDA application numbers are emitted on the Biolink FDA_regulatory_approvals slot, which "
+            "EntityToDiseaseAssociation and EntityToPhenotypicFeatureAssociation declare; monitor whether "
+            "the slot is widened to the chemical-to-disease association classes"
         ),
     },
 )
@@ -596,11 +597,17 @@ def _sources_template(table: str) -> list[dict[str, Any]]:
 #   cannot hold it and it used to land in the study description as a string. ``evidence_count`` is
 #   on ``Association`` — "the number of evidence instances that are connected to an association" —
 #   so the count stays on the edge where a consumer can query it;
-# * ``approval_ids`` (FDA application numbers) has no Biolink slot reachable from a lowercased
-#   annotation name, but Tablassert >= 12 keeps it as a CURATED pass-through. DAKP annotates it
-#   with ``split_by: "|"`` so the pipe-joined cell reaches the final KGX edge as its own
-#   top-level ``approval_ids`` JSON ARRAY (the legacy ``approvals`` list shape) instead of a
-#   joined scalar. ``source_score`` still has no reachable
+# * ``FDA_regulatory_approvals`` (FDA application numbers) IS a Biolink slot — "numbers that
+#   identify specific drug applications", multivalued, declared by ``EntityToDiseaseAssociation``
+#   and ``EntityToPhenotypicFeatureAssociation``. It is the slot
+#   ``NCATSTranslator/translator-ingests`` maps DAKP's approvals onto (``ingests/dakp/dakp.py``,
+#   ``dakp_rig.yaml``), so DAKP emits it under that exact name rather than the former curated
+#   ``approval_ids`` pass-through. DAKP annotates it with ``split_by: "|"`` so the pipe-joined
+#   cell reaches the final KGX edge as its own top-level JSON ARRAY (the legacy ``approvals``
+#   list shape) instead of a joined scalar. Two Tablassert behaviors gate it: the annotation
+#   name must survive with its case intact (``lib.Section.ops`` lowercases annotation names), and
+#   the edge category must resolve to a class that declares the slot — ``prune_to_class`` nulls
+#   it on any class that does not. ``source_score`` still has no reachable
 #   slot and no carve-out, so it folds into ``supporting_text`` as a ``"name: value"`` string —
 #   visible provenance, deliberately kept. ``has_confidence_score``
 #   would be mechanically available for ``source_score``, but that column is the max NER SPAN score
@@ -608,18 +615,18 @@ def _sources_template(table: str) -> list[dict[str, Any]]:
 #   would mislead any consumer that weights edges by confidence.
 _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
     "approved_treats_assertions": (
-        ("approval_ids", "approval_ids", "|"),
+        ("FDA_regulatory_approvals", "FDA_regulatory_approvals", "|"),
         ("edge_evidence", "has_evidence", "|"),
         ("clinical_approval_status", "clinical_approval_status", None),
     ),
     "faers_applied_to_treat_assertions": (
         ("case_count", "evidence_count", None),
-        ("approval_ids", "approval_ids", "|"),
+        ("FDA_regulatory_approvals", "FDA_regulatory_approvals", "|"),
         ("edge_evidence", "has_evidence", "|"),
         ("clinical_approval_status", "clinical_approval_status", None),
     ),
     "contraindication_assertions": (
-        ("approval_ids", "approval_ids", "|"),
+        ("FDA_regulatory_approvals", "FDA_regulatory_approvals", "|"),
         ("edge_evidence", "has_evidence", "|"),
         # ``evidence_text`` (the SPL contraindication prose) is deliberately NOT annotated: mapped
         # to ``supporting_text`` it buried every edge under full sentences, making the KGX output
@@ -650,7 +657,7 @@ OBJECT_PRIORITIZE = ("Disease", "PhenotypicFeature")
 _TABLE_QUALIFIERS: dict[str, tuple[tuple[str, str], ...]] = {
     # ``clinical_approval_status`` ("approved_for_condition") is the Biolink ClinicalApprovalStatusEnum
     # ASSOCIATION slot, not a qualifier slot — no ``Qualifiers`` member expresses approval status, so
-    # it stays an annotation; ``approval_ids`` / SPL ids are provenance strings, not entities.
+    # it stays an annotation; FDA application numbers / SPL ids are provenance strings, not entities.
     "approved_treats_assertions": (),
     # The indication (object) is the only disease on a FAERS row, so a ``disease_context_qualifier``
     # encoded from the object column just restates the object — biolink defines it as the condition

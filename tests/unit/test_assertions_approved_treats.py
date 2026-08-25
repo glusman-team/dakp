@@ -11,7 +11,13 @@ from __future__ import annotations
 import polars as pl
 
 from dakp_pipeline.assertions.approved_treats import ApprovedTreatsShaper, build_approved_treats_rows
-from dakp_pipeline.assertions.evidence import DailyMedEvidence, build_dailymed_evidence, build_drugsfda_ingredient_map, find_faers_cases
+from dakp_pipeline.assertions.evidence import (
+    DailyMedEvidence,
+    FDAApprovalIndex,
+    build_dailymed_evidence,
+    build_drugsfda_ingredient_map,
+    find_faers_cases,
+)
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 
@@ -40,7 +46,7 @@ def test_faers_rule_keeps_approved_pairs_and_filters_unmapped(
     assert statin["subject_text"] == "Examplestatin"
     assert statin["subject_curie"] == "UNII:QFX8B1R4QF"  # DailyMed-provided UNII
     assert statin["object_curie"] == "MONDO:0005154"
-    assert statin["approval_ids"] == "NDA012345"  # legacy display form: application type + number
+    assert statin["FDA_regulatory_approvals"] == "NDA012345"  # legacy display form: application type + number
     assert statin["supporting_spl_evidence"] == "dailymed:SETID-EXAMPLESTATIN-001"  # legacy set-CURIE form
     assert statin["supporting_spl_sets"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SETID-EXAMPLESTATIN-001"
     assert statin["supporting_spl_documents"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SETID-EXAMPLESTATIN-001#34067-9"
@@ -86,8 +92,8 @@ def test_faers_pair_without_spl_indication_support_is_not_approved(disease_map: 
     assert build_approved_treats_rows(cases, ev, mapping, disease_map) == []
 
 
-def test_multi_nda_for_same_subject_object_aggregates_approval_ids(disease_map: dict[str, dict[str, str]]) -> None:
-    # Two distinct NDAs, same ingredient + indication -> ONE row with both approval_ids aggregated.
+def test_multi_nda_for_same_subject_object_aggregates_approvals(disease_map: dict[str, dict[str, str]]) -> None:
+    # Two distinct NDAs, same ingredient + indication -> ONE row with both approvals aggregated.
     ev = DailyMedEvidence(
         approval_sets={"12345": {"SET-A"}, "99998": {"SET-B"}},
         approval_display={"12345": "012345", "99998": "099998"},
@@ -107,7 +113,13 @@ def test_multi_nda_for_same_subject_object_aggregates_approval_ids(disease_map: 
     rows = build_approved_treats_rows(cases, ev, mapping, disease_map)
     assert len(rows) == 1
     row = rows[0]
-    assert row["approval_ids"] == "012345|099998"  # sorted, deduped
+    # No index: the DailyMed display value rides through as recorded.
+    assert row["FDA_regulatory_approvals"] == "012345|099998"  # sorted, deduped
+
+    # With the Drugs@FDA register, each number resolves to its FDA form.
+    index = FDAApprovalIndex({"12345": ("NDA012345",), "99998": ("BLA099998",)})
+    expanded = build_approved_treats_rows(cases, ev, mapping, disease_map, approvals=index)
+    assert expanded[0]["FDA_regulatory_approvals"] == "BLA099998|NDA012345"
     assert (
         row["supporting_spl_sets"]
         == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A|https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-B"
@@ -157,7 +169,7 @@ def test_dailymed_fallback_when_no_faers_cases(
     # 022329 not in Drugs@FDA; its indication is also not in the dictionary).
     assert set(by_obj) == {"hypercholesterolemia", "headache", "pain"}
     assert by_obj["pain"]["subject_text"] == "Ibuprofen"
-    assert by_obj["pain"]["approval_ids"] == "NDA017977"
+    assert by_obj["pain"]["FDA_regulatory_approvals"] == "NDA017977"
     assert by_obj["pain"]["supporting_spl_evidence"] == "dailymed:SETID-IBUPROFEN-002"
 
 

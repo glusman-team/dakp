@@ -257,7 +257,7 @@ def test_edge_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> 
     dailymed_backed = [edge for edge in kgx_build.edges if edge["predicate"] in {_TREATS, _CONTRA}]
     assert dailymed_backed, "expected DailyMed-backed edges in the build"
     for edge in kgx_build.edges:
-        for field in ("approval_ids", "has_evidence"):
+        for field in ("FDA_regulatory_approvals", "has_evidence"):
             if field in edge:
                 assert isinstance(edge[field], list), f"{field} must be a list: {edge}"
                 assert edge[field], f"{field} must be omitted or non-empty: {edge}"
@@ -315,29 +315,43 @@ def test_faers_case_count_rides_the_edge_as_evidence_count(kgx_build: KgxBuild) 
         assert "number_of_cases" not in edge
 
 
-def test_approval_ids_ride_the_edge_as_a_top_level_json_array(kgx_build: KgxBuild) -> None:
-    """Tablassert >= 12 keeps ``approval_ids`` as a curated top-level edge field, split to an array.
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Pending Tablassert: `models.Annotation.clean_annotation` lowercases the annotation name, so the "
+        "column reaches the fold sweep as `fda_regulatory_approvals`, matches no Biolink slot, and lands in "
+        "`supporting_text` as `fda_regulatory_approvals: NDA012345`. Case preservation makes it a real slot; "
+        "an association-category override (Biolink declares it on EntityToDisease/PhenotypicFeature, not on "
+        "DAKP's derived ChemicalEntityToDiseaseOrPhenotypicFeature) keeps `prune_to_class` from nulling it. "
+        "strict=True: this test failing to fail means both landed — drop the marker."
+    ),
+)
+def test_fda_regulatory_approvals_ride_the_edge_as_a_top_level_json_array(kgx_build: KgxBuild) -> None:
+    """``FDA_regulatory_approvals`` reaches the edge as its own top-level JSON array.
 
-    No association class declares the slot, and pre-12 Tablassert folded the FDA application
-    numbers into ``supporting_text`` as an ``"approval_ids: <value>"`` string. 12.0 allow-lists
-    the column out of the fold sweep (a known-pending Biolink slot, like ``effect_size``), and
-    DAKP annotates it with ``split_by: "|"`` so the pipe-joined cell is emitted as a real JSON
-    array — the legacy ``approvals`` list shape — instead of a joined scalar.
+    The Biolink slot for FDA application numbers ("numbers that identify specific drug
+    applications", multivalued) and the name ``NCATSTranslator/translator-ingests`` maps DAKP's
+    approvals onto. DAKP annotates it with ``split_by: "|"`` so the pipe-joined cell is emitted
+    as a real JSON array — the legacy ``approvals`` list shape — instead of a joined scalar, and
+    never as a folded ``"<name>: <value>"`` ``supporting_text`` string.
     """
     edges = [edge for edge in kgx_build.edges if edge["predicate"] in {_TREATS, _APPLIED, _CONTRA}]
     assert edges, "expected DAKP edges in the build"
+    # The fixture build always has approval provenance, so "no edge carries the field" means the
+    # value was relocated, not that the source lacked it.
+    assert any("FDA_regulatory_approvals" in edge for edge in edges), "no edge carries FDA_regulatory_approvals as its own field"
     for edge in edges:
-        approval_ids = edge.get("approval_ids")
-        if approval_ids is None:
+        approvals = edge.get("FDA_regulatory_approvals")
+        if approvals is None:
             # Missing source approval provenance is intentionally omitted, not represented by [].
             continue
-        assert isinstance(approval_ids, list), f"approval_ids missing or not a JSON array: {approval_ids!r}"
-        assert approval_ids, "populated approval_ids must not be an empty array"
-        for value in approval_ids:
+        assert isinstance(approvals, list), f"FDA_regulatory_approvals missing or not a JSON array: {approvals!r}"
+        assert approvals, "populated FDA_regulatory_approvals must not be an empty array"
+        for value in approvals:
             assert isinstance(value, str)
-            assert value.strip(), f"empty approval id in {approval_ids!r}"
-            assert "|" not in value, f"approval_ids kept a joined cell instead of splitting it: {value!r}"
-        assert "approval_ids" not in (edge.get("supporting_text") or "")
+            assert value.strip(), f"empty approval id in {approvals!r}"
+            assert "|" not in value, f"FDA_regulatory_approvals kept a joined cell instead of splitting it: {value!r}"
+        assert "FDA_regulatory_approvals" not in (edge.get("supporting_text") or "")
 
 
 def test_validate_kgx_passes_on_raw_kgx(kgx_build: KgxBuild) -> None:
@@ -355,7 +369,7 @@ def test_legacy_tsv_pair_matches_the_old_schema(kgx_build: KgxBuild) -> None:
     """The export stage writes the old-service TSV pair with the exact legacy semantics.
 
     Same stem/directory as the ndjson sources, extension swapped (``.nodes.tsv`` / ``.edges.tsv``);
-    node categories are first-element; edge multi-values are comma-joined (`approval_ids` ->
+    node categories are first-element; edge multi-values are comma-joined (`FDA_regulatory_approvals` ->
     `approval`, `has_evidence` -> `supporting_spls`); every absent field is ``NA`` — including
     `object_modifier`, always; endpoint names are the CANONICAL node names (legacy parity).
     """
@@ -389,6 +403,6 @@ def test_legacy_tsv_pair_matches_the_old_schema(kgx_build: KgxBuild) -> None:
         assert row["object_modifier"] == "NA"  # always NA — legacy parity
         assert row["knowledge_level"] == edge["knowledge_level"]
         assert row["agent_type"] == edge["agent_type"]
-        assert row["approval"] == (",".join(edge["approval_ids"]) if "approval_ids" in edge else "NA")
+        assert row["approval"] == (",".join(edge["FDA_regulatory_approvals"]) if "FDA_regulatory_approvals" in edge else "NA")
         assert row["N_cases"] == (str(edge["evidence_count"]) if "evidence_count" in edge else "NA")
         assert row["supporting_spls"] == (",".join(edge["has_evidence"]) if "has_evidence" in edge else "NA")

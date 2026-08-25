@@ -41,11 +41,12 @@ contraindication shaper (:mod:`~dakp_pipeline.assertions.ner_dispatch`). The men
 degrade gracefully: calling :func:`build_approved_treats_rows` without a ``ner`` keeps the
 pure lexical behavior (the historical direct-call test surface).
 
-Provenance (``approval_ids``, ``supporting_spl_sets``, ``supporting_spl_documents``) is
+Provenance (``FDA_regulatory_approvals``, ``supporting_spl_sets``, ``supporting_spl_documents``) is
 aggregated per ``(subject, object)`` as deduplicated, sorted, pipe-joined lists, restricted to
 the sets whose indication text actually mentions the condition (the legacy "SPLs containing
-both UNII and CURIE"). ``approval_ids`` values use the legacy display form
-``<application type><number>`` (e.g. ``BLA103795``). The unannotated
+both UNII and CURIE"). ``FDA_regulatory_approvals`` values use the FDA display form
+``<application type><number>`` (e.g. ``BLA103795``), expanded from the raw application number
+by :class:`~dakp_pipeline.assertions.evidence.FDAApprovalIndex`. The unannotated
 ``supporting_spl_sets`` / ``supporting_spl_documents`` debug columns carry DailyMed label URLs
 (``https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=<spl_set_id>[#<loinc>]``) so the
 values are directly clickable links, and ``supporting_spl_evidence`` carries the backing SPL
@@ -65,7 +66,9 @@ import polars as pl
 from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_FAERS, KL_ASSERTION, join_pipe, match_diseases, row_for
 from dakp_pipeline.assertions.evidence import (
     DailyMedEvidence,
+    FDAApprovalIndex,
     build_drugsfda_ingredient_map,
+    build_fda_approval_index,
     dailymed_document_url,
     dailymed_set_url,
     faers_quarter_urls,
@@ -106,11 +109,20 @@ class ApprovedTreatsShaper:
             stats(logger, "shape_approved_treats", inputs=len(inputs), disease_map_terms=len(disease_map))
             dailymed = load_or_build_dailymed_evidence(inputs, ctx)
             drugsfda_map = build_drugsfda_ingredient_map(inputs)
+            approvals = build_fda_approval_index(inputs)
             faers_cases = find_faers_cases(inputs, columns=_FAERS_CASE_COLUMNS)
             quarter_urls = faers_quarter_urls(inputs)
             with MentionCache(ctx.workdir) as cache:
                 rows = build_approved_treats_rows(
-                    faers_cases, dailymed, drugsfda_map, disease_map, ner=ner, devices=devices, cache=cache, faers_quarter_urls=quarter_urls
+                    faers_cases,
+                    dailymed,
+                    drugsfda_map,
+                    disease_map,
+                    approvals=approvals,
+                    ner=ner,
+                    devices=devices,
+                    cache=cache,
+                    faers_quarter_urls=quarter_urls,
                 )
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_approved_treats")
 
@@ -150,6 +162,7 @@ def build_approved_treats_rows(
     drugsfda_map: Mapping[str, set[str]],
     disease_map: Mapping[str, Mapping[str, str]],
     *,
+    approvals: FDAApprovalIndex | None = None,
     ner: DiseaseNER | None = None,
     devices: Sequence[str] | None = None,
     cache: MentionCache | None = None,
@@ -161,7 +174,11 @@ def build_approved_treats_rows(
     corroboration gate (rule 4) and the DailyMed fallback candidate path; without a backend the
     historical lexical-only behavior is kept. ``cache`` (a persistent mention cache) only
     changes WHERE mentions come from, never their content.
+
+    ``approvals`` expands each application number to its FDA display form (``BLA125514``);
+    without it the DailyMed label's own prefixed id is used unchanged.
     """
+    approvals = approvals if approvals is not None else FDAApprovalIndex()
     mentions = _mine_indication_mentions(dailymed, ner, devices, cache) if ner is not None else None
     candidates = (
         _faers_candidates(faers_cases, disease_map, faers_quarter_urls)
@@ -204,14 +221,14 @@ def build_approved_treats_rows(
                 "object_curie": cand["object_curie"],
                 "object_name": cand["object_name"],
                 "object_category": cand["object_category"],
-                "approval_ids": [],
+                "FDA_regulatory_approvals": [],
                 "sets": [],
                 "docs": [],
                 "faers_source_records": [],
                 "faers_urls": [],
             },
         )
-        agg["approval_ids"].append(dailymed.approval_display.get(norm) or norm)
+        agg["FDA_regulatory_approvals"].extend(approvals.expand(dailymed.approval_display.get(norm) or norm))
         agg["sets"].extend(sets)
         agg["docs"].extend(docs)
         agg["faers_source_records"].extend(cand.get("faers_source_records", []))
@@ -246,7 +263,7 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         object_curie=agg["object_curie"],
         object_name=agg["object_name"],
         object_category=agg["object_category"],
-        approval_ids=sorted_pipe(agg["approval_ids"]),
+        FDA_regulatory_approvals=sorted_pipe(agg["FDA_regulatory_approvals"]),
         supporting_spl_sets=sorted_pipe(dailymed_set_url(set_id) for set_id in agg["sets"]),
         supporting_spl_documents=sorted_pipe(dailymed_document_url(doc_id) for doc_id in agg["docs"]),
         supporting_spl_evidence=spl_evidence_pipe(agg["sets"], agg["docs"]),

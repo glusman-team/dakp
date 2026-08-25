@@ -31,7 +31,7 @@ object_name       / ``original_object``; else ``NA``                            
 object_modifier   always ``NA``                                                 the legacy KG never populated it
 knowledge_level   ``knowledge_level``
 agent_type        ``agent_type``
-approval          ``",".join(approval_ids)``                                    treats edges only
+approval          ``",".join(FDA_regulatory_approvals)``                        treats edges only
 N_cases           ``str(evidence_count)``                                       applied_to_treat edges only
 supporting_spls   ``",".join(has_evidence)``                                    ``dailymed:<spl_set_id>`` CURIEs
 ===============  ============================================================  ==============================
@@ -141,7 +141,7 @@ def _edge_row(edge: Mapping[str, Any], names: Mapping[str, str]) -> dict[str, st
         "object_modifier": NA,
         "knowledge_level": _text(edge.get("knowledge_level")),
         "agent_type": _text(edge.get("agent_type")),
-        "approval": _joined(edge.get("approval_ids")),
+        "approval": _joined(edge.get("FDA_regulatory_approvals")),
         "N_cases": _text(str(edge.get("evidence_count"))) if edge.get("evidence_count") is not None else NA,
         "supporting_spls": _joined(edge.get("has_evidence")),
     }
