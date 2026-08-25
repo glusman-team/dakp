@@ -171,6 +171,13 @@ rig:
       - "RIG review issue: https://github.com/NCATSTranslator/translator-ingests/issues/416"
   artifact_base_url: "https://github.com/glusman-team/dakp"
   artifact_base_path: data
+uuid_fields:
+  - subject
+  - predicate
+  - object
+  - publications
+  - FDA_regulatory_approvals
+  - disease_context_qualifier
 tables:
   - tables/approved_treats.yaml
   - tables/faers_applied_to_treat.yaml

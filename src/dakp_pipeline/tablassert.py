@@ -136,6 +136,16 @@ GRAPH_NAME = "DRUG_APPROVALS_KP"
 #: outdated"); rebuild it with the installed ``tablassert build-fullmap``.
 FULLMAP_DEFAULT = ".fullmap"
 
+#: Edge identity fields declared as the Graph config's ``uuid_fields`` (Tablassert >= 16.0,
+#: SkyeAv/Tablassert#122): only these feed the derived edge ``id``, so an attribute-only
+#: change (``number_of_cases``, ``supporting_text``, ``sources``) no longer mints a new edge.
+#: A declared field ABSENT from an edge record contributes nothing at all to the hash, so the
+#: nullable ``disease_context_qualifier`` — emitted only on the contraindication edges that
+#: carry one — still discriminates those edges without forcing the key onto the other tables.
+#: Declaring ``uuid_fields`` also moves the UUID namespace onto the graph's infores
+#: (:data:`INFORES_DAKP`) instead of the historic ``TABLASSERT`` constant.
+UUID_FIELDS = ["subject", "predicate", "object", "publications", "FDA_regulatory_approvals", "disease_context_qualifier"]
+
 #: Real upstream dataset URL recorded as each table's ``source.url`` — the constants the
 #: acquisition layer itself uses, so provenance can never drift from what was downloaded.
 #: ``source.url`` is the section's RIG/audit record ONLY: edges get their provenance from the
@@ -877,6 +887,7 @@ def graph_config(tables: list[str] | None = None, version: str | None = None, fu
     ``build-kg`` resolve step reads from the Graph config (Tablassert >= 8.1 has no ``--fullmap``
     flag); it defaults to :data:`FULLMAP_DEFAULT` for deferred runs that never invoke ``build-kg``.
     The mandatory ``rig:`` section (Tablassert >= 11) is constant — see :func:`_rig_config`.
+    ``uuid_fields`` (Tablassert >= 16.0) pins edge identity to :data:`UUID_FIELDS`.
     """
     if tables is None:
         tables = [f"tables/{_TABLE_SPECS[table][0]}.yaml" for table in _TABLE_ORDER]
@@ -885,6 +896,7 @@ def graph_config(tables: list[str] | None = None, version: str | None = None, fu
         "version": version if version is not None else __version__,
         "fullmap": fullmap,
         "rig": _rig_config(tables),
+        "uuid_fields": list(UUID_FIELDS),
         "tables": list(tables),
     }
 

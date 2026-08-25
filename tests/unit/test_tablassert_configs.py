@@ -578,6 +578,11 @@ def test_graph_config_structure() -> None:
     # Tablassert >= 11 rejects the legacy top-level RIG keys; every RIG fact lives under `rig:`.
     for legacy_key in ("description", "infores", "contributions", "ui_explanation"):
         assert legacy_key not in graph
+    # Tablassert >= 16.0 `uuid_fields` (#122): edge identity is exactly subject / predicate /
+    # object plus the three provenance-qualifier fields. A declared field absent from an edge
+    # record contributes nothing to the hash, so the nullable `disease_context_qualifier` (only
+    # some contraindication edges carry one) is safe to declare graph-wide.
+    assert graph["uuid_fields"] == tablassert_configs.UUID_FIELDS
     rig = graph["rig"]
     assert rig["source_info"]["infores_id"] == INFORES_DAKP
     assert rig["source_info"]["name"] == "Drug Approvals Knowledge Provider (DAKP)"  # full title, not the bare acronym
@@ -607,6 +612,10 @@ def test_graph_config_validates_against_installed_tablassert() -> None:
 
     graph = Graph.model_validate(yaml.safe_load(tablassert_configs.graph_yaml()))
     assert graph.rig.source_info.infores_id == INFORES_DAKP
+    # uuid_fields canonicalize onto their allow-listed spellings and, being declared, move the
+    # UUID namespace off the historic TABLASSERT constant onto the graph's own infores.
+    assert graph.uuid_fields == tablassert_configs.UUID_FIELDS
+    assert graph.uuid_namespace == INFORES_DAKP
 
 
 def test_rig_section_validates_directly_against_tablassert_rig_config() -> None:

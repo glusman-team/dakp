@@ -29,7 +29,8 @@ classifiers = [
 # Tablassert is pinned to the `[qc]` variant because the production KG build runs
 # `tablassert build-kg --qc` (the SapBERT embedding audit from 12.0 plus 13.0's stage-7
 # fail-the-build assertions on the final NDJSON: empty-or-null-values, unnamed-nodes,
-# unidentified-nodes, incomplete-edges). The >= 15.1 floor is required: the emitted configs use
+# unidentified-nodes, incomplete-edges). The >= 16.0 floor supersedes the 15.1 floor, which was
+# required: the emitted configs use
 # `statement.category_override` (SkyeAv/Tablassert#118, 15.0) to pin
 # `EntityToDiseaseAssociation` / `EntityToPhenotypicFeatureAssociation` per object category, and
 # rely on 15.0's case-preserving annotation names (#117) so the `FDA_regulatory_approvals`
@@ -66,7 +67,7 @@ dependencies = [
     "pendulum>=3",
     "polars>=1.30.0",
     "pydantic>=2.12.0",
-    "tablassert[qc]>=15.1.0,<16",
+    "tablassert[qc]>=16.0.0,<17",
     # torch is transitive (gliner, sentence-transformers via tablassert[qc]) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host
     # (wenceslaus: 4x Tesla P100-PCIE-16GB, compute capability 6.0, CUDA 12.8 driver) force it:
