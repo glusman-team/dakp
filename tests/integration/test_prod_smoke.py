@@ -129,9 +129,9 @@ def _install_fake_http(monkeypatch: pytest.MonkeyPatch, requested: list[str]) ->
 def _fake_tablassert_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     """The real TablassertRunner runs; only the ``../Tablassert`` process is faked (offline).
 
-    The fake writes the KGX ndjson pair a successful ``build-kg`` leaves under ``data/`` (the
-    runner's cwd is the workdir root), so the downstream legacy TSV export exercises its real
-    branch against the faked subprocess output.
+    The fake writes the KGX ndjson pair and the ``.RIG.yaml`` a successful ``build-kg`` leaves
+    under ``data/`` (the runner's cwd is the workdir root), so the downstream legacy TSV export
+    and release publish exercise their real branches against the faked subprocess output.
     """
     from dakp_pipeline import __version__
     from dakp_pipeline.tablassert import GRAPH_NAME
@@ -147,6 +147,7 @@ def _fake_tablassert_subprocess(command: list[str], cwd: Path | None = None) -> 
         '"approval_ids":["NDA1"]}\n',
         encoding="utf-8",
     )
+    (data / f"{GRAPH_NAME}_{__version__}.RIG.yaml").write_text(f"source_info:\n  name: {GRAPH_NAME}\n", encoding="utf-8")
     return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok", stderr="")
 
 

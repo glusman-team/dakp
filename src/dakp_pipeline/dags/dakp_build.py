@@ -59,7 +59,7 @@ The DAG is organized into seven visual TaskGroups while preserving the historica
    the GPUs (the per-device flock in `ner/ner.py` is the hard guarantee).
 4. **tablassert** — config generation and optional real Tablassert KGX handoff.
 5. **export** — retrofit the KGX pair into the legacy DAKP TSV schema and publish the final
-   ndjson/tsv pair plus the graph config under the legacy `drug_approvals_kg_*_v<version>`
+   ndjson/tsv pair plus the Tablassert RIG under the legacy `drug_approvals_kg_*_v<version>`
    names (skipped when the handoff was deferred — no fullmap means no KGX to convert).
 6. **medliner** — export the MEDliNER training-data bundle from the DailyMed + FAERS extracts;
    a leaf hand-off artifact (no shape-stage dependency, default pool; the build summary does not
@@ -76,7 +76,7 @@ _ACQUIRE_DOC_MD = """Acquire raw source/model artifacts and return small `Artifa
 _EXTRACT_DOC_MD = """Native Go SDK bundle extraction; heavy payloads stay in the content-addressed store."""
 _SHAPE_DOC_MD = """Shape interim artifacts into DAKP assertion TSVs without moving table bytes through XCom."""
 _TABLASSERT_DOC_MD = """Generate Tablassert configs and optionally run the installed Tablassert CLI."""
-_EXPORT_DOC_MD = """Convert the Tablassert KGX ndjson pair into the legacy DAKP `.nodes.tsv` / `.edges.tsv` schema, then publish the ndjson/tsv pair and graph config under the legacy `drug_approvals_kg_*_v<version>` names."""
+_EXPORT_DOC_MD = """Convert the Tablassert KGX ndjson pair into the legacy DAKP `.nodes.tsv` / `.edges.tsv` schema, then publish the ndjson/tsv pair and the Tablassert `.RIG.yaml` under the legacy `drug_approvals_kg_*_v<version>` names."""
 _MEDLINER_DOC_MD = """Export the MEDliNER training-data bundle (`dakp.medliner.export.v1`) from the DailyMed + FAERS extracts."""
 _SUMMARY_DOC_MD = """Terminal build-summary stage: translator validation, regression checks, and report JSON."""
 
@@ -395,10 +395,10 @@ def _build_export_stage(tablassert_outputs: TablassertOutputs) -> Any:
                 return _refs_to_xcom(refs)
 
         @task(
-            doc_md="Publish the final ndjson/tsv pair + graph config under the legacy `drug_approvals_kg_*_v<version>` names; skipped on a deferred handoff."
+            doc_md="Publish the final ndjson/tsv pair + the Tablassert `.RIG.yaml` under the legacy `drug_approvals_kg_*_v<version>` names; skipped on a deferred handoff."
         )
         def publish_release_artifacts(
-            kgx_refs: Any, legacy_refs: Any, config_refs: Any
+            kgx_refs: Any, legacy_refs: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from airflow.sdk.exceptions import AirflowSkipException
 
@@ -406,14 +406,14 @@ def _build_export_stage(tablassert_outputs: TablassertOutputs) -> Any:
 
             ctx = _ctx()
             with step(logger, "task publish_release_artifacts"):
-                refs = release.publish(_refs_from_xcom(kgx_refs), _refs_from_xcom(legacy_refs), _refs_from_xcom(config_refs), ctx)
+                refs = release.publish(_refs_from_xcom(kgx_refs), _refs_from_xcom(legacy_refs), ctx)
                 stats(logger, "task publish_release_artifacts", output_refs=len(refs))
                 if not refs:  # deferred handoff: nothing built — SKIP, not fail
                     raise AirflowSkipException("Tablassert handoff was deferred (no fullmap); nothing to publish under the legacy names")
                 return _refs_to_xcom(refs)
 
         legacy = export_legacy_tsv(tablassert_outputs.kgx)
-        publish_release_artifacts(tablassert_outputs.kgx, legacy, tablassert_outputs.configs)
+        publish_release_artifacts(tablassert_outputs.kgx, legacy)
         return legacy
 
 

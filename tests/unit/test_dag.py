@@ -121,9 +121,9 @@ def test_dag_task_graph(dakp_build) -> None:
     assert upstream("run_tablassert") == shapes | {"generate_tablassert_configs"}
     # The legacy TSV export consumes the handoff (its report ref tells it real vs deferred).
     assert upstream("export_legacy_tsv") == {"run_tablassert"}
-    # The release publish joins the KGX handoff, the legacy TSV pair, and the graph configs —
-    # and is a leaf (nothing downstream waits on the published artifacts).
-    assert upstream("publish_release_artifacts") == {"run_tablassert", "export_legacy_tsv", "generate_tablassert_configs"}
+    # The release publish joins the KGX handoff and the legacy TSV pair (the RIG it renames is a
+    # build-kg output, not a config) — and is a leaf (nothing downstream waits on the artifacts).
+    assert upstream("publish_release_artifacts") == {"run_tablassert", "export_legacy_tsv"}
     assert downstream("publish_release_artifacts") == set()
     assert upstream("write_build_summary") == shapes | {"run_tablassert", "export_legacy_tsv"}
 

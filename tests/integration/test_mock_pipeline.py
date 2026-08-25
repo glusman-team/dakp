@@ -36,9 +36,10 @@ _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 def _fake_tablassert_run(assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
     """Stand-in for ../Tablassert following the REAL handoff contract.
 
-    Writes a real-mode handoff report plus a ``<name>_<version>.{nodes,edges}.ndjson`` pair under
-    ``data/`` (exactly what a successful ``build-kg`` leaves behind), so the downstream legacy
-    TSV export stage exercises its real branch against the fake output.
+    Writes a real-mode handoff report plus the ``<name>_<version>.{nodes,edges}.ndjson`` pair and
+    the ``<name>_<version>.RIG.yaml`` under ``data/`` (exactly what a successful ``build-kg``
+    leaves behind), so the downstream legacy TSV export and release-publish stages exercise their
+    real branches against the fake output.
     """
     del config_refs
     store = ArtifactStore(Workdir(ctx.workdir))
@@ -54,6 +55,7 @@ def _fake_tablassert_run(assertion_refs: list[ArtifactRef], config_refs: list[Ar
         '"approval_ids":["NDA1"],"has_evidence":["dailymed:set-1"]}\n',
         encoding="utf-8",
     )
+    (data / f"{GRAPH_NAME}_{__version__}.RIG.yaml").write_text(f"source_info:\n  name: {GRAPH_NAME}\n", encoding="utf-8")
     report = Workdir(ctx.workdir).reports / REPORT_NAME
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text(json.dumps({"mode": "real", "status": "ok"}), encoding="utf-8")

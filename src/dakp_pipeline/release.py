@@ -4,11 +4,13 @@ Downstream consumers know the pre-rewrite naming schema
 (``drug_approvals_kg_{nodes,edges}_v0.5.3.tsv.gz``); the Tablassert handoff instead emits
 ``data/DRUG_APPROVALS_KP_<version>.{nodes,edges}.ndjson`` and the legacy-TSV stage adds the
 ``.tsv`` pair under that same stem. This stage copies the final artifacts — the KGX ndjson pair,
-the legacy TSV pair, and the graph config — to the legacy schema under ``<workdir>/data``:
-``drug_approvals_kg_nodes_v<version>.ndjson`` / ``drug_approvals_kg_edges_v<version>.ndjson``,
-the same stems as ``.tsv``, and ``drug_approvals_kg_v<version>.yaml`` (the graph config, no
-nodes/edges kind). Copies, not renames: the Tablassert-stemmed originals stay for the build
-summary and debugging.
+the legacy TSV pair, and the Tablassert-generated RIG — to the legacy schema under
+``<workdir>/data``: ``drug_approvals_kg_nodes_v<version>.ndjson`` /
+``drug_approvals_kg_edges_v<version>.ndjson``, the same stems as ``.tsv``, and
+``drug_approvals_kg_v<version>.RIG.yaml`` (no nodes/edges kind). The published yaml is the
+Resource Ingest Guide Tablassert emits next to the KGX pair (``<name>_<version>.RIG.yaml``) —
+NOT the ``tables/graph.yaml`` build config, which is an input, not a release artifact. Copies,
+not renames: the Tablassert-stemmed originals stay for the build summary and debugging.
 
 The stage entry point :func:`publish` is Airflow-free. A DEFERRED handoff (no fullmap ->
 no ``build-kg`` -> no ndjson to name) returns an EMPTY ref list — never an error — mirroring
@@ -41,20 +43,20 @@ _PUBLISH_OPERATION = "publish_release_artifacts"
 
 
 def _legacy_name(kind: str | None, suffix: str) -> str:
-    """``drug_approvals_kg_<kind>_v<version>.<suffix>``; the graph yaml carries no kind."""
+    """``drug_approvals_kg_<kind>_v<version>.<suffix>``; the RIG yaml carries no kind."""
     stem = f"{LEGACY_STEM}_{kind}" if kind else LEGACY_STEM
     return f"{stem}_v{__version__}.{suffix}"
 
 
-def publish(kgx_refs: list[ArtifactRef], legacy_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
+def publish(kgx_refs: list[ArtifactRef], legacy_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
     """Copy the final build artifacts to the legacy ``drug_approvals_kg_*_v<version>`` names.
 
     Returns ``[]`` on a deferred handoff (the report among ``kgx_refs`` records that no
-    ``build-kg`` ran). Expects the current graph/version KGX ndjson pair under
-    ``<workdir>/data``, exactly two legacy TSV refs (``.nodes.tsv`` / ``.edges.tsv``) from
-    :func:`dakp_pipeline.legacy_tsv.export`, and ``graph.yaml`` among ``config_refs``; anything
+    ``build-kg`` ran). Expects the current graph/version KGX ndjson pair and the matching
+    ``<name>_<version>.RIG.yaml`` under ``<workdir>/data``, plus exactly two legacy TSV refs
+    (``.nodes.tsv`` / ``.edges.tsv``) from :func:`dakp_pipeline.legacy_tsv.export`; anything
     missing is a loud ``RuntimeError``. Returns the published refs in legacy-name order:
-    nodes/edges ndjson, nodes/edges tsv, graph yaml.
+    nodes/edges ndjson, nodes/edges tsv, RIG yaml.
     """
     event = _PUBLISH_OPERATION
     report_refs = [ref for ref in kgx_refs if ref.uri.name == REPORT_NAME]
@@ -70,10 +72,6 @@ def publish(kgx_refs: list[ArtifactRef], legacy_refs: list[ArtifactRef], config_
     if sorted(tsv_by_kind) != ["edges", "nodes"]:
         msg = f"expected the legacy .nodes.tsv/.edges.tsv pair among the legacy refs, found {sorted(ref.uri.name for ref in legacy_refs)}"
         raise RuntimeError(msg)
-    graph_yamls = [ref.uri for ref in config_refs if ref.uri.name == "graph.yaml"]
-    if len(graph_yamls) != 1:
-        msg = f"expected exactly one graph.yaml among the config refs, found {len(graph_yamls)}"
-        raise RuntimeError(msg)
 
     workdir = Workdir(ctx.workdir)
     data_dir = workdir.root / "data"
@@ -86,7 +84,7 @@ def publish(kgx_refs: list[ArtifactRef], legacy_refs: list[ArtifactRef], config_
             (_single_glob(data_dir, f"{kgx_stem}.edges.ndjson"), "edges", "ndjson", _NDJSON_MEDIA_TYPE),
             (tsv_by_kind["nodes"], "nodes", "tsv", TSV_MEDIA_TYPE),
             (tsv_by_kind["edges"], "edges", "tsv", TSV_MEDIA_TYPE),
-            (graph_yamls[0], None, "yaml", _YAML_MEDIA_TYPE),
+            (_single_glob(data_dir, f"{kgx_stem}.RIG.yaml"), None, "RIG.yaml", _YAML_MEDIA_TYPE),
         ]
         refs: list[ArtifactRef] = []
         for source, kind, suffix, media_type in sources:

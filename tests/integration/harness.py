@@ -154,9 +154,9 @@ def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: 
     # 6. Legacy TSV export (retrofit the KGX pair into the old DAKP TSV schema; [] when deferred).
     legacy_refs = _legacy_tsv.export(kgx_refs, ctx)
 
-    # 6b. Release naming: copy the final ndjson/tsv pair + graph config to the legacy
+    # 6b. Release naming: copy the final ndjson/tsv pair + the Tablassert RIG to the legacy
     # ``drug_approvals_kg_*_v<version>`` names (the DAG's publish_release_artifacts task).
-    release_refs = _release.publish(kgx_refs, legacy_refs, config_refs, ctx)
+    release_refs = _release.publish(kgx_refs, legacy_refs, ctx)
 
     # 7. Translator-readiness contract + regression + build summary.
     report = translator.validate(assertion_refs)
