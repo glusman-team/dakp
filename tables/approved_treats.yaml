@@ -335,6 +335,9 @@ template:
         - Virus
         - WebPage
         - Zygosity
+    category_override:
+      Disease: EntityToDiseaseAssociation
+      PhenotypicFeature: EntityToPhenotypicFeatureAssociation
   provenance:
     override:
       sources:

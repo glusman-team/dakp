@@ -1,4 +1,4 @@
-"""Real Tablassert/fullmap smoke for nullable contraindication context."""
+"""Real Tablassert/fullmap smoke for sparse contraindication context."""
 
 from __future__ import annotations
 
@@ -26,8 +26,18 @@ def _class(curie: str) -> dict[str, Any]:
     return {"id": curie, "equivalent_identifiers": []}
 
 
-def test_generated_contraindication_config_keeps_nullable_and_qualified_edges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A real redb resolves one context and nullable keeps the blank-context row."""
+def test_generated_contraindication_config_keeps_both_context_and_blank_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Context-bearing and unconditional rows now MERGE into one edge, carrying no context.
+
+    ``disease_context_qualifier`` is no longer emitted (the TODO on ``_TABLE_QUALIFIERS``: the
+    pinned ``EntityToDiseaseAssociation`` does not declare it), and that qualifier was the only
+    thing distinguishing "contraindicated in asthma when treating hypertension" from
+    "contraindicated in asthma" — same subject, object, and predicate otherwise. So the two rows
+    deduplicate to a single edge instead of two. The assertion TSV keeps both rows and their
+    ``disease_context_text``; the distinction is what is absent from the KGX edge, and this pins
+    that it is absent rather than smuggled in through a pruned-column rescue or a
+    ``supporting_text`` fold.
+    """
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".tablassert" / "store").mkdir(parents=True)
     (tmp_path / "data" / "tabular").mkdir(parents=True)
@@ -83,8 +93,12 @@ def test_generated_contraindication_config_keeps_nullable_and_qualified_edges(tm
     edges_path = tmp_path / "data" / f"{dakp_tablassert.GRAPH_NAME}_{version}.edges.ndjson"  # rig.artifact_base_path = "data" (Tablassert >= 11)
     edges = [json.loads(line) for line in edges_path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
-    assert len(edges) == 2
-    assert {edge.get("disease_context_qualifier") for edge in edges} == {"MONDO:0005148", None}
+    assert len(edges) == 1
+    edge = edges[0]
+    assert (edge["subject"], edge["object"]) == ("UNII:GOLD", "MONDO:0004979")
+    assert "disease_context_qualifier" not in edge
+    # hypertension (the dropped context) must not reappear anywhere else on the edge.
+    assert not any("MONDO:0005148" in str(value) for value in edge.values())
     # The SPL evidence prose is deliberately NOT on the edges (full sentences under
     # ``supporting_text`` made them unreadable); ``evidence_text`` stays in the assertion TSV.
     for edge in edges:

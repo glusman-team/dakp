@@ -106,23 +106,26 @@ EXPECTED_SOURCES = {
 }
 
 # assertion table -> {qualifier slot: assertion column backing it}. Only tables whose columns carry
-# a qualifier entity get entries (see ``_TABLE_QUALIFIERS`` for the per-table justification).
-# Contraindication context is sparse and nullable; it is not the same disease as the object.
+# a qualifier entity get entries (see ``_TABLE_QUALIFIERS`` for the per-table justification). ALL
+# empty today: contraindication context was the one qualifier, and the association class
+# ``OBJECT_CATEGORY_OVERRIDE`` pins for ``FDA_regulatory_approvals`` does not declare
+# ``disease_context_qualifier`` (the TODO on ``_TABLE_QUALIFIERS``).
 EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
     "approved_treats_assertions": {},
     "faers_applied_to_treat_assertions": {},
-    "contraindication_assertions": {"disease_context_qualifier": "disease_context_text"},
+    "contraindication_assertions": {},
 }
 
 # assertion table -> {annotation name: (assertion column it encodes, multivalued separator)}.
-# Every name here must be a slot DAKP's association class
-# (``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``) actually declares, or Tablassert
+# Every name here must be a slot the association class DAKP's rows resolve to
+# (``EntityToDiseaseAssociation`` / ``EntityToPhenotypicFeatureAssociation``, pinned by
+# ``OBJECT_CATEGORY_OVERRIDE``) actually declares, or Tablassert
 # relocates the value off the edge into the inlined supporting study's StudyResult description --
 # a junk drawer no translator-ingests source models. So: the common ``edge_evidence`` column maps to
 # ``has_evidence`` (ONE annotation, carrying the sorted ``dailymed:<spl_set_id>`` CURIEs, because
 # duplicate annotation names silently overwrite
-# each other), and ``case_count`` maps to ``evidence_count`` rather than the sibling-class-only
-# ``number_of_cases``. ``split_by: "|"``
+# each other), and ``case_count`` maps to ``evidence_count``: the literal ``number_of_cases`` slot
+# is claimed by Tablassert's study-size classifier, which renames it onto ``Study.study_size``. ``split_by: "|"``
 # makes the pipe-joined cells emit as real JSON arrays. ``FDA_regulatory_approvals`` is the Biolink
 # slot for FDA application numbers (declared by ``EntityToDiseaseAssociation`` /
 # ``EntityToPhenotypicFeatureAssociation``) and the name ``NCATSTranslator/translator-ingests``
@@ -361,33 +364,21 @@ def test_table_config_annotation_names_are_unique(table: str) -> None:
 def _dakp_association_classes(table: str) -> set[type]:
     """The association classes Tablassert resolves for every category pair this table allows.
 
-    Derived, not hardcoded: the category comes from the (subject role, object role) pair and is
-    then reconciled against the section predicate, exactly as ``Tcode._ops`` does at build time.
+    Derived, not hardcoded, and read from the EMITTED config so it tracks what the build does:
+    an object category pinned by ``statement.category_override`` takes that class, any other
+    falls back to the (subject role, object role) pair lookup, and both are then reconciled
+    against the section predicate, exactly as ``Tcode._ops`` does at build time.
     """
     from tablassert.biolink import resolve_association_class
     from tablassert.lib import derived_edge_category
 
     predicate = f"biolink:{tablassert_configs._TABLE_SPECS[table][1]}"
+    override = tablassert_configs.table_config(table)["statement"].get("category_override") or {}
     return {
-        resolve_association_class(derived_edge_category(subject, obj), predicate)
+        resolve_association_class(f"biolink:{override[obj]}" if obj in override else derived_edge_category(subject, obj), predicate)
         for subject in tablassert_configs.SUBJECT_PRIORITIZE
         for obj in tablassert_configs.OBJECT_PRIORITIZE
     }
-
-
-#: Annotated Biolink slots DAKP's CURRENT edge category cannot hold, exempted from the guard
-#: below with a named reason and an expiry condition.
-#:
-#: ``FDA_regulatory_approvals`` ("numbers that identify specific drug applications") is declared
-#: by ``EntityToDiseaseAssociation`` / ``EntityToPhenotypicFeatureAssociation`` — the classes the
-#: legacy KG emitted (``ref/legacy/bin/dakp-postprocess2jsonlBL.py``) and the ones
-#: ``NCATSTranslator/translator-ingests`` instantiates for DAKP edges (``ingests/dakp/dakp.py``).
-#: DAKP resolves to ``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` instead, and that
-#: category is derived by Tablassert from the (subject role, object role) pair alone
-#: (``lib.edge_tables``) with no per-config override as of Tablassert 14.0.0. Delete this set —
-#: and the exemption branch — as soon as Tablassert can express the association category, and
-#: emit the override from ``_TABLE_SPECS`` at the same time.
-PENDING_CATEGORY_SLOTS = frozenset({"FDA_regulatory_approvals"})
 
 
 @pytest.mark.parametrize("table", TABLES)
@@ -397,9 +388,9 @@ def test_annotation_slots_survive_dakp_association_class(table: str) -> None:
     A name that is a slot of SOME association class but not of the one DAKP's edges resolve to
     passes Tablassert's edge-field allow-list, then gets nulled by ``prune_to_class`` and
     stringified into the inlined supporting study's StudyResult ``description`` -- exactly the
-    junk drawer this contract exists to keep DAKP out of. ``number_of_cases`` and
-    ``supporting_documents`` are the two that used to land there; this fails loudly if either
-    (or a newly added annotation) comes back.
+    junk drawer this contract exists to keep DAKP out of. ``supporting_documents`` used to land
+    there, and ``number_of_cases`` did until ``category_override`` pinned the classes that
+    declare it; this fails loudly if either (or a newly added annotation) comes back.
     """
     from tablassert.biolink import ALLOWED_EDGE_FIELDS, KNOWN_PENDING_EDGE_FIELDS, class_fields
 
@@ -410,25 +401,33 @@ def test_annotation_slots_survive_dakp_association_class(table: str) -> None:
                 continue  # deliberately folded into ``supporting_text`` (e.g. ``source_score``)
             if name in KNOWN_PENDING_EDGE_FIELDS:
                 continue  # curated Tablassert pass-through; no association class declares it
-            if name in PENDING_CATEGORY_SLOTS:
-                continue  # blocked on the Tablassert association-category override (see below)
             assert name in slots, f"{name} is not a slot of {cls.__name__}; it would be relocated onto the supporting study"
 
 
-def test_pending_category_slots_are_declared_by_the_target_association_classes() -> None:
-    """The exempted slots are real, and name the classes DAKP's category must move to.
+def test_category_override_pins_every_allowed_object_category() -> None:
+    """Every object category DAKP allows is pinned, and pinned to a class that holds its slots.
 
-    This is the other half of :data:`PENDING_CATEGORY_SLOTS`: the exemption is only defensible
-    while the slot genuinely exists on the association classes DAKP is heading for. If Biolink
-    ever drops it from them, this fails and the exemption must be re-argued rather than silently
-    carried.
+    A category absent from ``category_override`` falls back to the derived (subject role, object
+    role) pair — ``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``, which declares neither
+    ``FDA_regulatory_approvals`` nor ``number_of_cases`` — so a widened
+    :data:`OBJECT_PRIORITIZE` must widen the override with it or those rows silently lose both
+    slots to ``prune_to_class``.
     """
-    import biolink_model.datamodel.pydanticmodel_v2 as bm
-    from tablassert.biolink import class_fields
+    from tablassert.biolink import ALLOWED_EDGE_FIELDS, class_fields, resolve_association_class
 
-    for name in PENDING_CATEGORY_SLOTS:
-        for cls in (bm.EntityToDiseaseAssociation, bm.EntityToPhenotypicFeatureAssociation):
-            assert name in class_fields(cls), f"{name} is not a slot of {cls.__name__}"
+    assert set(tablassert_configs.OBJECT_CATEGORY_OVERRIDE) == set(OBJECT_PRIORITIZE)
+    for table in TABLES:
+        statement = tablassert_configs.table_config(table)["statement"]
+        assert statement["category_override"] == tablassert_configs.OBJECT_CATEGORY_OVERRIDE
+        predicate = f"biolink:{tablassert_configs._TABLE_SPECS[table][1]}"
+        for pinned in statement["category_override"].values():
+            # The pin only holds if the class also accepts the section predicate: Tablassert
+            # reconciles the two and silently walks up the hierarchy when it does not.
+            cls = resolve_association_class(f"biolink:{pinned}", predicate)
+            assert cls.__name__ == pinned, f"{pinned} does not accept {predicate}; rows demote to {cls.__name__}"
+            for name in EXPECTED_ANNOTATIONS[table]:
+                if name in ALLOWED_EDGE_FIELDS:
+                    assert name in class_fields(cls), f"{name} is not a slot of {pinned}"
 
 
 # --- category guard (hard allow-lists via Tablassert ``avoid``) -------------------

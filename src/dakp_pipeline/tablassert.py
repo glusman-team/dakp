@@ -316,7 +316,8 @@ RIG_FILTERED_CONTENT: tuple[dict[str, str], ...] = (
     },
 )
 #: RIG ingest-level ``future_considerations``: content DAKP deliberately defers, each grounded in
-#: code — the medication-context note is the ``_TABLE_QUALIFIERS`` disease-only policy, and the
+#: code — the medication-context note is the ``_TABLE_QUALIFIERS`` disease-only policy (see its
+#: TODO: the qualifier is not emitted at all while the pinned class cannot hold it), and the
 #: status-coercion note is the ``ClinicalApprovalStatusEnum`` membership rule documented in
 #: ``assertions/observed_uses.py``.
 RIG_INGEST_FUTURE_CONSIDERATIONS: tuple[dict[str, str], ...] = (
@@ -374,15 +375,18 @@ RIG_TARGET_FUTURE_CONSIDERATIONS: tuple[dict[str, str], ...] = (
     {
         "category": "qualifiers",
         "consideration": (
-            "disease_context_qualifier is intentionally disease-only and sparse-nullable; revisit when a chemical-entity interaction assertion exists"
+            "disease_context_qualifier is not emitted: Biolink declares it only on "
+            "ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation, while FDA_regulatory_approvals is declared only on the "
+            "EntityToDisease/EntityToPhenotypicFeature classes these edges are pinned to, so a contraindication edge can carry one or the "
+            "other; the disease context stays in the assertion table. Revisit if Biolink widens either slot"
         ),
     },
     {
         "category": "edge_properties",
         "consideration": (
-            "FDA application numbers are emitted on the Biolink FDA_regulatory_approvals slot, which "
-            "EntityToDiseaseAssociation and EntityToPhenotypicFeatureAssociation declare; monitor whether "
-            "the slot is widened to the chemical-to-disease association classes"
+            "FDA application numbers are emitted on the Biolink FDA_regulatory_approvals slot, which only "
+            "EntityToDiseaseAssociation and EntityToPhenotypicFeatureAssociation declare, so every edge pins one of those classes by object "
+            "category; monitor whether the slot is widened to the chemical-to-disease association classes"
         ),
     },
 )
@@ -592,22 +596,24 @@ def _sources_template(table: str) -> list[dict[str, Any]]:
 # * ``clinical_approval_status`` is a first-class enum-typed field on the association class, so its
 #   values must be ``ClinicalApprovalStatusEnum`` members (see the enum-membership note in
 #   ``assertions/observed_uses.py``);
-# * ``evidence_count`` (integer) takes the FAERS case count. The literal slot ``number_of_cases``
-#   is a SIBLING-class field (``EntityToDiseaseAssociation``), not an ancestor's, so DAKP's class
-#   cannot hold it and it used to land in the study description as a string. ``evidence_count`` is
-#   on ``Association`` — "the number of evidence instances that are connected to an association" —
-#   so the count stays on the edge where a consumer can query it;
+# * ``evidence_count`` (integer) takes the FAERS case count. The literal slot is
+#   ``number_of_cases``, and :data:`OBJECT_CATEGORY_OVERRIDE` now pins classes that declare it —
+#   but the name is unusable anyway: Tablassert's study-size classifier claims it
+#   (``coerce.study_size_target("number_of_cases") == "study_size"``), so the clean phase renames
+#   it before the edge is assembled and the count lands on the inlined supporting study as
+#   ``Study.study_size`` — verified against a real ``build-kg``, and warned about at config time.
+#   ``evidence_count`` is on ``Association`` — "the number of evidence instances that are
+#   connected to an association" — so the count stays on the edge where a consumer can query it;
 # * ``FDA_regulatory_approvals`` (FDA application numbers) IS a Biolink slot — "numbers that
 #   identify specific drug applications", multivalued, declared by ``EntityToDiseaseAssociation``
-#   and ``EntityToPhenotypicFeatureAssociation``. It is the slot
-#   ``NCATSTranslator/translator-ingests`` maps DAKP's approvals onto (``ingests/dakp/dakp.py``,
-#   ``dakp_rig.yaml``), so DAKP emits it under that exact name rather than the former curated
-#   ``approval_ids`` pass-through. DAKP annotates it with ``split_by: "|"`` so the pipe-joined
-#   cell reaches the final KGX edge as its own top-level JSON ARRAY (the legacy ``approvals``
-#   list shape) instead of a joined scalar. Two Tablassert behaviors gate it: the annotation
-#   name must survive with its case intact (``lib.Section.ops`` lowercases annotation names), and
-#   the edge category must resolve to a class that declares the slot — ``prune_to_class`` nulls
-#   it on any class that does not. ``source_score`` still has no reachable
+#   and ``EntityToPhenotypicFeatureAssociation``, the classes
+#   :data:`OBJECT_CATEGORY_OVERRIDE` pins. DAKP annotates it with ``split_by: "|"`` so the
+#   pipe-joined cell reaches the final KGX edge as its own top-level JSON ARRAY (the legacy
+#   ``approvals`` list shape) instead of a joined scalar. Its mixed case survives because
+#   Tablassert >= 15.0 canonicalizes a declared annotation name onto the allow-listed slot
+#   spelling instead of lowercasing it (SkyeAv/Tablassert#117); before that it reached the fold
+#   sweep as ``fda_regulatory_approvals``, matched no slot, and folded into ``supporting_text``.
+#   ``source_score`` still has no reachable
 #   slot and no carve-out, so it folds into ``supporting_text`` as a ``"name: value"`` string —
 #   visible provenance, deliberately kept. ``has_confidence_score``
 #   would be mechanically available for ``source_score``, but that column is the max NER SPAN score
@@ -644,16 +650,39 @@ OBJECT_COLUMN = "object_text"
 # The allow-list IS the ``prioritize`` tuple on each side; widen both together.
 SUBJECT_PRIORITIZE = ("Drug", "SmallMolecule", "ChemicalEntity")
 OBJECT_PRIORITIZE = ("Disease", "PhenotypicFeature")
+#: ``statement.category_override`` (Tablassert >= 15.0): the association class each object
+#: category pins, in place of the derived ``(subject role, object role)`` pair lookup. Tablassert
+#: derives ``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` for every DAKP pair, and that
+#: class declares NEITHER ``FDA_regulatory_approvals`` nor ``number_of_cases`` — Biolink attaches
+#: both to ``EntityToDiseaseAssociation`` / ``EntityToPhenotypicFeatureAssociation`` instead — so
+#: ``prune_to_class`` nulled them off the edge and rescued them into the pruned column. Pinning the
+#: two classes per object category is the split the legacy KG made for the same reason
+#: (``ref/legacy/bin/dakp-postprocess2jsonlBL.py``: ``biolink:EntityToDiseaseAssociation`` for
+#: Disease objects, ``biolink:EntityToPhenotypicFeatureAssociation`` for PhenotypicFeature ones,
+#: with the chemical-to-disease class commented out beside it). The keys are exactly
+#: :data:`OBJECT_PRIORITIZE`: every object category DAKP allows is pinned, so no row falls back to
+#: the derived pair.
+OBJECT_CATEGORY_OVERRIDE: dict[str, str] = {"Disease": "EntityToDiseaseAssociation", "PhenotypicFeature": "EntityToPhenotypicFeatureAssociation"}
 
 # Per-table biolink statement qualifiers: (qualifier slot, backing assertion column). Emitted as
 # ``statement.qualifiers`` entries ONLY where a column actually carries the qualifier's entity.
 # Validity is two-layered: the slot must be a member of the installed Tablassert's Biolink
-# ``Qualifiers`` enum and the association class must support it. DAKP's contraindication context
-# uses the disease-ranged ``disease_context_qualifier``. Its sparse cells are explicitly nullable:
-# unresolved context must not delete an otherwise valid subject/object edge.
-# Contraindication context is sparse and optional: nullable keeps unconditional rows alive while
-# allowing explicit disease-context rows to resolve. The qualifier is intentionally disease-only;
-# medications belong in a future chemical-entity interaction assertion, not this slot.
+# ``Qualifiers`` enum and the association class must support it — the second layer is why every
+# table is currently EMPTY.
+#
+# TODO(disease-context-qualifier): restore the contraindication context qualifier. Biolink declares
+# ``disease_context_qualifier`` on ``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` ONLY,
+# and :data:`OBJECT_CATEGORY_OVERRIDE` pins ``EntityToDiseaseAssociation`` /
+# ``EntityToPhenotypicFeatureAssociation`` — the only classes declaring
+# ``FDA_regulatory_approvals`` — so a contraindication edge can carry the approvals or the
+# qualifier, never both, and emitting both would let ``prune_to_class`` null the qualifier into
+# the pruned column. Approvals win for now (deliberate, revisit when the constraint lifts):
+# * if Biolink widens ``disease_context_qualifier`` to the entity-to-disease classes (or widens
+#   ``FDA_regulatory_approvals`` to the chemical-to-disease one), re-add the entry below and drop
+#   the override for this table respectively;
+# * ``disease_context_text`` KEEPS its assertion-TSV column either way, so no extracted context is
+#   lost — it is only absent from the KGX edge. The qualifier was disease-only by design;
+#   medications belong in a future chemical-entity interaction assertion, not this slot.
 _TABLE_QUALIFIERS: dict[str, tuple[tuple[str, str], ...]] = {
     # ``clinical_approval_status`` ("approved_for_condition") is the Biolink ClinicalApprovalStatusEnum
     # ASSOCIATION slot, not a qualifier slot — no ``Qualifiers`` member expresses approval status, so
@@ -667,8 +696,9 @@ _TABLE_QUALIFIERS: dict[str, tuple[tuple[str, str], ...]] = {
     # contract; it is an adverse reaction rather than a disease context, so it is not a substitute.
     "faers_applied_to_treat_assertions": (),
     # ``disease_context_text`` is a distinct disease from the contraindicated object only when the
-    # extractor's explicit template classifier populated it; blank cells are valid and nullable.
-    "contraindication_assertions": (("disease_context_qualifier", "disease_context_text"),),
+    # extractor's explicit template classifier populated it; blank cells were valid and nullable.
+    # Empty per the TODO above: the pinned association class cannot hold the qualifier.
+    "contraindication_assertions": (),
 }
 
 _GENERATE_OPERATION = "generate_tablassert_configs"
@@ -804,6 +834,7 @@ def table_config(table: str) -> dict[str, Any]:
             "prioritize": list(OBJECT_PRIORITIZE),
             "avoid": category_avoid_list(OBJECT_PRIORITIZE),
         },
+        "category_override": dict(OBJECT_CATEGORY_OVERRIDE),
     }
     if qualifiers:  # no backing column => no ``qualifiers`` key (Tablassert treats absent and empty alike; keep configs minimal)
         statement["qualifiers"] = qualifiers

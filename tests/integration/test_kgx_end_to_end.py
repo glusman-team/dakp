@@ -293,11 +293,13 @@ def test_edge_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> 
 def test_faers_case_count_rides_the_edge_as_evidence_count(kgx_build: KgxBuild) -> None:
     """The FAERS case count rides the edge as ``evidence_count``, not a study description.
 
-    ``number_of_cases`` is the literal Biolink slot for this, but it is declared on
-    ``EntityToDiseaseAssociation`` — a SIBLING of DAKP's association class, not an ancestor — so
-    DAKP's edges cannot hold it and ``prune_to_class`` used to stringify it into a StudyResult
-    ``description``. ``evidence_count`` is on ``Association`` itself, so the count stays on the
-    edge where a consumer can query it.
+    ``number_of_cases`` is the literal Biolink slot, and ``statement.category_override`` pins
+    classes that declare it — but Tablassert's study-size classifier claims the NAME
+    (``coerce.study_size_target("number_of_cases") == "study_size"``), so the clean phase renames
+    it and the count lands on the inlined supporting study as ``Study.study_size`` instead of on
+    the edge. ``evidence_count`` is on ``Association`` itself and no classifier claims it, so the
+    count stays where a consumer can query it. The last assertion is the guard: if Tablassert ever
+    stops coercing the name, this keeps failing until DAKP moves to the precise slot.
 
     On the JSON type: Tablassert reads TSV cells as text and numerically coerces only the
     p-value / effect-size / study-size columns (``lib.numeric_columns``), so the count arrives as
@@ -306,6 +308,8 @@ def test_faers_case_count_rides_the_edge_as_evidence_count(kgx_build: KgxBuild) 
     validates against the integer-ranged slot. Accept either shape: widening Tablassert's
     ``numeric_columns`` to the count slots turns this into a real int without editing this test.
     """
+    from tablassert.coerce import study_size_target
+
     applied = [edge for edge in kgx_build.edges if edge["predicate"] == _APPLIED]
     assert applied, "expected FAERS applied_to_treat edges in the build"
     for edge in applied:
@@ -313,19 +317,9 @@ def test_faers_case_count_rides_the_edge_as_evidence_count(kgx_build: KgxBuild) 
         assert isinstance(count, int | str), f"evidence_count missing or oddly typed: {count!r}"
         assert int(count) > 0
         assert "number_of_cases" not in edge
+    assert study_size_target("number_of_cases") == "study_size", "Tablassert no longer coerces the name; use the precise slot"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Pending Tablassert: `models.Annotation.clean_annotation` lowercases the annotation name, so the "
-        "column reaches the fold sweep as `fda_regulatory_approvals`, matches no Biolink slot, and lands in "
-        "`supporting_text` as `fda_regulatory_approvals: NDA012345`. Case preservation makes it a real slot; "
-        "an association-category override (Biolink declares it on EntityToDisease/PhenotypicFeature, not on "
-        "DAKP's derived ChemicalEntityToDiseaseOrPhenotypicFeature) keeps `prune_to_class` from nulling it. "
-        "strict=True: this test failing to fail means both landed — drop the marker."
-    ),
-)
 def test_fda_regulatory_approvals_ride_the_edge_as_a_top_level_json_array(kgx_build: KgxBuild) -> None:
     """``FDA_regulatory_approvals`` reaches the edge as its own top-level JSON array.
 
