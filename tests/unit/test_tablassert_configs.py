@@ -122,7 +122,7 @@ EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
 # ``OBJECT_CATEGORY_OVERRIDE``) actually declares, or Tablassert
 # relocates the value off the edge into the inlined supporting study's StudyResult description --
 # a junk drawer no translator-ingests source models. So: the common ``edge_evidence`` column maps to
-# ``has_evidence`` (ONE annotation, carrying the sorted ``dailymed:<spl_set_id>`` CURIEs, because
+# ``publications`` (ONE annotation, carrying the sorted ``dailymed:<spl_set_id>`` CURIEs, because
 # duplicate annotation names silently overwrite
 # each other), and ``case_count`` maps to ``evidence_count``: the literal ``number_of_cases`` slot
 # is claimed by Tablassert's study-size classifier, which renames it onto ``Study.study_size``. ``split_by: "|"``
@@ -135,18 +135,18 @@ EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
 EXPECTED_ANNOTATIONS = {
     "approved_treats_assertions": {
         "FDA_regulatory_approvals": ("FDA_regulatory_approvals", "|"),
-        "has_evidence": ("edge_evidence", "|"),
+        "publications": ("edge_evidence", "|"),
         "clinical_approval_status": ("clinical_approval_status", None),
     },
     "faers_applied_to_treat_assertions": {
         "evidence_count": ("case_count", None),
         "FDA_regulatory_approvals": ("FDA_regulatory_approvals", "|"),
-        "has_evidence": ("edge_evidence", "|"),
+        "publications": ("edge_evidence", "|"),
         "clinical_approval_status": ("clinical_approval_status", None),
     },
     "contraindication_assertions": {
         "FDA_regulatory_approvals": ("FDA_regulatory_approvals", "|"),
-        "has_evidence": ("edge_evidence", "|"),
+        "publications": ("edge_evidence", "|"),
         # ``evidence_text`` is deliberately NOT annotated onto ``supporting_text`` (full SPL
         # sentences made the edges unreadable); the column stays TSV-only provenance.
         "source_score": ("source_score", None),
@@ -352,10 +352,10 @@ def test_table_config_annotation_names_are_unique(table: str) -> None:
     """No two annotations in a section may share a name -- Tablassert would silently drop one.
 
     Annotations are applied in declaration order as ``with_columns(pl.col(src).alias(name))``
-    with no duplicate check, so a second entry named ``has_evidence`` OVERWRITES the first and
+    with no duplicate check, so a second entry named ``publications`` OVERWRITES the first and
     that column's values vanish without a warning. This is why the SPL set and section URLs are
     unioned into one ``supporting_spl_evidence`` column upstream instead of being declared as
-    two ``has_evidence`` annotations.
+    two ``publications`` annotations.
     """
     names = [entry["annotation"] for entry in tablassert_configs.table_config(table)["annotations"]]
     assert len(names) == len(set(names)), f"duplicate annotation names in {table}: {names}"

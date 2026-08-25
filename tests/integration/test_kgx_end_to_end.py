@@ -237,16 +237,16 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
 
 
 def test_edge_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> None:
-    """DailyMed evidence rides the edge in ONE ``has_evidence`` array.
+    """DailyMed evidence rides the edge in ONE ``publications`` array.
 
-    ``has_evidence`` is a real multivalued slot of the association class every DAKP edge resolves to
-    (``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``), and the generated configs encode it
+    ``publications`` is a real multivalued slot of the root ``Association`` class every DAKP edge
+    resolves under (whatever ``OBJECT_CATEGORY_OVERRIDE`` pins), and the generated configs encode it
     with ``split_by: "|"`` — so DAKP's aggregated, pipe-joined cell arrives as a real JSON array of
     legacy-form ``dailymed:<spl_set_id>`` identifiers (sorted,
     deduped), never a
     one-element list holding a joined ``"a|b"`` blob (the silent corruption ``split_by`` exists to
     prevent). FAERS report provenance stays in the unannotated ``supporting_faers_*`` debug
-    columns and never enters ``has_evidence``.
+    columns and never enters ``publications``.
 
     The negative half is the point of the change: nothing is relocated into the inlined supporting
     study any more. ``supporting_documents`` (deprecated in Biolink and declared by no association
@@ -257,19 +257,19 @@ def test_edge_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> 
     dailymed_backed = [edge for edge in kgx_build.edges if edge["predicate"] in {_TREATS, _CONTRA}]
     assert dailymed_backed, "expected DailyMed-backed edges in the build"
     for edge in kgx_build.edges:
-        for field in ("FDA_regulatory_approvals", "has_evidence"):
+        for field in ("FDA_regulatory_approvals", "publications"):
             if field in edge:
                 assert isinstance(edge[field], list), f"{field} must be a list: {edge}"
                 assert edge[field], f"{field} must be omitted or non-empty: {edge}"
     for edge in dailymed_backed:
-        evidence = edge.get("has_evidence")
-        assert isinstance(evidence, list), f"has_evidence must be a JSON array, got {evidence!r}"
+        evidence = edge.get("publications")
+        assert isinstance(evidence, list), f"publications must be a JSON array, got {evidence!r}"
         assert evidence
         for value in evidence:
             assert isinstance(value, str)
-            assert value.startswith(DAILYMED_SET_CURIE_PREFIX), f"unknown has_evidence identifier: {value!r}"
-            assert "|" not in value, f"has_evidence kept a joined cell instead of splitting it: {value!r}"
-            assert "#" not in value, f"has_evidence kept section granularity instead of set CURIEs: {value!r}"
+            assert value.startswith(DAILYMED_SET_CURIE_PREFIX), f"unknown publications identifier: {value!r}"
+            assert "|" not in value, f"publications kept a joined cell instead of splitting it: {value!r}"
+            assert "#" not in value, f"publications kept section granularity instead of set CURIEs: {value!r}"
         assert "supporting_documents" not in edge
 
     # No DAKP value is stringified into a supporting study any more. Tablassert >= 12 keeps a
@@ -285,8 +285,8 @@ def test_edge_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> 
     applied = [edge for edge in kgx_build.edges if edge["predicate"] == _APPLIED]
     assert applied, "expected FAERS applied_to_treat edges"
     for edge in applied:
-        # FAERS-only edges carry no has_evidence identifiers at all now.
-        evidence = edge.get("has_evidence") or []
+        # FAERS-only edges carry no publications identifiers at all now.
+        evidence = edge.get("publications") or []
         assert all(not value.startswith("faers:") for value in evidence)
 
 
@@ -364,7 +364,7 @@ def test_legacy_tsv_pair_matches_the_old_schema(kgx_build: KgxBuild) -> None:
 
     Same stem/directory as the ndjson sources, extension swapped (``.nodes.tsv`` / ``.edges.tsv``);
     node categories are first-element; edge multi-values are comma-joined (`FDA_regulatory_approvals` ->
-    `approval`, `has_evidence` -> `supporting_spls`); every absent field is ``NA`` — including
+    `approval`, `publications` -> `supporting_spls`); every absent field is ``NA`` — including
     `object_modifier`, always; endpoint names are the CANONICAL node names (legacy parity).
     """
     data = kgx_build.workdir / "data"
@@ -399,4 +399,4 @@ def test_legacy_tsv_pair_matches_the_old_schema(kgx_build: KgxBuild) -> None:
         assert row["agent_type"] == edge["agent_type"]
         assert row["approval"] == (",".join(edge["FDA_regulatory_approvals"]) if "FDA_regulatory_approvals" in edge else "NA")
         assert row["N_cases"] == (str(edge["evidence_count"]) if "evidence_count" in edge else "NA")
-        assert row["supporting_spls"] == (",".join(edge["has_evidence"]) if "has_evidence" in edge else "NA")
+        assert row["supporting_spls"] == (",".join(edge["publications"]) if "publications" in edge else "NA")

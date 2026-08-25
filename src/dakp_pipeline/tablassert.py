@@ -23,7 +23,7 @@ The configs match the ACTUAL current Tablassert schema (verified against
   8.2.1+ models ``source.url`` as a ``list`` of one or more URLs per section and DAKP assertion
   rows aggregate across quarters, releases, and applications, so no per-row URL is truthful at
   row granularity; the dataset-level URLs are the honest RIG record, and per-row precision
-  stays on the edge via ``has_evidence`` (SPL set links) and ``FDA_regulatory_approvals`` (FDA
+  stays on the edge via ``publications`` (SPL set links) and ``FDA_regulatory_approvals`` (FDA
   application numbers);
 * column-encoded ``statement.subject`` / ``statement.object`` / ``statement.predicate``
   with drug / disease ``prioritize`` categories plus a HARD category allow-list each:
@@ -274,7 +274,7 @@ RIG_SUPPORTING_DATA_SOURCES: tuple[dict[str, Any], ...] = (
 #: RIG ``ingest_info.included_content``: the upstream record types DAKP pulls into the graph.
 #: ``fields_used`` names exactly what the assertion tables consume from SPL — the four mined
 #: section kinds' text (indications_and_usage, contraindications, boxed warnings,
-#: warnings/precautions), SPL set identifiers feeding ``has_evidence``, and FDA application
+#: warnings/precautions), SPL set identifiers feeding ``publications``, and FDA application
 #: numbers feeding ``FDA_regulatory_approvals``. Unlike ``relevant_files``, ``included_content`` is NOT
 #: audit-cross-checked by Tablassert, so these entries document intent rather than gate the build.
 RIG_INCLUDED_CONTENT: tuple[dict[str, str], ...] = (
@@ -578,15 +578,23 @@ def _sources_template(table: str) -> list[dict[str, Any]]:
 # junk drawer, and nothing in ``NCATSTranslator/translator-ingests`` models evidence that way (there
 # a ``Study`` is a real cohort/dataset/trial with TYPED ``StudyResult`` slots). So each name below is
 # a slot the class actually holds:
-# * ``has_evidence`` (``list[str]``, range ``information content entity``) carries the
-#   sorted identifier union from the single ``edge_evidence`` column: ``dailymed:<spl_set_id>``
-#   CURIEs for the backing DailyMed labels. One column,
+# * ``publications`` (``list[str]``, declared by the root ``Association`` class so every class
+#   :data:`OBJECT_CATEGORY_OVERRIDE` pins holds it) carries the sorted identifier union from the
+#   single ``edge_evidence`` column: ``dailymed:<spl_set_id>`` CURIEs for the backing DailyMed
+#   labels. This is the slot the deployed translator-ingests dakp transform lands DAKP evidence
+#   in anyway (it appends the legacy ``has_evidence`` values onto ``publications``, "store as
+#   publications for now"), so the edge ships the final slot directly and the ingest's stopgap
+#   re-homing disappears. One column,
 #   not two, because ANNOTATION NAMES MUST BE UNIQUE PER TABLE: Tablassert applies annotations
 #   as ``with_columns(pl.col(src).alias(name))`` in declaration order with no duplicate check,
-#   so a second ``has_evidence`` entry would SILENTLY overwrite the first. Human-readable URLs
+#   so a second ``publications`` entry would SILENTLY overwrite the first. Human-readable URLs
 #   remain in the unannotated source-specific debug columns and source-record provenance. (The
 #   deprecated Biolink ``supporting_documents`` slot — an alias of ``publications`` — is
 #   attached to no association class and was what previously landed in the study description.)
+#   The provenance-override path for the same slot is inert here: DAKP's ``ManualProvenance``
+#   carries no ``publications`` of its own (the model demands ``PMCID:``-prefixed CURIEs
+#   there), so Tablassert's provenance-phase ``publications`` op never runs to overwrite the
+#   column-encoded values.
 # * DAKP aggregates each cell into ONE pipe-joined string, so ``split_by: "|"`` is what makes it a
 #   real JSON array. Without the split Tablassert wraps the joined scalar into a USELESS
 #   one-element list (``["url1|url2"]``) that still passes Biolink validation — a silent-corruption
@@ -622,18 +630,18 @@ def _sources_template(table: str) -> list[dict[str, Any]]:
 _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
     "approved_treats_assertions": (
         ("FDA_regulatory_approvals", "FDA_regulatory_approvals", "|"),
-        ("edge_evidence", "has_evidence", "|"),
+        ("edge_evidence", "publications", "|"),
         ("clinical_approval_status", "clinical_approval_status", None),
     ),
     "faers_applied_to_treat_assertions": (
         ("case_count", "evidence_count", None),
         ("FDA_regulatory_approvals", "FDA_regulatory_approvals", "|"),
-        ("edge_evidence", "has_evidence", "|"),
+        ("edge_evidence", "publications", "|"),
         ("clinical_approval_status", "clinical_approval_status", None),
     ),
     "contraindication_assertions": (
         ("FDA_regulatory_approvals", "FDA_regulatory_approvals", "|"),
-        ("edge_evidence", "has_evidence", "|"),
+        ("edge_evidence", "publications", "|"),
         # ``evidence_text`` (the SPL contraindication prose) is deliberately NOT annotated: mapped
         # to ``supporting_text`` it buried every edge under full sentences, making the KGX output
         # unreadable. The column stays in the assertion TSV as provenance; only the edge drops it.

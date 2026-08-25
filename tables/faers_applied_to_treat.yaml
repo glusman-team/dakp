@@ -417,7 +417,7 @@ template:
       method: column
       encoding: P
       split_by: "|"
-    - annotation: has_evidence
+    - annotation: publications
       method: column
       encoding: Q
       split_by: "|"

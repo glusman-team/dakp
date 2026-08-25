@@ -57,7 +57,7 @@ def test_observed_use_retains_faers_report_and_nda_provenance(disease_map: dict[
     assert row["case_count"] == "2"
     # No approval index supplied: the number is emitted exactly as FAERS recorded it.
     assert row["FDA_regulatory_approvals"] == "017977"
-    assert row["edge_evidence"] == ""  # faers: report ids no longer ride has_evidence
+    assert row["edge_evidence"] == ""  # faers: report ids no longer ride publications
     assert row["supporting_faers_records"] == "24Q2:1002:2:headache|24Q3:1001:1:headache"
     assert row["supporting_faers_urls"] == "https://example.test/faers-24q2.zip|https://example.test/faers-24q3.zip"
 

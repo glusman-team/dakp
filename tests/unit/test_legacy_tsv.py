@@ -50,7 +50,7 @@ _EDGES: list[dict[str, Any]] = [
         "knowledge_level": "knowledge_assertion",
         "agent_type": "manual_validation_of_automated_agent",
         "FDA_regulatory_approvals": ["NDA012345", "ANDA065432"],
-        "has_evidence": ["dailymed:set-a", "dailymed:set-b"],
+        "publications": ["dailymed:set-a", "dailymed:set-b"],
     },
     {
         "id": "contra-1",
@@ -60,7 +60,7 @@ _EDGES: list[dict[str, Any]] = [
         "knowledge_level": "knowledge_assertion",
         "agent_type": "manual_validation_of_automated_agent",
         "evidence_count": "7",
-        "has_evidence": [],
+        "publications": [],
     },
 ]
 
@@ -133,7 +133,7 @@ def test_convert_edges_totals_on_odd_shapes() -> None:
         "object": "MONDO:0008383",
         "FDA_regulatory_approvals": "NDA1|NDA2",
         "evidence_count": 3,
-        "has_evidence": "dailymed:one",
+        "publications": "dailymed:one",
     }
     nodes = [*_NODES, {"name": "ghost", "category": ["biolink:Disease"]}]
     row = convert_edges([edge], nodes).to_dicts()[0]

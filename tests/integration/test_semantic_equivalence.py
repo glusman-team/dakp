@@ -240,7 +240,7 @@ def test_treats_carries_fda_approval_and_spl_evidence(built: dict[str, Any]) -> 
 def test_all_edge_families_carry_identifier_provenance(built: dict[str, Any]) -> None:
     """Every family exposes the unified identifier-only evidence contract.
 
-    Human-readable URLs remain in the source-specific debug columns; KGX ``has_evidence`` is
+    Human-readable URLs remain in the source-specific debug columns; KGX ``publications`` is
     intentionally limited to the stable ``dailymed:`` identifiers (``faers:`` report ids stay in
     the debug columns only).
     """

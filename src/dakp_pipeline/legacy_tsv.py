@@ -15,7 +15,7 @@ The conversion semantics are the ORIGINAL ones, recovered from the deleted legac
 
 * nodes — ``category`` is the FIRST element when the record carries a list;
 * edges — one column per header, ``NA`` for absent fields, comma-joined multi-values:
-  ``approval <- ",".join(approvals)`` and ``supporting_spls <- ",".join(has_evidence)``.
+  ``approval <- ",".join(approvals)`` and ``supporting_spls <- ",".join(publications)``.
 
 Field map (current Tablassert 12 KGX edge -> legacy column):
 
@@ -33,7 +33,7 @@ knowledge_level   ``knowledge_level``
 agent_type        ``agent_type``
 approval          ``",".join(FDA_regulatory_approvals)``                        treats edges only
 N_cases           ``str(evidence_count)``                                       applied_to_treat edges only
-supporting_spls   ``",".join(has_evidence)``                                    ``dailymed:<spl_set_id>`` CURIEs
+supporting_spls   ``",".join(publications)``                                 ``dailymed:<spl_set_id>`` CURIEs
 ===============  ============================================================  ==============================
 
 The converters are total: a list where a scalar is expected joins, a scalar where a list is
@@ -143,7 +143,7 @@ def _edge_row(edge: Mapping[str, Any], names: Mapping[str, str]) -> dict[str, st
         "agent_type": _text(edge.get("agent_type")),
         "approval": _joined(edge.get("FDA_regulatory_approvals")),
         "N_cases": _text(str(edge.get("evidence_count"))) if edge.get("evidence_count") is not None else NA,
-        "supporting_spls": _joined(edge.get("has_evidence")),
+        "supporting_spls": _joined(edge.get("publications")),
     }
 
 

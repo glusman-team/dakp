@@ -90,7 +90,7 @@ def test_dailymed_set_curie_reduces_to_set_granularity() -> None:
 
 
 def test_spl_evidence_pipe_emits_set_curies() -> None:
-    """The ``has_evidence`` column carries legacy-form ``dailymed:<spl_set_id>`` CURIEs.
+    """The ``edge_evidence`` column carries legacy-form ``dailymed:<spl_set_id>`` CURIEs.
 
     Set granularity only (the legacy DAKP KG shape); document ids reduce to their set CURIE
     so section-level provenance contributes the same set evidence exactly once.

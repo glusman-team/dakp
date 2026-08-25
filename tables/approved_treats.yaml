@@ -359,7 +359,7 @@ template:
       method: column
       encoding: J
       split_by: "|"
-    - annotation: has_evidence
+    - annotation: publications
       method: column
       encoding: S
       split_by: "|"

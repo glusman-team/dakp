@@ -56,8 +56,8 @@ Provenance: contraindications are text-mined from DailyMed. The unannotated
 ``supporting_spl_sets`` / ``supporting_spl_documents`` debug columns carry DailyMed label URLs
 (``https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=<spl_set_id>[#<loinc>]``), while
 ``supporting_spl_evidence`` carries the backing SPL sets as ``dailymed:<spl_set_id>`` CURIEs in
-the single column Tablassert encodes as Biolink ``has_evidence`` (the legacy DAKP KG evidence
-form; see :func:`~dakp_pipeline.assertions.evidence.spl_evidence_pipe`).
+the single column Tablassert encodes as the Biolink ``publications`` slot (the legacy DAKP KG
+evidence form; see :func:`~dakp_pipeline.assertions.evidence.spl_evidence_pipe`).
 ``primary_knowledge_source = infores:multiomics-drugapprovals``,
 ``upstream_resource_ids = infores:dailymed``, ``agent_type = manual_validation_of_automated_agent``
 (the agent type the legacy DAKP KG shipped on all three predicates),

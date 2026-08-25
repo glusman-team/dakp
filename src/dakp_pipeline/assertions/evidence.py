@@ -9,7 +9,9 @@ Pure, testable building blocks used by every assertion shaper:
   lists (the Translator list-encoding convention) for ``FDA_regulatory_approvals``,
   ``supporting_spl_sets``, ``supporting_spl_documents``, and ``supporting_spl_evidence`` —
   the ``dailymed:<spl_set_id>`` CURIEs of the backing SPL sets that Tablassert encodes as
-  Biolink ``has_evidence`` (the legacy DAKP KG evidence form).
+  the Biolink ``publications`` slot (the legacy DAKP KG shipped the same CURIEs as
+  ``has_evidence``; the deployed translator-ingests transform re-homes that slot onto
+  ``publications``, so the rebuild emits the final slot directly).
 * **SPL-support joining** — index DailyMed SPL approvals/ingredients/sections and
   Drugs@FDA application→ingredient lookups so shapers can ask "which SPL sets support
   this approval?" without re-scanning frames.
@@ -277,7 +279,7 @@ def faers_record_url(quarter: Any, quarter_urls: dict[str, str] | None = None) -
 
 
 def edge_evidence_pipe(*identifier_lists: Iterable[Any]) -> str:
-    """Encode the identifier-only union used for final Biolink ``has_evidence``."""
+    """Encode the identifier-only union used for the final Biolink ``publications`` slot."""
     return sorted_pipe(value for values in identifier_lists for value in values)
 
 
@@ -302,7 +304,7 @@ def pipe_safe_text(value: Any) -> str:
 DAILYMED_SET_URL_BASE = "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid="
 
 #: CURIE prefix of the legacy DAKP KG SPL-set evidence form (``dailymed:<spl_set_id>``) — the
-#: shape every ``has_evidence`` value is emitted in.
+#: shape every ``publications`` value is emitted in.
 DAILYMED_SET_CURIE_PREFIX = "dailymed:"
 
 
@@ -333,7 +335,7 @@ def dailymed_set_curie(value: Any) -> str:
     """Return the ``dailymed:<spl_set_id>`` CURIE for one SPL evidence value (idempotent).
 
     Accepts a bare set id, a document id (``<set_id>#<loinc>`` — the set part forms the CURIE,
-    ``has_evidence`` is set-granular), or an already-prefixed CURIE / legacy label URL (both
+    ``publications`` is set-granular), or an already-prefixed CURIE / legacy label URL (both
     pass through to the same CURIE). Empty values stay empty.
     """
     text = "" if value is None else str(value).strip()
@@ -366,13 +368,14 @@ def sorted_pipe(values: Iterable[Any]) -> str:
 def spl_evidence_pipe(sets: Iterable[Any], documents: Iterable[Any]) -> str:
     """Pipe-joined ``dailymed:<spl_set_id>`` CURIEs for every SPL set backing an assertion.
 
-    This is the column Tablassert encodes as the Biolink ``has_evidence`` slot, in the legacy
-    DAKP KG evidence form: sorted, deduplicated set-granular CURIEs (downstream
-    translator-ingests treats them as ``publications``). Document ids (``<set_id>#<loinc>``)
+    This is the column Tablassert encodes as the Biolink ``publications`` slot, in the legacy
+    DAKP KG evidence form: sorted, deduplicated set-granular CURIEs (the deployed
+    translator-ingests dakp transform lands DAKP evidence on ``publications``). Document ids
+    (``<set_id>#<loinc>``)
     reduce to their set CURIE, so rows tracking section-level provenance contribute the same
     set evidence; the section granularity stays visible in the UN-annotated
     ``supporting_spl_documents`` debug column (one column reaches the edge because a section
-    can declare ``has_evidence`` exactly once — annotation names must be unique per table).
+    can declare ``publications`` exactly once — annotation names must be unique per table).
     """
     return sorted_pipe([*(dailymed_set_curie(value) for value in sets), *(dailymed_set_curie(value) for value in documents)])
 
