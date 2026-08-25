@@ -179,6 +179,7 @@ uuid_fields:
   - original_object
   - publications
   - FDA_regulatory_approvals
+  - number_of_cases
   - disease_context_qualifier
 tables:
   - tables/approved_treats.yaml

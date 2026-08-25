@@ -138,14 +138,19 @@ FULLMAP_DEFAULT = ".fullmap"
 
 #: Edge identity fields declared as the Graph config's ``uuid_fields`` (Tablassert >= 16.0,
 #: SkyeAv/Tablassert#122): only these feed the derived edge ``id``, so an attribute-only
-#: change (``number_of_cases``, ``supporting_text``, ``sources``) no longer mints a new edge.
+#: change (``supporting_text``, ``sources``) no longer mints a new edge.
 #: ``original_subject`` / ``original_object`` are REQUIRED discriminators, not extras: two
 #: distinct source mentions can resolve to the same canonical CURIE (observed in production:
 #: two objects resolving to UMLS:C4721779 collided as ``uuid-fields-not-a-key``), and the
-#: pre-resolution CURIE is what keeps those records distinct. A declared field ABSENT from an
+#: pre-resolution CURIE is what keeps those records distinct. ``number_of_cases`` discriminates
+#: the FAERS-only case where two raw indication wordings resolve to the SAME object text, so the
+#: rows agree on the whole triple, both original CURIEs, and every provenance field — only the
+#: case count differs (observed in production: CHEBI:62088 applied_to_treat HP:0012531). A
+#: declared field ABSENT from an
 #: edge record contributes nothing at all to the hash, so the nullable
 #: ``disease_context_qualifier`` — emitted only on the contraindication edges that
-#: carry one — still discriminates those edges without forcing the key onto the other tables.
+#: carry one — still discriminates those edges without forcing the key onto the other tables
+#: (same for ``number_of_cases``, which only applied_to_treat edges carry).
 #: Declaring ``uuid_fields`` also moves the UUID namespace onto the graph's infores
 #: (:data:`INFORES_DAKP`) instead of the historic ``TABLASSERT`` constant.
 UUID_FIELDS = [
@@ -156,6 +161,7 @@ UUID_FIELDS = [
     "original_object",
     "publications",
     "FDA_regulatory_approvals",
+    "number_of_cases",
     "disease_context_qualifier",
 ]
 

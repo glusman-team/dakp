@@ -579,9 +579,10 @@ def test_graph_config_structure() -> None:
     for legacy_key in ("description", "infores", "contributions", "ui_explanation"):
         assert legacy_key not in graph
     # Tablassert >= 16.0 `uuid_fields` (#122): edge identity is the resolved triple plus the
-    # pre-resolution CURIEs (distinct mentions resolving to one canonical node must stay
-    # distinct records — a production build aborted `uuid-fields-not-a-key` on exactly that)
-    # plus the three provenance-qualifier fields. A declared field absent from an edge
+    # minimal discriminators production proved necessary — the pre-resolution CURIEs (distinct
+    # mentions resolving to one canonical node must stay distinct records), the FAERS case count
+    # (indication wordings resolving to the same object text agree on everything but the count),
+    # and the provenance/qualifier fields. A declared field absent from an edge
     # record contributes nothing to the hash, so the nullable `disease_context_qualifier` (only
     # some contraindication edges carry one) is safe to declare graph-wide.
     assert graph["uuid_fields"] == tablassert_configs.UUID_FIELDS
