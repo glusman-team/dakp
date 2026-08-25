@@ -139,12 +139,25 @@ FULLMAP_DEFAULT = ".fullmap"
 #: Edge identity fields declared as the Graph config's ``uuid_fields`` (Tablassert >= 16.0,
 #: SkyeAv/Tablassert#122): only these feed the derived edge ``id``, so an attribute-only
 #: change (``number_of_cases``, ``supporting_text``, ``sources``) no longer mints a new edge.
-#: A declared field ABSENT from an edge record contributes nothing at all to the hash, so the
-#: nullable ``disease_context_qualifier`` — emitted only on the contraindication edges that
+#: ``original_subject`` / ``original_object`` are REQUIRED discriminators, not extras: two
+#: distinct source mentions can resolve to the same canonical CURIE (observed in production:
+#: two objects resolving to UMLS:C4721779 collided as ``uuid-fields-not-a-key``), and the
+#: pre-resolution CURIE is what keeps those records distinct. A declared field ABSENT from an
+#: edge record contributes nothing at all to the hash, so the nullable
+#: ``disease_context_qualifier`` — emitted only on the contraindication edges that
 #: carry one — still discriminates those edges without forcing the key onto the other tables.
 #: Declaring ``uuid_fields`` also moves the UUID namespace onto the graph's infores
 #: (:data:`INFORES_DAKP`) instead of the historic ``TABLASSERT`` constant.
-UUID_FIELDS = ["subject", "predicate", "object", "publications", "FDA_regulatory_approvals", "disease_context_qualifier"]
+UUID_FIELDS = [
+    "subject",
+    "predicate",
+    "object",
+    "original_subject",
+    "original_object",
+    "publications",
+    "FDA_regulatory_approvals",
+    "disease_context_qualifier",
+]
 
 #: Real upstream dataset URL recorded as each table's ``source.url`` — the constants the
 #: acquisition layer itself uses, so provenance can never drift from what was downloaded.

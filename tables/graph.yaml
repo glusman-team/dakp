@@ -175,6 +175,8 @@ uuid_fields:
   - subject
   - predicate
   - object
+  - original_subject
+  - original_object
   - publications
   - FDA_regulatory_approvals
   - disease_context_qualifier
