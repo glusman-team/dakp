@@ -73,12 +73,26 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = [
-    "pre-commit>=4.5.1",
-    "pyright>=1.1.411",
+test = [
     "pytest>=9.0.0",
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
+]
+typecheck = [
+    "pyright>=1.1.411",
+]
+# The EXACT set both syncing CI jobs (python-type, python-test) install, so they share one
+# warm uv cache instead of racing to save mutually-useless ones (astral-sh/setup-uv keys its
+# cache on uv.lock). Excludes ruff/pre-commit: lint runs ruff standalone via ruff-action, and
+# no syncing CI job needs pre-commit. Modeled on ../Tablassert/pyproject.toml.
+ci = [
+    { include-group = "test" },
+    { include-group = "typecheck" },
+]
+# Superset for local development, so `uv sync --group dev` still installs everything.
+dev = [
+    { include-group = "ci" },
+    "pre-commit>=4.5.1",
     "ruff>=0.15.6",
 ]
 

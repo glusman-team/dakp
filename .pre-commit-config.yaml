@@ -1,27 +1,41 @@
-# Python-only hooks for the DAKP Milestone-1 scaffold (Go hooks land in a later milestone).
-# Modeled on ../Tablassert/.pre-commit-config.yaml.
+# Two stages, matching ../Tablassert/.pre-commit-config.yaml:
+#
+# pre-commit -- fast, auto-fixing checks only. Committing must stay cheap.
+# pre-push   -- the whole-repo gates that most often break CI (pyright, pytest). These run
+#               once per push instead of once per commit, so they catch a red build before
+#               it reaches a PR without taxing the edit/commit loop.
+default_install_hook_types: [pre-commit, pre-push]
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.12
+    # Keep in sync with the ruff pin resolved in uv.lock, which CI reads via `version-file`.
+    rev: v0.16.0
     hooks:
-      - id: ruff
+      # No `files:` filter: CI runs `ruff check .` over the whole tree, so scoping these to
+      # src/ and tests/ would let anything outside them only ever fail in CI.
+      - id: ruff-check
         args: [--fix]
-        files: ^(src|tests)/.*\.py$
       - id: ruff-format
-        files: ^(src|tests)/.*\.py$
   - repo: local
     hooks:
+      # Catches a pyproject.toml edit that was never relocked -- otherwise the failure
+      # surfaces much later, as a confusing `uv sync --frozen` error in CI.
+      - id: uv-lock-check
+        name: uv-lock-check
+        entry: uv lock --check
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false
       - id: pyright
         name: pyright
         entry: uv run pyright
         language: system
-        types: [python]
-        files: ^(src|tests)/.*\.py$
+        types_or: [python, pyi]
         pass_filenames: false
+        stages: [pre-push]
       - id: pytest
         name: pytest
         entry: uv run pytest -q
         language: system
-        types: [python]
-        files: ^(src|tests)/
+        types_or: [python, pyi]
         pass_filenames: false
+        stages: [pre-push]

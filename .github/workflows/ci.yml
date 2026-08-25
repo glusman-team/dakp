@@ -27,27 +27,30 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Both syncing jobs install this EXACT set, so they share one warm uv cache instead of
+  # racing to save mutually-useless ones. See the `ci` group in pyproject.toml.
+  SYNC_ARGS: --no-default-groups --group ci
+
 jobs:
   python-lint:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Sync dev dependencies
-        run: uv sync --group dev
+      # Ruff runs standalone: `ruff check` measures 0s, so a full `uv sync` in front of it is
+      # pure overhead. `version-file` reads the resolved pin out of uv.lock, which is the same
+      # version .pre-commit-config.yaml pins, so local and CI cannot drift.
       - name: Ruff lint
-        run: uv run ruff check .
+        uses: astral-sh/ruff-action@v4.1.0
+        with:
+          version-file: uv.lock
+          args: check --output-format=github
       - name: Ruff format check
-        run: uv run ruff format --check .
+        uses: astral-sh/ruff-action@v4.1.0
+        with:
+          version-file: uv.lock
+          args: format --check
 
   python-type:
     runs-on: ubuntu-latest
@@ -55,16 +58,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-      - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: astral-sh/setup-uv@v10.0.0
         with:
           python-version: "3.12"
-      - name: Sync dev dependencies
-        run: uv sync --group dev
+          enable-cache: true
+          prune-cache: true
+          cache-suffix: ci
+      - name: Sync dependencies
+        run: uv sync --frozen ${{ env.SYNC_ARGS }}
       - name: Pyright
         run: uv run pyright
 
@@ -74,20 +75,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-      - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: astral-sh/setup-uv@v10.0.0
         with:
           python-version: "3.12"
-      - name: Sync dev dependencies
-        run: uv sync --group dev
+          enable-cache: true
+          prune-cache: true
+          cache-suffix: ci
+      - name: Sync dependencies
+        run: uv sync --frozen ${{ env.SYNC_ARGS }}
       # addopts supplies `-n auto --cov`; pytest-cov merges the per-worker .coverage files and the
       # fail_under=100 branch gate (pyproject.toml) fails the job on any regression.
       - name: Run tests (parallel, with coverage gate)
-        run: uv run pytest -q --cov
+        run: uv run pytest
 
   go:
     runs-on: ubuntu-latest
@@ -112,16 +111,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-      - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: astral-sh/setup-uv@v10.0.0
         with:
           python-version: "3.12"
+          enable-cache: true
+          prune-cache: true
+          cache-suffix: dev
       - name: Sync dev dependencies
-        run: uv sync --group dev
+        run: uv sync --frozen --group dev
       - name: Cache pre-commit hook environments
         uses: actions/cache@v4
         with:
