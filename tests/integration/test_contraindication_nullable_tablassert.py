@@ -76,9 +76,7 @@ def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_
             upstream_resource_ids="infores:dailymed",
         )
         rows.append(row)
-    pl.DataFrame(rows, schema=schemas.CONTRAINDICATION_COLUMNS).write_csv(
-        tmp_path / "tabular" / "contraindication_assertions.tsv", separator="\t"
-    )
+    pl.DataFrame(rows, schema=schemas.CONTRAINDICATION_COLUMNS).write_csv(tmp_path / "tabular" / "contraindication_assertions.tsv", separator="\t")
 
     table = tmp_path / "contraindications.yaml"
     table.write_text(dakp_tablassert.table_yaml("contraindication_assertions"), encoding="utf-8")
