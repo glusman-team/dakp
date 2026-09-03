@@ -54,6 +54,9 @@ def build_context_from_config(cfg: Mapping[str, Any]) -> TaskContext:
         # Tablassert `--qc` (SapBERT audit + 13.0 stage-7 NDJSON assertions); absent => False,
         # never an error. The runner additionally gates on the QC runtime being importable.
         "qc": bool(cfg["qc"]) if cfg.get("qc") is not None else False,
+        # Tablassert `--no-original` (16.1: omit `original_*` verbatim source cells from final
+        # edges); absent => False, never an error.
+        "no_original": bool(cfg["no_original"]) if cfg.get("no_original") is not None else False,
     }
     if cfg.get("fullmap") is not None:
         params["fullmap"] = str(Path(str(cfg["fullmap"])).resolve())

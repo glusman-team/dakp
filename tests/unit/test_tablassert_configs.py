@@ -579,17 +579,23 @@ def test_graph_config_structure() -> None:
     for legacy_key in ("description", "infores", "contributions", "ui_explanation"):
         assert legacy_key not in graph
     # Tablassert >= 16.0 `uuid_fields` (#122): edge identity is the semantic statement only —
-    # the resolved triple, the pre-resolution mentions (distinct source mentions resolving to
-    # one canonical node must stay distinct records), and the nullable
-    # `disease_context_qualifier`. Evidence fields (publications, FDA_regulatory_approvals,
-    # number_of_cases) are NOT identity: rows agreeing on the six fields are merged upstream
-    # by the assertion shapers into one edge whose evidence is the sorted, deduplicated union
-    # (Tablassert aborts with `uuid-fields-not-a-key` on differing records sharing an id).
+    # the resolved triple plus the nullable `disease_context_qualifier` (unique qualifier values
+    # are distinct statements and must never merge). The pre-resolution mentions
+    # (original_subject/original_object) are NOT identity: distinct source mentions resolving to
+    # one canonical CURIE are ONE edge, merged downstream by `uuid_on_collision: merge`
+    # (Tablassert >= 16.2) instead of aborting the build with `uuid-fields-not-a-key`. Evidence
+    # fields (publications, FDA_regulatory_approvals, number_of_cases) are NOT identity either:
+    # rows agreeing on the identity fields are merged upstream by the assertion shapers into one
+    # edge whose evidence is the sorted, deduplicated union.
     # A declared field absent from an edge record contributes nothing to the hash, so the
     # qualifier (only some contraindication edges carry one) is safe to declare graph-wide.
     assert graph["uuid_fields"] == tablassert_configs.UUID_FIELDS
     # The identity contract itself, pinned literally so a silent edit of the constant fails here.
-    assert graph["uuid_fields"] == ["subject", "predicate", "object", "disease_context_qualifier", "original_subject", "original_object"]
+    assert graph["uuid_fields"] == ["subject", "predicate", "object", "disease_context_qualifier"]
+    # The id namespace is pinned explicitly so a future infores rename can never re-mint every
+    # edge id, and collisions merge instead of aborting.
+    assert graph["uuid_domain"] == tablassert_configs.UUID_DOMAIN == INFORES_DAKP
+    assert graph["uuid_on_collision"] == "merge"
     rig = graph["rig"]
     assert rig["source_info"]["infores_id"] == INFORES_DAKP
     assert rig["source_info"]["name"] == "Drug Approvals Knowledge Provider (DAKP)"  # full title, not the bare acronym
@@ -620,9 +626,12 @@ def test_graph_config_validates_against_installed_tablassert() -> None:
     graph = Graph.model_validate(yaml.safe_load(tablassert_configs.graph_yaml()))
     assert graph.rig.source_info.infores_id == INFORES_DAKP
     # uuid_fields canonicalize onto their allow-listed spellings and, being declared, move the
-    # UUID namespace off the historic TABLASSERT constant onto the graph's own infores.
+    # UUID namespace off the historic TABLASSERT constant onto the pinned uuid_domain (the DAKP
+    # infores).
     assert graph.uuid_fields == tablassert_configs.UUID_FIELDS
     assert graph.uuid_namespace == INFORES_DAKP
+    assert graph.uuid_domain == INFORES_DAKP
+    assert graph.uuid_on_collision == "merge"
 
 
 def test_rig_section_validates_directly_against_tablassert_rig_config() -> None:
@@ -969,6 +978,12 @@ def test_build_command_appends_qc_and_release_flags(monkeypatch: pytest.MonkeyPa
     assert command == ["uv", "run", "tablassert", "build-kg", "graph.yaml", "--qc", "--release"]
 
 
+def test_build_command_appends_no_original(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    command = TablassertRunner().build_command(Path("graph.yaml"), no_original=True)
+    assert command == ["uv", "run", "tablassert", "build-kg", "graph.yaml", "--no-original"]
+
+
 def test_build_command_appends_threads(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)
     command = TablassertRunner().build_command(Path("graph.yaml"), threads=70)
@@ -1035,6 +1050,7 @@ def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert report["tablassert_dir"] is None
     assert report["qc"] is False
     assert report["release"] is False
+    assert report["no_original"] is False
 
 
 def test_real_runner_records_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1166,6 +1182,26 @@ def test_real_runner_appends_release_flag(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     assert "--release" in seen[0]
     assert _read_report(workdir)["release"] is True
+
+
+def test_real_runner_appends_no_original_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    workdir = Workdir(tmp_path / "work")
+    workdir.create()
+    assertion_refs = _assertion_refs(workdir)
+    config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
+
+    seen: list[list[str]] = []
+
+    def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        seen.append(command)
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    _patch_installed(monkeypatch)
+    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, no_original=True, fullmap="data/fullmap"))
+
+    assert "--no-original" in seen[0]
+    assert _read_report(workdir)["no_original"] is True
 
 
 def test_real_runner_appends_threads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

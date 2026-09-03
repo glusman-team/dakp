@@ -348,6 +348,10 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
         # 13.0's stage-7 fail-the-build assertions on the final NDJSON (empty-or-null-values,
         # unnamed/unidentified nodes, incomplete-edges). Always on for DAKP builds.
         "qc": True,
+        # `tablassert build-kg --no-original` (16.1): omit the verbatim `original_*` source-cell
+        # copies from final edges. Edge identity no longer depends on them (uuid_fields is the
+        # resolved statement only), so they are dead weight in the published graph. Always on.
+        "no_original": True,
         # `tablassert build-kg --threads 70`: worker count for the parallel fullmap reads behind
         # entity resolution. Fixed at 70 for the wenceslaus build host (leaves headroom for the
         # Airflow workers + Go extractors; Tablassert's auto would claim every core).

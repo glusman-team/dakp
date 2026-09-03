@@ -143,6 +143,7 @@ def test_up_config_variable_carries_null_limits_and_fullmap(monkeypatch: pytest.
     assert config["force"] is False
     assert config["release"] is True  # `tablassert build-kg --release` (slim significant-only graph)
     assert config["qc"] is True  # `tablassert build-kg --qc` (SapBERT audit + 13.0 stage-7 NDJSON assertions)
+    assert config["no_original"] is True  # `tablassert build-kg --no-original` (16.1: no original_* on final edges)
     assert config["tablassert_threads"] == 70  # `tablassert build-kg --threads 70` (fullmap-read workers)
     assert config["threads"] == os.cpu_count()  # Go all-cores contract
     assert config["log_level"] == "DEBUG"

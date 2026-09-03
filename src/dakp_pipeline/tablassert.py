@@ -54,7 +54,7 @@ The real runner (:class:`TablassertRunner`) shells out to the installed ``tablas
 (a CORE dependency installed by the single ``uv sync``) and captures stdout / exit code into
 a handoff report; the deferred runner (:class:`DeferredTablassertRunner`) writes a
 deferred-handoff report without ever touching Tablassert (used when no fullmap triggers the
-real handoff, and in tests). DAKP requires Tablassert >= 14.0: the graph config carries the
+real handoff, and in tests). DAKP requires Tablassert >= 16.1: the graph config carries the
 fullmap path (the ``build-kg --fullmap`` flag was removed in Tablassert 8.1), the 8.2
 Biolink-valid KGX modeling (``sources[]`` retrieval provenance, first-class evidence slots)
 is what the emitted configs target, 9.1's per-row ``split_by`` (made the ONLY multivalued
@@ -70,7 +70,13 @@ fabricating an empty supporting study for publication-less sections like DAKP's.
 stage-7 ``--qc`` fail-the-build assertions (empty-or-null-values, unnamed/unidentified
 nodes, incomplete-edges) the production build now runs. 14.0 adds the explicit
 ``override.sources`` template (SkyeAv/Tablassert#116) with post-dedup ``{edge_id}``
-resolution — what DAKP's legacy-shaped edge provenance requires, so 14.0 is the floor.
+resolution — what DAKP's legacy-shaped edge provenance requires. 16.0's ``uuid_fields``
+(SkyeAv/Tablassert#122) pins edge identity to the resolved statement (:data:`UUID_FIELDS`),
+16.1's ``--no-original`` (#124) drops the verbatim ``original_*`` source cells from final
+edges (DAKP builds pass it always; identity no longer depends on them), and 16.2's
+``uuid_on_collision: merge`` (SkyeAv/Tablassert#126) merges edges that derive one id —
+synonym mentions resolving to the same CURIE — instead of aborting the build (the emitted
+graph config declares both UNCONDITIONALLY, so 16.2 is the floor).
 Fullmaps must
 be ``tablassert.fullmap.v5`` redb files — the on-disk format since Tablassert 8.2, unchanged
 in 13.0; older ones (v1-v4) are rejected on read.
@@ -82,7 +88,7 @@ on ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout over
 to ``uv run --with-editable <dir> tablassert`` for dev against a local ``../Tablassert``
 checkout. ``--qc`` is appended only when requested AND the QC audit runtime
 (sentence-transformers, part of the required ``tablassert[qc]`` install) is importable;
-``--release`` is a boolean flag.
+``--release`` and ``--no-original`` are boolean flags.
 
 The module-level :func:`run` is the entry point the stage harness and ``dags.dakp_build``
 invoke as a MODULE ATTRIBUTE at call time (``tablassert.run(...)``), so
@@ -139,28 +145,37 @@ FULLMAP_DEFAULT = ".fullmap"
 #: Edge identity fields declared as the Graph config's ``uuid_fields`` (Tablassert >= 16.0,
 #: SkyeAv/Tablassert#122): only these feed the derived edge ``id``, so an attribute-only
 #: change (``supporting_text``, ``sources``) no longer mints a new edge.
-#: Identity is the SEMANTIC STATEMENT ONLY — the resolved triple, the nullable
-#: ``disease_context_qualifier``, and the pre-resolution mentions:
-#: ``original_subject`` / ``original_object`` are REQUIRED discriminators, not extras: two
-#: distinct source mentions can resolve to the same canonical CURIE (observed in production:
-#: two objects resolving to UMLS:C4721779 collided as ``uuid-fields-not-a-key``), and the
-#: pre-resolution value is what keeps those records distinct. A declared field ABSENT from an
-#: edge record contributes nothing at all to the hash, so the nullable
-#: ``disease_context_qualifier`` — emitted only on the contraindication edges that
-#: carry one — still discriminates those edges without forcing the key onto the other tables.
-#: Evidence fields (``publications``, ``FDA_regulatory_approvals``, ``number_of_cases``) are
-#: deliberately NOT identity: rows agreeing on the six fields are ONE edge whose evidence is
-#: the merged union (deduplicated, sorted, pipe-joined — the
+#: Identity is the SEMANTIC STATEMENT ONLY — the resolved triple plus the nullable
+#: ``disease_context_qualifier``. A declared field ABSENT from an edge record contributes
+#: nothing at all to the hash, so the qualifier — emitted only on the contraindication edges
+#: that carry one — discriminates those edges without forcing the key onto the other tables:
+#: rows with UNIQUE qualifier values are distinct statements and must never merge, while the
+#: treatment/observed-use tables are effectively subject/predicate/object-only.
+#: The pre-resolution mentions (``original_subject`` / ``original_object``) are deliberately
+#: NOT identity (they were, until Tablassert 16.1): two distinct source mentions can resolve
+#: to the same canonical CURIE (observed in production: two objects resolving to
+#: UMLS:C4721779), and those rows are ONE edge — they merge downstream via the graph config's
+#: ``uuid_on_collision: merge`` (Tablassert >= 16.2), which unions
+#: list-valued evidence and keeps first-wins scalars instead of aborting the build
+#: (``uuid-fields-not-a-key``). Evidence fields (``publications``, ``FDA_regulatory_approvals``,
+#: ``number_of_cases``) are NOT identity either: rows agreeing on the identity fields are ONE
+#: edge whose evidence is the merged union (deduplicated, sorted, pipe-joined — the
 #: :func:`~dakp_pipeline.assertions.evidence.sorted_pipe` convention). That merging happens in
-#: the assertion shapers BEFORE Tablassert ever sees the rows, because Tablassert's deduper
-#: aborts the build (``uuid-fields-not-a-key``) when two differing records derive one id —
-#: observed in production: two FAERS indication wordings resolving to the same object text
-#: (CHEBI:62088 applied_to_treat HP:0012531), which the observed-uses shaper now folds into a
+#: the assertion shapers BEFORE Tablassert ever sees the rows — observed in production: two
+#: FAERS indication wordings resolving to the same object text
+#: (CHEBI:62088 applied_to_treat HP:0012531), which the observed-uses shaper folds into a
 #: single row with an exact distinct-case count (see
-#: :func:`~dakp_pipeline.assertions.observed_uses.build_observed_use_rows`).
-#: Declaring ``uuid_fields`` also moves the UUID namespace onto the graph's infores
-#: (:data:`INFORES_DAKP`) instead of the historic ``TABLASSERT`` constant.
-UUID_FIELDS = ["subject", "predicate", "object", "disease_context_qualifier", "original_subject", "original_object"]
+#: :func:`~dakp_pipeline.assertions.observed_uses.build_observed_use_rows`); merge-on-collision
+#: is the safety net for the cross-spelling cases the shapers cannot see pre-resolution.
+#: Declaring ``uuid_fields`` also moves the UUID namespace onto the graph's infores unless
+#: ``uuid_domain`` overrides it — :func:`graph_config` pins :data:`UUID_DOMAIN` explicitly so
+#: an infores rename can never re-mint every edge id.
+UUID_FIELDS = ["subject", "predicate", "object", "disease_context_qualifier"]
+
+#: Explicit ``uuid_domain`` for the derived edge ids (Tablassert >= 16.0): without it the
+#: namespace derives from ``rig.source_info.infores_id``, coupling every edge id to a
+#: provenance label. Pinning it keeps ids stable across an infores rename.
+UUID_DOMAIN = INFORES_DAKP
 
 #: Real upstream dataset URL recorded as each table's ``source.url`` — the constants the
 #: acquisition layer itself uses, so provenance can never drift from what was downloaded.
@@ -903,7 +918,11 @@ def graph_config(tables: list[str] | None = None, version: str | None = None, fu
     ``build-kg`` resolve step reads from the Graph config (Tablassert >= 8.1 has no ``--fullmap``
     flag); it defaults to :data:`FULLMAP_DEFAULT` for deferred runs that never invoke ``build-kg``.
     The mandatory ``rig:`` section (Tablassert >= 11) is constant — see :func:`_rig_config`.
-    ``uuid_fields`` (Tablassert >= 16.0) pins edge identity to :data:`UUID_FIELDS`.
+    ``uuid_fields`` (Tablassert >= 16.0) pins edge identity to :data:`UUID_FIELDS`;
+    ``uuid_domain`` pins the id namespace to :data:`UUID_DOMAIN` so an infores rename cannot
+    re-mint ids, and ``uuid_on_collision: merge`` (Tablassert >= 16.2) merges edges that
+    derive one id (synonym mentions resolving to the same CURIE) instead of aborting the
+    build with ``uuid-fields-not-a-key``.
     """
     if tables is None:
         tables = [f"tables/{_TABLE_SPECS[table][0]}.yaml" for table in _TABLE_ORDER]
@@ -913,6 +932,8 @@ def graph_config(tables: list[str] | None = None, version: str | None = None, fu
         "fullmap": fullmap,
         "rig": _rig_config(tables),
         "uuid_fields": list(UUID_FIELDS),
+        "uuid_domain": UUID_DOMAIN,
+        "uuid_on_collision": "merge",
         "tables": list(tables),
     }
 
@@ -1216,7 +1237,7 @@ def _find_graph(config_refs: list[ArtifactRef], ctx: TaskContext) -> Path:
 class TablassertRunner:
     """Run the INSTALLED ``tablassert`` CLI (a core DAKP dependency) as a subprocess.
 
-    Builds ``tablassert build-kg <graph.yaml> [--qc] [--release]`` (the graph config carries the
+    Builds ``tablassert build-kg <graph.yaml> [--qc] [--release] [--no-original]`` (the graph config carries the
     fullmap path — Tablassert 8.1 removed the ``build-kg --fullmap`` flag), streams the
     subprocess output live into the task log (:func:`stream_subprocess`), and records the full
     stdout / stderr / exit code in the handoff report. A non-zero exit is captured as
@@ -1229,7 +1250,14 @@ class TablassertRunner:
     tablassert_dir: str | None = None
 
     def build_command(
-        self, graph_yaml: Path, *, tablassert_dir: str | None = None, qc: bool = False, release: bool = False, threads: int | None = None
+        self,
+        graph_yaml: Path,
+        *,
+        tablassert_dir: str | None = None,
+        qc: bool = False,
+        release: bool = False,
+        no_original: bool = False,
+        threads: int | None = None,
     ) -> list[str]:
         """The exact Tablassert invocation (pure; testable without spawning a process)."""
         command = [*_command_prefix(tablassert_dir), "build-kg", str(graph_yaml)]
@@ -1237,6 +1265,8 @@ class TablassertRunner:
             command.append("--qc")
         if release:
             command.append("--release")
+        if no_original:
+            command.append("--no-original")
         if threads is not None:
             command.extend(["--threads", str(threads)])
         return command
@@ -1269,11 +1299,12 @@ class TablassertRunner:
         if qc_requested and not qc:
             logger.warning("{}: --qc requested but the QC audit runtime (sentence-transformers) is not importable; running without --qc", event)
         release = bool(ctx.params.get("release"))
+        no_original = bool(ctx.params.get("no_original"))
         # Worker count for the parallel fullmap reads behind entity resolution; absent => Tablassert auto.
         threads_value = ctx.params.get("tablassert_threads")
         threads = int(str(threads_value)) if threads_value is not None else None
 
-        command = self.build_command(graph_yaml, tablassert_dir=tablassert_dir, qc=qc, release=release, threads=threads)
+        command = self.build_command(graph_yaml, tablassert_dir=tablassert_dir, qc=qc, release=release, no_original=no_original, threads=threads)
         cwd = Workdir(ctx.workdir).root
 
         with step(logger, event):
@@ -1284,6 +1315,7 @@ class TablassertRunner:
                 fullmap=fullmap,
                 qc=qc,
                 release=release,
+                no_original=no_original,
                 threads=threads,
                 tablassert_dir=tablassert_dir or "-",
             )
@@ -1307,6 +1339,7 @@ class TablassertRunner:
                 "tablassert_dir": tablassert_dir,
                 "qc": qc,
                 "release": release,
+                "no_original": no_original,
                 "threads": threads,
             }
         )

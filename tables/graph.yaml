@@ -176,8 +176,8 @@ uuid_fields:
   - predicate
   - object
   - disease_context_qualifier
-  - original_subject
-  - original_object
+uuid_domain: "infores:multiomics-drugapprovals"
+uuid_on_collision: merge
 tables:
   - tables/approved_treats.yaml
   - tables/faers_applied_to_treat.yaml

@@ -120,7 +120,9 @@ def _endpoint_name(edge: Mapping[str, Any], side: str, names: Mapping[str, str])
     Legacy edges carried the canonical resolved-entity name ("Etanercept", never the raw label
     text), so the node's ``name`` from nodes.ndjson wins; ``original_subject`` /
     ``original_object`` (the raw assertion mention, e.g. the FAERS brand "Advil") is the fallback
-    for an endpoint that somehow missed the node set.
+    for an endpoint that somehow missed the node set. Builds run with ``--no-original``
+    (Tablassert >= 16.1; DAKP sets it always-on) drop those fields, so the fallback degrades to
+    ``NA`` — unreachable in practice because ``--qc`` fails any build with undeclared nodes.
     """
     curie = _text(edge.get(side))
     canonical = names.get(curie, "")
