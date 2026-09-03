@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/glusman-team/dakp/actions/workflows/ci.yml/badge.svg)](https://github.com/glusman-team/dakp/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/glusman-team/dakp/blob/main/LICENSE)
+[![Stars](https://img.shields.io/github/stars/glusman-team/dakp.svg)](https://github.com/glusman-team/dakp/stargazers)
 
 > **Drug Approvals Knowledge Provider** — a single, reproducible pipeline that turns DailyMed,
 > Drugs@FDA, and FAERS into Translator assertion tables, ready for
