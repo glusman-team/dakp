@@ -139,31 +139,28 @@ FULLMAP_DEFAULT = ".fullmap"
 #: Edge identity fields declared as the Graph config's ``uuid_fields`` (Tablassert >= 16.0,
 #: SkyeAv/Tablassert#122): only these feed the derived edge ``id``, so an attribute-only
 #: change (``supporting_text``, ``sources``) no longer mints a new edge.
+#: Identity is the SEMANTIC STATEMENT ONLY — the resolved triple, the nullable
+#: ``disease_context_qualifier``, and the pre-resolution mentions:
 #: ``original_subject`` / ``original_object`` are REQUIRED discriminators, not extras: two
 #: distinct source mentions can resolve to the same canonical CURIE (observed in production:
 #: two objects resolving to UMLS:C4721779 collided as ``uuid-fields-not-a-key``), and the
-#: pre-resolution CURIE is what keeps those records distinct. ``number_of_cases`` discriminates
-#: the FAERS-only case where two raw indication wordings resolve to the SAME object text, so the
-#: rows agree on the whole triple, both original CURIEs, and every provenance field — only the
-#: case count differs (observed in production: CHEBI:62088 applied_to_treat HP:0012531). A
-#: declared field ABSENT from an
+#: pre-resolution value is what keeps those records distinct. A declared field ABSENT from an
 #: edge record contributes nothing at all to the hash, so the nullable
 #: ``disease_context_qualifier`` — emitted only on the contraindication edges that
-#: carry one — still discriminates those edges without forcing the key onto the other tables
-#: (same for ``number_of_cases``, which only applied_to_treat edges carry).
+#: carry one — still discriminates those edges without forcing the key onto the other tables.
+#: Evidence fields (``publications``, ``FDA_regulatory_approvals``, ``number_of_cases``) are
+#: deliberately NOT identity: rows agreeing on the six fields are ONE edge whose evidence is
+#: the merged union (deduplicated, sorted, pipe-joined — the
+#: :func:`~dakp_pipeline.assertions.evidence.sorted_pipe` convention). That merging happens in
+#: the assertion shapers BEFORE Tablassert ever sees the rows, because Tablassert's deduper
+#: aborts the build (``uuid-fields-not-a-key``) when two differing records derive one id —
+#: observed in production: two FAERS indication wordings resolving to the same object text
+#: (CHEBI:62088 applied_to_treat HP:0012531), which the observed-uses shaper now folds into a
+#: single row with an exact distinct-case count (see
+#: :func:`~dakp_pipeline.assertions.observed_uses.build_observed_use_rows`).
 #: Declaring ``uuid_fields`` also moves the UUID namespace onto the graph's infores
 #: (:data:`INFORES_DAKP`) instead of the historic ``TABLASSERT`` constant.
-UUID_FIELDS = [
-    "subject",
-    "predicate",
-    "object",
-    "original_subject",
-    "original_object",
-    "publications",
-    "FDA_regulatory_approvals",
-    "number_of_cases",
-    "disease_context_qualifier",
-]
+UUID_FIELDS = ["subject", "predicate", "object", "disease_context_qualifier", "original_subject", "original_object"]
 
 #: Real upstream dataset URL recorded as each table's ``source.url`` — the constants the
 #: acquisition layer itself uses, so provenance can never drift from what was downloaded.

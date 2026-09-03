@@ -578,14 +578,18 @@ def test_graph_config_structure() -> None:
     # Tablassert >= 11 rejects the legacy top-level RIG keys; every RIG fact lives under `rig:`.
     for legacy_key in ("description", "infores", "contributions", "ui_explanation"):
         assert legacy_key not in graph
-    # Tablassert >= 16.0 `uuid_fields` (#122): edge identity is the resolved triple plus the
-    # minimal discriminators production proved necessary — the pre-resolution CURIEs (distinct
-    # mentions resolving to one canonical node must stay distinct records), the FAERS case count
-    # (indication wordings resolving to the same object text agree on everything but the count),
-    # and the provenance/qualifier fields. A declared field absent from an edge
-    # record contributes nothing to the hash, so the nullable `disease_context_qualifier` (only
-    # some contraindication edges carry one) is safe to declare graph-wide.
+    # Tablassert >= 16.0 `uuid_fields` (#122): edge identity is the semantic statement only —
+    # the resolved triple, the pre-resolution mentions (distinct source mentions resolving to
+    # one canonical node must stay distinct records), and the nullable
+    # `disease_context_qualifier`. Evidence fields (publications, FDA_regulatory_approvals,
+    # number_of_cases) are NOT identity: rows agreeing on the six fields are merged upstream
+    # by the assertion shapers into one edge whose evidence is the sorted, deduplicated union
+    # (Tablassert aborts with `uuid-fields-not-a-key` on differing records sharing an id).
+    # A declared field absent from an edge record contributes nothing to the hash, so the
+    # qualifier (only some contraindication edges carry one) is safe to declare graph-wide.
     assert graph["uuid_fields"] == tablassert_configs.UUID_FIELDS
+    # The identity contract itself, pinned literally so a silent edit of the constant fails here.
+    assert graph["uuid_fields"] == ["subject", "predicate", "object", "disease_context_qualifier", "original_subject", "original_object"]
     rig = graph["rig"]
     assert rig["source_info"]["infores_id"] == INFORES_DAKP
     assert rig["source_info"]["name"] == "Drug Approvals Knowledge Provider (DAKP)"  # full title, not the bare acronym

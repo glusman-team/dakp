@@ -103,6 +103,47 @@ def test_case_count_mixes_distinct_cases_and_anonymous_rows(disease_map: dict[st
     assert rows[0]["case_count"] == "4"  # distinct {1, 2} + 2 anonymous rows
 
 
+def test_wordings_resolving_to_one_object_merge_into_a_single_row() -> None:
+    """Duplicate fold: one edge-identity key, exact merged case count, unioned evidence.
+
+    Two raw indication wordings (case variants) hit the same dictionary key, so they share the
+    edge-identity key ``(subject_text, object_text)`` — the production ``uuid-fields-not-a-key``
+    collision shape (CHEBI:62088 applied_to_treat HP:0012531). Resolution-first aggregation
+    merges them into ONE row: ``case_count`` is the exact distinct-case count across BOTH
+    wordings (case 1, reported under each wording, counts once — summing per-wording counts
+    would double it), and the provenance columns are the deduplicated, sorted, pipe-joined
+    union of the merged wordings' evidence.
+    """
+    disease_map = {"Asthma": {"curie": "MONDO:0004979", "name": "asthma", "category": "Disease"}}
+    cases = pl.DataFrame(
+        {
+            "drugname": ["DrugX", "DrugX", "DrugX"],
+            "indication": ["Asthma", "ASTHMA", "ASTHMA"],
+            "primaryid": ["1", "1", "2"],
+            "nda": ["17977", "125514", "17977"],
+            "nda_raw": ["017977", "125514", "017977"],
+            "quarter": ["24Q3", "24Q2", "24Q3"],
+            "source_record_id": ["24Q3:1:1:Asthma", "24Q2:1:1:ASTHMA", "24Q3:2:1:ASTHMA"],
+        }
+    )
+    index = FDAApprovalIndex({"17977": ("NDA017977",), "125514": ("BLA125514",)})
+    rows = build_observed_use_rows(
+        cases,
+        disease_map,
+        approved_pairs=set(),
+        approvals=index,
+        faers_quarter_urls={"24Q3": "https://example.test/faers-24q3.zip", "24Q2": "https://example.test/faers-24q2.zip"},
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["object_text"] == "Asthma"
+    assert row["object_curie"] == "MONDO:0004979"
+    assert row["case_count"] == "2"  # distinct {1, 2} — case 1 counted once across both wordings
+    assert row["FDA_regulatory_approvals"] == "BLA125514|NDA017977"
+    assert row["supporting_faers_records"] == "24Q2:1:1:ASTHMA|24Q3:1:1:Asthma|24Q3:2:1:ASTHMA"
+    assert row["supporting_faers_urls"] == "https://example.test/faers-24q2.zip|https://example.test/faers-24q3.zip"
+
+
 def test_observed_uses_from_fixture_cases(faers_refs: list[ArtifactRef], disease_map: dict[str, dict[str, str]]) -> None:
     cases = find_faers_cases(faers_refs)
     rows = build_observed_use_rows(cases, disease_map)

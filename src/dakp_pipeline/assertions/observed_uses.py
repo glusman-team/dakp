@@ -5,9 +5,13 @@ FAERS adverse-event reports, without any approval claim.
 
 Aggregation rule (explicit and tested)
 ---------------------------------------
-FAERS case rows (``cases.parquet``) are aggregated by ``(drugname, indication)``; ``case_count``
-is the number of **distinct cases** (``primaryid``) reporting that pair (falls back to row count
-when ``primaryid`` is absent). The FAERS ``knowledge_level`` label is preserved from the first
+Each distinct indication string is first resolved to its object (disease-map match, single NER
+mention, or raw passthrough); FAERS case rows (``cases.parquet``) are then aggregated by
+``(drugname, resolved object_text)`` — the edge-identity key — so wordings that resolve to the
+same object merge into ONE row. ``case_count`` is the number of **distinct cases**
+(``primaryid``) across all merged wordings (falls back to row count when ``primaryid`` is
+absent), and the provenance columns are the deduplicated, sorted, pipe-joined union of the
+merged wordings' evidence. The FAERS ``knowledge_level`` label is preserved from the first
 rebuild (``statistical_association``).
 
 ``clinical_approval_status`` cross-references the pair against the approved-treats table (the
@@ -36,8 +40,9 @@ stop-list-passing indication the dictionary misses is mined — deduplicated by 
 multi-GPU dispatched in production. An indication yielding EXACTLY ONE disease/phenotype
 mention resolves to that mention: ``object_text``/``object_name`` = the normalized mention text
 and ``object_category`` from the mention type (``disease``→Disease, ``phenotype``→PhenotypicFeature).
-Zero or several mentions (no unambiguous head condition) keep the raw passthrough. Aggregation
-keys and ``case_count`` semantics are untouched — only object attributes improve. Offline the
+Zero or several mentions (no unambiguous head condition) keep the raw passthrough. Resolution
+happens BEFORE aggregation (see the aggregation rule above), so two wordings NER-resolving to
+one mention land in a single row with an exact merged distinct-case count. Offline the
 gazetteer is word-bounded where :func:`~dakp_pipeline.assertions.match_diseases` is
 plain-substring, so every gazetteer hit is already a dictionary hit and offline output is
 byte-identical to the lexical baseline.
@@ -227,12 +232,20 @@ def build_observed_use_rows(
 ) -> list[dict[str, str]]:
     """Aggregate FAERS drug-indication case counts into applied-to-treat rows (deterministic).
 
-    The distinct-case counting runs as a Polars group-by (never Python row iteration), so the
+    Indication strings are resolved to their object (disease-map match, single NER mention, or
+    raw passthrough) BEFORE aggregation, and the distinct-case counting then runs as ONE Polars
+    group-by on ``(drugname, object_text)`` (never Python row iteration), so the
     full-production case table (tens of millions of rows) aggregates in a few seconds with
-    bounded memory. Semantics are unchanged: per (drugname, indication) pair the count is the
-    number of distinct non-empty primaryids plus one per anonymous row (the legacy
-    ``_row{index}`` fallback made every primaryid-less row its own observation), and row-count
-    when the frame has no primaryid column at all.
+    bounded memory. Resolution-first makes the rows unique on the edge-identity key: two raw
+    indication wordings that resolve to the same object text (dictionary-key casing, or one
+    NER-normalized mention) merge into a single assertion whose evidence columns are the
+    deduplicated, sorted, pipe-joined union of the merged wordings' provenance (the
+    :func:`~dakp_pipeline.assertions.evidence.sorted_pipe` convention). The merged
+    ``case_count`` stays EXACT — the number of distinct non-empty primaryids across ALL merged
+    wordings plus one per anonymous row (the legacy ``_row{index}`` fallback made every
+    primaryid-less row its own observation), and row-count when the frame has no primaryid
+    column at all — so a case that listed the drug under two merged wordings counts ONCE,
+    where summing per-wording counts would double-count it.
 
     ``approved_pairs`` is the normalized (subject, object) pair set of the approved-treats table
     (:func:`_approved_pair_index`), or ``None`` when that table is unavailable — in which case
@@ -255,7 +268,7 @@ def build_observed_use_rows(
         return pl.col(name).fill_null("").cast(pl.Utf8) if name in faers_cases.columns else pl.lit("")
 
     primaryid = _text_column("primaryid").str.strip_chars()
-    normalized = (
+    cases = (
         faers_cases.lazy()
         .select(
             _text_column("drugname").str.strip_chars().alias("drugname"),
@@ -268,49 +281,82 @@ def build_observed_use_rows(
         )
         .filter((pl.col("drugname") != "") & (pl.col("indication") != ""))
         .with_columns(pl.struct(["primaryid", "nda", "nda_raw", "quarter", "source_record_id"]).alias("faers_row"))
-        .group_by("drugname", "indication")
-        .agg(
-            pl.col("primaryid").filter(pl.col("primaryid") != "").n_unique().alias("distinct_cases"),
-            pl.col("primaryid").filter(pl.col("primaryid") == "").len().alias("anon_rows"),
-            pl.col("faers_row").unique().alias("faers_rows"),
-        )
-        .collect()
-        .sort("drugname", "indication")
     )
-    pairs = normalized
 
-    # Mine the distinct stop-list-passing, dictionary-miss indication strings once (NER channel).
-    indication_mentions: dict[str, list[Mention]] | None = None
-    if ner is not None:
-        miss_texts = sorted(
-            {
-                normalize_text(str(rec["indication"]))
-                for rec in pairs.iter_rows(named=True)
-                if not is_non_disease_indication(str(rec["indication"])) and not match_diseases(str(rec["indication"]), disease_map)
-            }
-            - {""}
-        )
-        indication_mentions = _mine_indication_mentions(miss_texts, ner, devices, cache)
-
-    rows: list[dict[str, str]] = []
-    pairs_seen = 0
+    # Resolve each distinct stop-list-passing indication to its object BEFORE aggregation.
+    indications = sorted(set(cases.select("indication").unique().collect().get_column("indication").to_list()) - {""})
+    resolution: dict[str, dict[str, str]] = {}
+    misses: list[str] = []
     stoplist_drops = 0
-    ner_resolved = 0
-    for rec in pairs.iter_rows(named=True):
-        pairs_seen += 1
-        drug = str(rec["drugname"])
-        indication = str(rec["indication"])
+    for indication in indications:
         if is_non_disease_indication(indication):
             stoplist_drops += 1
             continue  # FAERS placeholder/usage-context indication, not a drug->condition observation
         matches = match_diseases(indication, disease_map)
         if matches:
-            obj = matches[0]
+            resolution[indication] = matches[0]
         else:
-            mention_obj = _ner_object(indication, indication_mentions)
-            if mention_obj is not None:
-                ner_resolved += 1
-            obj = mention_obj or {"text": indication, "curie": "", "name": indication, "category": "Disease"}
+            misses.append(indication)
+
+    # Mine the distinct stop-list-passing, dictionary-miss indication strings once (NER channel).
+    indication_mentions: dict[str, list[Mention]] | None = None
+    if ner is not None:
+        miss_texts = sorted({normalize_text(indication) for indication in misses} - {""})
+        indication_mentions = _mine_indication_mentions(miss_texts, ner, devices, cache)
+
+    ner_resolved = 0
+    for indication in misses:
+        mention_obj = _ner_object(indication, indication_mentions)
+        if mention_obj is not None:
+            ner_resolved += 1
+        resolution[indication] = mention_obj or {"text": indication, "curie": "", "name": indication, "category": "Disease"}
+
+    # Canonical object attributes per resolved object text (first indication in sorted order
+    # wins), so a pathological mention-type conflict between merged wordings stays
+    # deterministic and the group-by aggregates per-group-constant attribute columns.
+    canonical: dict[str, dict[str, str]] = {}
+    for indication in sorted(resolution):
+        canonical.setdefault(resolution[indication]["text"], resolution[indication])
+    mapping_rows: list[dict[str, str]] = []
+    for indication in sorted(resolution):
+        obj = canonical[resolution[indication]["text"]]
+        mapping_rows.append(
+            {
+                "indication": indication,
+                "object_text": obj["text"],
+                "object_curie": obj["curie"],
+                "object_name": obj["name"],
+                "object_category": obj["category"],
+            }
+        )
+    mapping = pl.DataFrame(
+        mapping_rows,
+        schema={"indication": pl.Utf8, "object_text": pl.Utf8, "object_curie": pl.Utf8, "object_name": pl.Utf8, "object_category": pl.Utf8},
+    )
+    pairs = (
+        cases.join(mapping.lazy(), on="indication", how="inner")  # stop-listed indications carry no mapping entry
+        .group_by("drugname", "object_text")
+        .agg(
+            pl.col("object_curie").first(),
+            pl.col("object_name").first(),
+            pl.col("object_category").first(),
+            pl.col("primaryid").filter(pl.col("primaryid") != "").n_unique().alias("distinct_cases"),
+            pl.col("primaryid").filter(pl.col("primaryid") == "").len().alias("anon_rows"),
+            pl.col("faers_row").unique().alias("faers_rows"),
+        )
+        .collect()
+        .sort("drugname", "object_text")
+    )
+
+    rows: list[dict[str, str]] = []
+    for rec in pairs.iter_rows(named=True):
+        drug = str(rec["drugname"])
+        obj = {
+            "text": str(rec["object_text"]),
+            "curie": str(rec["object_curie"]),
+            "name": str(rec["object_name"]),
+            "category": str(rec["object_category"]),
+        }
         source_records: set[str] = set()
         evidence_urls: set[str] = set()
         approval_values_by_norm: dict[str, set[str]] = {}
@@ -361,7 +407,14 @@ def build_observed_use_rows(
                 upstream_resource_ids=join_pipe(INFORES_FAERS, INFORES_DAILYMED),
             )
         )
-    stats(logger, "shape_faers_applied_to_treat", pairs=pairs_seen, stoplist_drops=stoplist_drops, ner_resolved=ner_resolved, assertions=len(rows))
+    stats(
+        logger,
+        "shape_faers_applied_to_treat",
+        indications=len(indications),
+        stoplist_drops=stoplist_drops,
+        ner_resolved=ner_resolved,
+        assertions=len(rows),
+    )
     return rows
 
 
