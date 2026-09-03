@@ -23,7 +23,7 @@ Parsing robustness for real FDA ASCII:
   lowercased the header line).
 * ``primaryid`` / legacy ``isr`` column resolution (pre-2014 FAERS used ``isr``).
 
-Outputs (under ``data/interim/faers/``):
+Outputs (under ``interim/faers/``):
 
 * ``quarter=<Q>/<family>.parquet`` — faithful normalized tables, partitioned by quarter.
 * ``quarter=<Q>/cases.parquet`` — per-quarter case join (DELETE-filtered, intra-quarter

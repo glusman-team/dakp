@@ -239,7 +239,7 @@ def test_table_config_structure(table: str) -> None:
     # text source over the uncompressed assertion TSV (tab delimiter; url required by the model).
     source = config["source"]
     assert source["kind"] == "text"
-    assert source["local"] == f"data/tabular/{table}.tsv"
+    assert source["local"] == f"tabular/{table}.tsv"
     assert source["delimiter"] == "\t"
     # The real upstream dataset URL (a list since Tablassert 8.2.1) — never the example.invalid placeholder.
     assert source["url"] == [EXPECTED_SOURCE_URLS[table]]
@@ -1029,7 +1029,7 @@ def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
 
-    refs = TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="data/fullmap"))
+    refs = TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="/maps/fullmap.redb"))
 
     assert len(refs) == 1
     # The subprocess hook was invoked once, from the workdir root, with the build-kg command.
@@ -1066,7 +1066,7 @@ def test_real_runner_records_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
     with pytest.raises(TablassertError, match="exited 2"):
-        TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="data/fullmap"))
+        TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="/maps/fullmap.redb"))
 
     # The report must still be on disk (written before the exception was raised).
     report = _read_report(workdir)
@@ -1092,7 +1092,7 @@ def test_real_runner_honors_ctx_overrides(monkeypatch: pytest.MonkeyPatch, tmp_p
     # check (uv resolves the local checkout transiently), so it runs even when tablassert is absent.
     monkeypatch.setattr(_RUN_MODULE, "tablassert_available", lambda: False)
     monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
-    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, tablassert_dir="/opt/tablassert", fullmap="data/fullmap"))
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, tablassert_dir="/opt/tablassert", fullmap="/maps/fullmap.redb"))
 
     assert seen[0][:5] == ["uv", "run", "--with-editable", "/opt/tablassert", "tablassert"]
     assert seen[0][-1] == str(workdir.root / "tables" / "graph.yaml")  # no --fullmap flag (removed in Tablassert 8.1)
@@ -1108,7 +1108,7 @@ def test_real_runner_raises_when_tablassert_missing(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(_RUN_MODULE, "tablassert_available", lambda: False)
 
     with pytest.raises(RuntimeError, match="uv sync"):
-        TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="data/fullmap"))
+        TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="/maps/fullmap.redb"))
 
 
 def test_real_runner_raises_when_fullmap_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1137,7 +1137,7 @@ def test_real_runner_appends_qc_when_runtime_available(monkeypatch: pytest.Monke
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "qc_runtime_available", lambda: True)
     monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
-    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, qc=True, fullmap="data/fullmap"))
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, qc=True, fullmap="/maps/fullmap.redb"))
 
     assert "--qc" in seen[0]
     assert _read_report(workdir)["qc"] is True
@@ -1158,7 +1158,7 @@ def test_real_runner_skips_qc_when_runtime_missing(monkeypatch: pytest.MonkeyPat
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "qc_runtime_available", lambda: False)
     monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
-    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, qc=True, fullmap="data/fullmap"))
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, qc=True, fullmap="/maps/fullmap.redb"))
 
     assert "--qc" not in seen[0]
     assert _read_report(workdir)["qc"] is False
@@ -1178,7 +1178,7 @@ def test_real_runner_appends_release_flag(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
-    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, release=True, fullmap="data/fullmap"))
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, release=True, fullmap="/maps/fullmap.redb"))
 
     assert "--release" in seen[0]
     assert _read_report(workdir)["release"] is True
@@ -1198,7 +1198,7 @@ def test_real_runner_appends_no_original_flag(monkeypatch: pytest.MonkeyPatch, t
 
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
-    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, no_original=True, fullmap="data/fullmap"))
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, no_original=True, fullmap="/maps/fullmap.redb"))
 
     assert "--no-original" in seen[0]
     assert _read_report(workdir)["no_original"] is True
@@ -1218,7 +1218,7 @@ def test_real_runner_appends_threads(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
-    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, tablassert_threads=70, fullmap="data/fullmap"))
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, tablassert_threads=70, fullmap="/maps/fullmap.redb"))
 
     assert seen[0][-2:] == ["--threads", "70"]
     assert _read_report(workdir)["threads"] == 70
@@ -1256,5 +1256,5 @@ def test_run_dispatches_to_real_with_run_tablassert(monkeypatch: pytest.MonkeyPa
     _patch_installed(monkeypatch)
     monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
 
-    run_tablassert(assertion_refs, config_refs, _ctx(workdir, run_tablassert=True, fullmap="data/fullmap"))
+    run_tablassert(assertion_refs, config_refs, _ctx(workdir, run_tablassert=True, fullmap="/maps/fullmap.redb"))
     assert _read_report(workdir)["mode"] == "real"

@@ -173,8 +173,7 @@ indent-width = 4
 target-version = "py312"
 src = ["src", "tests"]
 extend-exclude = [
-    # Generated runtime workdirs (pipeline output + scratch); never lint them.
-    "data",
+    # Generated runtime workdir (pipeline output + scratch); never lint it.
     "tmp",
 ]
 
@@ -211,7 +210,7 @@ skip-magic-trailing-comma = true
 
 [tool.pyright]
 include = ["src", "tests"]
-exclude = ["data", "tmp", ".venv"]
+exclude = ["tmp", ".venv"]
 pythonVersion = "3.12"
 strictListInference = true
 strictDictionaryInference = true

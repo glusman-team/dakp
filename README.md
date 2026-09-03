@@ -65,13 +65,13 @@ flowchart LR
 - **Tablassert handoff** — generates a graph config plus one table config per assertion table,
   then delegates to `tablassert build-kg`.
 - **legacy TSV export** — retrofits the KGX pair into the pre-rewrite DAKP TSV schema
-  (`<workdir>/data/DRUG_APPROVALS_KP_<version>.{nodes,edges}.tsv`: 3-column nodes, 12-column edges, `NA`
+  (`<workdir>/kgx/DRUG_APPROVALS_KP_<version>.{nodes,edges}.tsv`: 3-column nodes, 12-column edges, `NA`
   fills, comma-joined multi-values) for the internal service that still consumes it. The task
   skips cleanly when the handoff was deferred (no `--fullmap` → no KGX to convert).
 - **MEDliNER export** — `export_medliner_training_data` (the `medliner` TaskGroup) hands the
   annotation corpus to MEDliNER as a self-describing, deterministic `dakp.medliner.export.v1`
   bundle (`manifest.json` + `candidates.ndjson` + the NER gold benchmark) under
-  `<workdir>/data/store/medliner-export`. It consumes only the DailyMed and FAERS extracts, so
+  `<workdir>/store/medliner-export`. It consumes only the DailyMed and FAERS extracts, so
   it runs alongside the shape stage and never gates the build summary.
 
 ## Output Tables

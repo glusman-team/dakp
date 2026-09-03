@@ -120,7 +120,7 @@ def test_quarter_without_drug_or_indi_yields_no_cases(tmp_path: Path) -> None:
     out = faers_ascii.extract(refs, _ctx(tmp_path / "work"))
     cases = pl.read_parquet(next(r for r in out if r.uri.name == "cases.parquet").uri)
     assert cases.is_empty()
-    audit = pl.read_parquet(tmp_path / "work" / "data" / "interim" / "faers" / "dedup_audit.parquet")
+    audit = pl.read_parquet(tmp_path / "work" / "interim" / "faers" / "dedup_audit.parquet")
     assert audit.is_empty()
 
 
@@ -143,7 +143,7 @@ def test_delete_listing_absent_primaryid_drops_no_rows(tmp_path: Path) -> None:
     out = faers_ascii.extract([demo, drug, indi, delete], _ctx(tmp_path / "work"))
     cases = pl.read_parquet(next(r for r in out if r.uri.name == "cases.parquet").uri)
     assert cases["primaryid"].to_list() == ["1001"]  # 1001 survives (not deleted)
-    warnings = pl.read_parquet(tmp_path / "work" / "data" / "interim" / "faers" / "warnings.parquet")
+    warnings = pl.read_parquet(tmp_path / "work" / "interim" / "faers" / "warnings.parquet")
     assert "deleted_rows_dropped" not in warnings["code"].to_list()
 
 

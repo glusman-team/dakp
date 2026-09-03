@@ -1,7 +1,7 @@
 template:
   source:
     kind: text
-    local: data/tabular/faers_applied_to_treat_assertions.tsv
+    local: tabular/faers_applied_to_treat_assertions.tsv
     url:
       - "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
     delimiter: "\t"

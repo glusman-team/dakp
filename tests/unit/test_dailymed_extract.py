@@ -57,7 +57,7 @@ def test_extract_emits_all_tables_plus_section_tsv(tmp_path: Path) -> None:
         "dailymed_spl_sections.tsv",
     }
     # The section TSV is uncompressed (Tablassert cannot read compressed inputs).
-    tsv_path = ctx.workdir / "data" / "tabular" / "dailymed_spl_sections.tsv"
+    tsv_path = ctx.workdir / "tabular" / "dailymed_spl_sections.tsv"
     assert tsv_path.exists()
     assert tsv_path.read_bytes().startswith(b"source_record_id\t")
 

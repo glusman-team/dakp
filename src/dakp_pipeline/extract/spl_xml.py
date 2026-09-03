@@ -2,7 +2,7 @@
 
 Parses gzipped (or plain) SPL XML batches with :func:`xml.etree.ElementTree.iterparse`
 (streaming, constant-memory per document) and emits the normalized DailyMed interim
-tables under ``data/interim/dailymed/``:
+tables under ``interim/dailymed/``:
 
 * ``spl_documents.parquet``  — the locked public contract
   (:data:`dakp_pipeline.io.schemas.DAILYMED_SPL_DOCUMENTS_COLUMNS`): one row per
@@ -15,7 +15,7 @@ tables under ``data/interim/dailymed/``:
 * ``spl_sections.parquet``   — the proper per-section table: LOINC code, title, raw *and*
   cleaned section text, with a stable ``source_record_id``.
 
-Plus an **uncompressed** ``data/tabular/dailymed_spl_sections.tsv`` (the section table in
+Plus an **uncompressed** ``tabular/dailymed_spl_sections.tsv`` (the section table in
 Tablassert-readable form).
 
 Field semantics are ported from ``ref/legacy/DailyMed/bin/parseXML-xtree.py`` (HL7 v3 SPL) but as

@@ -3,7 +3,7 @@
 Proves the FULL path works on a TINY, hermetic fullmap (no network):
 
 1. run the mock pipeline over the tiny pipeline fixtures -> the three DAKP assertion TSVs
-   (``data/tabular/*_assertions.tsv``) + the generated ``tables/*.yaml`` Tablassert configs;
+   (``tabular/*_assertions.tsv``) + the generated ``tables/*.yaml`` Tablassert configs;
 2. build a tiny ``fullmap.redb`` (:mod:`tiny_fullmap`) mapping the assertion-table mention text
    (Ibuprofen/Advil, Examplestatin, hypercholesterolemia, headache, pain, asthma, ...) to CURIEs;
 3. invoke a REAL ``tablassert build-kg`` through the DAKP :class:`TablassertRunner` (the installed
@@ -98,7 +98,7 @@ def kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
     """Run the offline fixture pipeline + a REAL ``tablassert build-kg`` once; return the KGX."""
     work = tmp_path_factory.mktemp("dakp-kgx-e2e") / "work"
 
-    # (1) Hermetic offline pipeline -> assertion TSVs (data/tabular/) + generated tables/*.yaml.
+    # (1) Hermetic offline pipeline -> assertion TSVs (tabular/) + generated tables/*.yaml.
     # Fetchers always run their real branches; route them to the fixtures for this hermetic build.
     monkeypatch = pytest.MonkeyPatch()
     install_fixture_fetchers(monkeypatch)
@@ -113,7 +113,7 @@ def kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
     tiny_fullmap.build_tiny_fullmap(work / ".fullmap" / "fullmap.redb")
 
     # (3) REAL build-kg via the DAKP TablassertRunner (installed tablassert CLI, real subprocess).
-    tabular = work / "data" / "tabular"
+    tabular = work / "tabular"
     assertion_refs = [_ref(path, "text/tab-separated-values") for path in sorted(tabular.glob("*_assertions.tsv"))]
     tables_dir = work / "tables"
     config_refs = [_ref(path, "application/x-yaml") for path in sorted(tables_dir.glob("*.yaml"))]
@@ -124,9 +124,9 @@ def kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
     report: dict[str, Any] = json.loads(report_refs[0].uri.read_text(encoding="utf-8"))
 
     # (4) Load the produced KGX NDJSON (compile_graph writes <name>_<version>.{nodes,edges}.ndjson
-    #     into rig.artifact_base_path = "data", relative to the build cwd = <work>).
-    node_files = sorted((work / "data").glob("*.nodes.ndjson"))
-    edge_files = sorted((work / "data").glob("*.edges.ndjson"))
+    #     into rig.artifact_base_path = "kgx", relative to the build cwd = <work>).
+    node_files = sorted((work / "kgx").glob("*.nodes.ndjson"))
+    edge_files = sorted((work / "kgx").glob("*.edges.ndjson"))
     assert len(node_files) == 1, f"expected exactly one KGX nodes file, found {node_files}"
     assert len(edge_files) == 1, f"expected exactly one KGX edges file, found {edge_files}"
 
@@ -366,7 +366,7 @@ def test_legacy_tsv_pair_matches_the_old_schema(kgx_build: KgxBuild) -> None:
     `approval`, `publications` -> `supporting_spls`); every absent field is ``NA`` — including
     `object_modifier`, always; endpoint names are the CANONICAL node names (legacy parity).
     """
-    data = kgx_build.workdir / "data"
+    data = kgx_build.workdir / "kgx"
     assert [ref.uri.name for ref in kgx_build.legacy_refs] == [
         next(data.glob("*.nodes.ndjson")).with_suffix(".tsv").name,
         next(data.glob("*.edges.ndjson")).with_suffix(".tsv").name,

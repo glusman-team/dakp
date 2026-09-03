@@ -163,8 +163,8 @@ def _report_ref(workdir: Workdir, mode: str) -> ArtifactRef:
 
 
 def _write_kgx(workdir: Workdir) -> tuple[Path, Path]:
-    """Drop exactly one KGX ndjson pair under data/, like a successful build-kg."""
-    data = workdir.root / "data"
+    """Drop exactly one KGX ndjson pair under kgx/, like a successful build-kg."""
+    data = workdir.kgx
     nodes_path = data / f"{GRAPH_NAME}_{__version__}.nodes.ndjson"
     edges_path = data / f"{GRAPH_NAME}_{__version__}.edges.ndjson"
     nodes_path.write_text("".join(json.dumps(node) + "\n" for node in _NODES), encoding="utf-8")
@@ -181,7 +181,7 @@ def test_export_deferred_handoff_returns_empty(tmp_path: Path) -> None:
     workdir.create()
     refs = export([_report_ref(workdir, "deferred")], _ctx(workdir))
     assert refs == []
-    assert list((workdir.root / "data").glob("*.nodes.tsv")) == []
+    assert list(workdir.kgx.glob("*.nodes.tsv")) == []
 
 
 def test_export_real_handoff_writes_the_legacy_pair(tmp_path: Path) -> None:
@@ -197,11 +197,11 @@ def test_export_real_handoff_writes_the_legacy_pair(tmp_path: Path) -> None:
     for ref, ndjson in zip(refs, (nodes_ndjson, edges_ndjson), strict=True):
         assert hash_file(ndjson) in (json.loads(ref.manifest.read_text(encoding="utf-8"))["inputs"] if ref.manifest else [])
 
-    nodes_lines = (workdir.root / "data" / f"{GRAPH_NAME}_{__version__}.nodes.tsv").read_text(encoding="utf-8").splitlines()
+    nodes_lines = (workdir.kgx / f"{GRAPH_NAME}_{__version__}.nodes.tsv").read_text(encoding="utf-8").splitlines()
     assert nodes_lines[0].split("\t") == NODES_HEADER
     assert nodes_lines[1].split("\t") == ["CHEBI:4875", "Etanercept", "biolink:ChemicalEntity"]
 
-    edges_lines = (workdir.root / "data" / f"{GRAPH_NAME}_{__version__}.edges.tsv").read_text(encoding="utf-8").splitlines()
+    edges_lines = (workdir.kgx / f"{GRAPH_NAME}_{__version__}.edges.tsv").read_text(encoding="utf-8").splitlines()
     assert edges_lines[0].split("\t") == EDGES_HEADER
     assert edges_lines[1].split("\t")[4] == "Etanercept"  # subject_name
     assert edges_lines[1].split("\t")[10] == "269572"  # N_cases
@@ -235,7 +235,7 @@ def test_export_ignores_stale_kgx_pairs(tmp_path: Path) -> None:
     workdir = Workdir(tmp_path)
     workdir.create()
     nodes_ndjson, edges_ndjson = _write_kgx(workdir)
-    data = workdir.root / "data"
+    data = workdir.kgx
     for stem in ("dakp_0.1.0", "DRUG_APPROVALS_KP_1.0.0"):
         (data / f"{stem}.nodes.ndjson").write_text(json.dumps(_NODES[0]) + "\n", encoding="utf-8")
         (data / f"{stem}.edges.ndjson").write_text(json.dumps(_EDGES[0]) + "\n", encoding="utf-8")

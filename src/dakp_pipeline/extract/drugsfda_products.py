@@ -3,7 +3,7 @@
 Parses the FDA Drugs@FDA tab-delimited data files (the ``media/89850`` ZIP contents —
 ``Products.txt`` / ``Applications.txt`` / ``Submissions.txt`` — or their fixture mirrors)
 into normalized interim parquet tables, lookup tables, and one uncompressed TSV
-source-section table (``data/tabular/drugsfda_products.tsv``) for Tablassert handoff.
+source-section table (``tabular/drugsfda_products.tsv``) for Tablassert handoff.
 
 Application-number normalization ports the semantics of the legacy
 ``ref/legacy/FAERS/bin/drug2indi.pl readNDAproducts`` (``s/^(NDA|BLA|ANDA)0*(.+)/``): the raw

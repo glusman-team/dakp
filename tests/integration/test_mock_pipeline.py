@@ -37,13 +37,13 @@ def _fake_tablassert_run(assertion_refs: list[ArtifactRef], config_refs: list[Ar
     """Stand-in for ../Tablassert following the REAL handoff contract.
 
     Writes a real-mode handoff report plus the ``<name>_<version>.{nodes,edges}.ndjson`` pair and
-    the ``<name>_<version>.RIG.yaml`` under ``data/`` (exactly what a successful ``build-kg``
+    the ``<name>_<version>.RIG.yaml`` under ``kgx/`` (exactly what a successful ``build-kg``
     leaves behind), so the downstream legacy TSV export and release-publish stages exercise their
     real branches against the fake output.
     """
     del config_refs
     store = ArtifactStore(Workdir(ctx.workdir))
-    data = Workdir(ctx.workdir).root / "data"
+    data = Workdir(ctx.workdir).kgx
     data.mkdir(parents=True, exist_ok=True)
     nodes = data / f"{GRAPH_NAME}_{__version__}.nodes.ndjson"
     edges = data / f"{GRAPH_NAME}_{__version__}.edges.ndjson"
@@ -88,7 +88,7 @@ def test_full_pipeline_uses_mocked_sources(monkeypatch, tmp_path: Path) -> None:
     assert set(summary["translator_regression"]["families_seen"]) == {"biolink:treats", "biolink:applied_to_treat", "biolink:contraindicated_in"}
 
     # The fake Tablassert wrote its KGX pair, and the legacy TSV stage retrofitted it.
-    data = tmp_path / "work" / "data"
+    data = tmp_path / "work" / "kgx"
     assert (data / f"{GRAPH_NAME}_{__version__}.nodes.ndjson").exists()
     legacy_edges = (data / f"{GRAPH_NAME}_{__version__}.edges.tsv").read_text(encoding="utf-8").splitlines()
     assert legacy_edges[0].split("\t")[9:12] == ["approval", "N_cases", "supporting_spls"]
@@ -113,7 +113,7 @@ def test_default_deferred_handoff_runs_clean(monkeypatch, tmp_path: Path) -> Non
         assert result.table(table).path.exists()
 
     # Deferred handoff manifest (no fullmap => no real Tablassert; no local KGX compiler) + summary.
-    handoff = json.loads((tmp_path / "work" / "data" / "reports" / "tablassert_handoff.json").read_text(encoding="utf-8"))
+    handoff = json.loads((tmp_path / "work" / "reports" / "tablassert_handoff.json").read_text(encoding="utf-8"))
     assert handoff["mode"] == "deferred"
     assert result.build_summary is not None
     assert result.build_summary.exists()
@@ -122,7 +122,7 @@ def test_default_deferred_handoff_runs_clean(monkeypatch, tmp_path: Path) -> Non
     assert summary["translator_regression"]["violations"] == []
     # Deferred handoff => no KGX to retrofit: empty legacy_tsv section, no TSV pair.
     assert summary["legacy_tsv"] == {"exported": False, "files": []}
-    assert list((tmp_path / "work" / "data").glob("*.nodes.tsv")) == []
+    assert list((tmp_path / "work" / "kgx").glob("*.nodes.tsv")) == []
 
 
 def test_fixture_run_exports_a_valid_medliner_bundle(monkeypatch, tmp_path: Path) -> None:

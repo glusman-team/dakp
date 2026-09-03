@@ -37,7 +37,7 @@ def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_
     """
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".tablassert" / "store").mkdir(parents=True)
-    (tmp_path / "data" / "tabular").mkdir(parents=True)
+    (tmp_path / "tabular").mkdir(parents=True)
     fullmap_root = tmp_path / "fullmap"
     fullmap_root.mkdir()
     classes = fullmap_root / "classes.ndjson"
@@ -54,7 +54,7 @@ def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_
         )
         + "\n"
     )
-    fullmap = fullmap_root / "data" / "fullmap.redb"
+    fullmap = fullmap_root / "kgx" / "fullmap.redb"
     rs.build_fullmap_db(fullmap, [classes], [synonyms], threads=2)
 
     rows: list[dict[str, str]] = []
@@ -77,7 +77,7 @@ def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_
         )
         rows.append(row)
     pl.DataFrame(rows, schema=schemas.CONTRAINDICATION_COLUMNS).write_csv(
-        tmp_path / "data" / "tabular" / "contraindication_assertions.tsv", separator="\t"
+        tmp_path / "tabular" / "contraindication_assertions.tsv", separator="\t"
     )
 
     table = tmp_path / "contraindications.yaml"
@@ -87,7 +87,7 @@ def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_
 
     build_pipeline(graph, PipelineProgress(total_stages=6))
     version = dakp_tablassert.graph_config()["version"]
-    edges_path = tmp_path / "data" / f"{dakp_tablassert.GRAPH_NAME}_{version}.edges.ndjson"  # rig.artifact_base_path = "data" (Tablassert >= 11)
+    edges_path = tmp_path / "kgx" / f"{dakp_tablassert.GRAPH_NAME}_{version}.edges.ndjson"  # rig.artifact_base_path = "kgx" (Tablassert >= 11)
     edges = [json.loads(line) for line in edges_path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
     assert len(edges) == 2

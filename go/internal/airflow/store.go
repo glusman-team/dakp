@@ -37,19 +37,19 @@ type RegisterInput struct {
 
 // Store is the Go mirror of Python io/artifact_store.ArtifactStore, bound to a workdir root. It
 // registers workdir outputs (interim parquet) in place: hash + sidecar manifest, no copy. The
-// directory layout mirrors Python paths.Workdir (data/interim, data/manifests, data/raw/by-hash).
+// directory layout mirrors Python paths.Workdir (interim, manifests, raw/by-hash).
 type Store struct {
 	Workdir string
 }
 
-// InterimDir returns the partitioned interim-table root (data/interim).
-func (s Store) InterimDir() string { return filepath.Join(s.Workdir, "data", "interim") }
+// InterimDir returns the partitioned interim-table root (interim).
+func (s Store) InterimDir() string { return filepath.Join(s.Workdir, "interim") }
 
-// TabularDir returns the uncompressed Tablassert-handoff TSV root (data/tabular).
-func (s Store) TabularDir() string { return filepath.Join(s.Workdir, "data", "tabular") }
+// TabularDir returns the uncompressed Tablassert-handoff TSV root (tabular).
+func (s Store) TabularDir() string { return filepath.Join(s.Workdir, "tabular") }
 
-// ManifestsDir returns the per-artifact manifest root (data/manifests).
-func (s Store) ManifestsDir() string { return filepath.Join(s.Workdir, "data", "manifests") }
+// ManifestsDir returns the per-artifact manifest root (manifests).
+func (s Store) ManifestsDir() string { return filepath.Join(s.Workdir, "manifests") }
 
 // ManifestPath returns the sidecar manifest path for an artifact id (manifests/<hex>.json),
 // mirroring ArtifactStore.manifest_path.

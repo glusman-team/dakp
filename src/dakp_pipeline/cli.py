@@ -11,8 +11,7 @@ Commands::
 
     uv run dakp up             # build+pack the Go bundle, start Airflow, run dakp_pipeline, wait
     uv run dakp down           # stop the local Airflow started by `up`
-    uv run dakp clean          # remove caches, coverage data, tmp/, and the Go worker binary
-    uv run dakp cache clear    # delete the persistent NER mention cache (<workdir>/cache/ner/)
+    uv run dakp clean          # stop a live NER cache server, then remove caches, coverage data, tmp/, and the Go worker binary
     uv run dakp export-medliner --out <dir>   # export the MEDliNER training-data bundle (--fixtures = offline path)
 
 ``up`` is a faithful Python port of ``dakp_up.sh``: preflight-verifies the Airflow install
@@ -52,9 +51,9 @@ if TYPE_CHECKING:
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # --- hardcoded run locations + defaults (not flags, not env vars) ----------------
-_DEFAULT_WORKDIR = _REPO_ROOT / "tmp" / "airflow-run" / "data"
+_DEFAULT_WORKDIR = _REPO_ROOT / "tmp"
 _DEFAULT_FIXTURE_ROOT = _REPO_ROOT / "tests" / "fixtures" / "pipeline"
-_DEFAULT_AIRFLOW_HOME = _REPO_ROOT / "tmp" / "airflow-home"
+_DEFAULT_AIRFLOW_HOME = _REPO_ROOT / "tmp" / "airflow"
 _DEFAULT_PORT = 8090  # 8080 is commonly taken (e.g. by the aoe daemon on dev hosts)
 _DEFAULT_LOG_LEVEL = "INFO"
 _SMALL_SCOPE = 1  # `--small` bounds scope to ~1 FAERS quarter + 1 DailyMed release (the ONE surviving integer knob)
@@ -390,7 +389,9 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
         sleep(_RUN_WAIT_SECONDS)
 
     print()
-    summary = workdir / "data" / "reports" / "build_summary.json"
+    from dakp_pipeline.paths import Workdir
+
+    summary = Workdir(workdir).reports / "build_summary.json"
     if final == "success":
         print(f">>> SUCCESS — build summary: {summary}")
         if summary.exists():
@@ -428,7 +429,26 @@ def run_down() -> int:
 
 
 def run_clean() -> int:
-    """Remove caches, coverage data, ``tmp/``, stray ``__pycache__`` dirs, and the Go worker binary."""
+    """Remove caches, coverage data, ``tmp/``, stray ``__pycache__`` dirs, and the Go worker binary.
+
+    A live ``dakp-nercache`` server (``<workdir>/cache/ner/server.json`` pid probe) is SIGTERMed
+    first — Pebble holds an exclusive directory lock, so deleting under a running server would
+    corrupt nothing but the server would keep serving the deleted store. If the server survives
+    the SIGTERM, the clean is refused.
+    """
+    server_file = _DEFAULT_WORKDIR / "cache" / "ner" / "server.json"
+    if server_file.exists():
+        try:
+            pid = int(json.loads(server_file.read_text(encoding="utf-8")).get("pid", 0))
+        except (OSError, ValueError, AttributeError):
+            pid = 0
+        if pid and pid_alive(pid):
+            print(f">>> stopping live dakp-nercache server (pid {pid})")
+            terminate(pid)
+            sleep(2)
+            if pid_alive(pid):
+                print(f"!!! dakp-nercache pid {pid} survived SIGTERM; refusing to clean while it serves {_DEFAULT_WORKDIR / 'cache' / 'ner'}")
+                return 1
     for name in (".pytest_cache", ".ruff_cache", ".coverage", "htmlcov", "tmp"):
         target = _REPO_ROOT / name
         if target.is_dir():
@@ -440,39 +460,6 @@ def run_clean() -> int:
             shutil.rmtree(pycache, ignore_errors=True)
     (_REPO_ROOT / "go" / "dakp-worker").unlink(missing_ok=True)
     print(">>> cleaned caches, coverage data, tmp/, and the Go worker binary")
-    return 0
-
-
-# --- cache (persistent NER mention cache) ------------------------------------------
-
-
-def run_cache_clear() -> int:
-    """Delete the persistent NER mention cache (``<workdir>/cache/ner/``). Returns an exit code.
-
-    A live ``dakp-nercache`` server (``server.json`` pid probe) is SIGTERMed first — Pebble
-    holds an exclusive directory lock, so deleting under a running server would corrupt
-    nothing but the server would keep serving the deleted store. If the server survives the
-    SIGTERM, the deletion is refused.
-    """
-    cache_dir = _DEFAULT_WORKDIR / "cache" / "ner"
-    server_file = cache_dir / "server.json"
-    if server_file.exists():
-        try:
-            pid = int(json.loads(server_file.read_text(encoding="utf-8")).get("pid", 0))
-        except (OSError, ValueError, AttributeError):
-            pid = 0
-        if pid and pid_alive(pid):
-            print(f">>> stopping live dakp-nercache server (pid {pid})")
-            terminate(pid)
-            sleep(2)
-            if pid_alive(pid):
-                print(f"!!! dakp-nercache pid {pid} survived SIGTERM; refusing to delete {cache_dir}")
-                return 1
-    if not cache_dir.exists():
-        print(f">>> no NER mention cache at {cache_dir}")
-        return 0
-    shutil.rmtree(cache_dir, ignore_errors=True)
-    print(f">>> cleared NER mention cache ({cache_dir})")
     return 0
 
 
@@ -537,7 +524,7 @@ def run_export_medliner(*, out: str | None = None, workdir: str | None = None, f
     materialized ``workdir`` and NEVER downloads — a missing table is a loud error naming it.
     ``fixtures`` first runs the pure-Python reference extractors over the committed pipeline
     fixtures (the fully offline path). The bundle lands under
-    ``<workdir>/data/store/medliner-export`` and is copied to ``out`` when it points elsewhere.
+    ``<workdir>/store/medliner-export`` and is copied to ``out`` when it points elsewhere.
     """
     from dakp_pipeline import medliner_export
     from dakp_pipeline.io.contracts import TaskContext
@@ -569,8 +556,6 @@ def run_export_medliner(*, out: str | None = None, workdir: str | None = None, f
 # --- cyclopts app (console-script entry point: `dakp = dakp_pipeline.cli:app`) -----
 
 app = App(name="dakp", help="DAKP pipeline runner — one command runs the whole Airflow-native pipeline.")
-cache_app = App(name="cache", help="Manage DAKP's persistent caches.")
-app.command(cache_app)
 
 
 @app.command
@@ -617,14 +602,8 @@ def down() -> None:
 
 @app.command
 def clean() -> None:
-    """Remove caches, coverage data, ``tmp/``, and the Go worker binary."""
+    """Remove caches, coverage data, ``tmp/``, and the Go worker binary (stops a live NER cache server first)."""
     raise SystemExit(run_clean())
-
-
-@cache_app.command
-def clear() -> None:
-    """Delete the persistent NER mention cache (stops a live cache server first)."""
-    raise SystemExit(run_cache_clear())
 
 
 __all__ = [
@@ -636,7 +615,6 @@ __all__ = [
     "export_interim_refs",
     "extract_fixture_sources",
     "pid_alive",
-    "run_cache_clear",
     "run_clean",
     "run_down",
     "run_export_medliner",

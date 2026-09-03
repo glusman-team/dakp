@@ -170,7 +170,7 @@ rig:
       - "Upstream DINGO-reviewed DAKP RIG: https://github.com/NCATSTranslator/translator-ingests/blob/main/src/translator_ingest/ingests/dakp/dakp_rig.yaml"
       - "RIG review issue: https://github.com/NCATSTranslator/translator-ingests/issues/416"
   artifact_base_url: "https://github.com/glusman-team/dakp"
-  artifact_base_path: data
+  artifact_base_path: kgx
 uuid_fields:
   - subject
   - predicate

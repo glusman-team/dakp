@@ -208,11 +208,11 @@ def export(kgx_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
         return []
 
     workdir = Workdir(ctx.workdir)
-    data_dir = workdir.root / "data"
+    kgx_dir = workdir.kgx
     with step(logger, event):
         kgx_stem = f"{GRAPH_NAME}_{__version__}"
-        nodes_ndjson = _single_glob(data_dir, f"{kgx_stem}.nodes.ndjson")
-        edges_ndjson = _single_glob(data_dir, f"{kgx_stem}.edges.ndjson")
+        nodes_ndjson = _single_glob(kgx_dir, f"{kgx_stem}.nodes.ndjson")
+        edges_ndjson = _single_glob(kgx_dir, f"{kgx_stem}.edges.ndjson")
         nodes = read_kgx_jsonl(nodes_ndjson)
         edges = read_kgx_jsonl(edges_ndjson)
         nodes_path = nodes_ndjson.with_suffix(".tsv")

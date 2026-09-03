@@ -32,7 +32,7 @@ def _ctx(workdir: Path) -> TaskContext:
 
 def _scaffold(workdir: Path, *, mode: str = "real") -> tuple[list[ArtifactRef], list[ArtifactRef]]:
     """Write the handoff report + KGX pair + RIG + legacy TSV pair; return the ref lists."""
-    data = workdir / "data"
+    data = workdir / "kgx"
     data.mkdir(parents=True, exist_ok=True)
     stem = f"{GRAPH_NAME}_{__version__}"
     report = workdir / "reports" / REPORT_NAME
@@ -71,7 +71,7 @@ def test_publish_copies_everything_under_the_legacy_names(tmp_path: Path) -> Non
     kgx_refs, legacy_refs = _scaffold(tmp_path)
     refs = publish(kgx_refs, legacy_refs, _ctx(tmp_path))
 
-    data = tmp_path / "data"
+    data = tmp_path / "kgx"
     expected = [
         f"drug_approvals_kg_nodes_v{__version__}.ndjson",
         f"drug_approvals_kg_edges_v{__version__}.ndjson",
@@ -119,13 +119,13 @@ def test_publish_requires_the_legacy_tsv_pair(tmp_path: Path) -> None:
 
 def test_publish_requires_the_rig_yaml(tmp_path: Path) -> None:
     kgx_refs, legacy_refs = _scaffold(tmp_path)
-    (tmp_path / "data" / f"{GRAPH_NAME}_{__version__}.RIG.yaml").unlink()
+    (tmp_path / "kgx" / f"{GRAPH_NAME}_{__version__}.RIG.yaml").unlink()
     with pytest.raises(RuntimeError, match=r"exactly one '.*\.RIG\.yaml'"):
         publish(kgx_refs, legacy_refs, _ctx(tmp_path))
 
 
 def test_publish_requires_the_kgx_pair_on_disk(tmp_path: Path) -> None:
     kgx_refs, legacy_refs = _scaffold(tmp_path)
-    (tmp_path / "data" / f"{GRAPH_NAME}_{__version__}.edges.ndjson").unlink()
+    (tmp_path / "kgx" / f"{GRAPH_NAME}_{__version__}.edges.ndjson").unlink()
     with pytest.raises(RuntimeError, match="exactly one"):
         publish(kgx_refs, legacy_refs, _ctx(tmp_path))

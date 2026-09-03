@@ -48,8 +48,8 @@ def _ref(path: Path, rows: int) -> ArtifactRef:
 def test_build_summary_legacy_tsv_section_lists_exported_files(tmp_path: Path) -> None:
     wd = Workdir(tmp_path)
     wd.create()
-    nodes = _ref(wd.root / "data" / "dakp_0.1.0.nodes.tsv", 5)
-    edges = _ref(wd.root / "data" / "dakp_0.1.0.edges.tsv", 12)
+    nodes = _ref(wd.kgx / "dakp_0.1.0.nodes.tsv", 5)
+    edges = _ref(wd.kgx / "dakp_0.1.0.edges.tsv", 12)
     summary_path = write_build_summary(wd, [], [], ContractReport(ok=True), RegressionReport(ok=True), legacy_tsv_refs=[nodes, edges])
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["legacy_tsv"] == {

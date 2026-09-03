@@ -136,7 +136,7 @@ The standalone CLI runs the same parsing libraries directly, for development and
 checking against the Python reference extractors (it is **not** on the production path):
 
 ```bash
-go run ./cmd/dakp-worker hash data/raw/by-hash/<hex>/faers_ascii_2024q3.zip
+go run ./cmd/dakp-worker hash raw/by-hash/<hex>/faers_ascii_2024q3.zip
 go run ./cmd/dakp-worker dailymed <input-dir> <output-dir>
 go run ./cmd/dakp-worker faers <quarter-dir> <out-dir>
 go run ./cmd/dakp-worker drugsfda <input-dir> <out-dir>

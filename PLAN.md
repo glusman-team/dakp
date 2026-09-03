@@ -78,15 +78,15 @@ The same relative path resolves differently depending on where you stand:
 | CWD | Resolves to | Exists? |
 |---|---|---|
 | Repo root (where `dakp up` runs) | `/local_raid1/sgoetz/DBSTORE/FULLMAP/fullmap` | ✅ (`data  downloads`) |
-| tablassert's cwd (`…/tmp/airflow-run/data/`) | `/local_raid1/sgoetz/CODE/DAKP/tmp/DBSTORE/FULLMAP/fullmap` | ❌ |
+| tablassert's cwd (`…/tmp/`) | `/local_raid1/sgoetz/CODE/DAKP/DBSTORE/FULLMAP/fullmap` | ❌ |
 
 Confirmed with `pathlib.resolve()`:
 ```
 /local_raid1/sgoetz/CODE/DAKP + ../../DBSTORE/FULLMAP/fullmap
   → /local_raid1/sgoetz/DBSTORE/FULLMAP/fullmap        ← correct
 
-/local_raid1/sgoetz/CODE/DAKP/tmp/airflow-run/data + ../../DBSTORE/FULLMAP/fullmap
-  → /local_raid1/sgoetz/CODE/DAKP/tmp/DBSTORE/FULLMAP/fullmap  ← does not exist
+/local_raid1/sgoetz/CODE/DAKP/tmp + ../../DBSTORE/FULLMAP/fullmap
+  → /local_raid1/sgoetz/CODE/DAKP/DBSTORE/FULLMAP/fullmap  ← does not exist
 ```
 
 When `fullmap_db_path()` can't find the `.redb` at the resolved path, `resolve_batch()`

@@ -1,7 +1,7 @@
 """Content-addressed artifact store.
 
 Every raw download and derived artifact is hashed with BLAKE3 and stored immutably under
-``data/raw/by-hash/<hex>/``; human-readable aliases (under ``data/raw/aliases/``) point at
+``raw/by-hash/<hex>/``; human-readable aliases (under ``raw/aliases/``) point at
 the hash. Re-ingesting an identical artifact is a cache hit (no copy, manifest reused).
 Reuse is keyed by content hash, never by filename or mtime.
 
@@ -12,7 +12,7 @@ Two ingest modes:
 * :meth:`ArtifactStore.register` — register an artifact that already lives in the workdir
   (e.g. an interim parquet or a generated TSV) in place; hash + manifest only, no copy.
 
-A small operation index (``data/manifests/_index.json``, see :func:`op_index_key`) maps
+A small operation index (``manifests/_index.json``, see :func:`op_index_key`) maps
 ``operation + sorted input ids`` to the outputs registered for them, so extract/shape tasks
 can skip work whose inputs have not changed (:meth:`ArtifactStore.find_by_operation`).
 """
@@ -36,7 +36,7 @@ from dakp_pipeline.io.manifests import ArtifactManifest, EnvironmentBlock, HashB
 from dakp_pipeline.logging_setup import logger, stats
 from dakp_pipeline.paths import Workdir
 
-#: Name of the operation-index sidecar file inside ``data/manifests/`` (see :func:`op_index_key`).
+#: Name of the operation-index sidecar file inside ``manifests/`` (see :func:`op_index_key`).
 OP_INDEX_FILENAME = "_index.json"
 
 #: Shared Python/Go operation-index key spec (mirrored byte-for-byte by

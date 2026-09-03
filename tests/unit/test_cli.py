@@ -86,7 +86,7 @@ def _patch_happy(monkeypatch: pytest.MonkeyPatch, *, api_up: bool | Callable[[],
 
 
 def _write_summary(tmp_path: Path) -> Path:
-    summary = tmp_path / "work" / "data" / "reports" / "build_summary.json"
+    summary = tmp_path / "work" / "reports" / "build_summary.json"
     summary.parent.mkdir(parents=True, exist_ok=True)
     summary.write_text('{"ok": true}', encoding="utf-8")
     return summary
@@ -469,6 +469,61 @@ def test_clean_removes_expected_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert not (tmp_path / "go" / "dakp-worker").exists()
 
 
+def test_clean_stops_a_live_nercache_server(monkeypatch: pytest.MonkeyPatch, sandbox: Path) -> None:
+    """A live dakp-nercache server (pid probe in server.json) is SIGTERMed before cleaning."""
+    monkeypatch.setattr(cli, "_REPO_ROOT", sandbox)
+    (sandbox / "tmp").mkdir()
+    server_file = sandbox / "work" / "cache" / "ner" / "server.json"
+    server_file.parent.mkdir(parents=True)
+    server_file.write_text(json.dumps({"pid": 4242, "port": 9999}), encoding="utf-8")
+    terminated: list[int] = []
+    alive = iter([True, False])  # alive, then gone after SIGTERM
+    monkeypatch.setattr(cli, "pid_alive", lambda pid: next(alive))
+    monkeypatch.setattr(cli, "terminate", terminated.append)
+
+    code = cli.run_clean()
+
+    assert code == 0
+    assert terminated == [4242]
+    assert not (sandbox / "tmp").exists()  # the clean proceeded once the server was gone
+
+
+def test_clean_tolerates_a_corrupt_server_json(monkeypatch: pytest.MonkeyPatch, sandbox: Path) -> None:
+    """An unreadable server.json means no live server to stop — the clean simply proceeds."""
+    monkeypatch.setattr(cli, "_REPO_ROOT", sandbox)
+    (sandbox / "tmp").mkdir()
+    server_file = sandbox / "work" / "cache" / "ner" / "server.json"
+    server_file.parent.mkdir(parents=True)
+    server_file.write_text("not json", encoding="utf-8")
+    terminated: list[int] = []
+    monkeypatch.setattr(cli, "terminate", terminated.append)
+
+    code = cli.run_clean()
+
+    assert code == 0
+    assert terminated == []  # pid probe failed -> nothing to stop
+    assert not (sandbox / "tmp").exists()
+
+
+def test_clean_refuses_when_nercache_survives_sigterm(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """If the SIGTERMed pid is still alive, the clean is refused and nothing is removed."""
+    monkeypatch.setattr(cli, "_REPO_ROOT", sandbox)
+    (sandbox / "tmp").mkdir()
+    server_file = sandbox / "work" / "cache" / "ner" / "server.json"
+    server_file.parent.mkdir(parents=True)
+    server_file.write_text(json.dumps({"pid": 4242, "port": 9999}), encoding="utf-8")
+    terminated: list[int] = []
+    monkeypatch.setattr(cli, "pid_alive", lambda pid: True)  # never dies
+    monkeypatch.setattr(cli, "terminate", terminated.append)
+
+    code = cli.run_clean()
+
+    assert code == 1
+    assert terminated == [4242]
+    assert (sandbox / "tmp").exists()  # untouched
+    assert "refusing" in capsys.readouterr().out
+
+
 # --- cyclopts command wrappers (exit codes) ---------------------------------------
 
 
@@ -555,72 +610,6 @@ def test_up_builds_nercache_into_workdir_bin(monkeypatch: pytest.MonkeyPatch, sa
     assert str(sandbox / "work" / "bin" / "dakp-nercache") in build
 
 
-# --- cache clear --------------------------------------------------------------------
-
-
-def test_cache_clear_removes_the_store(sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    cache_dir = sandbox / "work" / "cache" / "ner"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "LOCK").write_bytes(b"")
-
-    assert cli.run_cache_clear() == 0
-    assert not cache_dir.exists()
-    assert "cleared" in capsys.readouterr().out
-
-
-def test_cache_clear_without_cache_is_a_noop(sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.run_cache_clear() == 0
-    assert "no NER mention cache" in capsys.readouterr().out
-
-
-def test_cache_clear_stops_a_live_server_first(monkeypatch: pytest.MonkeyPatch, sandbox: Path) -> None:
-    cache_dir = sandbox / "work" / "cache" / "ner"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "server.json").write_text(json.dumps({"pid": 4242, "port": 9999}), encoding="utf-8")
-    stopped: list[int] = []
-    alive = iter([True, False])  # alive, then gone after SIGTERM
-    monkeypatch.setattr(cli, "pid_alive", lambda pid: next(alive))
-    monkeypatch.setattr(cli, "terminate", stopped.append)
-
-    assert cli.run_cache_clear() == 0
-    assert stopped == [4242]
-    assert not cache_dir.exists()
-
-
-def test_cache_clear_tolerates_a_corrupt_server_json(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """An unreadable server.json means no live server to stop — the store is simply deleted."""
-    cache_dir = sandbox / "work" / "cache" / "ner"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "server.json").write_text("not json", encoding="utf-8")
-    terminated: list[int] = []
-    monkeypatch.setattr(cli, "terminate", terminated.append)
-
-    assert cli.run_cache_clear() == 0
-    assert terminated == []  # pid probe failed -> nothing to stop
-    assert not cache_dir.exists()
-    assert "cleared" in capsys.readouterr().out
-
-
-def test_cache_clear_refuses_when_the_server_survives_sigterm(
-    monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    cache_dir = sandbox / "work" / "cache" / "ner"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "server.json").write_text(json.dumps({"pid": 4242, "port": 9999}), encoding="utf-8")
-    monkeypatch.setattr(cli, "pid_alive", lambda pid: True)  # never dies
-    monkeypatch.setattr(cli, "terminate", lambda pid: None)
-
-    assert cli.run_cache_clear() == 1
-    assert cache_dir.exists()  # untouched
-    assert "refusing" in capsys.readouterr().out
-
-
-def test_cache_clear_command_raises_systemexit(sandbox: Path) -> None:
-    with pytest.raises(SystemExit) as excinfo:
-        cli.clear()
-    assert excinfo.value.code == 0
-
-
 # --- export-medliner (MEDliNER training-data bundle) ------------------------------
 
 
@@ -663,7 +652,7 @@ def test_export_medliner_happy_path_copies_to_out(sandbox: Path, capsys: pytest.
     assert manifest["task_counts"] == {"contraindication": 1, "indication": 3}
     assert manifest["family_counts"] == {"dailymed": 2, "faers": 2}
     # The store copy (where the export stage writes) exists alongside the --out copy.
-    assert (workdir / "data" / "store" / "medliner-export" / "manifest.json").exists()
+    assert (workdir / "store" / "medliner-export" / "manifest.json").exists()
 
 
 def test_export_medliner_default_out_is_the_store_bundle(sandbox: Path) -> None:
@@ -673,7 +662,7 @@ def test_export_medliner_default_out_is_the_store_bundle(sandbox: Path) -> None:
     code = cli.run_export_medliner()
 
     assert code == 0
-    bundle = sandbox / "work" / "data" / "store" / "medliner-export"
+    bundle = sandbox / "work" / "store" / "medliner-export"
     assert sorted(path.name for path in bundle.iterdir()) == ["candidates.ndjson", "manifest.json", "ner_gold.json"]
 
 
@@ -687,12 +676,12 @@ def test_export_medliner_missing_interim_tables_fail_loudly(sandbox: Path, capsy
     assert "dailymed/spl_documents.parquet" in out
     assert "faers/cases.parquet" in out
     assert "never downloads" in out
-    assert not (sandbox / "work" / "data" / "store" / "medliner-export").exists()  # no partial bundle
+    assert not (sandbox / "work" / "store" / "medliner-export").exists()  # no partial bundle
 
 
 def test_export_medliner_names_only_the_missing_table(sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """When one interim table exists, the error names exactly the one that is missing."""
-    interim = sandbox / "work" / "data" / "interim" / "dailymed"
+    interim = sandbox / "work" / "interim" / "dailymed"
     interim.mkdir(parents=True)
     (interim / "spl_documents.parquet").write_bytes(b"payload")
 
@@ -718,15 +707,15 @@ def test_export_medliner_fixtures_runs_reference_extractors_offline(
 
     assert code == 0
     assert "bundle ready" in capsys.readouterr().out
-    bundle = sandbox / "work" / "data" / "store" / "medliner-export"
+    bundle = sandbox / "work" / "store" / "medliner-export"
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == "dakp.medliner.export.v1"
     assert manifest["files"]["candidates.ndjson"]["rows"] > 0
     assert manifest["family_counts"]["dailymed"] > 0
     assert manifest["family_counts"]["faers"] > 0
     # The reference extractors materialized the interim layer on the way through.
-    assert (sandbox / "work" / "data" / "interim" / "dailymed" / "spl_documents.parquet").exists()
-    assert (sandbox / "work" / "data" / "interim" / "faers" / "cases.parquet").exists()
+    assert (sandbox / "work" / "interim" / "dailymed" / "spl_documents.parquet").exists()
+    assert (sandbox / "work" / "interim" / "faers" / "cases.parquet").exists()
 
 
 def test_export_medliner_fixtures_missing_fixture_raises_loudly(sandbox: Path) -> None:

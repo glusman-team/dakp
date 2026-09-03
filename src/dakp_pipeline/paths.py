@@ -29,11 +29,11 @@ class Workdir:
     # -- raw acquisition layer -------------------------------------------------
     @property
     def raw(self) -> Path:
-        return self.root / "data" / "raw"
+        return self.root / "raw"
 
     @property
     def by_hash(self) -> Path:
-        """Content-addressed store: ``data/raw/by-hash/<hash>/``."""
+        """Content-addressed store: ``raw/by-hash/<hash>/``."""
         return self.raw / "by-hash"
 
     @property
@@ -44,33 +44,33 @@ class Workdir:
     # -- processed layers ------------------------------------------------------
     @property
     def interim(self) -> Path:
-        """Partitioned parquet interim tables (``data/interim/``)."""
-        return self.root / "data" / "interim"
+        """Partitioned parquet interim tables (``interim/``)."""
+        return self.root / "interim"
 
     @property
     def tabular(self) -> Path:
-        """Uncompressed TSV assertion tables consumed by Tablassert (``data/tabular/``)."""
-        return self.root / "data" / "tabular"
+        """Uncompressed TSV assertion tables consumed by Tablassert (``tabular/``)."""
+        return self.root / "tabular"
 
     @property
     def kgx(self) -> Path:
-        """KGX NDJSON outputs produced by Tablassert (``data/kgx/``)."""
-        return self.root / "data" / "kgx"
+        """Final KGX NDJSON + RIG + legacy TSV outputs produced by Tablassert (``kgx/``)."""
+        return self.root / "kgx"
 
     @property
     def manifests(self) -> Path:
-        """Per-artifact JSON manifests (``data/manifests/``)."""
-        return self.root / "data" / "manifests"
+        """Per-artifact JSON manifests (``manifests/``)."""
+        return self.root / "manifests"
 
     @property
     def store(self) -> Path:
-        """Typed/derived store artifacts (``data/store/``)."""
-        return self.root / "data" / "store"
+        """Typed/derived store artifacts (``store/``)."""
+        return self.root / "store"
 
     @property
     def reports(self) -> Path:
         """Per-task ``task_report.json`` and build summaries."""
-        return self.root / "data" / "reports"
+        return self.root / "reports"
 
     @property
     def logs(self) -> Path:

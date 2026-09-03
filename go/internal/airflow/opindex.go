@@ -15,7 +15,7 @@ import (
 	"github.com/glusman-team/dakp/go/internal/blake3store"
 )
 
-// opIndexFilename is the operation-index sidecar inside data/manifests (matches Python
+// opIndexFilename is the operation-index sidecar inside manifests (matches Python
 // artifact_store.OP_INDEX_FILENAME).
 const opIndexFilename = "_index.json"
 
@@ -57,7 +57,7 @@ func OpIndexKey(operation string, inputs []string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// opIndexPath returns the index sidecar path (data/manifests/_index.json).
+// opIndexPath returns the index sidecar path (manifests/_index.json).
 func (s Store) opIndexPath() string { return filepath.Join(s.ManifestsDir(), opIndexFilename) }
 
 // readOpIndex is a best-effort read of the index (writers replace atomically, so reads need

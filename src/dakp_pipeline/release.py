@@ -74,21 +74,21 @@ def publish(kgx_refs: list[ArtifactRef], legacy_refs: list[ArtifactRef], ctx: Ta
         raise RuntimeError(msg)
 
     workdir = Workdir(ctx.workdir)
-    data_dir = workdir.root / "data"
+    kgx_dir = workdir.kgx
     kgx_stem = f"{GRAPH_NAME}_{__version__}"
     with step(logger, event):
         store = ArtifactStore(workdir)
         operation = OperationBlock(name=event)
         sources = [
-            (_single_glob(data_dir, f"{kgx_stem}.nodes.ndjson"), "nodes", "ndjson", _NDJSON_MEDIA_TYPE),
-            (_single_glob(data_dir, f"{kgx_stem}.edges.ndjson"), "edges", "ndjson", _NDJSON_MEDIA_TYPE),
+            (_single_glob(kgx_dir, f"{kgx_stem}.nodes.ndjson"), "nodes", "ndjson", _NDJSON_MEDIA_TYPE),
+            (_single_glob(kgx_dir, f"{kgx_stem}.edges.ndjson"), "edges", "ndjson", _NDJSON_MEDIA_TYPE),
             (tsv_by_kind["nodes"], "nodes", "tsv", TSV_MEDIA_TYPE),
             (tsv_by_kind["edges"], "edges", "tsv", TSV_MEDIA_TYPE),
-            (_single_glob(data_dir, f"{kgx_stem}.RIG.yaml"), None, "RIG.yaml", _YAML_MEDIA_TYPE),
+            (_single_glob(kgx_dir, f"{kgx_stem}.RIG.yaml"), None, "RIG.yaml", _YAML_MEDIA_TYPE),
         ]
         refs: list[ArtifactRef] = []
         for source, kind, suffix, media_type in sources:
-            target = data_dir / _legacy_name(kind, suffix)
+            target = kgx_dir / _legacy_name(kind, suffix)
             shutil.copyfile(source, target)
             refs.append(store.register(target, media_type=media_type, inputs=[hash_file(source)], operation=operation))
             stats(logger, event, published=str(target), source=str(source))

@@ -229,8 +229,8 @@ GRAPH_DESCRIPTION = (
 #: stands in until a dedicated public artifact location exists.
 RIG_ARTIFACT_BASE_URL = "https://github.com/glusman-team/dakp"
 #: Workdir-relative directory ``build-kg`` writes the KGX + RIG artifacts into (the runner's cwd
-#: is the workdir root, so outputs stay in ``./data`` as before).
-RIG_ARTIFACT_BASE_PATH = "data"
+#: is the workdir root, so outputs land in ``./kgx``).
+RIG_ARTIFACT_BASE_PATH = "kgx"
 #: Full human-readable RIG source name — the bare acronym is ambiguous outside this repository,
 #: and downstream ingest maintainers index sources by this name.
 RIG_SOURCE_NAME = "Drug Approvals Knowledge Provider (DAKP)"
@@ -883,7 +883,7 @@ def table_config(table: str) -> dict[str, Any]:
     }
     if qualifiers:  # no backing column => no ``qualifiers`` key (Tablassert treats absent and empty alike; keep configs minimal)
         statement["qualifiers"] = qualifiers
-    source: dict[str, Any] = {"kind": "text", "local": f"data/tabular/{table}.tsv", "url": [_TABLE_SOURCE_URLS[table]], "delimiter": "\t"}
+    source: dict[str, Any] = {"kind": "text", "local": f"tabular/{table}.tsv", "url": [_TABLE_SOURCE_URLS[table]], "delimiter": "\t"}
     denylist = _TABLE_SUBJECT_DENYLIST.get(table)
     if denylist:
         subject_letter = column_letter(table, SUBJECT_COLUMN)
@@ -1049,7 +1049,7 @@ def generate(assertion_refs: list[ArtifactRef], ctx: TaskContext) -> list[Artifa
     """Write ``tables/graph.yaml`` plus one table config per assertion table into the workdir.
 
     Configs land in ``<workdir>/tables/`` so their workdir-relative references
-    (``tables/<name>.yaml``, ``data/tabular/<table>.tsv``) resolve when Tablassert runs from the
+    (``tables/<name>.yaml``, ``tabular/<table>.tsv``) resolve when Tablassert runs from the
     workdir root. ``graph.yaml`` carries the fullmap redb path the ``build-kg`` resolve step reads
     (Tablassert reads it from the Graph config; the ``--fullmap`` flag is gone in >= 8.1):
     the real ``ctx.params["fullmap"]`` when present, else the :data:`FULLMAP_DEFAULT`

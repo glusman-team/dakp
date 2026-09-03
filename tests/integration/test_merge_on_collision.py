@@ -39,7 +39,7 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
     """ "Advil" + "Ibuprofen" rows (both -> CHEBI:5855) for one indication merge into ONE edge."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".tablassert" / "store").mkdir(parents=True)
-    (tmp_path / "data" / "tabular").mkdir(parents=True)
+    (tmp_path / "tabular").mkdir(parents=True)
     fullmap_root = tmp_path / "fullmap"
     fullmap_root.mkdir()
     classes = fullmap_root / "classes.ndjson"
@@ -56,7 +56,7 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
         )
         + "\n"
     )
-    fullmap = fullmap_root / "data" / "fullmap.redb"
+    fullmap = fullmap_root / "kgx" / "fullmap.redb"
     rs.build_fullmap_db(fullmap, [classes], [synonyms], threads=2)
 
     rows: list[dict[str, str]] = []
@@ -76,7 +76,7 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
         )
         rows.append(row)
     pl.DataFrame(rows, schema=schemas.FAERS_APPLIED_TO_TREAT_COLUMNS).write_csv(
-        tmp_path / "data" / "tabular" / "faers_applied_to_treat_assertions.tsv", separator="\t"
+        tmp_path / "tabular" / "faers_applied_to_treat_assertions.tsv", separator="\t"
     )
 
     table = tmp_path / "faers_applied_to_treat.yaml"
@@ -88,7 +88,7 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
 
     build_pipeline(graph, PipelineProgress(total_stages=6))
     version = dakp_tablassert.graph_config()["version"]
-    edges_path = tmp_path / "data" / f"{dakp_tablassert.GRAPH_NAME}_{version}.edges.ndjson"  # rig.artifact_base_path = "data" (Tablassert >= 11)
+    edges_path = tmp_path / "kgx" / f"{dakp_tablassert.GRAPH_NAME}_{version}.edges.ndjson"  # rig.artifact_base_path = "kgx" (Tablassert >= 11)
     edges = [json.loads(line) for line in edges_path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
     # ONE edge: the two spellings derived the same id and merged instead of aborting.

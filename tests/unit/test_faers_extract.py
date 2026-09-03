@@ -42,7 +42,7 @@ def _extract(wd: Path, refs: list[ArtifactRef] | None = None) -> list[ArtifactRe
 
 def _cases(wd: Path) -> pl.DataFrame:
     _extract(wd)
-    return pl.read_parquet(wd / "data" / "interim" / "faers" / "cases.parquet")
+    return pl.read_parquet(wd / "interim" / "faers" / "cases.parquet")
 
 
 # --- parsing primitives ---------------------------------------------------------
@@ -88,7 +88,7 @@ def test_parse_missing_primaryid_records_warning() -> None:
 
 def test_extract_writes_partitioned_normalized_parquets(tmp_path: Path) -> None:
     _extract(tmp_path)
-    base = tmp_path / "data" / "interim" / "faers"
+    base = tmp_path / "interim" / "faers"
     for quarter, families in [
         ("24Q3", {"demo", "drug", "indi", "reac", "rpsr", "delete", "cases"}),
         ("24Q2", {"demo", "drug", "indi", "reac", "rpsr", "cases"}),
@@ -162,7 +162,7 @@ def test_delete_filtering_drops_deleted_primaryid(tmp_path: Path) -> None:
 
 def test_delete_audit_records_deleted_primaryid(tmp_path: Path) -> None:
     _extract(tmp_path)
-    audit = pl.read_parquet(tmp_path / "data" / "interim" / "faers" / "delete_audit.parquet")
+    audit = pl.read_parquet(tmp_path / "interim" / "faers" / "delete_audit.parquet")
     assert audit.columns == ["quarter", "primaryid", "caseid", "source_file", "source_record_id"]
     assert "1003" in audit["primaryid"].to_list()
 
@@ -179,7 +179,7 @@ def test_caseid_dedup_most_recent_wins(tmp_path: Path) -> None:
 
 def test_dedup_audit_records_superseded_case(tmp_path: Path) -> None:
     _extract(tmp_path)
-    audit = pl.read_parquet(tmp_path / "data" / "interim" / "faers" / "dedup_audit.parquet")
+    audit = pl.read_parquet(tmp_path / "interim" / "faers" / "dedup_audit.parquet")
     assert audit.columns == ["quarter", "primaryid", "caseid", "dedup_key", "winning_quarter", "source_file"]
     row = audit.filter(pl.col("primaryid") == "2001").row(0, named=True)
     assert row["dedup_key"] == "5001"
@@ -190,7 +190,7 @@ def test_dedup_audit_records_superseded_case(tmp_path: Path) -> None:
 def test_single_quarter_has_no_dedup(tmp_path: Path) -> None:
     refs = [r for r in _refs() if "24Q3" in r.uri.name]
     _extract(tmp_path, refs)
-    audit = pl.read_parquet(tmp_path / "data" / "interim" / "faers" / "dedup_audit.parquet")
+    audit = pl.read_parquet(tmp_path / "interim" / "faers" / "dedup_audit.parquet")
     assert audit.is_empty()
 
 
@@ -199,7 +199,7 @@ def test_single_quarter_has_no_dedup(tmp_path: Path) -> None:
 
 def test_faers_cases_tsv_is_uncompressed_with_contract_columns(tmp_path: Path) -> None:
     _extract(tmp_path)
-    tsv = tmp_path / "data" / "interim" / "faers" / "faers_cases.tsv"
+    tsv = tmp_path / "interim" / "faers" / "faers_cases.tsv"
     assert tsv.exists()
     header = tsv.read_text(encoding="utf-8").splitlines()[0]
     assert header.split("\t") == schemas.FAERS_CASES_COLUMNS
@@ -228,8 +228,8 @@ def test_extract_is_blake3_deterministic(tmp_path: Path) -> None:
     wd_b = tmp_path / "b"
     _extract(wd_a)
     _extract(wd_b)
-    a = hash_file(wd_a / "data" / "interim" / "faers" / "cases.parquet")
-    b = hash_file(wd_b / "data" / "interim" / "faers" / "cases.parquet")
+    a = hash_file(wd_a / "interim" / "faers" / "cases.parquet")
+    b = hash_file(wd_b / "interim" / "faers" / "cases.parquet")
     assert a == b
     assert a.startswith("b3:")
 
@@ -282,7 +282,7 @@ def test_empty_input_returns_empty_cases(tmp_path: Path) -> None:
     out = faers_ascii.extract([], _ctx(tmp_path))
     assert out == []
     # No crash; cases.parquet not written when nothing parsed.
-    assert not (tmp_path / "data" / "interim" / "faers" / "cases.parquet").exists()
+    assert not (tmp_path / "interim" / "faers" / "cases.parquet").exists()
 
 
 def test_intraquarter_duplicate_indi_rows_deduped(tmp_path: Path) -> None:

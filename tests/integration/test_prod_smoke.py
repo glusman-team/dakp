@@ -130,13 +130,13 @@ def _fake_tablassert_subprocess(command: list[str], cwd: Path | None = None) -> 
     """The real TablassertRunner runs; only the ``../Tablassert`` process is faked (offline).
 
     The fake writes the KGX ndjson pair and the ``.RIG.yaml`` a successful ``build-kg`` leaves
-    under ``data/`` (the runner's cwd is the workdir root), so the downstream legacy TSV export
+    under ``kgx/`` (the runner's cwd is the workdir root), so the downstream legacy TSV export
     and release publish exercise their real branches against the faked subprocess output.
     """
     from dakp_pipeline import __version__
     from dakp_pipeline.tablassert import GRAPH_NAME
 
-    data = (cwd or Path.cwd()) / "data"
+    data = (cwd or Path.cwd()) / "kgx"
     data.mkdir(parents=True, exist_ok=True)
     (data / f"{GRAPH_NAME}_{__version__}.nodes.ndjson").write_text(
         '{"id":"CHEBI:1000001","name":"Examplestatin","category":["biolink:Drug"]}\n', encoding="utf-8"
@@ -154,7 +154,7 @@ def _fake_tablassert_subprocess(command: list[str], cwd: Path | None = None) -> 
 def _manifest_source_urls(workdir: Path) -> set[str]:
     """Collect every ``source.url`` recorded across the run's artifact manifests."""
     urls: set[str] = set()
-    for manifest_path in (workdir / "data" / "manifests").glob("*.json"):
+    for manifest_path in (workdir / "manifests").glob("*.json"):
         source = json.loads(manifest_path.read_text(encoding="utf-8")).get("source") or {}
         if source.get("url"):
             urls.add(str(source["url"]))
@@ -200,7 +200,7 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
     # Build summary + REAL Tablassert handoff (mode "real", not the deferred report).
     assert result.build_summary is not None
     assert result.build_summary.exists()
-    handoff = json.loads((workdir / "data" / "reports" / "tablassert_handoff.json").read_text(encoding="utf-8"))
+    handoff = json.loads((workdir / "reports" / "tablassert_handoff.json").read_text(encoding="utf-8"))
     assert handoff["mode"] == "real"
 
     # The legacy TSV stage retrofitted the (faked-subprocess) KGX pair into the old schema.
@@ -209,8 +209,8 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
 
     summary = json.loads(result.build_summary.read_text(encoding="utf-8"))
     assert summary["legacy_tsv"]["exported"] is True
-    nodes_tsv = workdir / "data" / f"{GRAPH_NAME}_{__version__}.nodes.tsv"
-    edges_tsv = workdir / "data" / f"{GRAPH_NAME}_{__version__}.edges.tsv"
+    nodes_tsv = workdir / "kgx" / f"{GRAPH_NAME}_{__version__}.nodes.tsv"
+    edges_tsv = workdir / "kgx" / f"{GRAPH_NAME}_{__version__}.edges.tsv"
     assert nodes_tsv.exists()
     assert edges_tsv.exists()
     assert nodes_tsv.read_text(encoding="utf-8").splitlines()[1].split("\t") == ["CHEBI:1000001", "Examplestatin", "biolink:Drug"]

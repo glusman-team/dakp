@@ -28,8 +28,8 @@ var dailymedInterimOrder = []string{"spl_documents", "spl_sets", "spl_approvals"
 
 // ExtractDailyMed is the native Go implementation of the DAG's extract_dailymed stage. It mirrors
 // spl_xml.SPLXMLExtractor._extract_via_go: parse the staged SPL inputs with internal/dailymed, then
-// write the five normalized interim parquet tables (data/interim/dailymed/) plus the uncompressed
-// sections TSV handoff (data/tabular/dailymed_spl_sections.tsv), registering each in the BLAKE3
+// write the five normalized interim parquet tables (interim/dailymed/) plus the uncompressed
+// sections TSV handoff (tabular/dailymed_spl_sections.tsv), registering each in the BLAKE3
 // store. Returns the six ArtifactRefs in the same order as the Python extractor (5 parquet with
 // spl_documents first, then the sections TSV).
 func ExtractDailyMed(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]ArtifactRef, error) {
