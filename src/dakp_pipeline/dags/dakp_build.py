@@ -1,4 +1,4 @@
-"""``dakp_build_v3`` Airflow DAG — the full pipeline task graph (Airflow-native).
+"""``dakp_pipeline`` Airflow DAG — the full pipeline task graph (Airflow-native).
 
 This is the **only** orchestrator (the former pure-Python pipeline runner is retired). The heavy
 parsing/extraction runs as **native Airflow Go SDK
@@ -26,7 +26,7 @@ from dakp_pipeline.logging_setup import logger, stats, step
 
 # --- DAG-level constants ---------------------------------------------------------
 
-DAG_ID = "dakp_build_v3"
+DAG_ID = "dakp_pipeline"
 
 #: Queue routed to the Go coordinator (airflow.cfg: [sdk] queue_to_coordinator = {"golang": "go"}).
 GO_QUEUE = "golang"

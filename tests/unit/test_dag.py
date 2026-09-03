@@ -1,4 +1,4 @@
-"""DAG wiring tests for the Airflow-native ``dakp_build_v3`` DAG (Airflow 3 is a hard dependency).
+"""DAG wiring tests for the Airflow-native ``dakp_pipeline`` DAG (Airflow 3 is a hard dependency).
 
 The DAG always imports and constructs (no optional-extra guard). These tests assert the module
 constants, the 16-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
@@ -46,7 +46,7 @@ _EXPECTED_GROUP_MEMBERS = {
 
 
 def test_module_constants(dakp_build) -> None:
-    assert dakp_build.DAG_ID == "dakp_build_v3"
+    assert dakp_build.DAG_ID == "dakp_pipeline"
     assert dakp_build.GO_QUEUE == "golang"
     assert dakp_build.DOWNLOAD_POOL == "dakp_download"
     assert dakp_build.EXTRACT_POOL == "dakp_extract"
@@ -56,7 +56,7 @@ def test_module_constants(dakp_build) -> None:
 
 def test_dag_object_and_task_ids(dakp_build) -> None:
     dag = dakp_build.dag_obj
-    assert dag.dag_id == "dakp_build_v3"
+    assert dag.dag_id == "dakp_pipeline"
     assert {t.task_id for t in dag.tasks} == _EXPECTED_TASK_IDS
 
 

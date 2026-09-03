@@ -7,7 +7,7 @@ parsing/extraction (DailyMed, FAERS, Drugs@FDA) runs **inside an Airflow Go SDK 
 shim). Layout:
 
 - [`cmd/dakp-bundle`](./cmd/dakp-bundle) — the **production** native worker: an Airflow Go SDK
-  `BundleProvider` registering `dag_id=dakp_build_v3` + the three extract tasks.
+  `BundleProvider` registering `dag_id=dakp_pipeline` + the three extract tasks.
 - [`internal/airflow`](./internal/airflow) — the worker support layer: `ArtifactRef`<->XCom codec,
   input staging, BLAKE3 store registration (mirrors Python `io/artifact_store`), a generic
   all-string parquet writer, and `ExtractDailyMed`/`ExtractFAERS`/`ExtractDrugsFDA`.

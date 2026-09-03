@@ -9,7 +9,7 @@ only inputs are a few short-aliased flags (``--fullmap/-f``, ``--port/-p``, ``--
 
 Commands::
 
-    uv run dakp up             # build+pack the Go bundle, start Airflow, run dakp_build_v3, wait
+    uv run dakp up             # build+pack the Go bundle, start Airflow, run dakp_pipeline, wait
     uv run dakp down           # stop the local Airflow started by `up`
     uv run dakp clean          # remove caches, coverage data, tmp/, and the Go worker binary
     uv run dakp cache clear    # delete the persistent NER mention cache (<workdir>/cache/ner/)
@@ -18,7 +18,7 @@ Commands::
 ``up`` is a faithful Python port of ``dakp_up.sh``: preflight-verifies the Airflow install
 (self-heals a corrupt venv), builds + packs the native Go bundle, starts Airflow standalone with the
 ExecutableCoordinator configured, sets the ``dakp_config`` Variable + task pools, triggers the
-``dakp_build_v3`` DAG, and waits for it to finish (unless ``--detach``). The fullmap redb is never
+``dakp_pipeline`` DAG, and waits for it to finish (unless ``--detach``). The fullmap redb is never
 downloaded — ``--fullmap <path>`` points at a prebuilt redb and triggers the real Tablassert
 handoff (without it the handoff is deferred, never an error).
 
