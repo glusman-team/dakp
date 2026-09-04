@@ -99,9 +99,22 @@ type treeEntry struct {
 // empty directory hashes to BLAKE3 of the empty input. Symlinks and other non-regular
 // files are skipped (the Python reference follows symlinked files to their target
 // content; DAKP fixtures and production trees use regular files).
+//
+// I/O is pipelined, but the byte stream into the hasher is untouched: one warmer
+// goroutine issues best-effort kernel readahead hints (posix_fadvise WILLNEED) for
+// upcoming files — at most treeWarmAhead files ahead of the hasher — so disk fetches
+// overlap hashing while the main goroutine runs the exact sequential read loop below.
+// The digest is therefore bit-identical to a purely sequential read, and warmer errors
+// are irrelevant (the hashing reads are authoritative). Readahead is a Linux-only hint;
+// other platforms compile a no-op warmer.
 func HashTree(root string) (string, error) {
 	return hashTreeChunked(root, DefaultChunk)
 }
+
+// treeWarmAhead bounds how far (in files) the readahead warmer may run ahead of the
+// hasher: deep enough to hide disk latency, shallow enough that warmed pages are not
+// evicted before use and hot-cache hashing pays no extra memory traffic.
+const treeWarmAhead = 8
 
 func hashTreeChunked(root string, chunk int) (string, error) {
 	entries, err := listTreeFiles(root)
@@ -109,6 +122,26 @@ func hashTreeChunked(root string, chunk int) (string, error) {
 		return "", err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].rel < entries[j].rel })
+
+	// Warmer pacing: one token per file; the warmer must take a token before hinting a
+	// file and the main goroutine returns a token per hashed file, so the warmer runs at
+	// most treeWarmAhead files ahead. Tokens prefill the initial window.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tokens := make(chan struct{}, treeWarmAhead)
+	for range treeWarmAhead {
+		tokens <- struct{}{}
+	}
+	go func() {
+		for _, e := range entries {
+			select {
+			case <-tokens:
+			case <-ctx.Done():
+				return
+			}
+			warmTreeFile(filepath.Join(root, filepath.FromSlash(e.rel)))
+		}
+	}()
 
 	h := blake3.New()
 	buf := make([]byte, chunk)
@@ -125,6 +158,10 @@ func hashTreeChunked(root string, chunk int) (string, error) {
 			return "", err
 		}
 		h.Write(sep)
+		select {
+		case tokens <- struct{}{}: // let the warmer run one file further ahead
+		default: // warmer already exited
+		}
 	}
 	return ArtifactID(hex.EncodeToString(h.Sum(nil))), nil
 }
@@ -194,6 +231,42 @@ func HashFiles(ctx context.Context, paths []string, limit int) (map[string]strin
 			}
 			mu.Lock()
 			out[p] = id
+			mu.Unlock()
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// HashFilesWithSRI hashes many files concurrently with bounded parallelism like HashFiles,
+// but reads each file ONCE, feeding both the BLAKE3 and SHA-256 hashers (the
+// HashFileWithSRI single pass). It returns a map from input path to the
+// [b3:<hex>, sha256-<base64>] pair — the same formats as HashFile and SHA256SRI. limit <= 0
+// means unbounded; remaining work is cancelled on the first error.
+func HashFilesWithSRI(ctx context.Context, paths []string, limit int) (map[string][2]string, error) {
+	var (
+		mu  sync.Mutex
+		out = make(map[string][2]string, len(paths))
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	if limit > 0 {
+		g.SetLimit(limit)
+	}
+	for _, p := range paths {
+		p := p
+		g.Go(func() error {
+			if err := gctx.Err(); err != nil {
+				return err // ctx cancelled or another goroutine already failed
+			}
+			id, sri, err := HashFileWithSRI(p)
+			if err != nil {
+				return fmt.Errorf("hash %s: %w", p, err)
+			}
+			mu.Lock()
+			out[p] = [2]string{id, sri}
 			mu.Unlock()
 			return nil
 		})

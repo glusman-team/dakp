@@ -120,7 +120,10 @@ func ExtractDailyMed(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 	inputIDs := tables.InputIDs
 	warnings := int64(tables.Warnings)
 
-	refs := make([]ArtifactRef, 0, len(dailymedInterimOrder)+1)
+	// Write all outputs first, then register them as ONE batch (hashes run concurrently;
+	// manifests/refs/stat lines stay in the locked registration order).
+	regInputs := make([]RegisterInput, 0, len(dailymedInterimOrder)+1)
+	regNames := make([]string, 0, len(dailymedInterimOrder)+1)
 	for _, name := range dailymedInterimOrder {
 		tf := byName[name]
 		out := filepath.Join(interimDir, name+".parquet")
@@ -128,7 +131,7 @@ func ExtractDailyMed(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 		if err != nil {
 			return nil, fmt.Errorf("extract_dailymed: write %s: %w", name, err)
 		}
-		ref, err := store.Register(RegisterInput{
+		regInputs = append(regInputs, RegisterInput{
 			Path:              out,
 			MediaType:         ParquetMediaType,
 			Rows:              int64(n),
@@ -137,11 +140,7 @@ func ExtractDailyMed(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 			Warnings:          warnings,
 			Operation:         dailymedOperation,
 		})
-		if err != nil {
-			return nil, err
-		}
-		StatOutput(ctx, dailymedEvent, name+".parquet", ref)
-		refs = append(refs, ref)
+		regNames = append(regNames, name+".parquet")
 	}
 
 	// Uncompressed sections TSV for the Tablassert handoff.
@@ -150,7 +149,7 @@ func ExtractDailyMed(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 	if err := writeTableTSV(tsvPath, secTF.Columns, secTF.Rows); err != nil {
 		return nil, fmt.Errorf("extract_dailymed: write sections tsv: %w", err)
 	}
-	tsvRef, err := store.Register(RegisterInput{
+	regInputs = append(regInputs, RegisterInput{
 		Path:              tsvPath,
 		MediaType:         TSVMediaType,
 		Rows:              int64(len(secTF.Rows)),
@@ -159,12 +158,15 @@ func ExtractDailyMed(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]A
 		Warnings:          warnings,
 		Operation:         dailymedOperation,
 	})
+	regNames = append(regNames, "dailymed_spl_sections.tsv")
+
+	refs, err := store.RegisterMany(ctx, regInputs)
 	if err != nil {
 		return nil, err
 	}
-	StatOutput(ctx, dailymedEvent, "dailymed_spl_sections.tsv", tsvRef)
-
-	refs = append(refs, tsvRef)
+	for i, name := range regNames {
+		StatOutput(ctx, dailymedEvent, name, refs[i])
+	}
 	Stat(ctx, dailymedEvent, "output_refs", len(refs))
 	store.RecordOperation(dailymedTaskOperation, upstreamIDs, refs)
 	return refs, nil

@@ -162,60 +162,65 @@ func ExtractFAERS(ctx context.Context, cfg Config, inputs []ArtifactRef) ([]Arti
 	}
 	Stat(ctx, faersEvent, "merged_rows", casesN)
 	Stat(ctx, faersEvent, "merge_elapsed_s", fmt.Sprintf("%.3f", time.Since(mergeStart).Seconds()))
-	casesRef, err := store.Register(RegisterInput{
-		Path: casesPath, MediaType: ParquetMediaType, Rows: int64(casesN),
-		SchemaFingerprint: SchemaFingerprint(faersCaseColumns), Inputs: inputIDs,
-		Warnings: warningsTotal, Operation: "extract_faers_cases",
+	// 1+2 registered as one batch (both files already exist; hashes run concurrently, refs
+	// and stat lines keep their order).
+	pairRefs, err := store.RegisterMany(ctx, []RegisterInput{
+		{
+			Path: casesPath, MediaType: ParquetMediaType, Rows: int64(casesN),
+			SchemaFingerprint: SchemaFingerprint(faersCaseColumns), Inputs: inputIDs,
+			Warnings: warningsTotal, Operation: "extract_faers_cases",
+		},
+		{
+			Path: tsvPath, MediaType: TSVMediaType, Rows: int64(casesN),
+			SchemaFingerprint: SchemaFingerprint(faers.CasesTSVColumns), Inputs: inputIDs,
+			Warnings: warningsTotal, Operation: "emit_faers_cases_tsv",
+		},
 	})
 	if err != nil {
 		return nil, err
 	}
+	casesRef, tsvRef := pairRefs[0], pairRefs[1]
 	StatOutput(ctx, faersEvent, "cases.parquet", casesRef)
-	tsvRef, err := store.Register(RegisterInput{
-		Path: tsvPath, MediaType: TSVMediaType, Rows: int64(casesN),
-		SchemaFingerprint: SchemaFingerprint(faers.CasesTSVColumns), Inputs: inputIDs,
-		Warnings: warningsTotal, Operation: "emit_faers_cases_tsv",
-	})
-	if err != nil {
-		return nil, err
-	}
 	StatOutput(ctx, faersEvent, "faers_cases.tsv", tsvRef)
 
-	// 3. delete_audit.parquet.
+	// 3+4+5. delete_audit / dedup_audit / warnings parquets: written, then registered as
+	// one batch (hashes run concurrently; refs and stat lines keep their order).
 	deleteRows := make([][]string, 0)
 	for _, r := range faers.BuildDeleteAudit(deleteTables) {
 		deleteRows = append(deleteRows, []string{r.Quarter, r.PrimaryID, r.CaseID, r.SourceFile, r.SourceRecordID})
 	}
-	deleteRef, err := writeFAERSAuditParquet(store, faersDir, "delete_audit", faers.DeleteAuditColumns, deleteRows, inputIDs, warningsTotal)
+	deleteIn, err := writeFAERSAuditParquet(faersDir, "delete_audit", faers.DeleteAuditColumns, deleteRows, inputIDs, warningsTotal)
 	if err != nil {
 		return nil, err
 	}
-	StatOutput(ctx, faersEvent, "delete_audit.parquet", deleteRef)
-
-	// 4. dedup_audit.parquet.
 	dedupRows := make([][]string, 0, len(dedupAudit))
 	for _, r := range dedupAudit {
 		dedupRows = append(dedupRows, []string{r.Quarter, r.PrimaryID, r.CaseID, r.DedupKey, r.WinningQuarter, r.SourceFile})
 	}
-	dedupRef, err := writeFAERSAuditParquet(store, faersDir, "dedup_audit", faers.DedupAuditColumns, dedupRows, inputIDs, warningsTotal)
+	dedupIn, err := writeFAERSAuditParquet(faersDir, "dedup_audit", faers.DedupAuditColumns, dedupRows, inputIDs, warningsTotal)
 	if err != nil {
 		return nil, err
 	}
-	StatOutput(ctx, faersEvent, "dedup_audit.parquet", dedupRef)
-
-	// 5. warnings.parquet (empty; the Go task records warnings in its log stream, not rows).
+	// warnings.parquet is empty: the Go task records warnings in its log stream, not rows.
 	warningsPath := filepath.Join(faersDir, "warnings.parquet")
 	if _, err := WriteStringParquet(warningsPath, faersWarningsColumns, nil); err != nil {
 		return nil, fmt.Errorf("extract_faers: write warnings.parquet: %w", err)
 	}
-	warningsRef, err := store.Register(RegisterInput{
-		Path: warningsPath, MediaType: ParquetMediaType, Rows: 0,
-		SchemaFingerprint: SchemaFingerprint(faersWarningsColumns), Inputs: inputIDs,
-		Warnings: warningsTotal, Operation: "extract_faers_warnings",
+	auditRefs, err := store.RegisterMany(ctx, []RegisterInput{
+		deleteIn,
+		dedupIn,
+		{
+			Path: warningsPath, MediaType: ParquetMediaType, Rows: 0,
+			SchemaFingerprint: SchemaFingerprint(faersWarningsColumns), Inputs: inputIDs,
+			Warnings: warningsTotal, Operation: "extract_faers_warnings",
+		},
 	})
 	if err != nil {
 		return nil, err
 	}
+	deleteRef, dedupRef, warningsRef := auditRefs[0], auditRefs[1], auditRefs[2]
+	StatOutput(ctx, faersEvent, "delete_audit.parquet", deleteRef)
+	StatOutput(ctx, faersEvent, "dedup_audit.parquet", dedupRef)
 	StatOutput(ctx, faersEvent, "warnings.parquet", warningsRef)
 
 	refs := []ArtifactRef{casesRef, tsvRef, deleteRef, dedupRef, warningsRef}
@@ -274,17 +279,19 @@ func mergeFAERSOutputs(runs []string, casesPath, tsvPath string) (int, error) {
 	return n, nil
 }
 
-func writeFAERSAuditParquet(store Store, dir, name string, columns []string, rows [][]string, inputIDs []string, warnings int64) (ArtifactRef, error) {
+// writeFAERSAuditParquet writes one audit parquet and returns its RegisterInput; the
+// caller batches the registration via RegisterMany.
+func writeFAERSAuditParquet(dir, name string, columns []string, rows [][]string, inputIDs []string, warnings int64) (RegisterInput, error) {
 	path := filepath.Join(dir, name+".parquet")
 	n, err := WriteStringParquet(path, columns, rows)
 	if err != nil {
-		return ArtifactRef{}, fmt.Errorf("extract_faers: write %s: %w", name, err)
+		return RegisterInput{}, fmt.Errorf("extract_faers: write %s: %w", name, err)
 	}
-	return store.Register(RegisterInput{
+	return RegisterInput{
 		Path: path, MediaType: ParquetMediaType, Rows: int64(n),
 		SchemaFingerprint: SchemaFingerprint(columns), Inputs: inputIDs,
 		Warnings: warnings, Operation: "extract_faers_" + name,
-	})
+	}, nil
 }
 
 // --- lazy source inventory (no bulk content reads) -------------------------------

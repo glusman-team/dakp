@@ -6,13 +6,17 @@ Optional SHA-256/SRI metadata is computed only as interoperability sugar; the ca
 artifact id is always ``b3:<hex>``.
 
 Pure code path: uses the ``blake3`` Rust-extension wheel, so tests/CI require no external
-CLI tools (no ``nix-hash``, no ``b3sum``).
+CLI tools (no ``nix-hash``, no ``b3sum``). File hashing is memory-mapped and multithreaded
+(``blake3(max_threads=blake3.AUTO)`` + ``Hasher.update_mmap``); BLAKE3 is a tree hash
+internally, so digests are byte-identical regardless of threading. ``hash_file_with_sri``
+overlaps the (slower) SHA-256 stream with BLAKE3 on a thread pool.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from blake3 import blake3
@@ -39,28 +43,45 @@ def hash_bytes(data: bytes) -> str:
 
 
 def hash_file(path: Path, *, chunk_size: int = _DEFAULT_CHUNK) -> str:
-    """Streaming BLAKE3 of a file's bytes, returned as ``b3:<hex>``."""
-    hasher = blake3()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(chunk_size), b""):
-            hasher.update(chunk)
+    """Multithreaded mmap BLAKE3 of a file's bytes, returned as ``b3:<hex>``.
+
+    ``chunk_size`` is accepted for call-site compatibility but is advisory: hashing uses
+    ``Hasher.update_mmap`` with Rayon multithreading rather than a chunked read loop.
+    """
+    del chunk_size  # advisory only on the mmap path
+    hasher = blake3(max_threads=blake3.AUTO)
+    hasher.update_mmap(str(path))
     return artifact_id(hasher.hexdigest())
 
 
-def hash_file_with_sri(path: Path, *, chunk_size: int = _DEFAULT_CHUNK) -> tuple[str, str]:
-    """Single-pass BLAKE3 id + SHA-256 SRI of a file's bytes.
+def _blake3_file(path: Path) -> str:
+    hasher = blake3(max_threads=blake3.AUTO)
+    hasher.update_mmap(str(path))
+    return artifact_id(hasher.hexdigest())
 
-    Streams the file once, updating both hashers per chunk; returns ``(b3:<hex>,
-    sha256-<base64>)`` in exactly the formats of :func:`hash_file` and :func:`sha256_sri`.
-    """
-    b3_hasher = blake3()
-    sha_hasher = hashlib.sha256()
+
+def _sha256_file(path: Path, chunk_size: int) -> str:
+    hasher = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(chunk_size), b""):
-            b3_hasher.update(chunk)
-            sha_hasher.update(chunk)
-    digest = base64.b64encode(sha_hasher.digest()).decode("ascii")
-    return artifact_id(b3_hasher.hexdigest()), f"sha256-{digest}"
+            hasher.update(chunk)
+    digest = base64.b64encode(hasher.digest()).decode("ascii")
+    return f"sha256-{digest}"
+
+
+def hash_file_with_sri(path: Path, *, chunk_size: int = _DEFAULT_CHUNK) -> tuple[str, str]:
+    """Concurrent BLAKE3 id + SHA-256 SRI of a file's bytes.
+
+    Runs BLAKE3 (mmap, multithreaded) and the streaming SHA-256 loop on a two-worker
+    thread pool — hashlib releases the GIL on large buffers and the Rust blake3 extension
+    does its own threading, so the two truly overlap. The file is read twice (once mapped,
+    once streamed). Returns ``(b3:<hex>, sha256-<base64>)`` in exactly the formats of
+    :func:`hash_file` and :func:`sha256_sri`.
+    """
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        b3_future = pool.submit(_blake3_file, path)
+        sha_future = pool.submit(_sha256_file, path, chunk_size)
+        return b3_future.result(), sha_future.result()
 
 
 def hash_tree(root: Path, *, chunk_size: int = _DEFAULT_CHUNK) -> str:
@@ -68,8 +89,10 @@ def hash_tree(root: Path, *, chunk_size: int = _DEFAULT_CHUNK) -> str:
 
     Nix-NAR-like in spirit but BLAKE3-based: stable over sorted relative paths, file
     sizes, and file contents. Directory mtimes, traversal order, and empty dirs do not
-    affect the result. Returns ``b3:<hex>``.
+    affect the result. Returns ``b3:<hex>``. File contents are fed via
+    ``Hasher.update_mmap``; ``chunk_size`` is advisory only on that path.
     """
+    del chunk_size  # advisory only on the mmap path
     hasher = blake3()
     files = sorted((p for p in root.rglob("*") if p.is_file()), key=lambda p: p.relative_to(root).as_posix())
     for path in files:
@@ -79,9 +102,7 @@ def hash_tree(root: Path, *, chunk_size: int = _DEFAULT_CHUNK) -> str:
         hasher.update(b"\x00")
         hasher.update(str(size).encode("ascii"))
         hasher.update(b"\x00")
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(chunk_size), b""):
-                hasher.update(chunk)
+        hasher.update_mmap(str(path))
         hasher.update(b"\x00")
     return artifact_id(hasher.hexdigest())
 

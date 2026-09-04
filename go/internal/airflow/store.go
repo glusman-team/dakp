@@ -1,9 +1,11 @@
 package airflow
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/glusman-team/dakp/go/internal/blake3store"
@@ -67,6 +69,42 @@ func (s Store) Register(in RegisterInput) (ArtifactRef, error) {
 	if err != nil {
 		return ArtifactRef{}, err
 	}
+	return s.registerWithHashes(in, id, sri)
+}
+
+// RegisterMany registers many in-place workdir outputs: it hashes every input path
+// concurrently (bounded by runtime.NumCPU) via blake3store.HashFilesWithSRI — one read per
+// file — then writes the sidecar manifests and builds the refs sequentially in input
+// order. The manifests, refs, and debug log lines are exactly those of N sequential
+// Register calls.
+func (s Store) RegisterMany(ctx context.Context, inputs []RegisterInput) ([]ArtifactRef, error) {
+	if len(inputs) == 0 {
+		return nil, nil
+	}
+	paths := make([]string, len(inputs))
+	for i, in := range inputs {
+		paths[i] = in.Path
+	}
+	hashes, err := blake3store.HashFilesWithSRI(ctx, paths, runtime.NumCPU())
+	if err != nil {
+		return nil, err
+	}
+	refs := make([]ArtifactRef, 0, len(inputs))
+	for _, in := range inputs {
+		pair := hashes[in.Path]
+		ref, err := s.registerWithHashes(in, pair[0], pair[1])
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, ref)
+	}
+	return refs, nil
+}
+
+// registerWithHashes is the shared tail of Register/RegisterMany: the hashes are already
+// computed, so it writes the sidecar manifest at manifests/<hex>.json, logs, and returns
+// the ArtifactRef whose URI is the path.
+func (s Store) registerWithHashes(in RegisterInput, id, sri string) (ArtifactRef, error) {
 	m := blake3store.NewArtifactManifest(id, in.Path, in.MediaType)
 	m.Hash.File = blake3store.StringPtr(id)
 	m.Hash.SHA256SRI = blake3store.StringPtr(sri)
