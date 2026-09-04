@@ -75,8 +75,14 @@ resolution — what DAKP's legacy-shaped edge provenance requires. 16.0's ``uuid
 16.1's ``--no-original`` (#124) drops the verbatim ``original_*`` source cells from final
 edges (DAKP builds pass it always; identity no longer depends on them), and 16.2's
 ``uuid_on_collision: merge`` (SkyeAv/Tablassert#126) merges edges that derive one id —
-synonym mentions resolving to the same CURIE — instead of aborting the build (the emitted
-graph config declares both UNCONDITIONALLY, so 16.2 is the floor).
+synonym mentions resolving to the same CURIE — instead of aborting the build. Tablassert
+>= 16.6 makes that merge exact for the FAERS case count: the build-internal
+``supporting_case_ids`` edge extra unions across folded edges and ``number_of_cases`` is
+recomputed as the union size, then the carrier is stripped before the final NDJSON (on older
+Tablassert the annotated ``case_ids`` column folds into ``supporting_text`` harmlessly and the
+merge keeps first-wins). The emitted
+graph config declares merge UNCONDITIONALLY and the FAERS table annotates ``case_ids``, so
+16.2 is the floor and 16.6 is where the merged count becomes exact.
 Fullmaps must
 be ``tablassert.fullmap.v5`` redb files — the on-disk format since Tablassert 8.2, unchanged
 in 13.0; older ones (v1-v4) are rejected on read.
@@ -157,8 +163,14 @@ FULLMAP_DEFAULT = ".fullmap"
 #: UMLS:C4721779), and those rows are ONE edge — they merge downstream via the graph config's
 #: ``uuid_on_collision: merge`` (Tablassert >= 16.2), which unions
 #: list-valued evidence and keeps first-wins scalars instead of aborting the build
-#: (``uuid-fields-not-a-key``). Evidence fields (``publications``, ``FDA_regulatory_approvals``,
-#: ``number_of_cases``) are NOT identity either: rows agreeing on the identity fields are ONE
+#: (``uuid-fields-not-a-key``). The one scalar that must NOT go first-wins is
+#: ``number_of_cases``: the merged edge would silently drop the absorbed rows' cases. The FAERS
+#: table therefore carries ``case_ids`` onto the edge as the build-internal
+#: ``supporting_case_ids`` list (one token per distinct case), and Tablassert >= 16.6 recomputes
+#: the merged count as the union size — the extra unique cases are ADDED — then strips the
+#: carrier before the final NDJSON. Other evidence fields (``publications``,
+#: ``FDA_regulatory_approvals``) are NOT identity either: rows agreeing on the identity fields
+#: are ONE
 #: edge whose evidence is the merged union (deduplicated, sorted, pipe-joined — the
 #: :func:`~dakp_pipeline.assertions.evidence.sorted_pipe` convention). That merging happens in
 #: the assertion shapers BEFORE Tablassert ever sees the rows — observed in production: two
@@ -668,6 +680,16 @@ def _sources_template(table: str) -> list[dict[str, Any]]:
 #   would be mechanically available for ``source_score``, but that column is the max NER SPAN score
 #   — confidence that a mention was recognized, not that the statement is true — so promoting it
 #   would mislead any consumer that weights edges by confidence.
+# * ``supporting_case_ids`` (``list[str]``, Tablassert >= 16.6) is a Tablassert edge EXTRA, not a
+#   Biolink slot — the build-internal carrier of the exact per-case token set behind
+#   ``number_of_cases`` (one token per distinct FAERS case; see
+#   :func:`~dakp_pipeline.assertions.observed_uses.build_observed_use_rows`). When
+#   ``uuid_on_collision: merge`` folds rows whose different ``object_text`` spellings resolved to
+#   one CURIE — the case the old ``original_subject``/``original_object`` identity discriminators
+#   kept as separate edges — the merge unions the carrier lists and recomputes
+#   ``number_of_cases`` as the union size, so the extra unique cases are ADDED instead of dropped
+#   by first-wins scalar merging. The dedup pass strips the field before writing, so it never
+#   reaches the published NDJSON.
 _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
     "approved_treats_assertions": (
         ("FDA_regulatory_approvals", "FDA_regulatory_approvals", "|"),
@@ -676,6 +698,7 @@ _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
     ),
     "faers_applied_to_treat_assertions": (
         ("case_count", "number_of_cases", None),
+        ("case_ids", "supporting_case_ids", "|"),
         ("FDA_regulatory_approvals", "FDA_regulatory_approvals", "|"),
         ("edge_evidence", "publications", "|"),
         ("clinical_approval_status", "clinical_approval_status", None),

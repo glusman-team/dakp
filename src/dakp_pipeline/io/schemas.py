@@ -64,6 +64,7 @@ FAERS_APPLIED_TO_TREAT_COLUMNS = [
     "object_name",
     "object_category",
     "case_count",
+    "case_ids",
     "clinical_approval_status",
     "knowledge_level",
     "agent_type",

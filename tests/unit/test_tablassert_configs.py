@@ -134,7 +134,10 @@ EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
 # ``EntityToPhenotypicFeatureAssociation``) and the name ``NCATSTranslator/translator-ingests``
 # maps DAKP's approvals onto, so the column and the annotation share it; DAKP splits it with
 # ``split_by`` so the edge carries the legacy ``approvals`` JSON-ARRAY shape;
-# ``source_score`` still folds into ``supporting_text``.
+# ``source_score`` still folds into ``supporting_text``. ``case_ids`` maps to
+# ``supporting_case_ids`` — a Tablassert edge EXTRA (>= 16.6), not a Biolink slot: the
+# build-internal carrier the ``uuid_on_collision: merge`` dedup unions to recompute
+# ``number_of_cases`` as the exact unique-case count, stripped before the final NDJSON.
 EXPECTED_ANNOTATIONS = {
     "approved_treats_assertions": {
         "FDA_regulatory_approvals": ("FDA_regulatory_approvals", "|"),
@@ -143,6 +146,7 @@ EXPECTED_ANNOTATIONS = {
     },
     "faers_applied_to_treat_assertions": {
         "number_of_cases": ("case_count", None),
+        "supporting_case_ids": ("case_ids", "|"),
         "FDA_regulatory_approvals": ("FDA_regulatory_approvals", "|"),
         "publications": ("edge_evidence", "|"),
         "clinical_approval_status": ("clinical_approval_status", None),
@@ -430,7 +434,7 @@ def test_category_override_pins_every_allowed_object_category() -> None:
     :data:`OBJECT_PRIORITIZE` must widen the override with it or those rows silently lose both
     slots to ``prune_to_class``.
     """
-    from tablassert.biolink import ALLOWED_EDGE_FIELDS, class_fields, resolve_association_class
+    from tablassert.biolink import ALLOWED_EDGE_FIELDS, KNOWN_PENDING_EDGE_FIELDS, class_fields, resolve_association_class
 
     assert set(tablassert_configs.OBJECT_CATEGORY_OVERRIDE) == set(OBJECT_PRIORITIZE)
     for table in TABLES:
@@ -443,8 +447,11 @@ def test_category_override_pins_every_allowed_object_category() -> None:
             cls = resolve_association_class(f"biolink:{pinned}", predicate)
             assert cls.__name__ == pinned, f"{pinned} does not accept {predicate}; rows demote to {cls.__name__}"
             for name in EXPECTED_ANNOTATIONS[table]:
-                if name in ALLOWED_EDGE_FIELDS:
-                    assert name in class_fields(cls), f"{name} is not a slot of {pinned}"
+                if name not in ALLOWED_EDGE_FIELDS:
+                    continue  # deliberately folded into ``supporting_text`` (e.g. ``source_score``)
+                if name in KNOWN_PENDING_EDGE_FIELDS:
+                    continue  # curated Tablassert pass-through (``supporting_case_ids``); no class declares it
+                assert name in class_fields(cls), f"{name} is not a slot of {pinned}"
 
 
 # --- category guard (hard allow-lists via Tablassert ``avoid``) -------------------

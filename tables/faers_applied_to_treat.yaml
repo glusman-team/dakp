@@ -413,14 +413,18 @@ template:
     - annotation: number_of_cases
       method: column
       encoding: J
-    - annotation: FDA_regulatory_approvals
+    - annotation: supporting_case_ids
       method: column
-      encoding: P
+      encoding: K
       split_by: "|"
-    - annotation: publications
+    - annotation: FDA_regulatory_approvals
       method: column
       encoding: Q
       split_by: "|"
+    - annotation: publications
+      method: column
+      encoding: R
+      split_by: "|"
     - annotation: clinical_approval_status
       method: column
-      encoding: K
+      encoding: L

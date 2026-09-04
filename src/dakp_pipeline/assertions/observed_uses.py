@@ -11,7 +11,10 @@ mention, or raw passthrough); FAERS case rows (``cases.parquet``) are then aggre
 same object merge into ONE row. ``case_count`` is the number of **distinct cases**
 (``primaryid``) across all merged wordings (falls back to row count when ``primaryid`` is
 absent), and the provenance columns are the deduplicated, sorted, pipe-joined union of the
-merged wordings' evidence. The FAERS ``knowledge_level`` label is preserved from the first
+merged wordings' evidence. ``case_ids`` carries the exact per-case token set behind that count
+(one token per distinct case) so Tablassert's merge dedup (``uuid_on_collision: merge``, >= 16.6)
+can recompute ``number_of_cases`` as the union size when cross-spelling rows resolve to one
+CURIE and fold into a single edge. The FAERS ``knowledge_level`` label is preserved from the first
 rebuild (``statistical_association``).
 
 ``clinical_approval_status`` cross-references the pair against the approved-treats table (the
@@ -247,6 +250,15 @@ def build_observed_use_rows(
     column at all — so a case that listed the drug under two merged wordings counts ONCE,
     where summing per-wording counts would double-count it.
 
+    ``case_ids`` makes that exactness survive the one merge the shaper cannot see: two rows
+    with DIFFERENT resolved ``object_text`` spellings can still resolve to the same CURIE in
+    Tablassert's fullmap pass, where ``uuid_on_collision: merge`` (Tablassert >= 16.6) folds
+    them into one edge and recomputes ``number_of_cases`` as the union size of the merged
+    ``supporting_case_ids`` lists. The cell therefore carries one token per counted case — the
+    primaryid for identified cases, ``anon:<source_record_id>`` for primaryid-less rows, padded
+    with per-group synthetic ``anon:row:`` tokens so ``len(case_ids) == case_count`` exactly —
+    and is pipe-joined like every other multivalued cell.
+
     ``approved_pairs`` is the normalized (subject, object) pair set of the approved-treats table
     (:func:`_approved_pair_index`), or ``None`` when that table is unavailable — in which case
     every row degrades to ``clinical_approval_status = not_provided``.
@@ -360,6 +372,8 @@ def build_observed_use_rows(
         source_records: set[str] = set()
         evidence_urls: set[str] = set()
         approval_values_by_norm: dict[str, set[str]] = {}
+        case_ids: set[str] = set()
+        anon_records: set[str] = set()
         for raw in rec.get("faers_rows") or []:
             row = raw or {}
             q = str(row.get("quarter") or "").strip()
@@ -369,6 +383,10 @@ def build_observed_use_rows(
             source_id = str(row.get("source_record_id") or "").strip()
             if source_id:
                 source_records.add(source_id)
+            if pid:
+                case_ids.add(pid)
+            elif source_id:
+                anon_records.add(source_id)
             raw_nda = str(row.get("nda_raw") or row.get("nda") or "").strip()
             norm_nda = normalize_nda(raw_nda)
             if norm_nda:
@@ -377,6 +395,13 @@ def build_observed_use_rows(
         # (``125514``/``0125514``) all normalize to the same key, and the index answers with the
         # FDA display form(s) for that key.
         approval_values = approvals.expand_all(min(values) for values in approval_values_by_norm.values())
+        # ``anon_rows`` counts RAW primaryid-less rows while ``anon_records`` dedups their
+        # source_record_ids (and an id-less row leaves no token at all), so pad with per-group
+        # synthetic tokens — unique across rows that could merge downstream because the group
+        # key is embedded — keeping len(case_ids) == case_count exact.
+        anon_tokens = {f"anon:{record}" for record in anon_records}
+        pad = int(rec["anon_rows"]) - len(anon_tokens)
+        anon_tokens.update(f"anon:row:{drug}:{obj['text']}:{index}" for index in range(max(pad, 0)))
         if approved_pairs is None:
             status = _STATUS_NOT_PROVIDED
         elif (normalize_text(drug), normalize_text(obj["text"])) in approved_pairs:
@@ -396,6 +421,7 @@ def build_observed_use_rows(
                 object_name=obj["name"],
                 object_category=obj["category"],
                 case_count=int(rec["distinct_cases"]) + int(rec["anon_rows"]),
+                case_ids=sorted_pipe([*case_ids, *anon_tokens]),
                 FDA_regulatory_approvals=sorted_pipe(approval_values),
                 edge_evidence="",
                 supporting_faers_records=sorted_pipe(source_records),

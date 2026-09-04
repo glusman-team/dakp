@@ -5,8 +5,14 @@ Two FAERS observed-use rows name the SAME drug with different raw spellings ("Ad
 resolution then maps both subjects to CHEBI:5855, and the two rows derive ONE edge id under
 DAKP's narrowed ``uuid_fields`` (subject/predicate/object + the — here absent — context
 qualifier). With ``uuid_on_collision: merge`` the build merges them into a single edge
-(list-valued evidence unions sorted; scalars first-wins) instead of aborting with
-``uuid-fields-not-a-key``.
+(list-valued evidence unions sorted) instead of aborting with ``uuid-fields-not-a-key``.
+
+On Tablassert >= 16.6 the merged ``number_of_cases`` is EXACT, not first-wins: each row carries
+its distinct-case token set as ``case_ids`` -> ``supporting_case_ids`` (the build-internal edge
+extra), the merge unions the lists, and the count is recomputed as the union size — extra unique
+cases are ADDED, shared cases counted ONCE, and the carrier is stripped before the final NDJSON.
+On 16.2-16.5 the carrier column folds into ``supporting_text`` and the conflicting count is
+first-wins; both shapes are asserted here.
 """
 
 from __future__ import annotations
@@ -25,6 +31,14 @@ pytest.importorskip("tablassert")
 from tablassert import rs
 from tablassert.cli import build_pipeline
 from tablassert.progress import PipelineProgress
+
+
+def _tablassert_at_least(major: int, minor: int) -> bool:
+    """Installed-Tablassert version gate for behavior that lands mid-pin-range."""
+    from importlib.metadata import version
+
+    parts = [*version("tablassert").split("."), "0"][:2]
+    return tuple(int(part) for part in parts) >= (major, minor)
 
 
 def _synonym(curie: str, name: str, names: list[str], category: str) -> dict[str, Any]:
@@ -59,8 +73,11 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
     fullmap = fullmap_root / "kgx" / "fullmap.redb"
     rs.build_fullmap_db(fullmap, [classes], [synonyms], threads=2)
 
+    # Case "2" appears under BOTH spellings (a case reported under two wordings): the union
+    # counts it once, so the merged count is 3 + 7 - 1 = 9, not first-wins (3 or 7) and not the
+    # naive sum (10).
     rows: list[dict[str, str]] = []
-    for spelling, cases, approvals in (("Advil", "3", "017977"), ("Ibuprofen", "7", "021010")):
+    for spelling, cases, case_ids, approvals in (("Advil", "3", "1|2|3", "017977"), ("Ibuprofen", "7", "2|4|5|6|7|8|9", "021010")):
         row = dict.fromkeys(schemas.FAERS_APPLIED_TO_TREAT_COLUMNS, "")
         row.update(
             subject_text=spelling,
@@ -68,6 +85,7 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
             predicate="biolink:applied_to_treat",
             subject_category="ChemicalEntity",
             case_count=cases,
+            case_ids=case_ids,
             FDA_regulatory_approvals=approvals,
             knowledge_level="statistical_association",
             agent_type="manual_validation_of_automated_agent",
@@ -95,8 +113,16 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
     assert len(edges) == 1
     edge = edges[0]
     assert (edge["subject"], edge["predicate"], edge["object"]) == ("CHEBI:5855", "biolink:applied_to_treat", "HP:0002315")
-    # List-valued evidence unions (sorted); the conflicting scalar case count is first-wins in
-    # the dedup stream, whose record order is Tablassert-internal — deterministic per build but
-    # not the TSV row order, so either source row may win.
+    # List-valued evidence unions (sorted).
     assert edge["FDA_regulatory_approvals"] == ["017977", "021010"]
-    assert int(edge["number_of_cases"]) in (3, 7)
+    # The carrier never ships as an edge field (16.6 strips it; older Tablassert folds it into
+    # supporting_text, never a top-level key).
+    assert "supporting_case_ids" not in edge
+    if _tablassert_at_least(16, 6):
+        # The case count is the union of both rows' case tokens: {1..9} = 9, independent of
+        # which record the dedup stream saw first.
+        assert int(edge["number_of_cases"]) == 9
+    else:
+        # Pre-16.6 first-wins: the conflicting scalar keeps the first-seen record's value,
+        # whose order is Tablassert-internal — deterministic per build but not the TSV row order.
+        assert int(edge["number_of_cases"]) in (3, 7)
