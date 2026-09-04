@@ -125,7 +125,8 @@ EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
 # a junk drawer no translator-ingests source models. So: the common ``edge_evidence`` column maps to
 # ``publications`` (ONE annotation, carrying the sorted ``dailymed:<spl_set_id>`` CURIEs, because
 # duplicate annotation names silently overwrite
-# each other), and ``case_count`` maps to ``number_of_cases`` — the literal Biolink slot, reachable
+# each other), and the FAERS ``number_of_cases`` column maps onto the same-named literal Biolink
+# slot, reachable
 # since Tablassert 15.1's ``STUDY_SIZE_EXEMPT_PATTERN`` (#119) stopped the study-size classifier
 # from renaming it onto ``Study.study_size`` (DAKP used the ``evidence_count`` alias before that).
 # ``split_by: "|"``
@@ -145,7 +146,7 @@ EXPECTED_ANNOTATIONS = {
         "clinical_approval_status": ("clinical_approval_status", None),
     },
     "faers_applied_to_treat_assertions": {
-        "number_of_cases": ("case_count", None),
+        "number_of_cases": ("number_of_cases", None),
         "supporting_case_ids": ("case_ids", "|"),
         "FDA_regulatory_approvals": ("FDA_regulatory_approvals", "|"),
         "publications": ("edge_evidence", "|"),

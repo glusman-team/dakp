@@ -697,7 +697,7 @@ _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
         ("clinical_approval_status", "clinical_approval_status", None),
     ),
     "faers_applied_to_treat_assertions": (
-        ("case_count", "number_of_cases", None),
+        ("number_of_cases", "number_of_cases", None),
         ("case_ids", "supporting_case_ids", "|"),
         ("FDA_regulatory_approvals", "FDA_regulatory_approvals", "|"),
         ("edge_evidence", "publications", "|"),

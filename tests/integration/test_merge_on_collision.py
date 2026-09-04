@@ -84,7 +84,7 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
             object_text="headache",
             predicate="biolink:applied_to_treat",
             subject_category="ChemicalEntity",
-            case_count=cases,
+            number_of_cases=cases,
             case_ids=case_ids,
             FDA_regulatory_approvals=approvals,
             knowledge_level="statistical_association",

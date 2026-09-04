@@ -290,7 +290,7 @@ def test_edge_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> 
         assert all(not value.startswith("faers:") for value in evidence)
 
 
-def test_faers_case_count_rides_the_edge_as_number_of_cases(kgx_build: KgxBuild) -> None:
+def test_faers_number_of_cases_rides_the_edge(kgx_build: KgxBuild) -> None:
     """The FAERS case count rides the edge as ``number_of_cases``, the literal Biolink slot.
 
     ``statement.category_override`` pins classes that declare it, and Tablassert 15.1's

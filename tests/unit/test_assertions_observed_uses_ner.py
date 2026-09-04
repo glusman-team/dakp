@@ -39,7 +39,7 @@ def test_single_disease_mention_resolves_object() -> None:
     assert rows[0]["object_text"] == "migraine"
     assert rows[0]["object_name"] == "migraine"
     assert rows[0]["object_category"] == "Disease"
-    assert rows[0]["case_count"] == "1"
+    assert rows[0]["number_of_cases"] == "1"
 
 
 def test_single_phenotype_mention_gets_phenotype_category() -> None:

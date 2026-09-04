@@ -261,9 +261,9 @@ def test_all_edge_families_carry_identifier_provenance(built: dict[str, Any]) ->
 
 
 def test_applied_to_treat_carries_faers_case_counts(built: dict[str, Any]) -> None:
-    """Legacy ``N_cases`` survives as a positive case_count on every applied_to_treat row."""
+    """Legacy ``N_cases`` survives as a positive number_of_cases on every applied_to_treat row."""
     for rec in _family_rows(built["tables"], APPLIED_TO_TREAT):
-        assert int(str(rec.get("case_count"))) > 0, "applied_to_treat row missing FAERS case count"
+        assert int(str(rec.get("number_of_cases"))) > 0, "applied_to_treat row missing FAERS case count"
 
 
 def test_contraindications_carry_spl_support(built: dict[str, Any]) -> None:

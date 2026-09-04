@@ -8,7 +8,7 @@ Aggregation rule (explicit and tested)
 Each distinct indication string is first resolved to its object (disease-map match, single NER
 mention, or raw passthrough); FAERS case rows (``cases.parquet``) are then aggregated by
 ``(drugname, resolved object_text)`` — the edge-identity key — so wordings that resolve to the
-same object merge into ONE row. ``case_count`` is the number of **distinct cases**
+same object merge into ONE row. ``number_of_cases`` is the number of **distinct cases**
 (``primaryid``) across all merged wordings (falls back to row count when ``primaryid`` is
 absent), and the provenance columns are the deduplicated, sorted, pipe-joined union of the
 merged wordings' evidence. ``case_ids`` carries the exact per-case token set behind that count
@@ -244,7 +244,7 @@ def build_observed_use_rows(
     NER-normalized mention) merge into a single assertion whose evidence columns are the
     deduplicated, sorted, pipe-joined union of the merged wordings' provenance (the
     :func:`~dakp_pipeline.assertions.evidence.sorted_pipe` convention). The merged
-    ``case_count`` stays EXACT — the number of distinct non-empty primaryids across ALL merged
+    ``number_of_cases`` stays EXACT — the number of distinct non-empty primaryids across ALL merged
     wordings plus one per anonymous row (the legacy ``_row{index}`` fallback made every
     primaryid-less row its own observation), and row-count when the frame has no primaryid
     column at all — so a case that listed the drug under two merged wordings counts ONCE,
@@ -256,7 +256,7 @@ def build_observed_use_rows(
     them into one edge and recomputes ``number_of_cases`` as the union size of the merged
     ``supporting_case_ids`` lists. The cell therefore carries one token per counted case — the
     primaryid for identified cases, ``anon:<source_record_id>`` for primaryid-less rows, padded
-    with per-group synthetic ``anon:row:`` tokens so ``len(case_ids) == case_count`` exactly —
+    with per-group synthetic ``anon:row:`` tokens so ``len(case_ids) == number_of_cases`` exactly —
     and is pipe-joined like every other multivalued cell.
 
     ``approved_pairs`` is the normalized (subject, object) pair set of the approved-treats table
@@ -398,7 +398,7 @@ def build_observed_use_rows(
         # ``anon_rows`` counts RAW primaryid-less rows while ``anon_records`` dedups their
         # source_record_ids (and an id-less row leaves no token at all), so pad with per-group
         # synthetic tokens — unique across rows that could merge downstream because the group
-        # key is embedded — keeping len(case_ids) == case_count exact.
+        # key is embedded — keeping len(case_ids) == number_of_cases exact.
         anon_tokens = {f"anon:{record}" for record in anon_records}
         pad = int(rec["anon_rows"]) - len(anon_tokens)
         anon_tokens.update(f"anon:row:{drug}:{obj['text']}:{index}" for index in range(max(pad, 0)))
@@ -420,7 +420,7 @@ def build_observed_use_rows(
                 object_curie=obj["curie"],
                 object_name=obj["name"],
                 object_category=obj["category"],
-                case_count=int(rec["distinct_cases"]) + int(rec["anon_rows"]),
+                number_of_cases=int(rec["distinct_cases"]) + int(rec["anon_rows"]),
                 case_ids=sorted_pipe([*case_ids, *anon_tokens]),
                 FDA_regulatory_approvals=sorted_pipe(approval_values),
                 edge_evidence="",

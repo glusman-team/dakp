@@ -30,7 +30,7 @@ def test_empty_string_primaryid_falls_back_to_row_count(disease_map: dict[str, d
     cases = pl.DataFrame({"primaryid": ["", ""], "drugname": ["DrugX", "DrugX"], "indication": ["pain", "pain"]})
     rows = build_observed_use_rows(cases, disease_map)
     assert len(rows) == 1
-    assert rows[0]["case_count"] == "2"
+    assert rows[0]["number_of_cases"] == "2"
 
 
 def test_empty_frame_yields_no_rows(disease_map: dict[str, dict[str, str]]) -> None:

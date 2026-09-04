@@ -17,7 +17,7 @@ from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 
 
-def test_case_count_aggregates_distinct_cases(disease_map: dict[str, dict[str, str]]) -> None:
+def test_number_of_cases_aggregates_distinct_cases(disease_map: dict[str, dict[str, str]]) -> None:
     # (DrugX, condY) appears across 3 distinct cases; one case contributes two rows (e.g. two
     # drug_seq) which must NOT inflate the count. (DrugX, other) is a single case.
     cases = pl.DataFrame(
@@ -28,7 +28,7 @@ def test_case_count_aggregates_distinct_cases(disease_map: dict[str, dict[str, s
         }
     )
     rows = build_observed_use_rows(cases, disease_map)
-    counts = {(r["subject_text"], r["object_text"]): r["case_count"] for r in rows}
+    counts = {(r["subject_text"], r["object_text"]): r["number_of_cases"] for r in rows}
     assert counts[("DrugX", "condY")] == "3"  # distinct primaryids, not 4 rows
     assert counts[("DrugX", "other")] == "1"
     ids = {(r["subject_text"], r["object_text"]): r["case_ids"] for r in rows}
@@ -57,7 +57,7 @@ def test_observed_use_retains_faers_report_and_nda_provenance(disease_map: dict[
     )
     assert len(rows) == 1
     row = rows[0]
-    assert row["case_count"] == "2"
+    assert row["number_of_cases"] == "2"
     # No approval index supplied: the number is emitted exactly as FAERS recorded it.
     assert row["FDA_regulatory_approvals"] == "017977"
     assert row["edge_evidence"] == ""  # faers: report ids no longer ride publications
@@ -90,13 +90,13 @@ def test_observed_use_expands_faers_numbers_to_the_fda_display_form(disease_map:
     assert rows[0]["FDA_regulatory_approvals"] == "BLA125514|NDA017977"
 
 
-def test_case_count_falls_back_to_rows_without_primaryid(disease_map: dict[str, dict[str, str]]) -> None:
+def test_number_of_cases_falls_back_to_rows_without_primaryid(disease_map: dict[str, dict[str, str]]) -> None:
     cases = pl.DataFrame({"drugname": ["DrugX", "DrugX"], "indication": ["condY", "condY"]})
     rows = build_observed_use_rows(cases, disease_map)
     assert len(rows) == 1
-    assert rows[0]["case_count"] == "2"  # no primaryid column -> row count
+    assert rows[0]["number_of_cases"] == "2"  # no primaryid column -> row count
     # Id-less rows still carry one token each (per-group synthetic pads), keeping
-    # len(case_ids) == case_count so the Tablassert merge union stays exact.
+    # len(case_ids) == number_of_cases so the Tablassert merge union stays exact.
     assert rows[0]["case_ids"] == "anon:row:DrugX:condY:0|anon:row:DrugX:condY:1"
 
 
@@ -113,17 +113,17 @@ def test_case_ids_tokenize_anonymous_rows_by_source_record(disease_map: dict[str
     )
     rows = build_observed_use_rows(cases, disease_map)
     assert len(rows) == 1
-    assert rows[0]["case_count"] == "3"
+    assert rows[0]["number_of_cases"] == "3"
     assert rows[0]["case_ids"] == "1|anon:24Q2:3:1:condY|anon:24Q3:2:1:condY"
 
 
-def test_case_count_mixes_distinct_cases_and_anonymous_rows(disease_map: dict[str, dict[str, str]]) -> None:
+def test_number_of_cases_mixes_distinct_cases_and_anonymous_rows(disease_map: dict[str, dict[str, str]]) -> None:
     # Distinct non-empty primaryids dedup; null/empty primaryids each count as their own
     # observation (legacy _row{index} fallback) — the pair total is the sum of both.
     cases = pl.DataFrame({"primaryid": ["1", "", None, "1", "2"], "drugname": ["DrugX"] * 5, "indication": ["condY"] * 5})
     rows = build_observed_use_rows(cases, disease_map)
     assert len(rows) == 1
-    assert rows[0]["case_count"] == "4"  # distinct {1, 2} + 2 anonymous rows
+    assert rows[0]["number_of_cases"] == "4"  # distinct {1, 2} + 2 anonymous rows
     assert rows[0]["case_ids"] == "1|2|anon:row:DrugX:condY:0|anon:row:DrugX:condY:1"
 
 
@@ -133,7 +133,7 @@ def test_wordings_resolving_to_one_object_merge_into_a_single_row() -> None:
     Two raw indication wordings (case variants) hit the same dictionary key, so they share the
     edge-identity key ``(subject_text, object_text)`` — the production ``uuid-fields-not-a-key``
     collision shape (CHEBI:62088 applied_to_treat HP:0012531). Resolution-first aggregation
-    merges them into ONE row: ``case_count`` is the exact distinct-case count across BOTH
+    merges them into ONE row: ``number_of_cases`` is the exact distinct-case count across BOTH
     wordings (case 1, reported under each wording, counts once — summing per-wording counts
     would double it), and the provenance columns are the deduplicated, sorted, pipe-joined
     union of the merged wordings' evidence.
@@ -162,7 +162,7 @@ def test_wordings_resolving_to_one_object_merge_into_a_single_row() -> None:
     row = rows[0]
     assert row["object_text"] == "Asthma"
     assert row["object_curie"] == "MONDO:0004979"
-    assert row["case_count"] == "2"  # distinct {1, 2} — case 1 counted once across both wordings
+    assert row["number_of_cases"] == "2"  # distinct {1, 2} — case 1 counted once across both wordings
     assert row["case_ids"] == "1|2"  # the merge-exact token set Tablassert unions on collision
     assert row["FDA_regulatory_approvals"] == "BLA125514|NDA017977"
     assert row["supporting_faers_records"] == "24Q2:1:1:ASTHMA|24Q3:1:1:Asthma|24Q3:2:1:ASTHMA"
@@ -178,7 +178,7 @@ def test_observed_uses_from_fixture_cases(faers_refs: list[ArtifactRef], disease
     assert set(by_subject) == {"Examplestatin", "Advil", "Placebo"}
     assert by_subject["Examplestatin"]["object_text"] == "hypercholesterolemia"
     assert by_subject["Examplestatin"]["object_curie"] == "MONDO:0005154"
-    assert by_subject["Examplestatin"]["case_count"] == "1"
+    assert by_subject["Examplestatin"]["number_of_cases"] == "1"
     # 'back pain' resolves through the dictionary substring match on 'pain'.
     assert by_subject["Placebo"]["object_text"] == "pain"
     assert by_subject["Advil"]["predicate"] == "biolink:applied_to_treat"
@@ -249,9 +249,9 @@ def test_rows_are_deterministically_ordered(faers_refs: list[ArtifactRef], disea
     assert first == second
     keys = [(r["subject_text"], r["object_text"]) for r in first]
     assert keys == sorted(keys)
-    # The carrier invariant: every row's token count equals its case_count exactly.
+    # The carrier invariant: every row's token count equals its number_of_cases exactly.
     for row in first:
-        assert len(row["case_ids"].split("|")) == int(row["case_count"])
+        assert len(row["case_ids"].split("|")) == int(row["number_of_cases"])
 
 
 def test_no_faers_cases_yields_no_rows(disease_map: dict[str, dict[str, str]]) -> None:
