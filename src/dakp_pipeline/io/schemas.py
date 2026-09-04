@@ -144,6 +144,30 @@ TSV_MEDIA_TYPE = "text/tab-separated-values"
 PARQUET_MEDIA_TYPE = "application/vnd.apache.parquet"
 
 
+def coerce_count_column(frame: pl.DataFrame, column: str = "number_of_cases") -> pl.DataFrame:
+    """Rewrite float-formatted whole-number cells (``"55.0"``) as integer strings (``"55"``).
+
+    Tablassert claims ``number_of_cases`` onto the integer-ranged Biolink slot only when the TSV
+    cell parses as an integer; a float-formatted cell fails that coercion and the count falls out
+    of the edge into a ``has_supporting_studies`` study description (the v1.4.0 release shipped
+    three ``applied_to_treat`` edges whose case counts survived only as ``number_of_cases=55.0``
+    description text). Applied to every assertion table in
+    :func:`dakp_pipeline.assertions.evidence.write_assertion_table`, i.e. before any Tablassert
+    handoff. A non-empty cell that is not a finite whole number is a shaper data bug and raises.
+    """
+    if column not in frame.columns or frame.is_empty():
+        return frame
+    cells = frame.get_column(column).cast(pl.Utf8).str.strip_chars()
+    values = cells.cast(pl.Float64, strict=False)  # null where the cell is not numeric
+    ok = (((values.is_finite()) & (values == values.floor())) | (cells == "")).fill_null(False)
+    if not ok.all():
+        offenders = cells.filter(~ok).unique().sort().head(5).to_list()
+        msg = f"column {column!r} must hold empty or whole-number cells; offenders: {offenders}"
+        raise ValueError(msg)
+    expr = pl.when(pl.col(column).cast(pl.Utf8).str.strip_chars() == "").then(pl.lit("")).otherwise(values.cast(pl.Int64).cast(pl.Utf8)).alias(column)
+    return frame.with_columns(expr)
+
+
 def write_tsv(frame: pl.DataFrame, path: Path) -> int:
     """Write an uncompressed TSV with a header row (Tablassert-readable). Returns row count."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,6 +198,7 @@ __all__ = [
     "FAERS_CASES_COLUMNS",
     "PARQUET_MEDIA_TYPE",
     "TSV_MEDIA_TYPE",
+    "coerce_count_column",
     "columns_for",
     "read_table",
     "schema_fingerprint",

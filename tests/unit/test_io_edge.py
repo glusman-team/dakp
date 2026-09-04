@@ -9,7 +9,8 @@ Targets the error/defensive branches the happy-path suite never reaches:
   missing fixture (FileNotFoundError); frozen-dataclass reprs/equality.
 * ``downloads`` — ``infer_media_type`` compound/unknown/uppercase suffixes.
 * ``schemas`` — ``columns_for`` unknown-table KeyError + registry-copy isolation,
-  ``read_table`` parquet-vs-TSV dispatch, fingerprint order-sensitivity.
+  ``read_table`` parquet-vs-TSV dispatch, fingerprint order-sensitivity, count-column
+  float-coercion (integer strings for Tablassert; loud failure on non-whole cells).
 * ``content_hash`` / ``manifests`` — already 100%; adversarial robustness only
   (empty file, unicode, symlinked dir non-recursion, manifest round-trip with nulls).
 """
@@ -282,6 +283,27 @@ def test_write_tsv_and_parquet_return_row_counts(tmp_path: Path) -> None:
     frame = pl.DataFrame({"c": ["1", "2", "3"]})
     assert schemas.write_tsv(frame, tmp_path / "o.tsv") == 3
     assert schemas.write_parquet(frame, tmp_path / "o.parquet") == 3
+
+
+def test_coerce_count_column_rewrites_float_cells_as_integer_strings() -> None:
+    frame = pl.DataFrame({"number_of_cases": ["55.0", "27", " 3.0 ", ""], "subject_text": ["a", "b", "c", "d"]})
+    out = schemas.coerce_count_column(frame)
+    assert out["number_of_cases"].to_list() == ["55", "27", "3", ""]
+    assert out["subject_text"].to_list() == ["a", "b", "c", "d"]  # other columns untouched
+
+
+def test_coerce_count_column_is_a_noop_without_the_column_or_rows() -> None:
+    bare = pl.DataFrame({"subject_text": ["a"]})  # tables without the count column pass through
+    assert schemas.coerce_count_column(bare) is bare
+    assert schemas.coerce_count_column(pl.DataFrame(schema=["number_of_cases", "subject_text"])).is_empty()
+
+
+@pytest.mark.parametrize("cell", ["27.5", "abc", "inf", "nan"])
+def test_coerce_count_column_raises_on_non_whole_cells(cell: str) -> None:
+    # A fractional/unparseable count is a shaper data bug: fail loudly, never silently floor.
+    frame = pl.DataFrame({"number_of_cases": [cell]})
+    with pytest.raises(ValueError, match="number_of_cases"):
+        schemas.coerce_count_column(frame)
 
 
 # --- manifests: round-trip with nulls / defaults (module already 100%) ---------

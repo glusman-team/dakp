@@ -12,9 +12,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import polars as pl
 import pytest
 
-from dakp_pipeline.assertions import evidence
+from dakp_pipeline.assertions import evidence, row_for
 from dakp_pipeline.assertions.evidence import (
     EVIDENCE_OPERATION,
     build_dailymed_evidence,
@@ -173,3 +174,20 @@ def test_cached_shape_outputs_prunes_when_the_table_was_deleted(ctx: TaskContext
     written = write_assertion_table("approved_treats_assertions", [], dailymed_refs, ctx, operation=_OPERATION)
     written[0].uri.unlink()
     assert cached_shape_outputs(_OPERATION, dailymed_refs, ctx) is None
+
+
+def test_write_assertion_table_coerces_number_of_cases_float_cells(ctx: TaskContext, dailymed_refs: list[ArtifactRef]) -> None:
+    """A float-formatted count cell ("55.0") reaches the Tablassert handoff TSV as "55".
+
+    Tablassert claims ``number_of_cases`` onto the integer-ranged Biolink slot only for
+    integer-formatted cells; the v1.4.0 release shipped three ``applied_to_treat`` edges whose
+    counts fell into ``has_supporting_studies`` descriptions because the cells were floats.
+    """
+    row = row_for(
+        "faers_applied_to_treat_assertions", subject_text="drug", predicate="biolink:applied_to_treat", object_text="disease", number_of_cases="55.0"
+    )
+    written = write_assertion_table("faers_applied_to_treat_assertions", [row], dailymed_refs, ctx, operation=_OPERATION)
+    # All-string schema: assert the TSV cell TEXT Tablassert will read (read_table would infer
+    # a lone "55" column back as Int64).
+    back = pl.read_csv(written[0].uri, separator="\t", infer_schema_length=0)
+    assert back["number_of_cases"].to_list() == ["55"]

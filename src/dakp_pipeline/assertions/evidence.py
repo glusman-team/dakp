@@ -729,9 +729,13 @@ def write_assertion_table(
     Columns are fixed by :data:`dakp_pipeline.io.schemas.ASSERTION_TABLES`; row ordering is the
     caller's responsibility (shapers sort deterministically before calling). Returns ``[]`` only
     when the table contract is unknown (cannot happen for the three assertion tables).
+    ``number_of_cases`` cells are normalized to integer strings before the write — a
+    float-formatted count would fail Tablassert's integer slot coercion and drop off the edge
+    (:func:`dakp_pipeline.io.schemas.coerce_count_column`); non-whole counts raise.
     """
     columns = schemas.columns_for(table)
     frame = pl.DataFrame(rows, schema=columns) if rows else pl.DataFrame(schema=columns)
+    frame = schemas.coerce_count_column(frame)
     out = Workdir(ctx.workdir).tabular / f"{table}.tsv"
     rows_written = schemas.write_tsv(frame, out)
     fingerprint = schemas.schema_fingerprint(columns)
