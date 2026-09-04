@@ -29,7 +29,7 @@ classifiers = [
 # Tablassert is pinned to the `[qc]` variant because the production KG build runs
 # `tablassert build-kg --qc` (the SapBERT embedding audit from 12.0 plus 13.0's stage-7
 # fail-the-build assertions on the final NDJSON: empty-or-null-values, unnamed-nodes,
-# unidentified-nodes, incomplete-edges). The >= 16.5 floor supersedes the 16.0 floor: DAKP
+# unidentified-nodes, incomplete-edges). The >= 16.6 floor supersedes the 16.0 floor: DAKP
 # builds pass `--no-original` (#124, 16.1 — omit the verbatim `original_*` source-cell
 # copies from final edges; edge identity no longer depends on them), 16.1's release-mode
 # `case_count < 25` drop for `applied_to_treat` (#123) applies automatically under
@@ -39,8 +39,7 @@ classifiers = [
 # also annotates `case_ids` onto the `supporting_case_ids` edge extra: on Tablassert >= 16.6
 # the merge unions those lists and recomputes `number_of_cases` as the exact union size (the
 # extra unique cases of mention-variant rows are added, not dropped first-wins) and strips
-# the carrier before the final NDJSON; on 16.5 the column folds into `supporting_text`
-# harmlessly and the merge keeps first-wins. The 16.0 floor was
+# the carrier before the final NDJSON. The 16.0 floor was
 # required: the emitted configs use
 # `statement.category_override` (SkyeAv/Tablassert#118, 15.0) to pin
 # `EntityToDiseaseAssociation` / `EntityToPhenotypicFeatureAssociation` per object category, and
@@ -80,7 +79,7 @@ dependencies = [
     "pendulum>=3",
     "polars>=1.30.0",
     "pydantic>=2.12.0",
-    "tablassert[qc]>=16.5.0,<17",
+    "tablassert[qc]>=16.6.0,<17",
     # torch is transitive (gliner, sentence-transformers via tablassert[qc]) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host
     # (wenceslaus: 4x Tesla P100-PCIE-16GB, compute capability 6.0, CUDA 12.8 driver) force it:
