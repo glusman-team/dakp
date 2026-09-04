@@ -12,6 +12,6 @@ from __future__ import annotations
 #: from the installed distribution metadata, so a bump that touches only ``pyproject.toml``
 #: silently ships the previous version's file names. ``tests/unit/test_version.py`` pins the two
 #: together.
-__version__ = "1.3.2"
+__version__ = "1.4.0"
 
 __all__ = ["__version__"]
