@@ -495,7 +495,7 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
             "terms_of_use_info": {
                 "terms_of_use_url": "https://www.nlm.nih.gov/terms.html",
                 "terms_of_use_description": (
-                    "DAKP is derived from DailyMed (NLM), Drugs@FDA, and FAERS (FDA) — US government "
+                    "DAKP is derived from DailyMed (NLM), Drugs@FDA, and FAERS (FDA): US government "
                     "public-domain data; the NLM and FDA terms of use apply."
                 ),
             },
