@@ -129,7 +129,7 @@ def read_dailymed_sections(path: Path) -> pl.DataFrame | None:
             .collect(engine="streaming")
         )
     except Exception as exc:
-        logger.warning("skipping unreadable input {} ({})", path, exc)
+        logger.warning("export_medliner: skipping unreadable input {} ({})", path, exc)
         return None
 
 
@@ -423,7 +423,7 @@ def export(inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
         # already registers usable index entries, it just never consulted them.
         cached = None if ctx.params.get("force") else store.find_by_operation(_OPERATION, input_ids)
         if cached is not None:
-            stats(logger, _OPERATION, skipped="inputs unchanged", outputs=len(cached))
+            stats(logger, _OPERATION, skipped=True, reason="inputs unchanged", outputs=len(cached))
             return cached
         dailymed_table = read_dailymed_sections(dailymed_ref.uri)
         if dailymed_table is None:

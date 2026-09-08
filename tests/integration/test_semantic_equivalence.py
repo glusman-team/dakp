@@ -33,7 +33,6 @@ import pytest
 from harness import install_fixture_fetchers, run_stages
 
 from dakp_pipeline import translator
-from dakp_pipeline.io.contracts import ArtifactRef
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -78,19 +77,11 @@ def built(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     finally:
         monkeypatch.undo()
     tables: dict[str, pl.DataFrame] = {}
-    refs: list[ArtifactRef] = []
     for name in ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions"):
         table = result.table(name)
         # infer_schema_length=0 -> every column read as the exact stored string (no int coercion).
         tables[name] = pl.read_csv(table.path, separator="\t", infer_schema_length=0)
-    # Recover the registered ArtifactRefs from the build summary's table list.
-    import json
-
-    assert result.build_summary is not None, "offline pipeline produced no build summary"
-    summary = json.loads(result.build_summary.read_text(encoding="utf-8"))
-    for entry in summary["tables"]:
-        refs.append(ArtifactRef(uri=Path(entry["path"]), blake3=entry["artifact_id"], media_type="text/tab-separated-values", rows=entry["rows"]))
-    return {"result": result, "tables": tables, "refs": refs, "workdir": workdir}
+    return {"result": result, "tables": tables, "refs": result.assertion_refs, "workdir": workdir}
 
 
 def _family_rows(tables: dict[str, pl.DataFrame], predicate: str) -> list[dict[str, str]]:

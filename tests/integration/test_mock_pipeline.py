@@ -21,7 +21,7 @@ from pathlib import Path
 
 from harness import install_fixture_fetchers, run_stages
 
-from dakp_pipeline import __version__
+from dakp_pipeline import __version__, translator
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
@@ -81,23 +81,20 @@ def test_full_pipeline_uses_mocked_sources(monkeypatch, tmp_path: Path) -> None:
     assert result.table("approved_treats_assertions").rows > 0
     assert result.table("faers_applied_to_treat_assertions").rows > 0
     assert result.table("contraindication_assertions").rows > 0
-    assert result.build_summary is not None
-    assert result.build_summary.exists()
-    summary = json.loads(result.build_summary.read_text(encoding="utf-8"))
-    assert summary["translator_regression"]["ok"] is True
-    assert set(summary["translator_regression"]["families_seen"]) == {"biolink:treats", "biolink:applied_to_treat", "biolink:contraindicated_in"}
+    report = translator.check_assertion_tables(result.assertion_refs)
+    assert report.ok, f"regression violations: {[v.message for v in report.violations]}"
+    assert set(report.families_seen) == {"biolink:treats", "biolink:applied_to_treat", "biolink:contraindicated_in"}
 
     # The fake Tablassert wrote its KGX pair, and the legacy TSV stage retrofitted it.
     data = tmp_path / "work" / "kgx"
     assert (data / f"{GRAPH_NAME}_{__version__}.nodes.ndjson").exists()
+    assert (data / f"{GRAPH_NAME}_{__version__}.nodes.tsv").exists()
     legacy_edges = (data / f"{GRAPH_NAME}_{__version__}.edges.tsv").read_text(encoding="utf-8").splitlines()
     assert legacy_edges[0].split("\t")[9:12] == ["approval", "N_cases", "supporting_spls"]
     # Subject CHEBI:1000001 is absent from the fake node set -> original_subject mention fallback;
     # object is resolved -> canonical node name; object_modifier is always NA.
     assert legacy_edges[1].split("\t")[4:7] == ["Examplestatin", "hypercholesterolemia", "NA"]
     assert legacy_edges[1].split("\t")[9:] == ["NDA1", "NA", "dailymed:set-1"]
-    assert summary["legacy_tsv"]["exported"] is True
-    assert {file["name"] for file in summary["legacy_tsv"]["files"]} == {f"{GRAPH_NAME}_{__version__}.nodes", f"{GRAPH_NAME}_{__version__}.edges"}
 
 
 def test_default_deferred_handoff_runs_clean(monkeypatch, tmp_path: Path) -> None:
@@ -112,17 +109,15 @@ def test_default_deferred_handoff_runs_clean(monkeypatch, tmp_path: Path) -> Non
         assert result.table(table).path.suffix == ".tsv"
         assert result.table(table).path.exists()
 
-    # Deferred handoff manifest (no fullmap => no real Tablassert; no local KGX compiler) + summary.
+    # Deferred handoff manifest (no fullmap => no real Tablassert; no local KGX compiler).
     handoff = json.loads((tmp_path / "work" / "reports" / "tablassert_handoff.json").read_text(encoding="utf-8"))
     assert handoff["mode"] == "deferred"
-    assert result.build_summary is not None
-    assert result.build_summary.exists()
-    summary = json.loads(result.build_summary.read_text(encoding="utf-8"))
-    assert summary["translator_regression"]["ok"] is True
-    assert summary["translator_regression"]["violations"] == []
-    # Deferred handoff => no KGX to retrofit: empty legacy_tsv section, no TSV pair.
-    assert summary["legacy_tsv"] == {"exported": False, "files": []}
+    report = translator.check_assertion_tables(result.assertion_refs)
+    assert report.ok, f"regression violations: {[v.message for v in report.violations]}"
+    assert report.violations == []
+    # Deferred handoff => no KGX to retrofit: no TSV pair.
     assert list((tmp_path / "work" / "kgx").glob("*.nodes.tsv")) == []
+    assert list((tmp_path / "work" / "kgx").glob("*.edges.tsv")) == []
 
 
 def test_fixture_run_exports_a_valid_medliner_bundle(monkeypatch, tmp_path: Path) -> None:

@@ -1,7 +1,7 @@
 """DAG wiring tests for the Airflow-native ``dakp_pipeline`` DAG (Airflow 3 is a hard dependency).
 
 The DAG always imports and constructs (no optional-extra guard). These tests assert the module
-constants, the 16-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
+constants, the 15-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
 three ``extract_*`` tasks are native Go SDK stubs routed to the ``golang`` queue, that
 acquisition/extraction resource pools let those tasks run concurrently, that the three
 GLiNER-mining shape tasks serialize on the 1-slot ``ner_mining`` pool, and that the MEDliNER
@@ -29,7 +29,6 @@ _EXPECTED_TASK_IDS = {
     "export_legacy_tsv",
     "publish_release_artifacts",
     "export_medliner_training_data",
-    "write_build_summary",
 }
 
 _GO_STUB_IDS = {"extract_dailymed", "extract_faers", "extract_drugsfda"}
@@ -41,7 +40,6 @@ _EXPECTED_GROUP_MEMBERS = {
     "tablassert": {"generate_tablassert_configs", "run_tablassert"},
     "export": {"export_legacy_tsv", "publish_release_artifacts"},
     "medliner": {"export_medliner_training_data"},
-    "summary": {"write_build_summary"},
 }
 
 
@@ -133,29 +131,14 @@ def test_dag_task_graph(dakp_build) -> None:
     # build-kg output, not a config) — and is a leaf (nothing downstream waits on the artifacts).
     assert upstream("publish_release_artifacts") == {"run_tablassert", "export_legacy_tsv"}
     assert downstream("publish_release_artifacts") == set()
-    assert upstream("write_build_summary") == shapes | {"run_tablassert", "export_legacy_tsv"}
 
     # The MEDliNER export branches off the DailyMed + FAERS extracts ONLY (no shape-stage
-    # dependency) and is a leaf: nothing — notably not write_build_summary — waits on the bundle.
+    # dependency) and is a leaf: nothing downstream waits on the bundle.
     assert upstream("export_medliner_training_data") == {"extract_dailymed", "extract_faers"}
     assert downstream("export_medliner_training_data") == set()
-
-    # The summary and the MEDliNER export are terminal.
-    assert downstream("write_build_summary") == set()
 
 
 def test_medliner_export_task_uses_the_default_pool(dakp_build) -> None:
     """The export reads two interim tables and writes JSON files — no scarce resource to bound,
     so it stays on the default pool (never the download/extract/NER pools)."""
     assert dakp_build.dag_obj.get_task("export_medliner_training_data").pool == "default_pool"
-
-
-def test_summary_tolerates_a_skipped_export(dakp_build) -> None:
-    """write_build_summary runs even when export_legacy_tsv SKIPs (deferred handoff).
-
-    The export task raises AirflowSkipException on a deferred handoff; under the default
-    all_success trigger rule that skip would cascade onto the terminal summary task. none_failed
-    keeps the summary running (its legacy_refs XCom then resolves to an empty list).
-    """
-    summary = dakp_build.dag_obj.get_task("write_build_summary")
-    assert summary.trigger_rule == "none_failed"

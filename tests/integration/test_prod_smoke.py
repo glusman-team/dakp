@@ -197,9 +197,7 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
     assert "Ibuprofen" in contra  # NER-mined from the DailyMed contraindication section
     assert "asthma" in contra
 
-    # Build summary + REAL Tablassert handoff (mode "real", not the deferred report).
-    assert result.build_summary is not None
-    assert result.build_summary.exists()
+    # REAL Tablassert handoff (mode "real", not the deferred report).
     handoff = json.loads((workdir / "reports" / "tablassert_handoff.json").read_text(encoding="utf-8"))
     assert handoff["mode"] == "real"
 
@@ -207,8 +205,6 @@ def test_prod_smoke_run_executes_real_path_offline(monkeypatch: pytest.MonkeyPat
     from dakp_pipeline import __version__
     from dakp_pipeline.tablassert import GRAPH_NAME
 
-    summary = json.loads(result.build_summary.read_text(encoding="utf-8"))
-    assert summary["legacy_tsv"]["exported"] is True
     nodes_tsv = workdir / "kgx" / f"{GRAPH_NAME}_{__version__}.nodes.tsv"
     edges_tsv = workdir / "kgx" / f"{GRAPH_NAME}_{__version__}.edges.tsv"
     assert nodes_tsv.exists()

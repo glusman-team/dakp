@@ -1,28 +1,24 @@
-"""Airflow-native runtime helpers — the canonical home for run-context + build-summary logic.
+"""Airflow-native runtime helpers — the canonical home for run-context logic.
 
 The DAG is the only orchestrator (the former pure-Python pipeline runner is retired). Tasks build
 their :class:`TaskContext` from the ``dakp_config``
 Airflow Variable (the single source of run config, shared by the Python tasks and the native Go
-bundle workers) via :func:`build_context_from_config`, and the final summary is written by
-:func:`write_build_summary`.
+bundle workers) via :func:`build_context_from_config`.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 
-from dakp_pipeline import translator
-from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.logging_setup import configure_logging, logger, stats
+from dakp_pipeline.io.contracts import TaskContext
+from dakp_pipeline.logging_setup import configure_logging
 from dakp_pipeline.paths import Workdir
 
-__all__ = ["build_context", "build_context_from_config", "write_build_summary"]
+__all__ = ["build_context", "build_context_from_config"]
 
 
 def build_context_from_config(cfg: Mapping[str, Any]) -> TaskContext:
@@ -83,53 +79,6 @@ def build_context(wd: Workdir, fixture_root: Path | str | None, params: Mapping[
     # ctx.fixture_root (single composite backend). A real production DiseaseNER (offline=False,
     # needs the NER dependencies) may be injected via params["ner"].
     return TaskContext(workdir=wd.root, fixture_root=fixture, params=merged)
-
-
-def write_build_summary(
-    wd: Workdir,
-    assertion_refs: list[ArtifactRef],
-    kgx_refs: list[ArtifactRef],
-    report: translator.ContractReport,
-    regression_report: translator.RegressionReport,
-    legacy_tsv_refs: list[ArtifactRef] | None = None,
-) -> Path:
-    """Write the build-summary JSON under the workdir's reports dir and return its path.
-
-    ``legacy_tsv_refs`` (optional; empty on a deferred Tablassert handoff, where the legacy TSV
-    export stage skips) adds a ``legacy_tsv`` section recording the retrofitted pair.
-    """
-    summary_path = wd.reports / "build_summary.json"
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    legacy_refs = legacy_tsv_refs or []
-    summary = {
-        "schema_version": "dakp.build_summary.v1",
-        "generated_at": datetime.now(UTC).isoformat(),
-        "workdir": str(wd.root),
-        "tables": [{"name": ref.uri.stem, "path": str(ref.uri), "rows": ref.rows, "artifact_id": ref.blake3} for ref in assertion_refs],
-        "tablassert": {"handoff_refs": [str(ref.uri) for ref in kgx_refs]},
-        "legacy_tsv": {
-            "exported": bool(legacy_refs),
-            "files": [{"name": ref.uri.stem, "path": str(ref.uri), "rows": ref.rows, "artifact_id": ref.blake3} for ref in legacy_refs],
-        },
-        "translator_contract": {"ok": report.ok, "problems": report.problems, "tables": report.tables},
-        "translator_regression": {
-            "ok": regression_report.ok,
-            "families_seen": regression_report.families_seen,
-            "row_count": regression_report.row_count,
-            "violations": [
-                {"family": violation.family, "invariant": violation.invariant, "message": violation.message}
-                for violation in regression_report.violations
-            ],
-        },
-    }
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    event = "build_summary"
-    stats(logger, event, path=str(summary_path), tables=len(assertion_refs), handoff_refs=len(kgx_refs), legacy_tsv_refs=len(legacy_refs))
-    for ref in assertion_refs:
-        stats(logger, event, table=ref.uri.stem, rows=ref.rows if ref.rows is not None else "-", blake3=ref.blake3)
-    stats(logger, event, contract_ok=report.ok, contract_problems=len(report.problems))
-    stats(logger, event, regression_ok=regression_report.ok, regression_violations=len(regression_report.violations))
-    return summary_path
 
 
 def _load_disease_map(fixture_root: Path) -> dict[str, dict[str, str]]:

@@ -202,10 +202,10 @@ class MentionCache:
             return None
         deadline = time.monotonic() + _START_WAIT_SECONDS
         while time.monotonic() < deadline:
-            started = self._read_live_server()
-            if started is not None:
-                self._base_url = started
-                stats(logger, "mention_cache", started=True, url=started)
+            server_url = self._read_live_server()
+            if server_url is not None:
+                self._base_url = server_url
+                stats(logger, "mention_cache", started=True, url=server_url)
                 return self._base_url
             if self._proc.poll() is not None:
                 break  # exited already (e.g. DB locked by a stale server that lost its file)

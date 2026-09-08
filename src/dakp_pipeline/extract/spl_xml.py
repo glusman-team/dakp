@@ -143,7 +143,7 @@ class SPLXMLExtractor:
 
         for ref in inputs:
             if not _looks_like_spl(ref.uri):
-                log.debug("skipping non-SPL artifact", uri=str(ref.uri))
+                stats(log, "extract_dailymed_spl", level="DEBUG", skipped_uri=str(ref.uri))
                 continue
             input_ids.append(ref.blake3)
             release_file = ref.uri.name

@@ -149,7 +149,7 @@ class FAERSASCIIExtractor:
                 by_quarter_family[source.quarter][source.family] = frame
 
         if not by_quarter_family:
-            logger.warning("faers extract: no FAERS ASCII sources parsed")
+            logger.warning("extract_faers: no FAERS ASCII sources parsed")
             return []
 
         wd = Workdir(ctx.workdir)
@@ -301,12 +301,12 @@ def _iter_faers_sources(refs: list[ArtifactRef]) -> Iterator[_FaersSource]:
         elif suffix == ".txt":
             family, quarter = _family_and_quarter(uri.name)
             if family is None or quarter is None:
-                logger.debug("skipping non-FAERS .txt artifact", uri=str(uri))
+                stats(logger, "extract_faers", level="DEBUG", skipped_uri=str(uri))
                 continue
             content = uri.read_bytes()
             yield _FaersSource(quarter, family, content, uri.name, hash_bytes(content))
         else:
-            logger.debug("skipping non-FAERS artifact", uri=str(uri))
+            stats(logger, "extract_faers", level="DEBUG", skipped_uri=str(uri))
 
 
 def _family_and_quarter(name: str) -> tuple[str | None, str | None]:

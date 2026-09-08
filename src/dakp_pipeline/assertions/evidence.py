@@ -399,7 +399,7 @@ def _read_indexed_table(index: _TableIndex, filename: str) -> pl.DataFrame | Non
         try:
             return schemas.read_table(ref.uri)
         except Exception as exc:
-            logger.warning("skipping unreadable input {} ({})", ref.uri, exc)
+            logger.warning("evidence: skipping unreadable input {} ({})", ref.uri, exc)
     return None
 
 
