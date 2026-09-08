@@ -88,7 +88,7 @@ def write_fullmap_inputs(directory: Path) -> tuple[Path, Path]:
     return classes, synonyms
 
 
-def build_tiny_fullmap(output: Path, *, threads: int = 2) -> Path:
+def build_tiny_fullmap(output: Path) -> Path:
     """Build a tiny ``fullmap.redb`` (sharded) at ``output`` covering the DAKP terms.
 
     The build runs in a short-lived CHILD interpreter (see module docstring) so the calling
@@ -102,7 +102,7 @@ def build_tiny_fullmap(output: Path, *, threads: int = 2) -> Path:
         from pathlib import Path
         from tablassert import rs
 
-        rs.build_fullmap_db(Path({str(output)!r}), [Path({str(classes)!r})], [Path({str(synonyms)!r})], threads={threads})
+        rs.build_fullmap_db(Path({str(output)!r}), [Path({str(classes)!r})], [Path({str(synonyms)!r})])
         """
     )
     completed = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)

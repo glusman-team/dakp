@@ -35,7 +35,6 @@ def test_build_context_from_config_defaults(tmp_path: Path) -> None:
     assert ctx.params["no_original"] is False  # Tablassert --no-original defaults off unless the config sets it
     assert "drugsfda_url" not in ctx.params
     assert "fullmap" not in ctx.params
-    assert "tablassert_threads" not in ctx.params  # absent => Tablassert auto worker count
 
 
 def test_build_context_from_config_forwards_release(tmp_path: Path) -> None:
@@ -51,11 +50,6 @@ def test_build_context_from_config_forwards_qc(tmp_path: Path) -> None:
 def test_build_context_from_config_forwards_no_original(tmp_path: Path) -> None:
     ctx = build_context_from_config(_cfg(tmp_path, no_original=True))
     assert ctx.params["no_original"] is True
-
-
-def test_build_context_from_config_forwards_tablassert_threads(tmp_path: Path) -> None:
-    ctx = build_context_from_config(_cfg(tmp_path, tablassert_threads="70"))
-    assert ctx.params["tablassert_threads"] == 70
 
 
 def test_build_context_from_config_applies_overrides(tmp_path: Path) -> None:

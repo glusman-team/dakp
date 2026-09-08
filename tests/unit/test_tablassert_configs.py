@@ -992,12 +992,6 @@ def test_build_command_appends_no_original(monkeypatch: pytest.MonkeyPatch) -> N
     assert command == ["uv", "run", "tablassert", "build-kg", "graph.yaml", "--no-original"]
 
 
-def test_build_command_appends_threads(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(shutil, "which", lambda name: None)
-    command = TablassertRunner().build_command(Path("graph.yaml"), threads=70)
-    assert command == ["uv", "run", "tablassert", "build-kg", "graph.yaml", "--threads", "70"]
-
-
 def test_resolve_tablassert_dir_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(TABLASERT_DIR_ENV, raising=False)
     # ctx param wins over env and runner default.
@@ -1210,26 +1204,6 @@ def test_real_runner_appends_no_original_flag(monkeypatch: pytest.MonkeyPatch, t
 
     assert "--no-original" in seen[0]
     assert _read_report(workdir)["no_original"] is True
-
-
-def test_real_runner_appends_threads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    workdir = Workdir(tmp_path / "work")
-    workdir.create()
-    assertion_refs = _assertion_refs(workdir)
-    config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
-
-    seen: list[list[str]] = []
-
-    def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-        seen.append(command)
-        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
-
-    _patch_installed(monkeypatch)
-    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
-    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, tablassert_threads=70, fullmap="/maps/fullmap.redb"))
-
-    assert seen[0][-2:] == ["--threads", "70"]
-    assert _read_report(workdir)["threads"] == 70
 
 
 # --- module-level dispatch --------------------------------------------------------

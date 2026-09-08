@@ -55,7 +55,7 @@ def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_
         + "\n"
     )
     fullmap = fullmap_root / "kgx" / "fullmap.redb"
-    rs.build_fullmap_db(fullmap, [classes], [synonyms], threads=2)
+    rs.build_fullmap_db(fullmap, [classes], [synonyms])
 
     rows: list[dict[str, str]] = []
     for context, evidence in (

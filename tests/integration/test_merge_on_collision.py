@@ -71,7 +71,7 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
         + "\n"
     )
     fullmap = fullmap_root / "kgx" / "fullmap.redb"
-    rs.build_fullmap_db(fullmap, [classes], [synonyms], threads=2)
+    rs.build_fullmap_db(fullmap, [classes], [synonyms])
 
     # Case "2" appears under BOTH spellings (a case reported under two wordings): the union
     # counts it once, so the merged count is 3 + 7 - 1 = 9, not first-wins (3 or 7) and not the

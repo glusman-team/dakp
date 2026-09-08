@@ -28,7 +28,7 @@ def build_context_from_config(cfg: Mapping[str, Any]) -> TaskContext:
     ``run_tablassert`` is DERIVED from fullmap presence (a fullmap path triggers the real Tablassert
     handoff; absent => deferred, never an error), and ``quarter_limit`` / ``release_limit`` /
     ``dailymed_max_age_days`` / ``drugsfda_max_age_days`` / ``force`` / ``release`` /
-    ``qc`` / ``fullmap`` / ``tablassert_threads`` / ``drugsfda_url`` are forwarded when set.
+    ``qc`` / ``fullmap`` / ``drugsfda_url`` are forwarded when set.
     ``fullmap`` is resolved to an absolute path so relative paths passed at ``dakp up`` time are
     anchored to the caller's CWD, not the Airflow worker's CWD at task-run time.
     Delegates to :func:`build_context` so the disease map is loaded from the fixture root exactly
@@ -56,9 +56,6 @@ def build_context_from_config(cfg: Mapping[str, Any]) -> TaskContext:
     }
     if cfg.get("fullmap") is not None:
         params["fullmap"] = str(Path(str(cfg["fullmap"])).resolve())
-    if cfg.get("tablassert_threads") is not None:
-        # Tablassert `build-kg --threads` (fullmap-read worker count); absent => Tablassert auto.
-        params["tablassert_threads"] = int(str(cfg["tablassert_threads"]))
     if cfg.get("drugsfda_url") is not None:
         params["drugsfda_url"] = str(cfg["drugsfda_url"])
     return build_context(wd, cfg.get("fixture_root"), params)

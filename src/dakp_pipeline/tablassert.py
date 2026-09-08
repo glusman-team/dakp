@@ -82,10 +82,12 @@ recomputed as the union size, then the carrier is stripped before the final NDJS
 Tablassert the annotated ``case_ids`` column folds into ``supporting_text`` harmlessly and the
 merge keeps first-wins). The emitted
 graph config declares merge UNCONDITIONALLY and the FAERS table annotates ``case_ids``, so
-16.2 is the merge floor and 16.6 is where the merged count becomes exact. 16.7.0 (the pin
-floor) lowers the release-mode minimum ``number_of_cases`` for ``applied_to_treat`` edges
+16.2 is the merge floor and 16.6 is where the merged count becomes exact. 16.7.0 lowers the
+release-mode minimum ``number_of_cases`` for ``applied_to_treat`` edges
 from 25 to 10 (SkyeAv/Tablassert#141), so ``--release`` builds now ship 10-24-case edges
-earlier releases dropped.
+earlier releases dropped. 17.0.0 (the pin floor, SkyeAv/Tablassert#142) removes the
+``--threads`` CLI option and the ``threads`` Python/Rust API parameter — every parallel stage
+now sizes itself automatically — so DAKP passes no worker count anywhere.
 Fullmaps must
 be ``tablassert.fullmap.v5`` redb files — the on-disk format since Tablassert 8.2, unchanged
 in 13.0; older ones (v1-v4) are rejected on read.
@@ -1276,14 +1278,7 @@ class TablassertRunner:
     tablassert_dir: str | None = None
 
     def build_command(
-        self,
-        graph_yaml: Path,
-        *,
-        tablassert_dir: str | None = None,
-        qc: bool = False,
-        release: bool = False,
-        no_original: bool = False,
-        threads: int | None = None,
+        self, graph_yaml: Path, *, tablassert_dir: str | None = None, qc: bool = False, release: bool = False, no_original: bool = False
     ) -> list[str]:
         """The exact Tablassert invocation (pure; testable without spawning a process)."""
         command = [*_command_prefix(tablassert_dir), "build-kg", str(graph_yaml)]
@@ -1293,8 +1288,6 @@ class TablassertRunner:
             command.append("--release")
         if no_original:
             command.append("--no-original")
-        if threads is not None:
-            command.extend(["--threads", str(threads)])
         return command
 
     def run(self, assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
@@ -1326,11 +1319,8 @@ class TablassertRunner:
             logger.warning("{}: --qc requested but the QC audit runtime (sentence-transformers) is not importable; running without --qc", event)
         release = bool(ctx.params.get("release"))
         no_original = bool(ctx.params.get("no_original"))
-        # Worker count for the parallel fullmap reads behind entity resolution; absent => Tablassert auto.
-        threads_value = ctx.params.get("tablassert_threads")
-        threads = int(str(threads_value)) if threads_value is not None else None
 
-        command = self.build_command(graph_yaml, tablassert_dir=tablassert_dir, qc=qc, release=release, no_original=no_original, threads=threads)
+        command = self.build_command(graph_yaml, tablassert_dir=tablassert_dir, qc=qc, release=release, no_original=no_original)
         cwd = Workdir(ctx.workdir).root
 
         with step(logger, event):
@@ -1342,7 +1332,6 @@ class TablassertRunner:
                 qc=qc,
                 release=release,
                 no_original=no_original,
-                threads=threads,
                 tablassert_dir=tablassert_dir or "-",
             )
             stats(logger, event, command=" ".join(command))
@@ -1366,7 +1355,6 @@ class TablassertRunner:
                 "qc": qc,
                 "release": release,
                 "no_original": no_original,
-                "threads": threads,
             }
         )
         refs = [_write_report(report, assertion_refs, ctx)]

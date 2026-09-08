@@ -351,10 +351,6 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
         # copies from final edges. Edge identity no longer depends on them (uuid_fields is the
         # resolved statement only), so they are dead weight in the published graph. Always on.
         "no_original": True,
-        # `tablassert build-kg --threads 70`: worker count for the parallel fullmap reads behind
-        # entity resolution. Fixed at 70 for the wenceslaus build host (leaves headroom for the
-        # Airflow workers + Go extractors; Tablassert's auto would claim every core).
-        "tablassert_threads": 70,
         "log_level": log_level,
         "fullmap": fullmap,
     }
