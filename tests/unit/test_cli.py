@@ -85,27 +85,18 @@ def _patch_happy(monkeypatch: pytest.MonkeyPatch, *, api_up: bool | Callable[[],
     return fake
 
 
-def _write_summary(tmp_path: Path) -> Path:
-    summary = tmp_path / "work" / "reports" / "build_summary.json"
-    summary.parent.mkdir(parents=True, exist_ok=True)
-    summary.write_text('{"ok": true}', encoding="utf-8")
-    return summary
-
-
 # --- up: happy paths --------------------------------------------------------------
 
 
 def test_up_mock_happy_path_reuses_running_airflow(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
     fake = _patch_happy(monkeypatch)  # api_up True -> reuse
-    _write_summary(sandbox)
 
     code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 0
     out = capsys.readouterr().out
     assert "reusing" in out
-    assert "SUCCESS" in out
-    assert '{"ok": true}' in out  # build summary was printed
+    assert "succeeded" in out
     # Orchestration ran the go pack + nercache build + unpause + all three pools + variables set + trigger.
     assert fake.commands_containing("airflow-go-pack")
     assert fake.commands_containing("dakp-nercache")
@@ -119,7 +110,6 @@ def test_up_starts_airflow_when_not_running(monkeypatch: pytest.MonkeyPatch, san
     started: list[int] = []
     monkeypatch.setattr(cli, "start_standalone", lambda log_path, env: started.append(1) or 4242)
     _patch_happy(monkeypatch, api_up=_bools(False, True))  # down once, then up
-    _write_summary(sandbox)
 
     code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
@@ -127,7 +117,7 @@ def test_up_starts_airflow_when_not_running(monkeypatch: pytest.MonkeyPatch, san
     assert started == [1]
     # The pidfile records the pid start_standalone returned.
     assert (sandbox / "home" / "standalone.pid").read_text(encoding="utf-8") == "4242"
-    assert "starting Airflow standalone" in capsys.readouterr().out
+    assert "Starting Airflow standalone" in capsys.readouterr().out
 
 
 def test_up_config_variable_carries_null_limits_and_fullmap(monkeypatch: pytest.MonkeyPatch, sandbox: Path) -> None:
@@ -176,7 +166,7 @@ def test_up_success_without_summary_file_still_succeeds(monkeypatch: pytest.Monk
     code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
     assert code == 0
-    assert "SUCCESS" in capsys.readouterr().out
+    assert "succeeded" in capsys.readouterr().out
 
 
 def test_up_detach_returns_after_trigger(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -460,7 +450,7 @@ def test_clean_removes_expected_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     code = cli.run_clean()
 
     assert code == 0
-    assert "cleaned" in capsys.readouterr().out
+    assert "Cleaned" in capsys.readouterr().out
     assert not (tmp_path / ".pytest_cache").exists()
     assert not (tmp_path / "tmp").exists()
     assert not (tmp_path / ".coverage").exists()
@@ -576,7 +566,6 @@ def test_up_nercache_build_failure_is_non_fatal(monkeypatch: pytest.MonkeyPatch,
     """A failed dakp-nercache build only disables mention caching; the run proceeds."""
     fake = _patch_happy(monkeypatch)
     fake.fail_markers = ("dakp-nercache",)
-    _write_summary(sandbox)
 
     code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
@@ -584,7 +573,7 @@ def test_up_nercache_build_failure_is_non_fatal(monkeypatch: pytest.MonkeyPatch,
     out = capsys.readouterr().out
     assert "dakp-nercache build failed" in out
     assert "boom" in out  # the build's stderr tail was printed
-    assert "SUCCESS" in out
+    assert "succeeded" in out
 
 
 def test_up_nercache_build_failure_without_stderr(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -592,7 +581,6 @@ def test_up_nercache_build_failure_without_stderr(monkeypatch: pytest.MonkeyPatc
     fake = _patch_happy(monkeypatch)
     fake.fail_markers = ("dakp-nercache",)
     fake.stderr = ""
-    _write_summary(sandbox)
 
     code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
@@ -603,7 +591,6 @@ def test_up_nercache_build_failure_without_stderr(monkeypatch: pytest.MonkeyPatc
 def test_up_builds_nercache_into_workdir_bin(monkeypatch: pytest.MonkeyPatch, sandbox: Path) -> None:
     """The mention-cache server lands at <workdir>/bin/dakp-nercache (the client's default lookup)."""
     fake = _patch_happy(monkeypatch)
-    _write_summary(sandbox)
 
     assert cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False) == 0
     (build,) = [call for call in fake.commands_containing("dakp-nercache") if "build" in call]
@@ -672,7 +659,7 @@ def test_export_medliner_missing_interim_tables_fail_loudly(sandbox: Path, capsy
 
     assert code == 1
     out = capsys.readouterr().out
-    assert "!!!" in out
+    assert "error:" in out
     assert "dailymed/spl_documents.parquet" in out
     assert "faers/cases.parquet" in out
     assert "never downloads" in out

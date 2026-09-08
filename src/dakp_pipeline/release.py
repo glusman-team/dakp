@@ -10,7 +10,7 @@ the legacy TSV pair, and the Tablassert-generated RIG — to the legacy schema u
 ``drug_approvals_kg_v<version>.RIG.yaml`` (no nodes/edges kind). The published yaml is the
 Resource Ingest Guide Tablassert emits next to the KGX pair (``<name>_<version>.RIG.yaml``) —
 NOT the ``tables/graph.yaml`` build config, which is an input, not a release artifact. Copies,
-not renames: the Tablassert-stemmed originals stay for the build summary and debugging.
+not renames: the Tablassert-stemmed originals stay for debugging.
 
 The stage entry point :func:`publish` is Airflow-free. A DEFERRED handoff (no fullmap ->
 no ``build-kg`` -> no ndjson to name) returns an EMPTY ref list — never an error — mirroring

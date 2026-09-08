@@ -210,7 +210,7 @@ def _run_heal(command: list[str]) -> None:
     result = run_subprocess(command, env={**os.environ, "UV_LOCK_TIMEOUT": str(_UV_HEAL_LOCK_TIMEOUT_SECONDS)})
     if result.returncode == 0:
         return
-    print(f"!!! heal step failed (rc={result.returncode}): {' '.join(command)}")
+    print(f"error: heal step failed (rc={result.returncode}): {' '.join(command)}")
     if result.stderr:
         print(result.stderr.strip()[-2000:])
 
@@ -228,17 +228,17 @@ def _preflight() -> int:
     """
     if airflow_importable():
         return 0
-    print(">>> [preflight] Airflow install is broken; reinstalling apache-airflow-core")
+    print("[preflight] Airflow install is broken; reinstalling apache-airflow-core")
     _run_heal(["uv", "sync", "--reinstall-package", "apache-airflow-core"])
     if not airflow_importable():
         _run_heal(["uv", "cache", "clean", "apache-airflow-core"])
         _run_heal(["uv", "sync", "--reinstall-package", "apache-airflow-core"])
     if not airflow_importable():
         probe = run_subprocess([sys.executable, "-c", "import airflow"])
-        print("!!! Airflow still fails to import after reinstall; import error:")
+        print("error: Airflow still fails to import after reinstall; import error:")
         if probe.stderr:
             print(probe.stderr.strip()[-2000:])
-        print("!!! inspect .venv (try: uv sync --reinstall); if the error mentions a uv lock, run `dakp down` — a stray Airflow holds it")
+        print("error: inspect .venv (run 'uv sync --reinstall'); if the error mentions a uv lock, run 'dakp down' — a stray Airflow process holds it")
         return 1
     return 0
 
@@ -275,13 +275,13 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
     env = _airflow_env(airflow_home, bundle_dir, port)
 
     # --- 1. build + pack the Go bundle into executables_root --------------------
-    print(">>> [1/6] building + packing the native Go bundle")
+    print("[1/6] Building and packing the native Go bundle")
     bundle_dir.mkdir(parents=True, exist_ok=True)
     pack = run_subprocess(
         ["go", "tool", "airflow-go-pack", "--output", str(bundle_dir / "dakp-bundle"), "./cmd/dakp-bundle"], cwd=_REPO_ROOT / "go", env=env
     )
     if pack.returncode != 0:
-        print("!!! bundle pack failed")
+        print("error: bundle pack failed")
         if pack.stderr:
             print(pack.stderr.strip()[-2000:])
         return 1
@@ -291,33 +291,33 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
     nercache_bin.parent.mkdir(parents=True, exist_ok=True)
     nercache = run_subprocess(["go", "build", "-o", str(nercache_bin), "./cmd/dakp-nercache"], cwd=_REPO_ROOT / "go", env=env)
     if nercache.returncode != 0:
-        print("!!! dakp-nercache build failed (NER mention caching disabled; non-fatal)")
+        print("warning: dakp-nercache build failed; NER mention caching disabled (non-fatal)")
         if nercache.stderr:
             print(nercache.stderr.strip()[-2000:])
 
     # --- 2. start Airflow standalone (reuse if already up) ----------------------
     if api_up(base_url):
-        print(f">>> [2/6] Airflow already running on :{port} (reusing)")
+        print(f"[2/6] Airflow already running on :{port} (reusing)")
     else:
-        print(f">>> [2/6] starting Airflow standalone on :{port} (logs: {log_path})")
+        print(f"[2/6] Starting Airflow standalone on :{port} (logs: {log_path})")
         pidfile.write_text(str(start_standalone(log_path, env)), encoding="utf-8")
         for _ in range(_API_WAIT_ROUNDS):
             if api_up(base_url):
                 break
             sleep(_API_WAIT_SECONDS)
         if not api_up(base_url):
-            print(f"!!! API server did not come up; tail of {log_path}:")
+            print(f"error: API server did not come up; tail of {log_path}:")
             _tail(log_path)
             return 1
 
     # --- 3. wait for the DAG to register, then unpause + provision pools --------
-    print(">>> [3/6] waiting for DAG registration")
+    print("[3/6] Waiting for DAG registration")
     for _ in range(_DAG_WAIT_ROUNDS):
         if dag_registered(db_path, DAG_ID):
             break
         sleep(_DAG_WAIT_SECONDS)
     if not dag_registered(db_path, DAG_ID):
-        print(f"!!! DAG {DAG_ID} never registered; check {log_path}")
+        print(f"error: DAG {DAG_ID} never registered; check {log_path}")
         return 1
     run_subprocess(["uv", "run", "airflow", "dags", "unpause", DAG_ID], env=env)
     # The concurrency-bounding pools are not auto-created; tasks on a missing pool never schedule.
@@ -358,24 +358,24 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
         "log_level": log_level,
         "fullmap": fullmap,
     }
-    print(f">>> [4/6] setting {CONFIG_VARIABLE} Variable (workdir={workdir})")
+    print(f"[4/6] Setting {CONFIG_VARIABLE} Variable (workdir={workdir})")
     run_subprocess(["uv", "run", "airflow", "variables", "set", CONFIG_VARIABLE, json.dumps(config)], env=env)
 
     # --- 5. trigger the DAG run -------------------------------------------------
-    print(f">>> [5/6] triggering {DAG_ID}")
+    print(f"[5/6] Triggering {DAG_ID}")
     trigger = run_subprocess(["uv", "run", "airflow", "dags", "trigger", DAG_ID], env=env)
     if trigger.returncode != 0:
-        print("!!! trigger failed")
+        print("error: trigger failed")
         if trigger.stderr:
             print(trigger.stderr.strip()[-2000:])
         return 1
 
     if detach:
-        print(f">>> triggered {DAG_ID} (detached) — watch {base_url} ; logs: {log_path}")
+        print(f"Triggered {DAG_ID} (detached) — watch {base_url}; logs: {log_path}")
         return 0
 
     # --- 6. wait for completion -------------------------------------------------
-    print(">>> [6/6] waiting for the run to finish")
+    print("[6/6] Waiting for the run to finish")
     final = ""
     for i in range(1, _RUN_WAIT_ROUNDS + 1):
         state = run_state(db_path, DAG_ID)
@@ -389,15 +389,10 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
         sleep(_RUN_WAIT_SECONDS)
 
     print()
-    from dakp_pipeline.paths import Workdir
-
-    summary = Workdir(workdir).reports / "build_summary.json"
     if final == "success":
-        print(f">>> SUCCESS — build summary: {summary}")
-        if summary.exists():
-            print(summary.read_text(encoding="utf-8"))
+        print(f"DAG run {DAG_ID} succeeded")
         return 0
-    print(f"!!! DAG run did not succeed (final={final or 'timeout'}). Inspect: {log_path} and {airflow_home / 'logs'}/")
+    print(f"error: DAG run did not succeed (final={final or 'timeout'}); inspect {log_path} and {airflow_home / 'logs'}/")
     return 1
 
 
@@ -410,7 +405,7 @@ def run_down() -> int:
     if pidfile.exists():
         pid_text = pidfile.read_text(encoding="utf-8").strip()
         if pid_text.isdigit() and pid_alive(int(pid_text)):
-            print(f">>> stopping Airflow standalone (pid {pid_text})")
+            print(f"Stopping Airflow standalone (pid {pid_text})")
             terminate(int(pid_text))
             sleep(5)
         pidfile.unlink(missing_ok=True)
@@ -421,7 +416,7 @@ def run_down() -> int:
     sleep(2)
     run_subprocess(["pkill", "-9", "-f", "airflow"])  # catch-all for reparented children
     sleep(1)
-    print(">>> Airflow stopped")
+    print("Airflow stopped")
     return 0
 
 
@@ -443,11 +438,11 @@ def run_clean() -> int:
         except (OSError, ValueError, AttributeError):
             pid = 0
         if pid and pid_alive(pid):
-            print(f">>> stopping live dakp-nercache server (pid {pid})")
+            print(f"Stopping live dakp-nercache server (pid {pid})")
             terminate(pid)
             sleep(2)
             if pid_alive(pid):
-                print(f"!!! dakp-nercache pid {pid} survived SIGTERM; refusing to clean while it serves {_DEFAULT_WORKDIR / 'cache' / 'ner'}")
+                print(f"error: dakp-nercache pid {pid} survived SIGTERM; refusing to clean while it serves {_DEFAULT_WORKDIR / 'cache' / 'ner'}")
                 return 1
     for name in (".pytest_cache", ".ruff_cache", ".coverage", "htmlcov", "tmp"):
         target = _REPO_ROOT / name
@@ -459,7 +454,7 @@ def run_clean() -> int:
         if ".venv" not in pycache.parts:
             shutil.rmtree(pycache, ignore_errors=True)
     (_REPO_ROOT / "go" / "dakp-worker").unlink(missing_ok=True)
-    print(">>> cleaned caches, coverage data, tmp/, and the Go worker binary")
+    print("Cleaned caches, coverage data, tmp/, and the Go worker binary")
     return 0
 
 
@@ -542,14 +537,14 @@ def run_export_medliner(*, out: str | None = None, workdir: str | None = None, f
         try:
             refs = export_interim_refs(workdir_root)
         except FileNotFoundError as exc:
-            print(f"!!! {exc}")
+            print(f"error: {exc}")
             return 1
     medliner_export.export(refs, ctx)
     src_dir = wd.store / medliner_export.OUT_DIRNAME
     out_dir = Path(out) if out is not None else src_dir
     if out_dir != src_dir:
         copy_export_bundle(src_dir, out_dir)
-    print(f">>> MEDliNER training-data bundle ready: {out_dir}")
+    print(f"MEDliNER training-data bundle ready: {out_dir}")
     return 0
 
 

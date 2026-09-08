@@ -8,7 +8,7 @@ explicit ``params`` it forwards to :func:`dakp_pipeline.runtime.build_context`.
 
 WHY a harness and not per-test wiring: the four end-to-end integration tests (semantic-equivalence,
 offline-pipeline, prod-smoke, KGX) all run the identical acquire -> extract -> MEDliNER export ->
-shape -> Tablassert -> contract/regression -> summary sequence. Centralizing it in one place means
+shape -> Tablassert -> legacy TSV -> release publish sequence. Centralizing it in one place means
 a stage signature
 change touches one call site, the byte-determinism re-run uses the exact same path as the first
 run, and monkeypatch boundaries stay identical across tests.
@@ -37,13 +37,12 @@ from dakp_pipeline import legacy_tsv as _legacy_tsv
 from dakp_pipeline import medliner_export as _medliner_export
 from dakp_pipeline import release as _release
 from dakp_pipeline import tablassert as _tablassert
-from dakp_pipeline import translator
 from dakp_pipeline.assertions import approved_treats, contraindications, observed_uses
 from dakp_pipeline.extract import drugsfda_products, faers_ascii, spl_xml
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import configure_logging
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.runtime import build_context, write_build_summary
+from dakp_pipeline.runtime import build_context
 from dakp_pipeline.sources import dailymed, drugsfda, faers
 
 
@@ -58,11 +57,13 @@ class TableOutput:
 
 @dataclass
 class StageResult:
-    """Return value of :func:`run_stages`: produced table summaries + the build summary path."""
+    """Return value of :func:`run_stages`: produced table summaries + the assertion refs."""
 
     workdir: Workdir
     tables: dict[str, TableOutput] = field(default_factory=dict)
-    build_summary: Path | None = None
+    #: The registered assertion-table ArtifactRefs (approved-treats + observed-uses +
+    #: contraindications), in production order.
+    assertion_refs: list[ArtifactRef] = field(default_factory=list)
     #: The three MEDliNER export-bundle refs ([manifest, candidates, gold]); empty if the
     #: export stage did not run.
     medliner_export_refs: list[ArtifactRef] = field(default_factory=list)
@@ -108,9 +109,9 @@ def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: 
     """Wire the DAKP stages exactly as the Airflow DAG does, end-to-end.
 
     Stages: acquire -> extract -> MEDliNER export -> shape assertions -> generate Tablassert
-    configs -> Tablassert handoff -> legacy TSV export -> release publish (legacy names) ->
-    translator contract + regression -> build summary. The same sequence the DAG drives (the MEDliNER export branches off the
-    DailyMed + FAERS extracts as a leaf hand-off the summary does not wait on); the only
+    configs -> Tablassert handoff -> legacy TSV export -> release publish (legacy names).
+    The same sequence the DAG drives (the MEDliNER export branches off the
+    DailyMed + FAERS extracts as a leaf hand-off nothing downstream waits on); the only
     difference is this runs Airflow-free in-process so the tests exercise the real stage
     functions (and the pure-Python reference extractors) with full monkeypatch control.
     ``params`` carries the explicit run behavior (``run_tablassert``, ``quarter_limit``,
@@ -135,7 +136,7 @@ def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: 
 
     # 2b. MEDliNER training-data export: a leaf hand-off bundle consuming ONLY the DailyMed +
     # FAERS extracts (the DAG's `medliner` group runs it in parallel with the shape stage, and
-    # the build summary is not gated on it).
+    # nothing downstream is gated on it).
     medliner_refs = _medliner_export.export([*dm_ext, *faers_ext], ctx)
 
     # 3. Shape assertion tables (uncompressed TSV, Tablassert-facing). Observed-uses consumes the
@@ -158,13 +159,8 @@ def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: 
     # ``drug_approvals_kg_*_v<version>`` names (the DAG's publish_release_artifacts task).
     release_refs = _release.publish(kgx_refs, legacy_refs, ctx)
 
-    # 7. Translator-readiness contract + regression + build summary.
-    report = translator.validate(assertion_refs)
-    regression_report = translator.check_assertion_tables(assertion_refs)
-    build_summary = write_build_summary(wd, assertion_refs, kgx_refs, report, regression_report, legacy_tsv_refs=legacy_refs)
-
     tables = {ref.uri.stem: TableOutput(ref.uri.stem, ref.uri, ref.rows or 0) for ref in assertion_refs}
-    return StageResult(workdir=wd, tables=tables, build_summary=build_summary, medliner_export_refs=medliner_refs, release_refs=release_refs)
+    return StageResult(workdir=wd, tables=tables, assertion_refs=assertion_refs, medliner_export_refs=medliner_refs, release_refs=release_refs)
 
 
 __all__ = ["StageResult", "TableOutput", "install_fixture_fetchers", "run_stages"]

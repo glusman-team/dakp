@@ -23,7 +23,7 @@ import-safe and monkeypatchable. Three public entry points:
      infores required per family (dailymed/faers).
 
   Problems are returned both as structured :class:`ContractProblem` records (``kgx_problems``)
-  and as rendered strings (``problems``) so the existing build summary keeps working.
+  and as rendered strings (``problems``) for human-readable reports.
 * :func:`check_rows` / :func:`check_assertion_tables` — regression guardrails asserting the
   produced assertion/edge set preserves the three DAKP edge families and their Translator
   provenance semantics — without requiring edge-for-edge equality with the legacy build

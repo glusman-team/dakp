@@ -4,8 +4,8 @@ This is the **only** orchestrator (the former pure-Python pipeline runner is ret
 parsing/extraction runs as **native Airflow Go SDK
 bundle workers** (``go/cmd/dakp-bundle``): the three ``extract_*`` tasks are ``@task.stub(queue=
 "golang")`` declarations whose Go implementations the ExecutableCoordinator forks per task instance.
-Every other stage (acquisition, assertion shaping, Tablassert handoff, translator contract +
-regression, build summary) is a real Python TaskFlow task reusing the existing stage modules.
+Every other stage (acquisition, assertion shaping, Tablassert handoff, legacy TSV export, release
+publishing, MEDliNER export) is a real Python TaskFlow task reusing the existing stage modules.
 
 Tasks pass ``list[ArtifactRef]`` manifests over XCom (serialized to JSON dicts via
 :mod:`dakp_pipeline.io.xcom` so the native Go workers read/write the same manifests); heavy bytes
@@ -50,7 +50,7 @@ CONFIG_VARIABLE = "dakp_config"
 _DAG_DOC_MD = """
 ### DAKP build stages
 
-The DAG is organized into seven visual TaskGroups while preserving the historical task IDs:
+The DAG is organized into six visual TaskGroups while preserving the historical task IDs:
 
 1. **acquire** — network/model acquisition, bounded by `dakp_download`.
 2. **extract** — native Go SDK stubs on the `golang` queue, bounded by `dakp_extract`.
@@ -62,9 +62,8 @@ The DAG is organized into seven visual TaskGroups while preserving the historica
    ndjson/tsv pair plus the Tablassert RIG under the legacy `drug_approvals_kg_*_v<version>`
    names (skipped when the handoff was deferred — no fullmap means no KGX to convert).
 6. **medliner** — export the MEDliNER training-data bundle from the DailyMed + FAERS extracts;
-   a leaf hand-off artifact (no shape-stage dependency, default pool; the build summary does not
-   wait on it).
-7. **summary** — terminal translator validation/regression/build-summary task.
+   a leaf hand-off artifact (no shape-stage dependency, default pool; nothing downstream waits
+   on it).
 
 The `dakp_extract` pool has 4 slots; each extract consumes the default 1 slot, so DailyMed, FAERS,
 and Drugs@FDA all extract concurrently. (The streaming FAERS rewrite — plans/fix-faers-memory.md —
@@ -78,7 +77,6 @@ _SHAPE_DOC_MD = """Shape interim artifacts into DAKP assertion TSVs without movi
 _TABLASSERT_DOC_MD = """Generate Tablassert configs and optionally run the installed Tablassert CLI."""
 _EXPORT_DOC_MD = """Convert the Tablassert KGX ndjson pair into the legacy DAKP `.nodes.tsv` / `.edges.tsv` schema, then publish the ndjson/tsv pair and the Tablassert `.RIG.yaml` under the legacy `drug_approvals_kg_*_v<version>` names."""
 _MEDLINER_DOC_MD = """Export the MEDliNER training-data bundle (`dakp.medliner.export.v1`) from the DailyMed + FAERS extracts."""
-_SUMMARY_DOC_MD = """Terminal build-summary stage: translator validation, regression checks, and report JSON."""
 
 
 @dataclass(frozen=True)
@@ -383,8 +381,8 @@ def _build_tablassert_stage(assertions: AssertionOutputs) -> TablassertOutputs:
         return TablassertOutputs(configs=configs, kgx=kgx)
 
 
-def _build_export_stage(tablassert_outputs: TablassertOutputs) -> Any:
-    """Create the legacy-export TaskGroup and return the legacy-TSV task handle."""
+def _build_export_stage(tablassert_outputs: TablassertOutputs) -> None:
+    """Create the legacy-export TaskGroup (legacy TSV retrofit + release publish)."""
     with TaskGroup(group_id="export", prefix_group_id=False, tooltip="Legacy export + release naming", doc_md=_EXPORT_DOC_MD):
 
         @task(doc_md="Retrofit the KGX ndjson pair into the legacy DAKP TSV pair; skipped when the Tablassert handoff was deferred.")
@@ -421,7 +419,6 @@ def _build_export_stage(tablassert_outputs: TablassertOutputs) -> Any:
 
         legacy = export_legacy_tsv(tablassert_outputs.kgx)
         publish_release_artifacts(tablassert_outputs.kgx, legacy)
-        return legacy
 
 
 def _build_medliner_stage(extracts: ExtractOutputs) -> Any:
@@ -429,7 +426,7 @@ def _build_medliner_stage(extracts: ExtractOutputs) -> Any:
 
     The bundle is a leaf hand-off artifact: it consumes ONLY the DailyMed + FAERS extract XComs
     (no shape-stage dependency), runs on the default pool (no GPU/network scarcity), and nothing
-    downstream — notably not ``write_build_summary`` — waits on it.
+    downstream waits on it.
     """
     with TaskGroup(group_id="medliner", prefix_group_id=False, tooltip="MEDliNER training-data export", doc_md=_MEDLINER_DOC_MD):
 
@@ -448,56 +445,19 @@ def _build_medliner_stage(extracts: ExtractOutputs) -> Any:
         return export_medliner_training_data(extracts.dailymed, extracts.faers)
 
 
-def _build_summary_stage(assertions: AssertionOutputs, kgx: Any, legacy_tsv_refs_task: Any) -> Any:
-    """Create the terminal summary TaskGroup and return its task handle."""
-    with TaskGroup(group_id="summary", prefix_group_id=False, tooltip="Build summary", doc_md=_SUMMARY_DOC_MD):
-        # none_failed: export_legacy_tsv SKIPs (never fails) on a deferred handoff, and the summary
-        # must still run — a skip upstream under the default all_success rule would skip the whole
-        # terminal stage (its XCom then resolves to None, i.e. an empty ref list).
-        @task(trigger_rule="none_failed", doc_md="Terminal task: validate assertion tables, run regression guards, and write build_summary.json.")
-        def write_build_summary(
-            approved: Any, uses: Any, contra: Any, kgx_refs: Any, legacy_refs: Any
-        ) -> str:  # pragma: no cover - body executes only under the Airflow task runtime
-            from dakp_pipeline import runtime, translator
-            from dakp_pipeline.paths import Workdir
-
-            ctx = _ctx()
-            with step(logger, "task write_build_summary"):
-                assertion_refs = [*_refs_from_xcom(approved), *_refs_from_xcom(uses), *_refs_from_xcom(contra)]
-                kgx_ref_list = _refs_from_xcom(kgx_refs)
-                legacy_ref_list = _refs_from_xcom(legacy_refs)
-                stats(
-                    logger,
-                    "task write_build_summary",
-                    assertion_refs=len(assertion_refs),
-                    kgx_refs=len(kgx_ref_list),
-                    legacy_tsv_refs=len(legacy_ref_list),
-                )
-                report = translator.validate(assertion_refs)
-                regression_report = translator.check_assertion_tables(assertion_refs)
-                summary = runtime.write_build_summary(
-                    Workdir(ctx.workdir), assertion_refs, kgx_ref_list, report, regression_report, legacy_tsv_refs=legacy_ref_list
-                )
-                stats(logger, "task write_build_summary", summary_path=str(summary))
-                return str(summary)
-
-        return write_build_summary(assertions.approved, assertions.uses, assertions.contraindications, kgx, legacy_tsv_refs_task)
-
-
 @dag(dag_id=DAG_ID, start_date=datetime(2026, 1, 1), schedule=None, catchup=False, tags=["dakp", "drug-approvals"], doc_md=_DAG_DOC_MD)
 def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies execute only under an Airflow runtime
-    """Full DAKP build DAG: acquire -> extract (native Go) -> shape -> Tablassert handoff -> legacy TSV export -> summary.
+    """Full DAKP build DAG: acquire -> extract (native Go) -> shape -> Tablassert handoff -> legacy TSV export.
 
     The MEDliNER training-data export branches off the DailyMed + FAERS extracts as a leaf
-    hand-off (parallel with shape onward; the summary does not wait on it).
+    hand-off (parallel with shape onward; nothing downstream waits on it).
     """
     acquired = _build_acquire_stage()
     extracted = _build_extract_stage(acquired)
     assertions = _build_shape_stage(extracted, acquired.ner_models)
     _build_medliner_stage(extracted)
     tablassert_outputs = _build_tablassert_stage(assertions)
-    legacy_tsv = _build_export_stage(tablassert_outputs)
-    _build_summary_stage(assertions, tablassert_outputs.kgx, legacy_tsv)
+    _build_export_stage(tablassert_outputs)
 
 
 # Register the DAG (Airflow scans the dags folder for module-level DAGs).

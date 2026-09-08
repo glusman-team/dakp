@@ -36,7 +36,7 @@ uv run dakp up --fullmap /path/to/fullmap.redb
 ```
 
 `dakp up` builds the native Go bundle, starts a local Airflow, triggers the `dakp_pipeline`
-DAG, waits, and prints the build summary. Without `--fullmap` the Tablassert handoff is
+DAG, waits, and reports the final run state. Without `--fullmap` the Tablassert handoff is
 deferred (a manifest is written), never an error. Acquisition is always real; "offline" is
 only a test concern.
 
