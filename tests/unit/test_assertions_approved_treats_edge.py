@@ -15,6 +15,7 @@ from loguru import logger
 
 from dakp_pipeline.assertions.approved_treats import _faers_candidates, _object_attrs, _subject_for_sets, build_approved_treats_rows
 from dakp_pipeline.assertions.evidence import DailyMedEvidence
+from dakp_pipeline.ner.ner import DiseaseNER
 
 # --- _subject_for_sets: singleton adoption + fallthrough ------------------------
 
@@ -313,3 +314,53 @@ def test_multi_ingredient_supporting_set_yields_faers_fallback_subject(disease_m
     assert len(rows) == 1
     assert rows[0]["subject_text"] == "Examplestatin"  # FAERS fallback (ingredient column)
     assert rows[0]["subject_curie"] == ""
+
+
+# --- condition-in-label corroboration: negated efficacy/indication boilerplate ----
+
+# Verbatim boilerplate from the DailyMed baclofen label (NCATSTranslator/Feedback#1360): the
+# indication section NAMES 'cerebral palsy' (and 'stroke', "Parkinson's disease") only to say
+# efficacy is NOT established — such sentences must never corroborate a treats candidate.
+_BACLOFEN_SECTION = (
+    "Baclofen is useful for the alleviation of signs and symptoms of spasticity resulting from multiple sclerosis. "
+    "Baclofen may also be of some value in patients with spinal cord injuries and other spinal cord diseases. "
+    "Baclofen is not indicated in the treatment of skeletal muscle spasm resulting from rheumatic disorders. "
+    "The efficacy of baclofen in stroke, cerebral palsy, and Parkinson's disease has not been established and, "
+    "therefore, it is not recommended for these conditions."
+)
+
+
+def test_candidate_dropped_when_condition_named_only_in_efficacy_disclaimer() -> None:
+    # Every other gate passes, but 'cerebral palsy' / 'stroke' appear only in the label's
+    # "efficacy ... has not been established ... not recommended" sentence -> dropped.
+    ev = _supported_evidence(_BACLOFEN_SECTION)
+    assert build_approved_treats_rows(_cases("cerebral palsy"), ev, {"12345": {"EXAMPLESTATIN"}}, {}) == []
+    assert build_approved_treats_rows(_cases("stroke"), ev, {"12345": {"EXAMPLESTATIN"}}, {}) == []
+
+
+def test_candidate_kept_when_condition_named_in_positive_sentence_of_same_section() -> None:
+    # 'spasticity' is named in the disclaimer-free first sentence of the very same section:
+    # stripping the negated sentences must not over-drop the positive mention. (The "not
+    # indicated ... skeletal muscle spasm" sentence goes too, but spasticity survives elsewhere.)
+    ev = _supported_evidence(_BACLOFEN_SECTION)
+    rows = build_approved_treats_rows(_cases("spasticity"), ev, {"12345": {"EXAMPLESTATIN"}}, {})
+    assert [row["object_text"] for row in rows] == ["spasticity"]
+
+
+def test_candidate_kept_when_condition_has_a_positive_mention_alongside_the_disclaimer() -> None:
+    # The condition appears in a negated sentence AND a positive one: the positive mention still
+    # corroborates (only the disclaimer sentence is stripped, not the whole section).
+    ev = _supported_evidence(
+        "Indicated for the management of cerebral palsy spasticity. The efficacy of Examplestatin in cerebral palsy has not been established."
+    )
+    rows = build_approved_treats_rows(_cases("cerebral palsy"), ev, {"12345": {"EXAMPLESTATIN"}}, {})
+    assert [row["object_text"] for row in rows] == ["cerebral palsy"]
+
+
+def test_ner_mention_mined_only_from_a_disclaimer_sentence_does_not_corroborate() -> None:
+    # Mentions are mined from the FULL section, so 'breast cancer' is mined — but it lives only in
+    # the efficacy disclaimer, so it no longer corroborates the more specific FAERS candidate.
+    ev = _supported_evidence("The efficacy of Examplestatin in breast cancer has not been established.")
+    ner = DiseaseNER(gazetteer={"breast cancer": "disease"})
+    rows = build_approved_treats_rows(_cases("Hormone receptor positive breast cancer"), ev, {"12345": {"EXAMPLESTATIN"}}, {}, ner=ner)
+    assert rows == []
