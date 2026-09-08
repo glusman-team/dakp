@@ -82,7 +82,10 @@ recomputed as the union size, then the carrier is stripped before the final NDJS
 Tablassert the annotated ``case_ids`` column folds into ``supporting_text`` harmlessly and the
 merge keeps first-wins). The emitted
 graph config declares merge UNCONDITIONALLY and the FAERS table annotates ``case_ids``, so
-16.2 is the floor and 16.6 is where the merged count becomes exact.
+16.2 is the merge floor and 16.6 is where the merged count becomes exact. 16.7.0 (the pin
+floor) lowers the release-mode minimum ``number_of_cases`` for ``applied_to_treat`` edges
+from 25 to 10 (SkyeAv/Tablassert#141), so ``--release`` builds now ship 10-24-case edges
+earlier releases dropped.
 Fullmaps must
 be ``tablassert.fullmap.v5`` redb files — the on-disk format since Tablassert 8.2, unchanged
 in 13.0; older ones (v1-v4) are rejected on read.
