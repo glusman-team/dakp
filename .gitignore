@@ -24,3 +24,6 @@ coverage.xml
 htmlcov/
 .tablassert/
 .ralph/
+
+# Local planning notes (untracked)
+/plans/
