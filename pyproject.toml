@@ -106,8 +106,8 @@ typecheck = [
 ]
 # The EXACT set both syncing CI jobs (python-type, python-test) install, so they share one
 # warm uv cache instead of racing to save mutually-useless ones (astral-sh/setup-uv keys its
-# cache on uv.lock). Excludes ruff/pre-commit: lint runs ruff standalone via ruff-action, and
-# no syncing CI job needs pre-commit. Modeled on ../Tablassert/pyproject.toml.
+# cache on uv.lock). Excludes ruff/pre-commit: the CI lint and pre-commit jobs sync the dev
+# group instead. Modeled on ../Tablassert/pyproject.toml.
 ci = [
     { include-group = "test" },
     { include-group = "typecheck" },

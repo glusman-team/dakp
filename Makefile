@@ -1,4 +1,4 @@
-.PHONY: setup test test-go lint fmt fmt-check typecheck check clean
+.PHONY: setup test test-go vet lint fmt fmt-check typecheck check precommit clean
 
 # Install Python dev dependencies.
 setup:
@@ -11,6 +11,10 @@ test:
 # Run the Go test suite.
 test-go:
 	cd go && go test ./...
+
+# Run go vet over the Go module.
+vet:
+	cd go && go vet ./...
 
 # Run Python lint checks.
 lint:
@@ -31,8 +35,11 @@ typecheck:
 	uv run pyright
 
 # Run the full local quality gate (mirrors CI).
-check: lint fmt-check typecheck test test-go
-	cd go && go vet ./...
+check: lint fmt-check typecheck test test-go vet
+
+# Run the pre-commit hooks over all files (the `pre-commit` CI job runs this same target).
+precommit:
+	uv run pre-commit run --all-files
 
 # Remove local build, test, and cache artifacts.
 clean:

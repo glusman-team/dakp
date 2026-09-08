@@ -1,12 +1,13 @@
 # CI for the DAKP rebuild. Modeled on ../Tablassert/.github/workflows/ci.yml: aggressive caching +
-# fully parallel jobs (no `needs:` between them, so they fan out at once).
+# fully parallel jobs (no `needs:` between them, so they fan out at once). Every check is a
+# Makefile target (local `make check` runs the same gate), so local and CI cannot drift:
 #
-#   python-lint   ruff check + ruff format --check
-#   python-type   pyright
-#   python-test   pytest -q --cov (addopts adds `-n auto`; pytest-cov combines per-xdist-worker
+#   python-lint   make lint + make fmt-check (gofmt needs a Go toolchain, hence setup-go)
+#   python-type   make typecheck
+#   python-test   make test (addopts adds `-n auto`; pytest-cov combines per-xdist-worker
 #                 coverage so the 100% branch gate in pyproject.toml still holds)
-#   go            cd go && go test ./...
-#   pre-commit    validates the contributor hook wiring (.pre-commit-config.yaml)
+#   go            make test-go + make vet
+#   pre-commit    make precommit (validates the contributor hook wiring)
 #
 # Caching is keyed on lockfiles so it invalidates exactly when dependencies change:
 #   - astral-sh/setup-uv caches the uv download/wheel cache, keyed on uv.lock.
@@ -28,9 +29,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Both syncing jobs install this EXACT set, so they share one warm uv cache instead of
-  # racing to save mutually-useless ones. See the `ci` group in pyproject.toml.
+  # The typecheck/test jobs install the `ci` group (test + typecheck) EXACTLY, so they share one
+  # warm uv cache instead of racing to save mutually-useless ones; the lint and pre-commit jobs
+  # sync the `dev` group instead (ruff/pre-commit live there). See the groups in pyproject.toml.
   SYNC_ARGS: --no-default-groups --group ci
+  # Makefile targets run tools via `uv run`, which would otherwise top the env up to the default
+  # (dev) group. Pinning `uv run` to whatever the sync step installed keeps each job's env exact
+  # and the `uv run` itself a no-op (inexact sync: installs nothing, removes nothing).
+  UV_NO_DEFAULT_GROUPS: "1"
 
 jobs:
   python-lint:
@@ -38,19 +44,26 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      # Ruff runs standalone: `ruff check` measures 0s, so a full `uv sync` in front of it is
-      # pure overhead. `version-file` reads the resolved pin out of uv.lock, which is the same
-      # version .pre-commit-config.yaml pins, so local and CI cannot drift.
-      - name: Ruff lint
-        uses: astral-sh/ruff-action@v4.1.0
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
         with:
-          version-file: uv.lock
-          args: check --output-format=github
-      - name: Ruff format check
-        uses: astral-sh/ruff-action@v4.1.0
+          python-version: "3.12"
+          enable-cache: true
+          prune-cache: true
+          cache-suffix: dev
+      # `make lint` runs ruff through the project env, so this job syncs the dev group (ruff
+      # lives there, not in `ci`) instead of running ruff standalone via ruff-action.
+      - name: Sync dependencies
+        run: uv sync --frozen --group dev
+      # The gofmt check inside `make fmt-check` needs a Go toolchain; no compilation happens,
+      # so the setup-go build/module cache is off.
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          version-file: uv.lock
-          args: format --check
+          go-version-file: go/go.mod
+          cache: false
+      - name: Lint and format check
+        run: make lint fmt-check
 
   python-type:
     runs-on: ubuntu-latest
@@ -67,7 +80,7 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen ${{ env.SYNC_ARGS }}
       - name: Pyright
-        run: uv run pyright
+        run: make typecheck
 
   python-test:
     runs-on: ubuntu-latest
@@ -86,13 +99,10 @@ jobs:
       # addopts supplies `-n auto --cov`; pytest-cov merges the per-worker .coverage files and the
       # fail_under=100 branch gate (pyproject.toml) fails the job on any regression.
       - name: Run tests (parallel, with coverage gate)
-        run: uv run pytest
+        run: make test
 
   go:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: go
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -102,8 +112,9 @@ jobs:
           go-version-file: go/go.mod
           cache: true
           cache-dependency-path: go/go.sum
-      - name: Go test
-        run: go test ./...
+      # The Makefile targets `cd go` themselves, so make runs from the repo root.
+      - name: Go test and vet
+        run: make test-go vet
 
   pre-commit:
     runs-on: ubuntu-latest
@@ -125,4 +136,4 @@ jobs:
           path: ~/.cache/pre-commit
           key: ${{ runner.os }}-pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
       - name: Run pre-commit
-        run: uv run pre-commit run --all-files
+        run: make precommit
