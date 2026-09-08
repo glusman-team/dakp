@@ -14,7 +14,7 @@ generates Tablassert configs and hands canonical resolution and KGX compilation 
 `tablassert` CLI.
 
 ```mermaid
-flowchart LR
+flowchart TD
     acquire --> extract --> NER --> aggregate --> tablassert["Tablassert KGX handoff"]
 ```
 
