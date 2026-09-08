@@ -19,7 +19,12 @@ An approved-treats row requires an **NDA-bearing drug-indication pair** that sat
    text equals the candidate or is word-contained IN it (the label naming the general
    condition — e.g. ``breast cancer`` — corroborates the more specific FAERS report —
    e.g. ``hormone receptor positive breast cancer``; the reverse direction would assert
-   more than the label supports and is never accepted). Candidates whose condition appears on
+   more than the label supports and is never accepted). All three channels ignore sentences
+   that disclaim efficacy or indication ("not indicated", "not recommended", "not approved",
+   "not been established" — see :func:`_positive_context_text`), so boilerplate like the
+   baclofen label's "efficacy ... in stroke, cerebral palsy, and Parkinson's disease has not
+   been established" never corroborates the very conditions it disclaims
+   (NCATSTranslator/Feedback#1360). Candidates whose condition appears on
    no supporting label are dropped (``dropped_no_label_term_support``) — the legacy
    ``supportInDailyMed`` gate (``ref/legacy/bin/drug2indi2kg.py``).
 
@@ -58,6 +63,7 @@ disease baseline. Canonical CURIE mapping is a later milestone (text-first).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
@@ -97,6 +103,30 @@ _FAERS_CASE_COLUMNS = ("nda", "nda_raw", "indication", "ingredient", "drugname",
 
 #: One INFO progress line per this many mined indication sections (GLiNER is the slow step).
 _MINING_PROGRESS_EVERY = 500
+
+#: Sentence-level cues for SPL indication-section boilerplate that DISCLAIMS efficacy or
+#: indication rather than asserting it — e.g. the baclofen label's "The efficacy of baclofen in
+#: stroke, cerebral palsy, and Parkinson's disease has not been established and, therefore, it is
+#: not recommended for these conditions." A condition named only in such a sentence is the label
+#: saying the drug does NOT treat it, so the sentence must not corroborate a treats candidate
+#: (NCATSTranslator/Feedback#1360).
+_NEGATION_CUES = re.compile(r"\b(?:not indicated|not recommended|not approved|not been established)\b", re.IGNORECASE)
+
+#: Sentence/bullet boundaries inside an SPL section: blank-or-single newlines separate the
+#: section's bulleted lines; sentence-final punctuation followed by whitespace separates prose
+#: sentences within a line.
+_SENTENCE_BOUNDARY = re.compile(r"(?:\r?\n)+|(?<=[.!?])\s+")
+
+
+def _positive_context_text(section_text: str) -> str:
+    """The indication section minus every sentence/bullet that disclaims efficacy or indication.
+
+    Splitting is per-sentence, so a disclaimer naming several conditions ("...in stroke, cerebral
+    palsy, and Parkinson's disease has not been established...") removes them all, while a
+    positive sentence elsewhere in the same section still corroborates its conditions.
+    """
+    kept = [chunk for chunk in _SENTENCE_BOUNDARY.split(section_text or "") if chunk.strip() and not _NEGATION_CUES.search(chunk)]
+    return " ".join(kept)
 
 
 class ApprovedTreatsShaper:
@@ -311,22 +341,30 @@ def _section_mentions_condition(
     condition (``breast cancer``) covers the specific FAERS report (``hormone receptor positive
     breast cancer``). The reverse (mention more specific than the candidate) never corroborates —
     and needs no rule: it is already covered by the verbatim check.
+
+    All three channels run against :func:`_positive_context_text` output: sentences that disclaim
+    efficacy or indication ("not indicated", "not recommended", "not approved", "not been
+    established") are stripped first, so a condition named only in such boilerplate — the label
+    saying the drug does NOT treat it — never corroborates (NCATSTranslator/Feedback#1360). An NER
+    mention must additionally survive in the positive remainder, since mentions are mined from the
+    full (unstripped) section.
     """
     needle = normalize_text(cand["object_text"])
     if not needle:
         return False
-    for match in match_diseases(section_text, disease_map):
+    positive_text = _positive_context_text(section_text)
+    for match in match_diseases(positive_text, disease_map):
         if cand["object_curie"] and match["curie"]:
             if match["curie"] == cand["object_curie"]:
                 return True
         elif normalize_text(match["text"]) == needle:
             return True
-    normalized_section = normalize_text(section_text)
+    normalized_section = normalize_text(positive_text)
     if f" {needle} " in f" {normalized_section} ":
         return True
     for mention in mentions or []:
         mention_text = normalize_text(mention.text)
-        if mention_text and (mention_text == needle or f" {mention_text} " in f" {needle} "):
+        if mention_text and f" {mention_text} " in f" {normalized_section} " and (mention_text == needle or f" {mention_text} " in f" {needle} "):
             return True
     return False
 
