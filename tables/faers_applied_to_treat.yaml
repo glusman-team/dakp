@@ -405,6 +405,8 @@ template:
             - "https://db.systemsbiology.net/gestalt/cgi-pub/KGinfo.pl?id={edge_id}"
         - resource_id: "infores:faers"
           resource_role: primary_knowledge_source
+          source_record_urls:
+            - "https://www.fda.gov/safety/fda-adverse-event-monitoring-system-aems"
         - resource_id: "infores:dailymed"
           resource_role: supporting_data_source
       knowledge_level: observation
