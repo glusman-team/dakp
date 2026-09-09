@@ -359,6 +359,14 @@ def _parse_source(source: _FaersSource, warnings: _Warnings) -> pl.DataFrame | N
         warnings.add(source.quarter, source.family, "missing_primaryid", "no primaryid/isr column")
         return None
 
+    # AERS-era (pre-2012Q4) column variants: INDI carries the drug link as drug_seq (not
+    # indi_drug_seq) and DEMO names the case number case (not caseid) — matches the
+    # ``indi_drug_seq // drug_seq`` fallback in the legacy ``listCases.pl``.
+    if source.family == "INDI" and "indi_drug_seq" not in frame.columns and "drug_seq" in frame.columns:
+        frame = frame.rename({"drug_seq": "indi_drug_seq"})
+    if source.family == "DEMO" and "caseid" not in frame.columns and "case" in frame.columns:
+        frame = frame.rename({"case": "caseid"})
+
     frame = _ensure_cols(frame, ("primaryid",))
     frame = frame.with_columns(
         pl.col("primaryid").cast(pl.Utf8).fill_null("").alias("primaryid"),

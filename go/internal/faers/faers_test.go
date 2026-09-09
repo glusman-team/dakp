@@ -143,6 +143,32 @@ func TestParseResolvesLegacyISRAsPrimaryID(t *testing.T) {
 	}
 }
 
+func TestParseResolvesAERSEraDrugSeqAndCaseColumns(t *testing.T) {
+	// AERS-era (pre-2012Q4) INDI carries the drug link as DRUG_SEQ and DEMO names the case
+	// number CASE; both are renamed to their modern equivalents for the case join.
+	indi := ParseSource(inlineSource("04Q1", "INDI", "INDI04Q1.TXT", "ISR$DRUG_SEQ$INDI_PT$\r\n4204616$1$HEADACHE$\r\n"), &Warnings{})
+	if indi == nil {
+		t.Fatal("expected INDI table")
+	}
+	if !containsString(indi.Columns, "indi_drug_seq") || containsString(indi.Columns, "drug_seq") {
+		t.Fatalf("drug_seq not resolved to indi_drug_seq: %v", indi.Columns)
+	}
+	if got := indi.Rows[0][indexOf(indi.Columns, "indi_drug_seq")]; got != "1" {
+		t.Fatalf("indi_drug_seq = %q, want 1", got)
+	}
+
+	demo := ParseSource(inlineSource("04Q1", "DEMO", "DEMO04Q1.TXT", "ISR$CASE$OCCP_COD$\r\n4204616$5657190$MD$\r\n"), &Warnings{})
+	if demo == nil {
+		t.Fatal("expected DEMO table")
+	}
+	if !containsString(demo.Columns, "caseid") || containsString(demo.Columns, "case") {
+		t.Fatalf("case not resolved to caseid: %v", demo.Columns)
+	}
+	if got := demo.Rows[0][indexOf(demo.Columns, "caseid")]; got != "5657190" {
+		t.Fatalf("caseid = %q, want 5657190", got)
+	}
+}
+
 func TestParseHandlesCRLFAndTrailingDollarPreservingNDALeadingZeroes(t *testing.T) {
 	tbl := parseFamilies(t, "DRUG24Q3.txt")["DRUG"]
 	if tbl == nil {

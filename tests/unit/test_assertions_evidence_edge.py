@@ -53,6 +53,13 @@ def test_faers_quarter_url_uses_exact_fda_zip_fallback() -> None:
     assert faers_quarter_url("2024q3") == expected
 
 
+def test_faers_quarter_url_uses_aers_name_before_2012q4() -> None:
+    base = "https://fis.fda.gov/content/Exports"
+    assert faers_quarter_url("04Q1") == f"{base}/aers_ascii_2004q1.zip"
+    assert faers_quarter_url("2012q3") == f"{base}/aers_ascii_2012q3.zip"
+    assert faers_quarter_url("12Q4") == f"{base}/faers_ascii_2012q4.zip"
+
+
 def test_faers_quarter_url_rejects_malformed_quarter() -> None:
     import pytest
 

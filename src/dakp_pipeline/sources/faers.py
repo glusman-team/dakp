@@ -38,11 +38,14 @@ from dakp_pipeline.paths import Workdir
 # FDA quarterly-data-extract listing page (anchors discovery of the ASCII zips). The old
 # ``https://fis.fda.gov/content/Exports`` index now 404s; the listing moved here. The quarterly
 # ASCII zips themselves still live under ``https://fis.fda.gov/content/Exports/`` (the download
-# base), named ``faers_ascii_<YYYY>q<N>.zip``.
+# base), named ``faers_ascii_<YYYY>q<N>.zip`` — except 2004Q1 through 2012Q3, which predate the
+# AERS->FAERS rename and are published as ``aers_ascii_<YYYY>q<N>.zip`` (the legacy
+# ``getLatest.pl`` regex ``f?aers_ascii_....[Qq]..zip`` matched both; the optional ``f`` here
+# keeps those 35 quarters discoverable).
 FDA_FAERS_INDEX_URL = "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
 #: Where the quarterly ASCII zips are downloaded from (the listing page only anchors discovery).
 FDA_FAERS_DOWNLOAD_BASE = "https://fis.fda.gov/content/Exports"
-_FAERS_ZIP_RE = re.compile(r"faers_ascii_(\d{4})q(\d)\.zip", re.IGNORECASE)
+_FAERS_ZIP_RE = re.compile(r"f?aers_ascii_(\d{4})q(\d)\.zip", re.IGNORECASE)
 _DEFAULT_TIMEOUT = 120.0
 #: Max concurrent quarter downloads/cache checks within one FAERS acquisition.
 _DOWNLOAD_CONCURRENCY = 4

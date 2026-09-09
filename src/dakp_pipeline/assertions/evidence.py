@@ -70,7 +70,7 @@ _NCI_APPLICATION_TYPES = {
     "C73605": "NDA",  # NDA authorized generic
 }
 _FAERS_QUARTER_RE = re.compile(r"^(?:(\d{4})|(\d{2}))Q([1-4])$", re.IGNORECASE)
-_FAERS_FILENAME_RE = re.compile(r"faers_ascii_(\d{2}|\d{4})q([1-4])\.zip", re.IGNORECASE)
+_FAERS_FILENAME_RE = re.compile(r"f?aers_ascii_(\d{2}|\d{4})q([1-4])\.zip", re.IGNORECASE)
 _PIPE_UNSAFE_RE = re.compile(r"[|\t\r\n]")
 _PIPE_UNSAFE_RUN_RE = re.compile(r"[|\s]+")
 
@@ -220,8 +220,9 @@ def faers_quarter_url(quarter: Any, *, base_url: str = FAERS_DOWNLOAD_BASE) -> s
 
     Accepted labels are ``24Q3``/``24q3`` and ``2024Q3``/``2024q3``. Two-digit years are
     interpreted as 20xx, matching the FAERS quarter labels produced by the extractor. The
-    returned fallback is therefore ``.../faers_ascii_2024q3.zip``; callers should prefer the
-    URL recorded in the input artifact manifest when one is available.
+    returned fallback is therefore ``.../faers_ascii_2024q3.zip``; quarters before 2012Q4
+    predate the AERS->FAERS rename, so their fallback is ``.../aers_ascii_<YYYY>q<N>.zip``.
+    Callers should prefer the URL recorded in the input artifact manifest when one is available.
     """
     text = "" if quarter is None else str(quarter).strip()
     match = _FAERS_QUARTER_RE.fullmatch(text)
@@ -229,7 +230,8 @@ def faers_quarter_url(quarter: Any, *, base_url: str = FAERS_DOWNLOAD_BASE) -> s
         raise ValueError(f"invalid FAERS quarter {quarter!r}; expected YYQn or YYYYQn")
     year = int(match.group(1) or ("20" + match.group(2)))
     qtr = match.group(3)
-    return f"{base_url.rstrip('/')}/faers_ascii_{year:04d}q{qtr}.zip"
+    prefix = "aers" if (year, int(qtr)) < (2012, 4) else "faers"
+    return f"{base_url.rstrip('/')}/{prefix}_ascii_{year:04d}q{qtr}.zip"
 
 
 def source_manifest_url(ref: ArtifactRef) -> str:

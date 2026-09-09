@@ -275,6 +275,26 @@ func ParseStream(r io.Reader, quarter, family, sourceName string, warn *Warnings
 		}
 	}
 
+	// AERS-era (pre-2012Q4) column variants: INDI carries the drug link as drug_seq (not
+	// indi_drug_seq) and DEMO names the case number case (not caseid) — matches the
+	// indi_drug_seq // drug_seq fallback in the legacy listCases.pl.
+	renameCol := func(from, to string) {
+		if containsString(names, to) {
+			return
+		}
+		for i, n := range names {
+			if n == from {
+				names[i] = to
+			}
+		}
+	}
+	switch family {
+	case "INDI":
+		renameCol("drug_seq", "indi_drug_seq")
+	case "DEMO":
+		renameCol("case", "caseid")
+	}
+
 	ncols := len(rawCols)
 	var rows [][]string
 	for {

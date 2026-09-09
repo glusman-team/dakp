@@ -49,6 +49,14 @@ def test_discover_quarters_canonicalizes_full_year_to_two_digit() -> None:
     assert quarters[0].quarter == "18Q2"
 
 
+def test_discover_quarters_includes_pre_rename_aers_zips() -> None:
+    # 2004Q1-2012Q3 predate the AERS->FAERS rename and are published as aers_ascii_*.
+    html = "<a href='faers_ascii_2012q4.zip'>q4</a><a href='aers_ascii_2012q3.zip'>q3</a><a href='aers_ascii_2004q1.zip'>q1</a>"
+    quarters = faers_source.discover_quarters(html)
+    assert [q.quarter for q in quarters] == ["12Q4", "12Q3", "04Q1"]
+    assert quarters[1].url.endswith("/aers_ascii_2012q3.zip")
+
+
 def test_discover_quarters_empty_html() -> None:
     assert faers_source.discover_quarters("<html>no links</html>") == []
 

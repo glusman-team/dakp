@@ -68,6 +68,26 @@ def test_parse_resolves_legacy_isr_column_as_primaryid() -> None:
     assert frame["primaryid"].to_list() == ["9001"]
 
 
+def test_parse_resolves_aers_era_drug_seq_and_case_columns() -> None:
+    # AERS-era (pre-2012Q4) INDI carries the drug link as DRUG_SEQ and DEMO names the case
+    # number CASE; both are renamed to their modern equivalents for the case join.
+    indi = _parse_source(
+        _FaersSource("04Q1", "INDI", b"ISR$DRUG_SEQ$INDI_PT$\r\n4204616$1$HEADACHE$\r\n", "INDI04Q1.TXT", "b3:abcdef012345"), _Warnings()
+    )
+    assert indi is not None
+    assert "indi_drug_seq" in indi.columns
+    assert "drug_seq" not in indi.columns
+    assert indi["indi_drug_seq"].to_list() == ["1"]
+
+    demo = _parse_source(
+        _FaersSource("04Q1", "DEMO", b"ISR$CASE$OCCP_COD$\r\n4204616$5657190$MD$\r\n", "DEMO04Q1.TXT", "b3:abcdef012345"), _Warnings()
+    )
+    assert demo is not None
+    assert "caseid" in demo.columns
+    assert "case" not in demo.columns
+    assert demo["caseid"].to_list() == ["5657190"]
+
+
 def test_parse_handles_crlf_and_trailing_dollar() -> None:
     # Real FAERS lines end with `$\r\n`; the fixture files are written that way.
     frame = _parse_source(_FaersSource("24Q3", "DRUG", (_FAERS_DIR / "DRUG24Q3.txt").read_bytes(), "DRUG24Q3.txt", "b3:abcdef012345"), _Warnings())
