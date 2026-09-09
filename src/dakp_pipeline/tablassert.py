@@ -85,9 +85,13 @@ graph config declares merge UNCONDITIONALLY and the FAERS table annotates ``case
 16.2 is the merge floor and 16.6 is where the merged count becomes exact. 16.7.0 lowers the
 release-mode minimum ``number_of_cases`` for ``applied_to_treat`` edges
 from 25 to 10 (SkyeAv/Tablassert#141), so ``--release`` builds now ship 10-24-case edges
-earlier releases dropped. 17.0.0 (the pin floor, SkyeAv/Tablassert#142) removes the
+earlier releases dropped. 17.0.0 (SkyeAv/Tablassert#142) removes the
 ``--threads`` CLI option and the ``threads`` Python/Rust API parameter — every parallel stage
-now sizes itself automatically — so DAKP passes no worker count anywhere.
+now sizes itself automatically — so DAKP passes no worker count anywhere. 17.0.1 (the pin
+floor, SkyeAv/Tablassert#145) makes the fullmap resolver retain every CURIE tied on a term's
+best ranking tier instead of keeping one arbitrary winner, so a DAKP mention that maps equally
+well to several CURIEs expands to one edge per tied CURIE (level-one still beats level-two);
+nothing in the emitted config changes, only resolved KG content.
 Fullmaps must
 be ``tablassert.fullmap.v5`` redb files — the on-disk format since Tablassert 8.2, unchanged
 in 13.0; older ones (v1-v4) are rejected on read.
