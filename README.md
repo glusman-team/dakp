@@ -24,7 +24,7 @@ Requires [`uv`](https://docs.astral.sh/uv/) (installs every dependency, includin
 and `tablassert[qc]`, plus the `dakp` CLI) and a Go toolchain (used to build the native bundle).
 
 ```bash
-uv sync
+make setup
 uv run dakp up --small   # bounded real-data dev run (~1 FAERS quarter + 1 DailyMed release)
 uv run dakp down         # stop the local Airflow
 ```
@@ -83,11 +83,18 @@ hand-edit; the test suite enforces byte-equality with the generated output.
 
 ## Developing
 
+All dev workflows go through the [Makefile](./Makefile):
+
 ```bash
-uv run pytest -q --cov        # tests; 100% branch coverage gate (fail_under = 100)
-uv run ruff check             # lint
-uv run ruff format --check    # formatting
-uv run pyright                # type check
+make test        # Python tests; 100% branch coverage gate (fail_under = 100)
+make test-go     # Go test suite
+make lint        # ruff
+make fmt-check   # Python (ruff) and Go (gofmt) formatting checks
+make typecheck   # pyright
+make vet         # go vet
+make check       # full local quality gate, mirrors CI
+make precommit   # pre-commit hooks over all files
+make clean       # remove build, test, and cache artifacts
 ```
 
 ## License
