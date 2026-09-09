@@ -70,8 +70,10 @@ EXPECTED_PROVENANCE = {
 
 # assertion table -> the explicit ``override.sources`` template (resource_id, role, upstream ids)
 # in legacy entry order, mirroring ``tablassert_configs._TABLE_SOURCES``. The DAKP wrapper entry
-# carries the gestalt ``{edge_id}`` record-URL template; no other entry carries record URLs.
+# carries the gestalt ``{edge_id}`` record-URL template; the only other entry carrying record URLs
+# is the FAERS table's ``infores:faers`` primary entry (the static FDA AEMS page).
 GESTALT_URL_TEMPLATE = "https://db.systemsbiology.net/gestalt/cgi-pub/KGinfo.pl?id={edge_id}"
+FAERS_AEMS_URL = "https://www.fda.gov/safety/fda-adverse-event-monitoring-system-aems"
 EXPECTED_SOURCES = {
     "approved_treats_assertions": [
         {
@@ -90,7 +92,7 @@ EXPECTED_SOURCES = {
             "upstream_resource_ids": ["infores:dailymed", "infores:faers"],
             "source_record_urls": [GESTALT_URL_TEMPLATE],
         },
-        {"resource_id": "infores:faers", "resource_role": "primary_knowledge_source"},
+        {"resource_id": "infores:faers", "resource_role": "primary_knowledge_source", "source_record_urls": [FAERS_AEMS_URL]},
         {"resource_id": "infores:dailymed", "resource_role": "supporting_data_source"},
     ],
     "contraindication_assertions": [
@@ -268,7 +270,8 @@ def test_table_config_structure(table: str) -> None:
     assert "infores" not in override  # the DAKP infores is graph-level only (Tablassert >= 8.0.1 forbids it here)
     # The explicit sources template (Tablassert >= 14.0, SkyeAv/Tablassert#116) replicates the
     # legacy edge provenance verbatim — including the gestalt {edge_id} record-URL template on
-    # the DAKP entry — and carries NO dataset-level record URLs anywhere.
+    # the DAKP entry — and carries no dataset-level record URLs except the FAERS table's static
+    # AEMS page on its ``infores:faers`` primary entry.
     assert override["sources"] == EXPECTED_SOURCES[table]
     assert override["knowledge_level"] == knowledge_level
     assert override["agent_type"] == agent_type

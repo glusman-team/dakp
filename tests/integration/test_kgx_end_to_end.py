@@ -43,7 +43,7 @@ from dakp_pipeline import legacy_tsv
 from dakp_pipeline.assertions.evidence import DAILYMED_SET_CURIE_PREFIX
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.tablassert import GESTALT_RECORD_URL_TEMPLATE, TablassertRunner
+from dakp_pipeline.tablassert import FAERS_SOURCE_RECORD_URL, GESTALT_RECORD_URL_TEMPLATE, TablassertRunner
 from dakp_pipeline.translator import INFORES_DAKP, read_kgx_jsonl, validate_kgx
 
 # Skip the WHOLE module when tablassert is not importable (deps not installed). tiny_fullmap imports
@@ -177,7 +177,9 @@ def test_three_edge_families_present(kgx_build: KgxBuild) -> None:
 # (Tablassert >= 14.0, SkyeAv/Tablassert#116) stamps on every edge of that family:
 # (resource_id, resource_role, upstream_resource_ids-or-None) in legacy entry order. The DAKP
 # wrapper entry additionally carries the gestalt record URL with the edge's own id resolved;
-# NO entry carries a dataset-level URL.
+# the FAERS table's ``infores:faers`` primary entry carries the static AEMS page
+# (:data:`~dakp_pipeline.tablassert.FAERS_SOURCE_RECORD_URL`); every other entry carries no
+# dataset-level URL.
 EXPECTED_SOURCES_BY_PREDICATE: dict[str, list[tuple[str, str, list[str] | None]]] = {
     _TREATS: [
         (INFORES_DAKP, "primary_knowledge_source", ["infores:dailymed", "infores:faers"]),
@@ -205,8 +207,9 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
     ``override.sources`` template (SkyeAv/Tablassert#116), which is the legacy shape: the DAKP
     wrapper entry (primary for treats, aggregator for the mined families) carries the gestalt
     per-edge record URL with ``{edge_id}`` resolved to the edge's own id; FAERS is the primary
-    entry for ``applied_to_treat`` and ``infores:medi`` for ``contraindicated_in``; no entry
-    carries a dataset-level URL (they are irrelevant per-edge).
+    entry for ``applied_to_treat`` and ``infores:medi`` for ``contraindicated_in``; the only
+    dataset-level URL anywhere is the FAERS primary entry's static AEMS page on
+    ``applied_to_treat`` edges.
     """
     assert kgx_build.edges, "build-kg produced no edges"
     for edge in kgx_build.edges:
@@ -230,9 +233,14 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
         dakp_entry = next(entry for entry in sources if entry.get("resource_id") == INFORES_DAKP)
         # The gestalt viewer deep-link resolved the template to THIS edge's id.
         assert dakp_entry.get("source_record_urls") == [GESTALT_RECORD_URL_TEMPLATE.replace("{edge_id}", edge["id"])]
-        # No dataset-level record URLs on any other entry.
+        # No dataset-level record URLs on any other entry — except the FAERS primary entry on
+        # applied_to_treat edges, which carries exactly the static AEMS page.
         for entry in sources:
-            if entry is not dakp_entry:
+            if entry is dakp_entry:
+                continue
+            if edge["predicate"] == _APPLIED and entry.get("resource_id") == "infores:faers":
+                assert entry.get("source_record_urls") == [FAERS_SOURCE_RECORD_URL]
+            else:
                 assert "source_record_urls" not in entry
 
 

@@ -18,8 +18,8 @@ The configs match the ACTUAL current Tablassert schema (verified against
   as ``source.local``. ``source.url`` is required by the model and records the table's REAL
   upstream dataset URL (:data:`_TABLE_SOURCE_URLS`) — never a placeholder. It serves the RIG
   only: edge provenance comes entirely from the explicit ``override.sources`` template
-  (:data:`_TABLE_SOURCES`), which carries no dataset-level URLs (they are irrelevant
-  per-edge). Tablassert
+  (:data:`_TABLE_SOURCES`), which carries only the FAERS primary entry's static AEMS URL
+  (:data:`FAERS_SOURCE_RECORD_URL`) in addition to the per-edge DAKP URL. Tablassert
   8.2.1+ models ``source.url`` as a ``list`` of one or more URLs per section and DAKP assertion
   rows aggregate across quarters, releases, and applications, so no per-row URL is truthful at
   row granularity; the dataset-level URLs are the honest RIG record, and per-row precision
@@ -201,8 +201,9 @@ UUID_DOMAIN = INFORES_DAKP
 #: Real upstream dataset URL recorded as each table's ``source.url`` — the constants the
 #: acquisition layer itself uses, so provenance can never drift from what was downloaded.
 #: ``source.url`` is the section's RIG/audit record ONLY: edges get their provenance from the
-#: explicit ``override.sources`` template (:data:`_TABLE_SOURCES`), which carries no
-#: dataset-level URLs. Approved-treats and contraindication
+#: explicit ``override.sources`` template (:data:`_TABLE_SOURCES`), which carries only the
+#: FAERS primary entry's static AEMS URL (:data:`FAERS_SOURCE_RECORD_URL`) as a dataset-level
+#: exception. Approved-treats and contraindication
 #: rows are extracted from DailyMed SPL releases (the DailyMed full-release index); FAERS
 #: observed-use rows from the FAERS quarterly ASCII extracts (the FDA quarterly-data listing).
 _TABLE_SOURCE_URLS: dict[str, str] = {
@@ -593,41 +594,51 @@ _TABLE_SPECS: dict[str, tuple[str, str, str, str]] = {
 #: SkyeAv/Tablassert#116).
 GESTALT_RECORD_URL_TEMPLATE = "https://db.systemsbiology.net/gestalt/cgi-pub/KGinfo.pl?id={edge_id}"
 
+#: Static record URL carried by the FAERS table's ``infores:faers`` primary-knowledge-source
+#: entry — the FDA Adverse Event Monitoring System (AEMS) landing page. FAERS observed-use rows
+#: aggregate across quarters, so no per-quarter URL is truthful per edge; the static page is the
+#: honest per-edge record for the primary source (the quarterly-data index stays on the section's
+#: ``source.url`` and the RIG).
+FAERS_SOURCE_RECORD_URL = "https://www.fda.gov/safety/fda-adverse-event-monitoring-system-aems"
+
 # assertion table -> the explicit ``provenance.override.sources`` template, recovered from the
-# shipped legacy ``drug_approvals_kg_edges.jsonl``: (resource_id, role, upstream ids) in legacy
-# entry order. The DAKP entry always carries the gestalt record URL; the remaining entries carry
-# no ``source_record_urls`` (dataset-level URLs are irrelevant per-edge). Contraindication edges
+# shipped legacy ``drug_approvals_kg_edges.jsonl``: (resource_id, role, upstream ids, extra
+# record urls) in legacy entry order. The DAKP entry always carries the gestalt record URL; the
+# only other entry carrying ``source_record_urls`` is the FAERS table's ``infores:faers`` primary
+# entry (the static AEMS page, :data:`FAERS_SOURCE_RECORD_URL`) — the rest carry none
+# (dataset-level URLs are irrelevant per-edge). Contraindication edges
 # keep the legacy ``infores:medi`` primary entry even though this rebuild has no MEDI source
 # module — edge-shape parity only; the RIG deliberately stays MEDI-free (see the
 # ``RIG_SUPPORTING_DATA_SOURCES`` comment). Requires Tablassert >= 14.0 (SkyeAv/Tablassert#116).
-_TABLE_SOURCES: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
+_TABLE_SOURCES: dict[str, tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...]] = {
     "approved_treats_assertions": (
-        (INFORES_DAKP, "primary_knowledge_source", ("infores:dailymed", "infores:faers")),
-        ("infores:faers", "supporting_data_source", ()),
-        ("infores:dailymed", "supporting_data_source", ()),
+        (INFORES_DAKP, "primary_knowledge_source", ("infores:dailymed", "infores:faers"), ()),
+        ("infores:faers", "supporting_data_source", (), ()),
+        ("infores:dailymed", "supporting_data_source", (), ()),
     ),
     "faers_applied_to_treat_assertions": (
-        (INFORES_DAKP, "aggregator_knowledge_source", ("infores:dailymed", "infores:faers")),
-        ("infores:faers", "primary_knowledge_source", ()),
-        ("infores:dailymed", "supporting_data_source", ()),
+        (INFORES_DAKP, "aggregator_knowledge_source", ("infores:dailymed", "infores:faers"), ()),
+        ("infores:faers", "primary_knowledge_source", (), (FAERS_SOURCE_RECORD_URL,)),
+        ("infores:dailymed", "supporting_data_source", (), ()),
     ),
     "contraindication_assertions": (
-        (INFORES_DAKP, "aggregator_knowledge_source", ("infores:dailymed", "infores:medi")),
-        ("infores:medi", "primary_knowledge_source", ("infores:dailymed",)),
-        ("infores:dailymed", "supporting_data_source", ()),
+        (INFORES_DAKP, "aggregator_knowledge_source", ("infores:dailymed", "infores:medi"), ()),
+        ("infores:medi", "primary_knowledge_source", ("infores:dailymed",), ()),
+        ("infores:dailymed", "supporting_data_source", (), ()),
     ),
 }
 
 
 def _sources_template(table: str) -> list[dict[str, Any]]:
-    """The table's explicit ``override.sources`` entries (the DAKP entry gets the gestalt URL)."""
+    """Return explicit sources, adding the gestalt URL and any configured static record URLs."""
     entries: list[dict[str, Any]] = []
-    for resource_id, role, upstream in _TABLE_SOURCES[table]:
+    for resource_id, role, upstream, record_urls in _TABLE_SOURCES[table]:
         entry: dict[str, Any] = {"resource_id": resource_id, "resource_role": role}
         if upstream:
             entry["upstream_resource_ids"] = list(upstream)
-        if resource_id == INFORES_DAKP:
-            entry["source_record_urls"] = [GESTALT_RECORD_URL_TEMPLATE]
+        urls = [GESTALT_RECORD_URL_TEMPLATE, *record_urls] if resource_id == INFORES_DAKP else list(record_urls)
+        if urls:
+            entry["source_record_urls"] = urls
         entries.append(entry)
     return entries
 
@@ -930,9 +941,9 @@ def table_config(table: str) -> dict[str, Any]:
                 # Explicit ``sources`` list replicating the legacy DAKP edge-provenance shape
                 # exactly (DAKP wrapper entry with the gestalt record-URL template, then the
                 # per-resource entries); Tablassert >= 14.0 uses it verbatim on every edge and
-                # resolves the ``{edge_id}`` placeholder post-build. No dataset-level record
-                # URLs anywhere: they are irrelevant per-edge, and the section ``source.url``
-                # stays RIG-only.
+                # resolves the ``{edge_id}`` placeholder post-build. The FAERS primary entry
+                # additionally carries its static AEMS record URL; the section ``source.url``
+                # remains the RIG/audit record.
                 "sources": _sources_template(table),
                 "knowledge_level": knowledge_level,
                 "agent_type": agent_type,
@@ -1408,6 +1419,7 @@ def run(assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: 
 __all__ = [
     "AGENT_TYPE",
     "DEFAULT_TABLASERT_DIR",
+    "FAERS_SOURCE_RECORD_URL",
     "FULLMAP_DEFAULT",
     "GESTALT_RECORD_URL_TEMPLATE",
     "GRAPH_DESCRIPTION",
