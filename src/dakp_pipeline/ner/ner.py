@@ -25,12 +25,10 @@ Composite design (gazetteer-first, GLiNER-augmented)
   — the same 0.35 floor by default (the lowest score at which GLiNER is still accurate), so
   nothing generated is abstained; raise ``accept_threshold`` to decide narrower than you
   generate. Below the floor the backend **abstains** rather than asserting a low-confidence
-  mention or falling back to a less specific one. GLiNER is natively
-  multi-entity, but the shipped fine-tune is trained for ONE fused label (:data:`MODEL_LABEL` —
-  it cannot say whether a span is a disease or a phenotype), so one ``predict_entities`` call
-  requests exactly that label; spans carrying it are typed by :func:`canonical_type` (fused
-  label -> ``disease`` fallback), and the gazetteer stays the type authority whenever a span
-  contests a gazetteer term. GLiNER silently truncates inputs past
+  mention or falling back to a less specific one. GLiNER is natively multi-entity and the
+  shipped fine-tune is trained for the two labels ``disease`` and ``phenotype``; inference
+  requests both labels and preserves the model's type. The gazetteer stays the type authority
+  whenever a span contests a gazetteer term. GLiNER silently truncates inputs past
   ``config.max_len`` word tokens (384 on the shipped fine-tune), so long sections are
   predicted in exact-substring windows (:func:`_windows`) whose spans are remapped back into
   full-text offsets before the merge. ``gliner`` is a core
@@ -52,7 +50,7 @@ import itertools
 import os
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -66,12 +64,11 @@ from dakp_pipeline.ner.model_cache import NERDependencyError, default_model_cach
 # contraindication text (deberta-v3-small encoder, max_len 384 word tokens). Override for
 # another GLiNER checkpoint.
 DEFAULT_MODEL = "SkyeAv/drug-approvals-gliner-small-v2.1"
-#: The one label the production checkpoint is fine-tuned for (see the model card), requested
-#: verbatim in every ``predict_entities`` call — GLiNER label matching is exact. The fused
-#: label cannot distinguish disease from phenotype; ``canonical_type`` maps it to the
-#: ``disease`` fallback (the contraindication-majority class), which only sticks on model-only
-#: spans — a span that supersedes a gazetteer term keeps the gazetteer's type (:meth:`_emit`).
-MODEL_LABEL = "DiseaseOrPhenotype"
+#: Labels the production checkpoint is fine-tuned for (see its model card), requested verbatim
+#: in every GLiNER inference call — label matching is exact.
+MODEL_LABELS: tuple[str, ...] = (TYPE_DISEASE, TYPE_PHENOTYPE)
+#: Backward-compatible singular alias for callers that imported the old constant.
+MODEL_LABEL = TYPE_DISEASE
 #: Candidate-**generation** threshold, passed straight to ``predict_entities``. 0.35 is the
 #: lowest score at which GLiNER is still accurate, so generation never goes below it. Keeping it
 #: at (not above) the acceptance floor matters: a specific span often scores lower than its
@@ -557,9 +554,9 @@ class DiseaseNER:
         gazetteer: a :class:`Gazetteer`, a ``{surface: type}`` mapping, or ``None`` to use the
             curated :data:`EMBEDDED_GAZETTEER`.
         model_id: GLiNER checkpoint (production mode).
-        model_labels: labels passed to ``predict_entities``. Defaults to the fused label used by
-            :data:`DEFAULT_MODEL`; provide the labels expected by an explicitly overridden
-            checkpoint.
+        model_labels: labels passed to GLiNER. Defaults to the two labels trained into
+            :data:`DEFAULT_MODEL`; provide the labels expected by an explicitly overridden checkpoint.
+        inference_batch_size: number of windows per GLiNER inference batch.
         threshold: GLiNER candidate-**generation** threshold (production mode). Generate wide:
             this only decides what the merge gets to look at.
         accept_threshold: DAKP-side **acceptance** floor (production mode). A model span below it
@@ -581,10 +578,11 @@ class DiseaseNER:
         offline: bool = True,
         gazetteer: Gazetteer | Mapping[str, str] | None = None,
         model_id: str = DEFAULT_MODEL,
-        model_labels: tuple[str, ...] = (MODEL_LABEL,),
+        model_labels: tuple[str, ...] = MODEL_LABELS,
         threshold: float = DEFAULT_THRESHOLD,
         accept_threshold: float = DEFAULT_ACCEPT_THRESHOLD,
         chunk_words: int | None = None,
+        inference_batch_size: int = 16,
         cache_dir: Path | str | None = None,
         workdir: Path | str | None = None,
         device: str | None = None,
@@ -605,6 +603,7 @@ class DiseaseNER:
         self._threshold = threshold
         self._accept = accept_threshold
         self._chunk_words = chunk_words
+        self._inference_batch_size = max(1, int(inference_batch_size))
         self._cache_dir = cache_dir
         self._workdir = workdir
         self._device = device
@@ -632,6 +631,58 @@ class DiseaseNER:
         if not self._offline:
             mentions = self._merge_model_spans(text, mentions)
         return sorted(mentions, key=_sort_key)
+
+    def extract_batch(self, texts: Sequence[str]) -> list[list[Mention]]:
+        """Extract several texts with one padded GLiNER inference stream.
+
+        Each text retains its own sentence-aware windows and merge, while all windows are
+        submitted together to GLiNER's batched ``inference`` API. This is the hot path used by
+        per-device workers; offline extraction remains a cheap deterministic loop.
+        """
+        values = list(texts)
+        if self._offline:
+            return [self.extract(text) for text in values]
+        gazetteer = [list(self._matcher.match(text)) if text and text.strip() else [] for text in values]
+        active = [(index, text) for index, text in enumerate(values) if text and text.strip()]
+        if not active:
+            return [[] for _ in values]
+        model = self._load_model()
+        budget = _token_budget(model, self._chunk_words)
+        windows: list[tuple[int, int, str]] = []
+        for text_index, text in active:
+            windows.extend((text_index, start, window) for start, window in _windows(text, budget))
+        raw_batches = model.inference(
+            [window for _text_index, _start, window in windows],
+            list(self._model_labels),
+            threshold=self._threshold,
+            batch_size=self._inference_batch_size,
+        )
+        spans_by_text: dict[int, list[list[_ModelSpan]]] = {index: [] for index, _text in active}
+        for (text_index, window_start, _window), raw in zip(windows, raw_batches, strict=True):
+            spans: list[_ModelSpan] = []
+            text = values[text_index]
+            for entity in raw:
+                etype = canonical_type(str(entity["label"]))
+                if etype not in CONTRAINDICATION_DISEASE_TYPES:
+                    continue
+                start, end = window_start + int(entity["start"]), window_start + int(entity["end"])
+                if normalize_text(text[start:end]) in _POPULATION_PHRASES:
+                    continue
+                spans.append(_ModelSpan(start=start, end=end, type=etype, score=float(entity["score"])))
+            spans_by_text[text_index].append(spans)
+        output: list[list[Mention]] = []
+        for index, text in enumerate(values):
+            if not text or not text.strip():
+                output.append([])
+                continue
+            text_windows = [(start, window) for text_index, start, window in windows if text_index == index]
+            text_spans = spans_by_text[index]
+            _merge_straddling_spans(text_windows, text_spans)
+            trimmed = self._trimmed_spans(text, [span for spans in text_spans for span in spans])
+            gazetteer_spans = [(mention.start, mention.end) for mention in gazetteer[index]]
+            candidates = _select_candidates(_candidates_vs_gazetteer(trimmed, gazetteer_spans))
+            output.append(sorted(self._emit(text, gazetteer[index], candidates), key=_sort_key))
+        return output
 
     # -- production model (lazy) -----------------------------------------------
     def _load_model(self) -> Any:
@@ -672,6 +723,7 @@ class DiseaseNER:
             "threshold": self._threshold,
             "accept_threshold": self._accept,
             "chunk_words": self._chunk_words,
+            "inference_batch_size": self._inference_batch_size,
             "cache_dir": self._cache_dir,
             "workdir": self._workdir,
         }
@@ -693,9 +745,9 @@ class DiseaseNER:
         """
         model = self._load_model()
         budget = _token_budget(model, self._chunk_words)
-        # The shipped fine-tune is single-label: request its fused disease-or-phenotype class
-        # verbatim. ``canonical_type`` maps it to the ``disease`` fallback below. An explicit
-        # ``model_labels`` override supports checkpoints with a different label vocabulary.
+        # Request the exact label vocabulary configured for this checkpoint. The published
+        # production fine-tune uses ``disease`` and ``phenotype``; an explicit ``model_labels``
+        # override supports checkpoints with a different vocabulary.
         labels = list(self._model_labels)
         windows = _windows(text, budget)
         spans_by_window: list[list[_ModelSpan]] = []
@@ -810,6 +862,7 @@ __all__ = [
     "DEFAULT_THRESHOLD",
     "EMBEDDED_GAZETTEER",
     "MODEL_LABEL",
+    "MODEL_LABELS",
     "TYPE_DISEASE",
     "TYPE_PHENOTYPE",
     "DiseaseNER",

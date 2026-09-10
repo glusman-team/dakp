@@ -6,8 +6,8 @@ Every shaper that mines DailyMed/FAERS text with the composite NER backend
 * **backend construction** — :func:`default_ner` builds the deterministic **offline**
   backend (gazetteer from the ontology fixture, else embedded) used by tests and offline
   runs; production shapers receive an injected ``params["ner"]`` instead.
-* **device resolution** — :func:`_resolve_devices` caps the hardcoded build-host GPU list
-  to the visible, torch-supported CUDA devices (None when unusable → sequential CPU mining).
+* **device resolution** — :func:`_resolve_devices` discovers every visible CUDA ordinal and
+  filters it to torch-supported devices (None when unusable → sequential CPU mining).
 * **multi-GPU dispatch** — :func:`_mine_multi_gpu` / :func:`mine_passes_multi_gpu` shard
   work items across one spawned worker per GPU (LPT-balanced by text length), with
   byte-identical output regardless of dispatch mode.
@@ -36,9 +36,9 @@ from dakp_pipeline.logging_setup import logger, stats
 from dakp_pipeline.ner.mention_cache import MentionCache, mention_key, ner_cache_material
 from dakp_pipeline.ner.ner import DiseaseNER, Mention, _cuda_device_supported
 
-#: The 4x Tesla P100-PCIE-16GB GPUs on the DAKP build host (wenceslaus). Hardcoded - not
-#: auto-detected — so shapers always dispatch across all four when CUDA is available.
-#: When CUDA is absent (CI, tests, non-GPU hosts) shapers fall back to sequential.
+#: Historical build-host default retained for compatibility with callers that import it. Runtime
+#: dispatch no longer uses this fixed list: :func:`_resolve_devices` discovers every visible CUDA
+#: ordinal and filters it by the installed torch kernels.
 BUILD_HOST_GPUS: tuple[str, ...] = ("cuda:0", "cuda:1", "cuda:2", "cuda:3")
 
 _ONTOLOGY_FIXTURE = Path("ontology") / "disease_map.tsv"
@@ -58,16 +58,15 @@ def default_ner(fixture_root: Path | str | None) -> DiseaseNER:
     return DiseaseNER()
 
 
-def _resolve_devices(ner: DiseaseNER, gpus: Sequence[str] = BUILD_HOST_GPUS) -> Sequence[str] | None:
-    """The GPU list capped to the VISIBLE device count and filtered to devices the
-    installed torch can actually run on; None when unusable.
+def _resolve_devices(ner: DiseaseNER, gpus: Sequence[str] | None = None) -> Sequence[str] | None:
+    """Discover visible CUDA devices and filter to devices the installed torch can run on.
 
     Only the production (GLiNER) backend benefits from multi-GPU dispatch — the offline
     gazetteer is CPU-only and deterministic. ``torch.cuda.is_available()`` guards against
-    CI / test hosts with no CUDA (the lazy import never fires at module load). The list is
-    capped at ``torch.cuda.device_count()`` because hosts vary: the build server has the full
-    4x P100 set, laptops often expose a single GPU — dispatching a worker to a nonexistent
-    ``cuda:N`` crashes the whole pool (torch refuses to deserialize onto a missing device).
+    CI / test hosts with no CUDA (the lazy import never fires at module load). Device ordinals
+    are taken directly from ``torch.cuda.device_count()``; this respects ``CUDA_VISIBLE_DEVICES``
+    and avoids dispatching a worker to a nonexistent ``cuda:N``. An optional ``gpus`` sequence
+    remains for tests and legacy callers that need an explicit subset.
     Devices whose arch the torch build lacks kernels for (e.g. sm_60 P100s against a cu128
     wheel line) are filtered out via :func:`~dakp_pipeline.ner.ner._cuda_device_supported` —
     ``is_available()`` alone lies there (True, but the first CUDA call raises), so with no
@@ -84,7 +83,8 @@ def _resolve_devices(ner: DiseaseNER, gpus: Sequence[str] = BUILD_HOST_GPUS) -> 
     visible = torch.cuda.device_count()
     if visible <= 0:
         return None
-    supported = tuple(gpus[index] for index in range(min(visible, len(gpus))) if _cuda_device_supported(torch, index))
+    candidates = tuple(gpus) if gpus is not None else tuple(f"cuda:{index}" for index in range(visible))
+    supported = tuple(candidates[index] for index in range(min(visible, len(candidates))) if _cuda_device_supported(torch, index))
     if not supported:
         logger.warning(
             "contraindication_gpus_unsupported: no visible CUDA device arch is in the torch build arch list = {}; falling back to sequential CPU mining",
@@ -123,7 +123,9 @@ def _mine_shard(shard: Sequence[Any], ner_config: dict[str, Any], device: str) -
     (safe under the ``spawn`` start method).
     """
     ner = DiseaseNER(device=device, **ner_config)
-    return [(set_id, doc_id, ner.extract(text)) for set_id, doc_id, text in (_item_parts(item) for item in shard)]
+    items = [_item_parts(item) for item in shard]
+    mentions = ner.extract_batch([text for _set_id, _doc_id, text in items])
+    return [(set_id, doc_id, result) for (set_id, doc_id, _text), result in zip(items, mentions, strict=True)]
 
 
 def _mine_multi_gpu(work_items: Sequence[Any], ner: DiseaseNER, devices: Sequence[str]) -> dict[tuple[str, str], list[Mention]]:

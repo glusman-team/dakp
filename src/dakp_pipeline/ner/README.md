@@ -34,7 +34,7 @@ Benchmarked on a hand-labeled fixture (34 cases / 42 gold spans, `tests/eval/`):
 
 > These numbers were measured with the previous default checkpoint (`gliner_large-v2.5`).
 > Since 2026-09-10 the production default is the domain fine-tune
-> `SkyeAv/drug-approvals-gliner-small-v2.1` (single fused `DiseaseOrPhenotype` label);
+> `SkyeAv/drug-approvals-gliner-small-v2.1` (trained on `disease` and `phenotype` labels);
 > re-run `tests/eval/benchmark_ner.py` to re-measure.
 
 * **Offline mode (default):** curated gazetteer + deterministic lexical matcher. Zero heavy deps,
@@ -49,11 +49,10 @@ Benchmarked on a hand-labeled fixture (34 cases / 42 gold spans, `tests/eval/`):
   Model spans whose normalized surface is a population descriptor (e.g. `women of childbearing
   potential`) are dropped, leading hedge tokens (`recent`, `a history of`) are trimmed, and spans
   a hard window split cuts across a phrase boundary are re-joined. GLiNER is natively
-  **multi-entity**, but the shipped fine-tune is trained for ONE fused label
-  (`DiseaseOrPhenotype` — it cannot say whether a span is a disease or a phenotype), so one
-  call requests exactly that label. Spans carrying it fall back to type `disease` (the
-  contraindication-majority class); the gazetteer remains the type authority whenever a span
-  contests a gazetteer term, and Tablassert resolves the real category downstream. GLiNER is a
+  **multi-entity**, and the shipped fine-tune is trained for the `disease` and `phenotype` labels,
+  so one call requests both labels and preserves the model's returned type. The gazetteer remains
+  the type authority whenever a span contests a gazetteer term, and Tablassert resolves the
+  ontology concept downstream. GLiNER is a
   core, lazy-imported dependency. GLiNER silently truncates inputs past `config.max_len` word tokens (384 on the
   shipped fine-tune), so long sections (some run to ~3000 words) are predicted in
   sentence-aware, exact-substring windows of ≤ that budget (`chunk_words` kwarg overrides it) and

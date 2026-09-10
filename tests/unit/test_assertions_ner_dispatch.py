@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+import dakp_pipeline.assertions.ner_dispatch as dispatch
 from dakp_pipeline.assertions.ner_dispatch import _group_devices, default_ner, mine_passes_multi_gpu, mine_with_cache
 from dakp_pipeline.ner import model_cache
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
@@ -25,6 +26,55 @@ def _ner(*terms: str) -> DiseaseNER:
 
 
 # --- mine_passes_multi_gpu ------------------------------------------------------
+
+
+def test_shard_uses_one_batch_per_gpu_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    ner = _ner("asthma")
+    calls: list[list[str]] = []
+
+    def extract_batch(texts: Sequence[str]) -> list[list[Mention]]:
+        calls.append(list(texts))
+        return [ner.extract(text) for text in texts]
+
+    class WorkerNER:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def extract_batch(self, texts: Sequence[str]) -> list[list[Mention]]:
+            return extract_batch(texts)
+
+    monkeypatch.setattr(dispatch, "DiseaseNER", WorkerNER)
+    result = dispatch._mine_shard([("S1", "D1", "asthma"), ("S2", "D2", "asthma")], ner._config(), "cpu")
+    assert calls == [["asthma", "asthma"]]
+    assert {(set_id, doc_id) for set_id, doc_id, _mentions in result} == {("S1", "D1"), ("S2", "D2")}
+
+
+def test_four_device_sharding_creates_four_distinct_shards(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sufficiently large workload schedules one independent shard per visible device."""
+    submitted: list[tuple[list[Any], str]] = []
+
+    class FakeFuture:
+        def result(self) -> list[tuple[str, str, list[Mention]]]:
+            return []
+
+    class FakePool:
+        def __enter__(self) -> FakePool:
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def submit(self, function: Any, shard: list[Any], _config: dict[str, Any], device: str) -> FakeFuture:
+            submitted.append((shard, device))
+            return FakeFuture()
+
+    monkeypatch.setattr(dispatch, "ProcessPoolExecutor", lambda **_kwargs: FakePool())
+    ner = _ner("asthma")
+    items = [("S", f"D{i}", "asthma " * (i + 1)) for i in range(8)]
+    dispatch._mine_multi_gpu(items, ner, ("cuda:0", "cuda:1", "cuda:2", "cuda:3"))
+    assert [device for _shard, device in submitted] == ["cuda:0", "cuda:1", "cuda:2", "cuda:3"]
+    assert sorted(item[1] for shard, _device in submitted for item in shard) == [f"D{i}" for i in range(8)]
+    assert all(shard for shard, _device in submitted)
 
 
 def test_mine_passes_multi_gpu_all_passes_empty() -> None:

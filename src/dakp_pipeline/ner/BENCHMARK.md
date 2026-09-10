@@ -31,8 +31,8 @@ The composite holds perfect precision *and* recall across the widened fixture: t
 diseases and the hedge-prefixed mention all come out exactly right.
 
 > **Checkpoint change (2026-09-10):** the production default is now the domain fine-tune
-> `SkyeAv/drug-approvals-gliner-small-v2.1` (deberta-v3-small, `max_len: 384`, ONE fused
-> `DiseaseOrPhenotype` label — spans carrying it fall back to type `disease`; gazetteer types
+> `SkyeAv/drug-approvals-gliner-small-v2.1` (deberta-v3-small, `max_len: 384`, trained on
+> `disease` and `phenotype` labels; model output preserves its type; gazetteer types
 > still win on overlap). All numbers on this page were measured with `gliner_large-v2.5`;
 > re-run `tests/eval/benchmark_ner.py` to re-measure against the fine-tune.
 

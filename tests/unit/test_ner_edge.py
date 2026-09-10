@@ -23,7 +23,7 @@ from dakp_pipeline.ner.ner import (
     _DEFAULT_WORD_BUDGET,
     _GLINER_TOKEN,
     DEFAULT_MODEL,
-    MODEL_LABEL,
+    MODEL_LABELS,
     DiseaseNER,
     Mention,
     _cuda_device_supported,
@@ -143,6 +143,9 @@ class _FakeGLiNERModel:
         self.calls.append((text, labels, threshold))
         return self._predictions
 
+    def inference(self, texts: list[str], labels: list[str], threshold: float = 0.0, batch_size: int = 8) -> list[list[dict[str, Any]]]:
+        return [self.predict_entities(text, labels, threshold) for text in texts]
+
 
 class _FakeGLiNER:
     loaded_from: ClassVar[list[str]] = []
@@ -187,10 +190,10 @@ def test_production_merge_gazetteer_wins_and_gliner_adds_recall(monkeypatch: pyt
     porphyria = mentions[1]
     assert porphyria.normalized == "porphyria"
     assert porphyria.score == 0.8
-    # The model was loaded from the cached content path, with the fine-tune's fused label + threshold.
+    # The model was loaded from the cached content path with the checkpoint's trained labels.
     assert _FakeGLiNER.loaded_from == [str(tmp_path)]
     _text, labels, threshold = _FakeGLiNER.model.calls[0]
-    assert labels == [MODEL_LABEL]
+    assert labels == list(MODEL_LABELS)
     assert threshold == 0.42
 
     # A second extract reuses the cached model (from_pretrained called exactly once).
@@ -205,14 +208,35 @@ def test_production_with_empty_gazetteer_is_model_only(monkeypatch: pytest.Monke
     assert [(m.text, m.type, m.notes) for m in mentions] == [("porphyria", "phenotype", "gliner")]
 
 
-def test_fused_finetune_label_falls_back_to_disease_type(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The shipped fine-tune emits one fused ``DiseaseOrPhenotype`` label that cannot say
-    disease vs phenotype; model-only spans fall back to ``disease`` (the contraindication-
-    majority class), and Tablassert resolves the real category downstream."""
-    _install_fake_gliner(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": MODEL_LABEL, "score": 0.8}])
+def test_trained_labels_preserve_disease_and_phenotype_types(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The published checkpoint is trained on separate disease and phenotype labels."""
+    _install_fake_gliner(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "phenotype", "score": 0.8}])
     backend = DiseaseNER(offline=False, gazetteer={})
     mentions = backend.extract("porphyria")
-    assert [(m.text, m.type, m.notes) for m in mentions] == [("porphyria", "disease", "gliner")]
+    assert [(m.text, m.type, m.notes) for m in mentions] == [("porphyria", "phenotype", "gliner")]
+
+
+def test_extract_batch_uses_padded_inference_and_matches_single_texts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A production worker sends multiple windows through one GLiNER batch call."""
+    model = _FakeGLiNERModel([{"start": 0, "end": 9, "label": "phenotype", "score": 0.8}])
+    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    backend = DiseaseNER(offline=False, gazetteer={}, inference_batch_size=2)
+    texts = ["porphyria", "porphyria"]
+
+    batched = backend.extract_batch(texts)
+    single = [backend.extract(text) for text in texts]
+
+    assert batched == single
+    assert [m.type for m in batched[0]] == ["phenotype"]
+    assert len(model.calls) == 4  # one inference item for each of two batched + two single calls
+
+
+def test_extract_batch_handles_empty_text_and_model_filters(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    model = _FakeGLiNERModel([{"start": 0, "end": 5, "label": "CHEMICAL", "score": 0.8}, {"start": 0, "end": 5, "label": "phenotype", "score": 0.8}])
+    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    backend = DiseaseNER(offline=False, gazetteer={})
+    assert backend.extract_batch([" "]) == [[]]
+    assert backend.extract_batch(["women", ""]) == [[], []]
 
 
 def test_model_labels_override_is_requested_verbatim(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
