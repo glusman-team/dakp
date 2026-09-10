@@ -188,10 +188,7 @@ EXPECTED_SOURCES_BY_PREDICATE: dict[str, list[tuple[str, str, list[str] | None]]
         ("infores:faers", "supporting_data_source", None),
         ("infores:dailymed", "supporting_data_source", None),
     ],
-    _CONTRA: [
-        (INFORES_DAKP, "primary_knowledge_source", ["infores:dailymed"]),
-        ("infores:dailymed", "supporting_data_source", None),
-    ],
+    _CONTRA: [(INFORES_DAKP, "primary_knowledge_source", ["infores:dailymed"]), ("infores:dailymed", "supporting_data_source", None)],
 }
 
 

@@ -204,6 +204,7 @@ def test_production_with_empty_gazetteer_is_model_only(monkeypatch: pytest.Monke
     mentions = backend.extract("porphyria")
     assert [(m.text, m.type, m.notes) for m in mentions] == [("porphyria", "phenotype", "gliner")]
 
+
 def test_fused_finetune_label_falls_back_to_disease_type(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The shipped fine-tune emits one fused ``DiseaseOrPhenotype`` label that cannot say
     disease vs phenotype; model-only spans fall back to ``disease`` (the contraindication-
@@ -223,9 +224,11 @@ def test_model_labels_override_is_requested_verbatim(monkeypatch: pytest.MonkeyP
     _text, labels, _threshold = _FakeGLiNER.model.calls[0]
     assert labels == ["disease", "phenotype"]
 
+
 def test_empty_model_labels_is_rejected() -> None:
     with pytest.raises(ValueError, match="model_labels"):
         DiseaseNER(offline=False, model_labels=())
+
 
 def test_load_model_returns_cached_model_without_reimport() -> None:
     sentinel = object()
