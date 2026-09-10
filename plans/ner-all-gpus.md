@@ -39,16 +39,17 @@ The four-GPU dispatch already exists end to end; the remaining speed lever is **
 - Fix the two Ruff formatting failures before committing the implementation. The CI fix is part of this change, and the version bump will be `1.11.1` (patch release).
 
 ## Steps
-- [ ] Inspect all shaper call sites, tests, runtime configuration, and current GPU-related assumptions.
-- [ ] Replace the stale fused-label production assumptions with the checkpoint's trained `disease`/`phenotype` labels and update related docs/tests.
-- [ ] Decide the exact batching/concurrency change needed based on the call-path audit.
-- [ ] Implement four-way concurrent dispatch with safe visibility and fallback behavior.
-- [ ] Add regression tests for four-device scheduling, separate shards, multi-pass behavior, and output determinism.
-- [ ] Run focused tests, lint/type checks, and a GPU-aware smoke/benchmark check where hardware is available.
+- [x] Inspect all shaper call sites, tests, runtime configuration, and current GPU-related assumptions.
+- [x] Replace the stale fused-label production assumptions with the checkpoint's trained `disease`/`phenotype` labels and update related docs/tests.
+- [x] Decide the exact batching/concurrency change needed based on the call-path audit.
+- [x] Implement four-way concurrent dispatch with safe visibility and fallback behavior.
+- [x] Add regression tests for four-device scheduling, separate shards, multi-pass behavior, and output determinism.
+- [x] Run focused tests, lint/type checks, and a GPU-aware smoke/benchmark check where hardware is available.
 
 ## Verification
 - Confirm logs show one worker/model per visible supported CUDA device for a sufficiently large production NER workload, with no device running more than one model.
 - Confirm the production checkpoint is called with exactly its trained `disease` and `phenotype` labels and model-only output preserves those types.
 - Confirm each device receives a distinct shard and all four workers overlap in execution.
+- Local verification complete: `make check` passes (1073 tests, 100% coverage, Ruff, Pyright, Go tests, and vet). This host exposes one `sm_120` GPU, while installed torch supports through `sm_90`, so the GPU-aware smoke safely selected CPU fallback.
 - Confirm outputs match sequential extraction, cache hits are not redundantly mined, and one-/zero-GPU environments continue to work.
 - Run the relevant pytest targets plus repository quality checks.
