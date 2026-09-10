@@ -987,10 +987,10 @@ def test_build_command_appends_qc_and_release_flags(monkeypatch: pytest.MonkeyPa
     assert command == ["uv", "run", "tablassert", "build-kg", "graph.yaml", "--qc", "--release"]
 
 
-def test_build_command_appends_no_original(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_command_has_no_original_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)
-    command = TablassertRunner().build_command(Path("graph.yaml"), no_original=True)
-    assert command == ["uv", "run", "tablassert", "build-kg", "graph.yaml", "--no-original"]
+    command = TablassertRunner().build_command(Path("graph.yaml"))
+    assert "--no-original" not in command
 
 
 def test_resolve_tablassert_dir_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1053,7 +1053,7 @@ def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert report["tablassert_dir"] is None
     assert report["qc"] is False
     assert report["release"] is False
-    assert report["no_original"] is False
+    assert "no_original" not in report
 
 
 def test_real_runner_records_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1187,7 +1187,7 @@ def test_real_runner_appends_release_flag(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert _read_report(workdir)["release"] is True
 
 
-def test_real_runner_appends_no_original_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_real_runner_omits_no_original_flag_and_report_field(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     workdir = Workdir(tmp_path / "work")
     workdir.create()
     assertion_refs = _assertion_refs(workdir)
@@ -1203,8 +1203,8 @@ def test_real_runner_appends_no_original_flag(monkeypatch: pytest.MonkeyPatch, t
     monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
     TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, no_original=True, fullmap="/maps/fullmap.redb"))
 
-    assert "--no-original" in seen[0]
-    assert _read_report(workdir)["no_original"] is True
+    assert "--no-original" not in seen[0]
+    assert "no_original" not in _read_report(workdir)
 
 
 # --- module-level dispatch --------------------------------------------------------

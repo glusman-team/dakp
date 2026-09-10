@@ -72,9 +72,7 @@ nodes, incomplete-edges) the production build now runs. 14.0 adds the explicit
 ``override.sources`` template (SkyeAv/Tablassert#116) with post-dedup ``{edge_id}``
 resolution — what DAKP's legacy-shaped edge provenance requires. 16.0's ``uuid_fields``
 (SkyeAv/Tablassert#122) pins edge identity to the resolved statement (:data:`UUID_FIELDS`),
-16.1's ``--no-original`` (#124) drops the verbatim ``original_*`` source cells from final
-edges (DAKP builds pass it always; identity no longer depends on them), and 16.2's
-``uuid_on_collision: merge`` (SkyeAv/Tablassert#126) merges edges that derive one id —
+16.2's ``uuid_on_collision: merge`` (SkyeAv/Tablassert#126) merges edges that derive one id —
 synonym mentions resolving to the same CURIE — instead of aborting the build. Tablassert
 >= 16.6 makes that merge exact for the FAERS case count: the build-internal
 ``supporting_case_ids`` edge extra unions across folded edges and ``number_of_cases`` is
@@ -87,11 +85,13 @@ release-mode minimum ``number_of_cases`` for ``applied_to_treat`` edges
 from 25 to 10 (SkyeAv/Tablassert#141), so ``--release`` builds now ship 10-24-case edges
 earlier releases dropped. 17.0.0 (SkyeAv/Tablassert#142) removes the
 ``--threads`` CLI option and the ``threads`` Python/Rust API parameter — every parallel stage
-now sizes itself automatically — so DAKP passes no worker count anywhere. 17.0.1 (the pin
-floor, SkyeAv/Tablassert#145) makes the fullmap resolver retain every CURIE tied on a term's
-best ranking tier instead of keeping one arbitrary winner, so a DAKP mention that maps equally
-well to several CURIEs expands to one edge per tied CURIE (level-one still beats level-two);
-nothing in the emitted config changes, only resolved KG content.
+now sizes itself automatically — so DAKP passes no worker count anywhere. 17.0.1
+(SkyeAv/Tablassert#145) makes the fullmap resolver retain every CURIE tied on a term's best
+ranking tier instead of keeping one arbitrary winner, so a DAKP mention that maps equally
+well to several CURIEs expands to one edge per tied CURIE (level-one still beats level-two).
+18.0.0 retains ``original_*`` edge fields and deterministically aggregates distinct values
+across collision merges as sorted pipe-delimited strings while removing ``--no-original``;
+nothing else in the emitted config changes, only resolved KG content.
 Fullmaps must
 be ``tablassert.fullmap.v5`` redb files — the on-disk format since Tablassert 8.2, unchanged
 in 13.0; older ones (v1-v4) are rejected on read.
@@ -103,7 +103,7 @@ on ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout over
 to ``uv run --with-editable <dir> tablassert`` for dev against a local ``../Tablassert``
 checkout. ``--qc`` is appended only when requested AND the QC audit runtime
 (sentence-transformers, part of the required ``tablassert[qc]`` install) is importable;
-``--release`` and ``--no-original`` are boolean flags.
+``--release`` is a boolean flag.
 
 The module-level :func:`run` is the entry point the stage harness and ``dags.dakp_build``
 invoke as a MODULE ATTRIBUTE at call time (``tablassert.run(...)``), so
@@ -1267,7 +1267,7 @@ def _find_graph(config_refs: list[ArtifactRef], ctx: TaskContext) -> Path:
 class TablassertRunner:
     """Run the INSTALLED ``tablassert`` CLI (a core DAKP dependency) as a subprocess.
 
-    Builds ``tablassert build-kg <graph.yaml> [--qc] [--release] [--no-original]`` (the graph config carries the
+    Builds ``tablassert build-kg <graph.yaml> [--qc] [--release]`` (the graph config carries the
     fullmap path — Tablassert 8.1 removed the ``build-kg --fullmap`` flag), streams the
     subprocess output live into the task log (:func:`stream_subprocess`), and records the full
     stdout / stderr / exit code in the handoff report. A non-zero exit is captured as
@@ -1279,17 +1279,13 @@ class TablassertRunner:
 
     tablassert_dir: str | None = None
 
-    def build_command(
-        self, graph_yaml: Path, *, tablassert_dir: str | None = None, qc: bool = False, release: bool = False, no_original: bool = False
-    ) -> list[str]:
+    def build_command(self, graph_yaml: Path, *, tablassert_dir: str | None = None, qc: bool = False, release: bool = False) -> list[str]:
         """The exact Tablassert invocation (pure; testable without spawning a process)."""
         command = [*_command_prefix(tablassert_dir), "build-kg", str(graph_yaml)]
         if qc:
             command.append("--qc")
         if release:
             command.append("--release")
-        if no_original:
-            command.append("--no-original")
         return command
 
     def run(self, assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
@@ -1320,22 +1316,12 @@ class TablassertRunner:
         if qc_requested and not qc:
             logger.warning("{}: --qc requested but the QC audit runtime (sentence-transformers) is not importable; running without --qc", event)
         release = bool(ctx.params.get("release"))
-        no_original = bool(ctx.params.get("no_original"))
 
-        command = self.build_command(graph_yaml, tablassert_dir=tablassert_dir, qc=qc, release=release, no_original=no_original)
+        command = self.build_command(graph_yaml, tablassert_dir=tablassert_dir, qc=qc, release=release)
         cwd = Workdir(ctx.workdir).root
 
         with step(logger, event):
-            stats(
-                logger,
-                event,
-                graph_config=str(graph_yaml),
-                fullmap=fullmap,
-                qc=qc,
-                release=release,
-                no_original=no_original,
-                tablassert_dir=tablassert_dir or "-",
-            )
+            stats(logger, event, graph_config=str(graph_yaml), fullmap=fullmap, qc=qc, release=release, tablassert_dir=tablassert_dir or "-")
             stats(logger, event, command=" ".join(command))
             completed = stream_subprocess(command, cwd=cwd)
         status = "ok" if completed.returncode == 0 else "failed"
@@ -1356,7 +1342,6 @@ class TablassertRunner:
                 "tablassert_dir": tablassert_dir,
                 "qc": qc,
                 "release": release,
-                "no_original": no_original,
             }
         )
         refs = [_write_report(report, assertion_refs, ctx)]

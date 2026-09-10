@@ -113,6 +113,9 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
     assert len(edges) == 1
     edge = edges[0]
     assert (edge["subject"], edge["predicate"], edge["object"]) == ("CHEBI:5855", "biolink:applied_to_treat", "HP:0002315")
+    # Original source mentions survive collision merging and use deterministic pipe joining.
+    assert edge["original_subject"] == "Advil|Ibuprofen"
+    assert edge["original_object"] == "headache"
     # List-valued evidence unions (sorted).
     assert edge["FDA_regulatory_approvals"] == ["017977", "021010"]
     # The carrier never ships as an edge field (16.6 strips it; older Tablassert folds it into

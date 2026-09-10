@@ -32,7 +32,7 @@ def test_build_context_from_config_defaults(tmp_path: Path) -> None:
     assert ctx.params["run_tablassert"] is False
     assert ctx.params["release"] is False  # Tablassert --release defaults off unless the config sets it
     assert ctx.params["qc"] is False  # Tablassert --qc defaults off unless the config sets it
-    assert ctx.params["no_original"] is False  # Tablassert --no-original defaults off unless the config sets it
+    assert "no_original" not in ctx.params
     assert "drugsfda_url" not in ctx.params
     assert "fullmap" not in ctx.params
 
@@ -47,9 +47,9 @@ def test_build_context_from_config_forwards_qc(tmp_path: Path) -> None:
     assert ctx.params["qc"] is True
 
 
-def test_build_context_from_config_forwards_no_original(tmp_path: Path) -> None:
+def test_build_context_from_config_ignores_no_original_config(tmp_path: Path) -> None:
     ctx = build_context_from_config(_cfg(tmp_path, no_original=True))
-    assert ctx.params["no_original"] is True
+    assert "no_original" not in ctx.params
 
 
 def test_build_context_from_config_applies_overrides(tmp_path: Path) -> None:

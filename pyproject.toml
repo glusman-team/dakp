@@ -1,6 +1,6 @@
 [project]
 name = "dakp-pipeline"
-version = "1.11.1"
+version = "1.11.2"
 description = "Drug Approvals Knowledge Provider (DAKP) rebuild: reproducible, content-addressed pipeline producing DailyMed / Drugs@FDA / FAERS / MEDI treatment and contraindication assertion tables for Tablassert."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -30,15 +30,15 @@ classifiers = [
 # Tablassert is pinned to the `[qc]` variant because the production KG build runs
 # `tablassert build-kg --qc` (the SapBERT embedding audit from 12.0 plus 13.0's stage-7
 # fail-the-build assertions on the final NDJSON: empty-or-null-values, unnamed-nodes,
-# unidentified-nodes, incomplete-edges). The >= 17.0.1 floor supersedes the 16.0 floor: 17.0
-# (#142) removes the `--threads` / `threads` knobs entirely (every parallel stage now sizes
-# itself automatically), so DAKP no longer passes a worker count, and 17.0.1 (#145) fixes the
-# fullmap resolver to retain every CURIE tied on a term's best ranking tier instead of keeping
-# one arbitrary winner — a DAKP mention that maps equally well to several CURIEs now expands to
-# one edge per tied CURIE rather than silently shipping whichever the sort surfaced. DAKP
-# builds pass `--no-original` (#124, 16.1 — omit the verbatim `original_*` source-cell
-# copies from final edges; edge identity no longer depends on them), the release-mode
-# low-case drop for `applied_to_treat` applies automatically under `--release` (#123, 16.1 —
+# unidentified-nodes, incomplete-edges). The >= 18.0.0 floor supersedes the 17.0 floor:
+# 18.0.0 retains `original_*` edge fields and deterministically aggregates distinct values
+# during collision merges as sorted pipe-delimited strings; the obsolete `--no-original`
+# option and API parameters are removed. The 17.0.0 (#142) `--threads` / `threads` removal
+# remains part of the supported contract, so DAKP passes no worker count anywhere, and
+# 17.0.1 (#145) fixes the fullmap resolver to retain every CURIE tied on a term's best
+# ranking tier instead of keeping one arbitrary winner — a DAKP mention that maps equally
+# well to several CURIEs now expands to one edge per tied CURIE rather than silently shipping
+# whichever the sort surfaced. The release-mode low-case drop for `applied_to_treat` applies automatically under `--release` (#123, 16.1 —
 # renamed to read `number_of_cases` in 16.6.0 (#137); minimum lowered 25 -> 10 in 16.7.0
 # (#141)), and the generated graph config emits `uuid_on_collision: merge` (#126, 16.2 —
 # edges deriving one id merge: list-valued evidence unions sorted, scalars first-wins;
@@ -86,7 +86,7 @@ dependencies = [
     "pendulum>=3",
     "polars>=1.30.0",
     "pydantic>=2.12.0",
-    "tablassert[qc]>=17.0.1,<18",
+    "tablassert[qc]>=18.0.0,<19",
     # torch is transitive (gliner, sentence-transformers via tablassert[qc]) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host
     # (wenceslaus: 4x Tesla P100-PCIE-16GB, compute capability 6.0, CUDA 12.8 driver) force it:

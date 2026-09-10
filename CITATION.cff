@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use DAKP, please cite it as below."
 type: software
 title: "DAKP: Drug Approvals Knowledge Provider"
-version: 1.11.1
+version: 1.11.2
 license: Apache-2.0
 repository-code: https://github.com/glusman-team/dakp
 abstract: DAKP is a reproducible pipeline that turns DailyMed, Drugs@FDA, and FAERS into NCATS Translator assertion tables (approved-treats, observed-use, and contraindication), ready for Tablassert KGX modeling.
