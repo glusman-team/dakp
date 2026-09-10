@@ -241,7 +241,9 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                     drugsfda_refs=len(drugsfda_refs),
                     faers_refs=len(faers_refs),
                 )
-                ner = DiseaseNER(offline=False, workdir=ctx.workdir)
+                # Indications are precision-first: false-positive treatment edges are more
+                # harmful than missed weak corroboration.
+                ner = DiseaseNER.for_indications(offline=False, workdir=ctx.workdir)
                 ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
                 in_refs = [*dailymed_refs, *drugsfda_refs, *faers_refs]
                 # Already-done skip: identical inputs + config fingerprint => return the
@@ -281,7 +283,9 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                     drugsfda_refs=len(drugsfda_refs),
                     approved_refs=len(approved_refs),
                 )
-                ner = DiseaseNER(offline=False, workdir=ctx.workdir)
+                # Observed uses share the indication precision-first profile: false-positive
+                # observed-use edges are more harmful than missed weak indications.
+                ner = DiseaseNER.for_indications(offline=False, workdir=ctx.workdir)
                 ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
                 # Drugs@FDA is the authoritative FDA application register: it expands the
                 # prefix-stripped FAERS application numbers back to their FDA form (BLA125514).
@@ -322,7 +326,9 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                 dailymed_refs, drugsfda_refs = _refs_from_xcom(dm_ext), _refs_from_xcom(drugsfda_ext)
                 in_refs = [*dailymed_refs, *drugsfda_refs]
                 stats(logger, "task shape_contraindication_tables", dailymed_refs=len(dailymed_refs), drugsfda_refs=len(drugsfda_refs))
-                ner = DiseaseNER(offline=False, workdir=ctx.workdir)
+                # A missed contraindication is more harmful than retaining a low-confidence
+                # candidate, so this task uses the lower contraindication acceptance point.
+                ner = DiseaseNER.for_contraindications(offline=False, workdir=ctx.workdir)
                 ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
                 # Already-done skip: identical inputs + config fingerprint => cached outputs.
                 cached = cached_shape_outputs("shape_contraindications", in_refs, ctx)

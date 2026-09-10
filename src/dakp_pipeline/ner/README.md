@@ -61,21 +61,29 @@ Benchmarked on a hand-labeled fixture (34 cases / 42 gold spans, `tests/eval/`):
 
 ## Confidence and abstention
 
-Two knobs, one operating point by default:
+The backend separates a model-generation floor from use-specific acceptance profiles:
 
-| knob | default | role |
+| setting | default | role |
 | ---- | ------- | ---- |
-| `threshold` | `0.35` | candidate **generation**, passed to GLiNER |
-| `accept_threshold` | `0.35` | DAKP-side **acceptance** floor |
+| `GLINER_GENERATION_FLOOR` / `threshold` | `0.35` | candidate **generation**, passed to GLiNER |
+| `INDICATION_ACCEPT_THRESHOLD` | `0.95` | precision-first acceptance for indications and observed uses |
+| `CONTRAINDICATION_ACCEPT_THRESHOLD` | `0.35` | recall-first acceptance for contraindications |
+| `STRICT_GAZETTEER_EXTENSION_THRESHOLD` | `0.95` | minimum model score to replace an exact gazetteer anchor with a longer span |
 
-`0.35` is the lowest score at which GLiNER is still accurate, so generation never goes below
-it — and spans at that floor are still correct, so the acceptance floor sits at it too:
-nothing generated is abstained by default. Generating at (not above) the acceptance floor is
-what makes the specificity merge work: a specific span often scores lower than its generic
-head, so generating above the floor hid exactly the spans worth preferring. Raise
-`accept_threshold` to open a band: candidates in `[threshold, accept_threshold)` stay visible
-to the merge but are **abstained on** rather than asserted — `extract` returns fewer mentions,
-or none at all, instead of emitting something the model is not confident about.
+The `0.35` generation floor exists so specificity candidates remain visible to the merge. It is
+not the indication operating point. The current-model local sweep selected `0.95` for indications:
+on the 34-case fixture, the full composite reached precision 1.000 with 39/42 recall. The lower
+contraindication point preserves rare/OOV candidates because a missed contraindication is more
+harmful; it is intentionally not the same production policy as indications. These values were
+measured in a non-deployment checkout and should be revalidated on the deployment machine.
+
+Use `DiseaseNER.for_indications(...)` and `DiseaseNER.for_contraindications(...)` rather than
+passing two unexplained numeric defaults. Both profiles also use the strict gazetteer-extension
+floor: weak model extensions are discarded and the exact gazetteer span remains, while
+high-confidence qualified spans such as `pulmonary hypertension` can replace `hypertension`.
+Candidates in `[threshold, accept_threshold)` remain
+visible to the merge but are **abstained on** rather than asserted — `extract` returns fewer
+mentions, or none at all, instead of emitting something the model is not confident about.
 
 Abstention never downgrades. If a specific span supersedes a gazetteer span and then falls below
 the floor, the generic term is **not** resurrected: emitting `hypertension` for text that reads

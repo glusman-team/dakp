@@ -19,6 +19,35 @@ part of the span while temporal/evidential hedges are not.
 
 ## Results (strict span-level micro P/R/F1; a TP needs exact `(start, end, type)`)
 
+### Current-model local run
+
+The checked-in default checkpoint (`SkyeAv/drug-approvals-gliner-small-v2.1`) was available in
+this checkout's cache and was benchmarked on CPU. This checkout is not the deployment machine,
+so these are provisional local measurements and should be rerun on deployment hardware/cache.
+The fixture has 34 cases and 42 gold spans.
+
+| variant | acceptance | precision | recall | F1 | TP | FP | FN |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| gazetteer-only | n/a | 0.949 | 0.881 | 0.914 | 37 | 2 | 5 |
+| GLiNER-only | 0.35 | 0.718 | 0.667 | 0.691 | 28 | 11 | 14 |
+| composite (historical merge) | 0.35 | 0.952 | 0.952 | 0.952 | 40 | 2 | 2 |
+| composite (historical merge) | 0.90 | 0.976 | 0.929 | 0.951 | 39 | 1 | 3 |
+| composite (strict extension) | 0.35 | **1.000** | **1.000** | **1.000** | **42** | **0** | **0** |
+| **composite (strict extension)** | **0.95** | **1.000** | **0.976** | **0.988** | **41** | **0** | **1** |
+
+Historical-merge rows generated candidates at `0.35` without the strict extension floor. The
+final production rows use the strict extension floor `0.95` as well as the shared generation floor.
+The precision-first indication/observed-use profile therefore uses acceptance `0.95`; the
+contraindication profile uses the lower `0.35` acceptance point to preserve recall. The two
+generic `0.35` defaults are no longer the production policy: they represent the named generation
+floor and the recall-first contraindication profile respectively.
+
+Representative historical-merge composite errors at acceptance `0.35` were boundary overreach:
+`hypersensitivity to ibuprofen.` and `persistent transaminase elevations`. The strict extension
+floor removes both without sacrificing the OOV contraindication probes. The final indication
+profile retains one false negative, OOV `pheochromocytoma`; the final contraindication profile
+retains none on this fixture.
+
 Current (2026-08-14, after the specificity merge + abstention below):
 
 | approach  | precision | recall | F1    | TP | FP | FN | notes                                   |

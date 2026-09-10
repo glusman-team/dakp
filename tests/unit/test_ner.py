@@ -13,11 +13,15 @@ from pathlib import Path
 
 from dakp_pipeline.ner.dictionary import CONTRAINDICATION_DISEASE_TYPES, TYPE_DISEASE, TYPE_PHENOTYPE, Gazetteer
 from dakp_pipeline.ner.ner import (
+    CONTRAINDICATION_ACCEPT_THRESHOLD,
     DEFAULT_ACCEPT_THRESHOLD,
     DEFAULT_MODEL,
     DEFAULT_THRESHOLD,
     EMBEDDED_GAZETTEER,
+    GLINER_GENERATION_FLOOR,
+    INDICATION_ACCEPT_THRESHOLD,
     MODEL_LABELS,
+    STRICT_GAZETTEER_EXTENSION_THRESHOLD,
     DiseaseNER,
     Mention,
     extract_contraindication_diseases,
@@ -35,12 +39,15 @@ def test_defaults_and_contraindication_types() -> None:
     assert DEFAULT_MODEL == "SkyeAv/drug-approvals-gliner-small-v2.1"
     # The shipped fine-tune is trained for separate disease and phenotype labels.
     assert MODEL_LABELS == ("disease", "phenotype")
-    # 0.35 is the lowest score at which GLiNER is still accurate: generation sits at it and the
-    # acceptance floor joins it there, so nothing generated is abstained by default. The ordering
-    # stays load-bearing — candidates must reach the specificity merge at or below the floor.
-    assert DEFAULT_THRESHOLD == 0.35
-    assert DEFAULT_ACCEPT_THRESHOLD == 0.35
-    assert DEFAULT_THRESHOLD <= DEFAULT_ACCEPT_THRESHOLD
+    # The generation floor is distinct from the precision-first indication profile. The generic
+    # aliases retain the recall-first contraindication profile for compatibility.
+    assert GLINER_GENERATION_FLOOR == 0.35
+    assert DEFAULT_THRESHOLD == GLINER_GENERATION_FLOOR
+    assert INDICATION_ACCEPT_THRESHOLD == 0.95
+    assert CONTRAINDICATION_ACCEPT_THRESHOLD == GLINER_GENERATION_FLOOR
+    assert DEFAULT_ACCEPT_THRESHOLD == CONTRAINDICATION_ACCEPT_THRESHOLD
+    assert DEFAULT_THRESHOLD <= INDICATION_ACCEPT_THRESHOLD
+    assert DEFAULT_THRESHOLD <= CONTRAINDICATION_ACCEPT_THRESHOLD
     assert CONTRAINDICATION_DISEASE_TYPES == (TYPE_DISEASE, TYPE_PHENOTYPE)
     # The embedded gazetteer is non-empty and every term is typed disease/phenotype.
     assert EMBEDDED_GAZETTEER
@@ -140,6 +147,18 @@ def test_importing_ner_does_not_import_heavy_deps() -> None:
 def test_constructing_production_backend_does_not_import_gliner() -> None:
     DiseaseNER(offline=False)
     assert "gliner" not in sys.modules
+
+
+def test_use_specific_profiles_have_distinct_acceptance_roles() -> None:
+    indications = DiseaseNER.for_indications(offline=False)
+    contraindications = DiseaseNER.for_contraindications(offline=False)
+    assert indications._threshold == contraindications._threshold == GLINER_GENERATION_FLOOR
+    assert indications._accept == INDICATION_ACCEPT_THRESHOLD
+    assert contraindications._accept == CONTRAINDICATION_ACCEPT_THRESHOLD
+    assert indications._config()["accept_threshold"] == INDICATION_ACCEPT_THRESHOLD
+    assert contraindications._config()["accept_threshold"] == CONTRAINDICATION_ACCEPT_THRESHOLD
+    assert indications._config()["strict_extension_threshold"] == STRICT_GAZETTEER_EXTENSION_THRESHOLD
+    assert contraindications._config()["strict_extension_threshold"] == STRICT_GAZETTEER_EXTENSION_THRESHOLD
 
 
 def test_mention_is_frozen() -> None:

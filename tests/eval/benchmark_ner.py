@@ -31,7 +31,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from dakp_pipeline.ner.ner import DEFAULT_THRESHOLD, EMBEDDED_GAZETTEER
+from dakp_pipeline.ner.ner import EMBEDDED_GAZETTEER, GLINER_GENERATION_FLOOR, INDICATION_ACCEPT_THRESHOLD, STRICT_GAZETTEER_EXTENSION_THRESHOLD
 
 HERE = Path(__file__).resolve().parent
 GOLD_PATH = HERE / "ner_gold.json"
@@ -103,19 +103,25 @@ def gazetteer_predictor() -> Predictor:
     return lambda text: [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text)]
 
 
-def gliner_predictor(threshold: float = DEFAULT_THRESHOLD) -> Predictor:
-    """Production mode with an EMPTY gazetteer: the fine-tuned GLiNER only (isolates the model)."""
+def gliner_predictor(threshold: float = GLINER_GENERATION_FLOOR, accept_threshold: float | None = None) -> Predictor:
+    """Production mode with an EMPTY gazetteer: GLiNER only (isolates the model)."""
     from dakp_pipeline.ner.ner import DiseaseNER
 
-    ner = DiseaseNER(offline=False, gazetteer={}, threshold=threshold)
+    ner = DiseaseNER(offline=False, gazetteer={}, threshold=threshold, accept_threshold=accept_threshold if accept_threshold is not None else threshold)
     return lambda text: [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text)]
 
 
-def composite_predictor(threshold: float = DEFAULT_THRESHOLD) -> Predictor:
-    """Production mode with the curated gazetteer: the settled backend (gazetteer + GLiNER)."""
+def composite_predictor(threshold: float = GLINER_GENERATION_FLOOR, accept_threshold: float | None = None) -> Predictor:
+    """Production mode with the curated gazetteer and an explicit acceptance profile."""
     from dakp_pipeline.ner.ner import DiseaseNER
 
-    ner = DiseaseNER(offline=False, gazetteer=GAZETTEER, threshold=threshold)
+    ner = DiseaseNER(
+        offline=False,
+        gazetteer=GAZETTEER,
+        threshold=threshold,
+        accept_threshold=accept_threshold if accept_threshold is not None else threshold,
+        strict_extension_threshold=STRICT_GAZETTEER_EXTENSION_THRESHOLD,
+    )
     return lambda text: [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text)]
 
 
@@ -166,7 +172,18 @@ def _candidates() -> dict[str, Predictor]:
     return candidates
 
 
-def run(json_out: Path | None = None) -> dict[str, dict[str, float]]:
+def _print_errors(predict: Predictor, cases: Sequence[Case]) -> None:
+    """Print exact false-positive/false-negative surfaces for threshold decisions."""
+    for case in cases:
+        gold = {(g.start, g.end, g.type, g.surface) for g in case.gold}
+        pred = {(p.start, p.end, p.type, p.text) for p in predict(case.text)}
+        fp = pred - {(start, end, etype, surface) for start, end, etype, surface in gold}
+        fn = gold - pred
+        if fp or fn:
+            print(f"  {case.case_id}: FP={[surface for _, _, _, surface in sorted(fp)]} FN={[surface for _, _, _, surface in sorted(fn)]}")
+
+
+def run(json_out: Path | None = None, *, sweep: Sequence[float] = ()) -> dict[str, dict[str, float]]:
     cases = load_cases()
     total_gold = sum(len(case.gold) for case in cases)
     dailymed = sum(1 for c in cases if c.source == "dailymed")
@@ -184,6 +201,14 @@ def run(json_out: Path | None = None) -> dict[str, dict[str, float]]:
         print(f"{name:<12} {strict.precision:>7.3f} {strict.recall:>7.3f} {strict.f1:>7.3f} {strict.tp:>5} {strict.fp:>5} {strict.fn:>5}")
     print("\n(strict = exact (start,end,type) match; lenient_f1 = offset match ignoring type)")
 
+    if sweep:
+        print(f"\nAcceptance sweep (generation floor = {GLINER_GENERATION_FLOOR:.2f}):")
+        print(f"{'accept':>8} {'approach':<12} {'P':>7} {'R':>7} {'F1':>7} {'TP':>5} {'FP':>5} {'FN':>5}")
+        for accept in sweep:
+            for name, predictor in (("gliner", gliner_predictor(accept_threshold=accept)), ("composite", composite_predictor(accept_threshold=accept))):
+                strict = score(predictor, cases)
+                print(f"{accept:>8.2f} {name:<12} {strict.precision:>7.3f} {strict.recall:>7.3f} {strict.f1:>7.3f} {strict.tp:>5} {strict.fp:>5} {strict.fn:>5}")
+
     if json_out is not None:
         payload = {"schema_version": "dakp.ner.benchmark.v1", "cases": len(cases), "gold_mentions": total_gold, "results": results}
         json_out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -194,8 +219,16 @@ def run(json_out: Path | None = None) -> dict[str, dict[str, float]]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark disease/phenotype NER approaches on the gold fixture.")
     parser.add_argument("--json", type=Path, default=None, help="Optional path to write the results JSON.")
+    parser.add_argument("--sweep", action="store_true", help="Run the current-model acceptance sweep for GLiNER-only and composite variants.")
+    parser.add_argument("--errors", action="store_true", help="Print FP/FN examples for the default operating points.")
     args = parser.parse_args()
-    run(json_out=args.json)
+    sweep = (0.35, 0.50, 0.75, 0.90, 0.95) if args.sweep else ()
+    run(json_out=args.json, sweep=sweep)
+    if args.errors:
+        cases = load_cases()
+        for name, predictor in (("gliner", gliner_predictor()), ("composite", composite_predictor(accept_threshold=INDICATION_ACCEPT_THRESHOLD))):
+            print(f"\n{name} errors:")
+            _print_errors(predictor, cases)
 
 
 if __name__ == "__main__":

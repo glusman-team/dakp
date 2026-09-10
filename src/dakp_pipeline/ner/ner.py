@@ -69,19 +69,28 @@ DEFAULT_MODEL = "SkyeAv/drug-approvals-gliner-small-v2.1"
 MODEL_LABELS: tuple[str, ...] = (TYPE_DISEASE, TYPE_PHENOTYPE)
 #: Backward-compatible singular alias for callers that imported the old constant.
 MODEL_LABEL = TYPE_DISEASE
-#: Candidate-**generation** threshold, passed straight to ``predict_entities``. 0.35 is the
-#: lowest score at which GLiNER is still accurate, so generation never goes below it. Keeping it
-#: at (not above) the acceptance floor matters: a specific span often scores lower than its
-#: generic head (``drug hypersensitivity`` 0.35 vs ``hypersensitivity``), and generating at the
-#: old 0.5 hid exactly the spans the specificity merge exists to prefer.
-DEFAULT_THRESHOLD = 0.35
-#: DAKP-side **acceptance** floor — the confidence a model span must reach to be emitted at all.
-#: Spans in the ``[DEFAULT_THRESHOLD, DEFAULT_ACCEPT_THRESHOLD)`` band are visible to the merge
-#: (so they can still win a boundary contest) but are abstained on rather than asserted.
-#: Default: the floor sits at the generation threshold — spans at the model's accuracy floor are
-#: still correct, so nothing generated is abstained. Raise ``accept_threshold`` to tighten
-#: deliberately; do not lower ``threshold`` below 0.35 (the model's accuracy floor).
-DEFAULT_ACCEPT_THRESHOLD = 0.35
+#: Lowest model score retained for merge consideration. This is deliberately a generation
+#: floor, not a production operating point: the specificity merge needs to see low-scoring
+#: specific spans before a use-specific acceptance policy decides whether to assert them.
+GLINER_GENERATION_FLOOR = 0.35
+#: Precision-first indication/observed-use acceptance point, selected from the current-model
+#: sweep. At 0.95 the local 34-case fixture had no composite false positives (39/42 recall).
+INDICATION_ACCEPT_THRESHOLD = 0.95
+#: Contraindications use the model floor as their acceptance point: a missed contraindication is
+#: more harmful than a low-confidence candidate. This aliases the one generation-floor constant
+#: instead of repeating an unexplained second ``0.35`` literal.
+CONTRAINDICATION_ACCEPT_THRESHOLD = GLINER_GENERATION_FLOOR
+#: Strict gazetteer policy for production profiles: a model may replace an exact gazetteer anchor
+#: with a longer, more specific boundary only at this confidence. Lower-scoring extensions are
+#: discarded and the exact gazetteer anchor remains. This prevents extensions such as
+#: ``hypersensitivity to ibuprofen`` from weakening the high-precision lexical anchor.
+STRICT_GAZETTEER_EXTENSION_THRESHOLD = 0.95
+#: Backward-compatible generic generation alias. New production code should use one of the named
+#: use-specific constructors below.
+DEFAULT_THRESHOLD = GLINER_GENERATION_FLOOR
+#: Backward-compatible generic acceptance alias. It preserves the recall-first behavior of the
+#: historical constructor; production DAG tasks use explicit indication/contraindication profiles.
+DEFAULT_ACCEPT_THRESHOLD = CONTRAINDICATION_ACCEPT_THRESHOLD
 
 # GLiNER counts input in word tokens from its whitespace splitter and silently truncates anything
 # past ``config.max_len`` tokens (only a UserWarning). Mirror that exact token pattern (gliner's
@@ -558,11 +567,14 @@ class DiseaseNER:
             :data:`DEFAULT_MODEL`; provide the labels expected by an explicitly overridden checkpoint.
         inference_batch_size: number of windows per GLiNER inference batch.
         threshold: GLiNER candidate-**generation** threshold (production mode). Generate wide:
-            this only decides what the merge gets to look at.
+            this only decides what the merge gets to look at. Production profiles use
+            :data:`GLINER_GENERATION_FLOOR`.
         accept_threshold: DAKP-side **acceptance** floor (production mode). A model span below it
             is abstained on — emitted as nothing, never downgraded to the generic gazetteer term
-            it was competing with. Keep ``threshold <= accept_threshold``; an ``accept_threshold``
-            below ``threshold`` is simply a no-op (GLiNER already filtered).
+            it was competing with. Use :data:`INDICATION_ACCEPT_THRESHOLD` for indications and
+            observed uses; use :data:`CONTRAINDICATION_ACCEPT_THRESHOLD` for contraindications.
+            Keep ``threshold <= accept_threshold``; an ``accept_threshold`` below ``threshold`` is
+            simply a no-op (GLiNER already filtered).
         chunk_words: window budget in GLiNER word tokens for long texts (production mode);
             ``None`` = the loaded model's ``config.max_len``, fallback 384. GLiNER silently
             truncates anything longer, so longer texts are predicted window by window.
@@ -570,6 +582,9 @@ class DiseaseNER:
         device: explicit CUDA device for multi-GPU dispatch (e.g. ``"cuda:2"``). ``None``
             (default) auto-detects via :func:`_model_device` (CUDA when available, else CPU).
             Set by multi-GPU workers to pin the GLiNER model to a specific GPU.
+        strict_extension_threshold: minimum score for a model span that extends exactly one
+            gazetteer span. ``None`` preserves the historical merge; production profiles use
+            :data:`STRICT_GAZETTEER_EXTENSION_THRESHOLD`.
     """
 
     def __init__(
@@ -586,6 +601,7 @@ class DiseaseNER:
         cache_dir: Path | str | None = None,
         workdir: Path | str | None = None,
         device: str | None = None,
+        strict_extension_threshold: float | None = None,
     ) -> None:
         if isinstance(gazetteer, Gazetteer):
             resolved = gazetteer
@@ -607,8 +623,29 @@ class DiseaseNER:
         self._cache_dir = cache_dir
         self._workdir = workdir
         self._device = device
+        self._strict_extension_threshold = strict_extension_threshold
         self._model: Any = None
         self._gpu_lock_fd: int | None = None
+
+    @classmethod
+    def for_indications(cls, **kwargs: Any) -> DiseaseNER:
+        """Build the precision-first profile for indications and observed uses."""
+        return cls(
+            threshold=GLINER_GENERATION_FLOOR,
+            accept_threshold=INDICATION_ACCEPT_THRESHOLD,
+            strict_extension_threshold=STRICT_GAZETTEER_EXTENSION_THRESHOLD,
+            **kwargs,
+        )
+
+    @classmethod
+    def for_contraindications(cls, **kwargs: Any) -> DiseaseNER:
+        """Build the recall-first profile for contraindication mining."""
+        return cls(
+            threshold=GLINER_GENERATION_FLOOR,
+            accept_threshold=CONTRAINDICATION_ACCEPT_THRESHOLD,
+            strict_extension_threshold=STRICT_GAZETTEER_EXTENSION_THRESHOLD,
+            **kwargs,
+        )
 
     # -- builders --------------------------------------------------------------
     @classmethod
@@ -681,6 +718,7 @@ class DiseaseNER:
             trimmed = self._trimmed_spans(text, [span for spans in text_spans for span in spans])
             gazetteer_spans = [(mention.start, mention.end) for mention in gazetteer[index]]
             candidates = _select_candidates(_candidates_vs_gazetteer(trimmed, gazetteer_spans))
+            candidates = self._strict_gazetteer_candidates(candidates)
             output.append(sorted(self._emit(text, gazetteer[index], candidates), key=_sort_key))
         return output
 
@@ -726,6 +764,7 @@ class DiseaseNER:
             "inference_batch_size": self._inference_batch_size,
             "cache_dir": self._cache_dir,
             "workdir": self._workdir,
+            "strict_extension_threshold": self._strict_extension_threshold,
         }
 
     def _merge_model_spans(self, text: str, gazetteer_mentions: list[Mention]) -> list[Mention]:
@@ -767,7 +806,20 @@ class DiseaseNER:
         trimmed = self._trimmed_spans(text, [span for spans in spans_by_window for span in spans])
         gazetteer_spans = [(mention.start, mention.end) for mention in gazetteer_mentions]
         candidates = _select_candidates(_candidates_vs_gazetteer(trimmed, gazetteer_spans))
+        candidates = self._strict_gazetteer_candidates(candidates)
         return self._emit(text, gazetteer_mentions, candidates)
+
+    def _strict_gazetteer_candidates(self, candidates: list[_Candidate]) -> list[_Candidate]:
+        """Keep only sufficiently confident model extensions of exact gazetteer anchors.
+
+        Free-standing OOV candidates are not affected. A rejected extension is omitted so
+        :meth:`_emit` retains the exact gazetteer mention instead of treating the model boundary
+        as authoritative at low confidence.
+        """
+        floor = self._strict_extension_threshold
+        if floor is None:
+            return candidates
+        return [candidate for candidate in candidates if candidate.anchor < 0 or candidate.span.score >= floor]
 
     def _trimmed_spans(self, text: str, spans: list[_ModelSpan]) -> list[_ModelSpan]:
         """Hedge-trim every model span, re-applying the population filter to the trimmed surface.
@@ -856,13 +908,17 @@ def extract_contraindication_diseases(text: str, ner: DiseaseNER | None = None) 
 
 
 __all__ = [
+    "CONTRAINDICATION_ACCEPT_THRESHOLD",
     "CONTRAINDICATION_DISEASE_TYPES",
     "DEFAULT_ACCEPT_THRESHOLD",
     "DEFAULT_MODEL",
     "DEFAULT_THRESHOLD",
     "EMBEDDED_GAZETTEER",
+    "GLINER_GENERATION_FLOOR",
+    "INDICATION_ACCEPT_THRESHOLD",
     "MODEL_LABEL",
     "MODEL_LABELS",
+    "STRICT_GAZETTEER_EXTENSION_THRESHOLD",
     "TYPE_DISEASE",
     "TYPE_PHENOTYPE",
     "DiseaseNER",

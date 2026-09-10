@@ -763,12 +763,29 @@ def test_config_returns_serializable_construction_kwargs(tmp_path: Path) -> None
     # Must round-trip: the multi-GPU workers rebuild from this dict, and a missing key would
     # silently run all four P100s at the default floor while the parent ran tuned.
     assert config["accept_threshold"] == 0.66
+    assert config["strict_extension_threshold"] is None
     assert config["chunk_words"] == 128
     assert config["cache_dir"] == tmp_path
     assert config["workdir"] == tmp_path / "work"
     assert config["gazetteer"] is gaz
     # device is deliberately excluded — the caller sets it per-worker.
     assert "device" not in config
+
+
+def test_strict_extension_profile_keeps_exact_anchor_when_model_extension_is_weak(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    text = "Contraindicated in patients with hypersensitivity to ibuprofen."
+    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "hypersensitivity to ibuprofen.", "phenotype", 0.89)])
+    backend = DiseaseNER.for_contraindications(offline=False, gazetteer={"hypersensitivity": "phenotype"})
+    mentions = backend.extract(text)
+    assert [(mention.text, mention.notes) for mention in mentions] == [("hypersensitivity", "exact")]
+
+
+def test_strict_extension_profile_accepts_confident_specific_boundary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    text = "Contraindicated in patients with pulmonary hypertension."
+    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "pulmonary hypertension", "disease", 0.99)])
+    backend = DiseaseNER.for_contraindications(offline=False, gazetteer={"hypertension": "disease"})
+    mentions = backend.extract(text)
+    assert [(mention.text, mention.notes) for mention in mentions] == [("pulmonary hypertension", "gliner:extends")]
 
 
 def test_config_can_reconstruct_equivalent_backend(tmp_path: Path) -> None:
