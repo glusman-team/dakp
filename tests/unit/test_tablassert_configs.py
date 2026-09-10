@@ -69,9 +69,9 @@ EXPECTED_PROVENANCE = {
 }
 
 # assertion table -> the explicit ``override.sources`` template (resource_id, role, upstream ids)
-# in legacy entry order, mirroring ``tablassert_configs._TABLE_SOURCES``. The DAKP wrapper entry
-# carries the gestalt ``{edge_id}`` record-URL template; the only other entry carrying record URLs
-# is the FAERS table's ``infores:faers`` primary entry (the static FDA AEMS page).
+# mirroring ``tablassert_configs._TABLE_SOURCES``. DAKP is primary for every family and carries
+# the gestalt ``{edge_id}`` record-URL template. The FAERS supporting entry on observed-use
+# edges also carries the static FDA AEMS page.
 GESTALT_URL_TEMPLATE = "https://db.systemsbiology.net/gestalt/cgi-pub/KGinfo.pl?id={edge_id}"
 FAERS_AEMS_URL = "https://www.fda.gov/safety/fda-adverse-event-monitoring-system-aems"
 EXPECTED_SOURCES = {
@@ -88,21 +88,20 @@ EXPECTED_SOURCES = {
     "faers_applied_to_treat_assertions": [
         {
             "resource_id": INFORES_DAKP,
-            "resource_role": "aggregator_knowledge_source",
+            "resource_role": "primary_knowledge_source",
             "upstream_resource_ids": ["infores:dailymed", "infores:faers"],
             "source_record_urls": [GESTALT_URL_TEMPLATE],
         },
-        {"resource_id": "infores:faers", "resource_role": "primary_knowledge_source", "source_record_urls": [FAERS_AEMS_URL]},
+        {"resource_id": "infores:faers", "resource_role": "supporting_data_source", "source_record_urls": [FAERS_AEMS_URL]},
         {"resource_id": "infores:dailymed", "resource_role": "supporting_data_source"},
     ],
     "contraindication_assertions": [
         {
             "resource_id": INFORES_DAKP,
-            "resource_role": "aggregator_knowledge_source",
-            "upstream_resource_ids": ["infores:dailymed", "infores:medi"],
+            "resource_role": "primary_knowledge_source",
+            "upstream_resource_ids": ["infores:dailymed"],
             "source_record_urls": [GESTALT_URL_TEMPLATE],
         },
-        {"resource_id": "infores:medi", "resource_role": "primary_knowledge_source", "upstream_resource_ids": ["infores:dailymed"]},
         {"resource_id": "infores:dailymed", "resource_role": "supporting_data_source"},
     ],
 }
@@ -264,14 +263,13 @@ def test_table_config_structure(table: str) -> None:
     assert statement["object"]["prioritize"] == ["Disease", "PhenotypicFeature"]
     assert statement["object"]["avoid"] == category_avoid_list(OBJECT_PRIORITIZE)
 
-    # ManualProvenance override matching the legacy DAKP edge-provenance shape (no publication
-    # alongside override).
+    # ManualProvenance override carrying DAKP as the primary source (no publication alongside
+    # override).
     override = config["provenance"]["override"]
     assert "infores" not in override  # the DAKP infores is graph-level only (Tablassert >= 8.0.1 forbids it here)
-    # The explicit sources template (Tablassert >= 14.0, SkyeAv/Tablassert#116) replicates the
-    # legacy edge provenance verbatim — including the gestalt {edge_id} record-URL template on
-    # the DAKP entry — and carries no dataset-level record URLs except the FAERS table's static
-    # AEMS page on its ``infores:faers`` primary entry.
+    # The explicit sources template (Tablassert >= 14.0, SkyeAv/Tablassert#116) puts DAKP
+    # first as the primary knowledge source, including the gestalt {edge_id} record-URL template;
+    # the FAERS supporting entry on observed-use edges retains the static AEMS page.
     assert override["sources"] == EXPECTED_SOURCES[table]
     assert override["knowledge_level"] == knowledge_level
     assert override["agent_type"] == agent_type

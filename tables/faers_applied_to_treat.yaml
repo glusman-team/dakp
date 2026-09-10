@@ -397,14 +397,14 @@ template:
     override:
       sources:
         - resource_id: "infores:multiomics-drugapprovals"
-          resource_role: aggregator_knowledge_source
+          resource_role: primary_knowledge_source
           upstream_resource_ids:
             - "infores:dailymed"
             - "infores:faers"
           source_record_urls:
             - "https://db.systemsbiology.net/gestalt/cgi-pub/KGinfo.pl?id={edge_id}"
         - resource_id: "infores:faers"
-          resource_role: primary_knowledge_source
+          resource_role: supporting_data_source
           source_record_urls:
             - "https://www.fda.gov/safety/fda-adverse-event-monitoring-system-aems"
         - resource_id: "infores:dailymed"

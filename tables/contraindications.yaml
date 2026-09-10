@@ -508,16 +508,11 @@ template:
     override:
       sources:
         - resource_id: "infores:multiomics-drugapprovals"
-          resource_role: aggregator_knowledge_source
-          upstream_resource_ids:
-            - "infores:dailymed"
-            - "infores:medi"
-          source_record_urls:
-            - "https://db.systemsbiology.net/gestalt/cgi-pub/KGinfo.pl?id={edge_id}"
-        - resource_id: "infores:medi"
           resource_role: primary_knowledge_source
           upstream_resource_ids:
             - "infores:dailymed"
+          source_record_urls:
+            - "https://db.systemsbiology.net/gestalt/cgi-pub/KGinfo.pl?id={edge_id}"
         - resource_id: "infores:dailymed"
           resource_role: supporting_data_source
       knowledge_level: knowledge_assertion
