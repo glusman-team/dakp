@@ -30,6 +30,12 @@ Current (2026-08-14, after the specificity merge + abstention below):
 The composite holds perfect precision *and* recall across the widened fixture: the two qualified
 diseases and the hedge-prefixed mention all come out exactly right.
 
+> **Checkpoint change (2026-09-10):** the production default is now the domain fine-tune
+> `SkyeAv/drug-approvals-gliner-small-v2.1` (deberta-v3-small, `max_len: 384`, ONE fused
+> `DiseaseOrPhenotype` label — spans carrying it fall back to type `disease`; gazetteer types
+> still win on overlap). All numbers on this page were measured with `gliner_large-v2.5`;
+> re-run `tests/eval/benchmark_ner.py` to re-measure against the fine-tune.
+
 The **gazetteer** row moved down (was 1.000 / 0.923 / 0.960 on 31 cases) and that is expected,
 not a regression. Offline mode was deliberately left unchanged (see "Specificity merge" below),
 so on `pulmonary hypertension` it still emits its generic head `hypertension` — wrong offsets

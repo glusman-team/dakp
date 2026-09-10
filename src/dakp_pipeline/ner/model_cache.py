@@ -173,7 +173,7 @@ def ensure_model(
     written. ``force`` re-downloads unconditionally.
 
     Args:
-        model_id: Upstream model identifier (e.g. ``"gliner-community/gliner_large-v2.5"``).
+        model_id: Upstream model identifier (e.g. ``"SkyeAv/drug-approvals-gliner-small-v2.1"``).
         source: Provenance label / cache subdir (default ``"huggingface"``).
         cache_dir: Explicit cache root. Wins over ``workdir`` when both are given.
         workdir: Pipeline workdir; the cache lives at ``<workdir>/models``.

@@ -24,7 +24,7 @@ from dakp_pipeline.ner import mention_cache, model_cache
 from dakp_pipeline.ner.mention_cache import BINARY_ENV_VAR, MentionCache, config_fingerprint, mention_key, ner_cache_material, normalize_key_text
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
 
-_MODEL_ID = "gliner-community/gliner_large-v2.5"
+_MODEL_ID = "SkyeAv/drug-approvals-gliner-small-v2.1"
 _MODEL_B3 = "b3:" + "ab" * 32
 _FINGERPRINT = "cd" * 32
 

@@ -23,6 +23,7 @@ from dakp_pipeline.ner.ner import (
     _DEFAULT_WORD_BUDGET,
     _GLINER_TOKEN,
     DEFAULT_MODEL,
+    MODEL_LABEL,
     DiseaseNER,
     Mention,
     _cuda_device_supported,
@@ -186,10 +187,10 @@ def test_production_merge_gazetteer_wins_and_gliner_adds_recall(monkeypatch: pyt
     porphyria = mentions[1]
     assert porphyria.normalized == "porphyria"
     assert porphyria.score == 0.8
-    # The model was loaded from the cached content path, with the contraindication labels + threshold.
+    # The model was loaded from the cached content path, with the fine-tune's fused label + threshold.
     assert _FakeGLiNER.loaded_from == [str(tmp_path)]
     _text, labels, threshold = _FakeGLiNER.model.calls[0]
-    assert labels == ["disease", "phenotype"]
+    assert labels == [MODEL_LABEL]
     assert threshold == 0.42
 
     # A second extract reuses the cached model (from_pretrained called exactly once).
@@ -203,6 +204,28 @@ def test_production_with_empty_gazetteer_is_model_only(monkeypatch: pytest.Monke
     mentions = backend.extract("porphyria")
     assert [(m.text, m.type, m.notes) for m in mentions] == [("porphyria", "phenotype", "gliner")]
 
+def test_fused_finetune_label_falls_back_to_disease_type(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The shipped fine-tune emits one fused ``DiseaseOrPhenotype`` label that cannot say
+    disease vs phenotype; model-only spans fall back to ``disease`` (the contraindication-
+    majority class), and Tablassert resolves the real category downstream."""
+    _install_fake_gliner(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": MODEL_LABEL, "score": 0.8}])
+    backend = DiseaseNER(offline=False, gazetteer={})
+    mentions = backend.extract("porphyria")
+    assert [(m.text, m.type, m.notes) for m in mentions] == [("porphyria", "disease", "gliner")]
+
+
+def test_model_labels_override_is_requested_verbatim(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """An explicitly overridden checkpoint declares its own label vocabulary via model_labels."""
+    _install_fake_gliner(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "phenotype", "score": 0.8}])
+    backend = DiseaseNER(offline=False, gazetteer={}, model_id="acme/other-ner", model_labels=("disease", "phenotype"), cache_dir=tmp_path)
+    mentions = backend.extract("porphyria")
+    assert [(m.text, m.type) for m in mentions] == [("porphyria", "phenotype")]
+    _text, labels, _threshold = _FakeGLiNER.model.calls[0]
+    assert labels == ["disease", "phenotype"]
+
+def test_empty_model_labels_is_rejected() -> None:
+    with pytest.raises(ValueError, match="model_labels"):
+        DiseaseNER(offline=False, model_labels=())
 
 def test_load_model_returns_cached_model_without_reimport() -> None:
     sentinel = object()

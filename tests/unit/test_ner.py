@@ -17,6 +17,7 @@ from dakp_pipeline.ner.ner import (
     DEFAULT_MODEL,
     DEFAULT_THRESHOLD,
     EMBEDDED_GAZETTEER,
+    MODEL_LABEL,
     DiseaseNER,
     Mention,
     extract_contraindication_diseases,
@@ -31,7 +32,9 @@ _ONTOLOGY_TSV = _FIXTURE_ROOT / "ontology" / "disease_map.tsv"
 
 
 def test_defaults_and_contraindication_types() -> None:
-    assert DEFAULT_MODEL == "gliner-community/gliner_large-v2.5"
+    assert DEFAULT_MODEL == "SkyeAv/drug-approvals-gliner-small-v2.1"
+    # The shipped fine-tune is trained for ONE fused disease-or-phenotype label, requested verbatim.
+    assert MODEL_LABEL == "DiseaseOrPhenotype"
     # 0.35 is the lowest score at which GLiNER is still accurate: generation sits at it and the
     # acceptance floor joins it there, so nothing generated is abstained by default. The ordering
     # stays load-bearing — candidates must reach the specificity merge at or below the floor.

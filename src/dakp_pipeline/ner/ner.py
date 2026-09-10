@@ -12,7 +12,8 @@ Composite design (gazetteer-first, GLiNER-augmented)
   0.955 on the benchmark fixture, zero heavy dependencies, fully deterministic. Used by tests
   and offline runs.
 * **Production mode (``offline=False``):** the same gazetteer anchors high-precision spans and
-  GLiNER zero-shot (``gliner-community/gliner_large-v2.5``) fills out-of-gazetteer gaps.
+  a domain fine-tuned GLiNER (``SkyeAv/drug-approvals-gliner-small-v2.1``, trained on FAERS and
+  DailyMed indication/contraindication text) fills out-of-gazetteer gaps.
   Non-overlapping GLiNER spans add recall; on overlap the **most specific span wins** — a model
   span that strictly contains a gazetteer span supersedes it (``pulmonary hypertension`` beats
   ``hypertension``), taking the model's boundary and the gazetteer's type. Equal spans, partial
@@ -25,9 +26,12 @@ Composite design (gazetteer-first, GLiNER-augmented)
   nothing generated is abstained; raise ``accept_threshold`` to decide narrower than you
   generate. Below the floor the backend **abstains** rather than asserting a low-confidence
   mention or falling back to a less specific one. GLiNER is natively
-  multi-entity: one ``predict_entities`` call scores every requested label (disease + phenotype
-  here) and returns any number of spans per label. GLiNER silently truncates inputs past
-  ``config.max_len`` word tokens (768 on the shipped v2.5 checkpoint), so long sections are
+  multi-entity, but the shipped fine-tune is trained for ONE fused label (:data:`MODEL_LABEL` —
+  it cannot say whether a span is a disease or a phenotype), so one ``predict_entities`` call
+  requests exactly that label; spans carrying it are typed by :func:`canonical_type` (fused
+  label -> ``disease`` fallback), and the gazetteer stays the type authority whenever a span
+  contests a gazetteer term. GLiNER silently truncates inputs past
+  ``config.max_len`` word tokens (384 on the shipped fine-tune), so long sections are
   predicted in exact-substring windows (:func:`_windows`) whose spans are remapped back into
   full-text offsets before the merge. ``gliner`` is a core
   DAKP dependency but is imported lazily on first use (no torch at module load), raising
@@ -58,9 +62,16 @@ from dakp_pipeline.ner.dictionary import CONTRAINDICATION_DISEASE_TYPES, TYPE_DI
 from dakp_pipeline.ner.lexical import LexicalMatcher, Mention
 from dakp_pipeline.ner.model_cache import NERDependencyError, default_model_cache_dir, ensure_model
 
-# GLiNER v2.5 large (deberta-v3-large encoder, max_len 768 word tokens, multi-entity: up to
-# ``max_types`` labels per call). Override for a smaller / biomedical-tuned checkpoint.
-DEFAULT_MODEL = "gliner-community/gliner_large-v2.5"
+# Domain fine-tune of ``urchade/gliner_small-v2.1`` for FAERS/DailyMed indication and
+# contraindication text (deberta-v3-small encoder, max_len 384 word tokens). Override for
+# another GLiNER checkpoint.
+DEFAULT_MODEL = "SkyeAv/drug-approvals-gliner-small-v2.1"
+#: The one label the production checkpoint is fine-tuned for (see the model card), requested
+#: verbatim in every ``predict_entities`` call — GLiNER label matching is exact. The fused
+#: label cannot distinguish disease from phenotype; ``canonical_type`` maps it to the
+#: ``disease`` fallback (the contraindication-majority class), which only sticks on model-only
+#: spans — a span that supersedes a gazetteer term keeps the gazetteer's type (:meth:`_emit`).
+MODEL_LABEL = "DiseaseOrPhenotype"
 #: Candidate-**generation** threshold, passed straight to ``predict_entities``. 0.35 is the
 #: lowest score at which GLiNER is still accurate, so generation never goes below it. Keeping it
 #: at (not above) the acceptance floor matters: a specific span often scores lower than its
@@ -87,7 +98,7 @@ _GLINER_TOKEN = re.compile(r"\w+(?:[-_]\w+)*|\S")
 _SENTENCE_PIECE = re.compile(r"[^.!?;]+[.!?;]*\s*")
 
 #: Window-budget fallback (GLiNER word tokens) when a model exposes no ``config.max_len``; the
-#: shipped ``gliner-community/gliner_large-v2.5`` checkpoint sets ``max_len: 768``.
+#: shipped fine-tune sets ``max_len: 384``.
 _DEFAULT_WORD_BUDGET = 384
 
 # Curated high-precision disease/phenotype gazetteer — the offline mode's embedded vocabulary
@@ -542,10 +553,13 @@ class DiseaseNER:
 
     Args:
         offline: ``True`` (default) = deterministic gazetteer only; ``False`` = gazetteer +
-            GLiNER zero-shot recall.
+            fine-tuned GLiNER recall.
         gazetteer: a :class:`Gazetteer`, a ``{surface: type}`` mapping, or ``None`` to use the
             curated :data:`EMBEDDED_GAZETTEER`.
         model_id: GLiNER checkpoint (production mode).
+        model_labels: labels passed to ``predict_entities``. Defaults to the fused label used by
+            :data:`DEFAULT_MODEL`; provide the labels expected by an explicitly overridden
+            checkpoint.
         threshold: GLiNER candidate-**generation** threshold (production mode). Generate wide:
             this only decides what the merge gets to look at.
         accept_threshold: DAKP-side **acceptance** floor (production mode). A model span below it
@@ -567,6 +581,7 @@ class DiseaseNER:
         offline: bool = True,
         gazetteer: Gazetteer | Mapping[str, str] | None = None,
         model_id: str = DEFAULT_MODEL,
+        model_labels: tuple[str, ...] = (MODEL_LABEL,),
         threshold: float = DEFAULT_THRESHOLD,
         accept_threshold: float = DEFAULT_ACCEPT_THRESHOLD,
         chunk_words: int | None = None,
@@ -583,7 +598,10 @@ class DiseaseNER:
         self._gazetteer = resolved
         self._matcher = LexicalMatcher(resolved)
         self._offline = offline
+        if not model_labels:
+            raise ValueError("model_labels must contain at least one label")
         self._model_id = model_id
+        self._model_labels = tuple(model_labels)
         self._threshold = threshold
         self._accept = accept_threshold
         self._chunk_words = chunk_words
@@ -650,6 +668,7 @@ class DiseaseNER:
             "offline": self._offline,
             "gazetteer": self._gazetteer,
             "model_id": self._model_id,
+            "model_labels": self._model_labels,
             "threshold": self._threshold,
             "accept_threshold": self._accept,
             "chunk_words": self._chunk_words,
@@ -674,7 +693,10 @@ class DiseaseNER:
         """
         model = self._load_model()
         budget = _token_budget(model, self._chunk_words)
-        labels = list(CONTRAINDICATION_DISEASE_TYPES)
+        # The shipped fine-tune is single-label: request its fused disease-or-phenotype class
+        # verbatim. ``canonical_type`` maps it to the ``disease`` fallback below. An explicit
+        # ``model_labels`` override supports checkpoints with a different label vocabulary.
+        labels = list(self._model_labels)
         windows = _windows(text, budget)
         spans_by_window: list[list[_ModelSpan]] = []
         for window_start, window in windows:
@@ -787,6 +809,7 @@ __all__ = [
     "DEFAULT_MODEL",
     "DEFAULT_THRESHOLD",
     "EMBEDDED_GAZETTEER",
+    "MODEL_LABEL",
     "TYPE_DISEASE",
     "TYPE_PHENOTYPE",
     "DiseaseNER",

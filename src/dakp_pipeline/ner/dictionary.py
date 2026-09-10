@@ -37,6 +37,11 @@ _TYPE_ALIASES: Mapping[str, str] = {
     "phenotypes": TYPE_PHENOTYPE,
     "phenotypicfeature": TYPE_PHENOTYPE,
     "phenotypic_feature": TYPE_PHENOTYPE,
+    # The production GLiNER fine-tune (ner.ner.DEFAULT_MODEL) ships ONE fused disease-or-
+    # phenotype label: it cannot say which of the two a span is. Fallback to disease — the
+    # contraindication-majority class — for model-only spans; spans contesting a gazetteer
+    # term keep the gazetteer's type via the specificity merge (ner.ner._emit).
+    "diseaseorphenotype": TYPE_DISEASE,
 }
 
 

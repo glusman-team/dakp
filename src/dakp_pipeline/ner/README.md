@@ -32,22 +32,30 @@ Benchmarked on a hand-labeled fixture (34 cases / 42 gold spans, `tests/eval/`):
 | composite | **1.000** | **1.000** | **1.000** | **settled backend** (gazetteer + GLiNER merge) |
 | scispacy  | 0.571     | 0.457  | 0.508 | dropped: no phenotype label, coarse spans |
 
+> These numbers were measured with the previous default checkpoint (`gliner_large-v2.5`).
+> Since 2026-09-10 the production default is the domain fine-tune
+> `SkyeAv/drug-approvals-gliner-small-v2.1` (single fused `DiseaseOrPhenotype` label);
+> re-run `tests/eval/benchmark_ner.py` to re-measure.
+
 * **Offline mode (default):** curated gazetteer + deterministic lexical matcher. Zero heavy deps,
   fully deterministic. Used by tests + offline runs. Bounded by its fixed vocabulary: it returns
   the generic head for qualified diseases (`hypertension` for `pulmonary hypertension`).
 * **Production mode (`offline=False`):** the same gazetteer anchors high-precision spans and
-  GLiNER zero-shot (`gliner-community/gliner_large-v2.5`) fills out-of-gazetteer gaps → perfect
-  recall at perfect precision. On overlap the **most specific span wins**: a model span that
+  a domain fine-tuned GLiNER (`SkyeAv/drug-approvals-gliner-small-v2.1`, trained on FAERS and
+  DailyMed indication/contraindication text) fills out-of-gazetteer gaps. On overlap the **most specific span wins**: a model span that
   strictly contains a gazetteer span supersedes it (`pulmonary hypertension` over
   `hypertension`), taking the model's boundary and the gazetteer's type. Equal spans, partial
   overlaps, and spans covering several gazetteer terms (a conjunction) go to the gazetteer.
   Model spans whose normalized surface is a population descriptor (e.g. `women of childbearing
   potential`) are dropped, leading hedge tokens (`recent`, `a history of`) are trimmed, and spans
   a hard window split cuts across a phrase boundary are re-joined. GLiNER is natively
-  **multi-entity**: one call scores every requested label (disease + phenotype) and returns any
-  number of spans per label (up to 30 labels per call in v2.5). GLiNER is a core, lazy-imported
-  dependency. GLiNER silently truncates inputs past `config.max_len` word tokens (768 on the
-  shipped v2.5 checkpoint), so long sections (some run to ~3000 words) are predicted in
+  **multi-entity**, but the shipped fine-tune is trained for ONE fused label
+  (`DiseaseOrPhenotype` — it cannot say whether a span is a disease or a phenotype), so one
+  call requests exactly that label. Spans carrying it fall back to type `disease` (the
+  contraindication-majority class); the gazetteer remains the type authority whenever a span
+  contests a gazetteer term, and Tablassert resolves the real category downstream. GLiNER is a
+  core, lazy-imported dependency. GLiNER silently truncates inputs past `config.max_len` word tokens (384 on the
+  shipped fine-tune), so long sections (some run to ~3000 words) are predicted in
   sentence-aware, exact-substring windows of ≤ that budget (`chunk_words` kwarg overrides it) and
   span offsets are remapped back into full-text coordinates — no mention past the truncation
   point is lost.
@@ -127,7 +135,8 @@ The NER deps are intentionally heavy (pull torch/transformers) but are part of t
 - NER deps are core (installed by `uv sync`) but lazy-imported (no torch at module load).
 - One backend / one entry point; offline (deterministic) vs production (model) is a mode toggle.
 - Prefer the most specific span; abstain rather than assert a low-confidence or over-general one.
-- Lazy imports for the model; weights cached once (`gliner_large-v2.5` ≈ 1.8 GB fp32 fits
-  comfortably on a 12 GB GPU; CPU fallback works).
+- Lazy imports for the model; weights cached once (the shipped fine-tune is a
+  deberta-v3-small encoder, ≈ 0.8 GB fp32 — fits comfortably on any build GPU; CPU fallback
+  works).
 - `loguru` for logging; deterministic offline mode; no absolute paths.
 - Mentions are text + type only; ontology CURIE resolution is Tablassert-only.

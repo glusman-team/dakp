@@ -7,7 +7,7 @@ composite NER backend (see ``ner/BENCHMARK.md``).
 
 Approaches benchmarked (all via the ONE ``DiseaseNER`` backend in different modes):
   * ``gazetteer``  — offline mode: curated gazetteer + lexical matcher (deterministic).
-  * ``gliner``     — production mode with an EMPTY gazetteer: GLiNER zero-shot only.
+  * ``gliner``     — production mode with an EMPTY gazetteer: GLiNER only (isolates the model).
   * ``composite``  — production mode with the curated gazetteer: the settled backend
                      (gazetteer anchors high-precision spans; GLiNER fills OOV recall).
 
@@ -104,7 +104,7 @@ def gazetteer_predictor() -> Predictor:
 
 
 def gliner_predictor(threshold: float = DEFAULT_THRESHOLD) -> Predictor:
-    """Production mode with an EMPTY gazetteer: GLiNER zero-shot only (isolates the model)."""
+    """Production mode with an EMPTY gazetteer: the fine-tuned GLiNER only (isolates the model)."""
     from dakp_pipeline.ner.ner import DiseaseNER
 
     ner = DiseaseNER(offline=False, gazetteer={}, threshold=threshold)

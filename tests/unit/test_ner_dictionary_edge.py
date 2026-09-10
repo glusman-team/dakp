@@ -90,6 +90,8 @@ def test_canonical_type_every_alias_and_fallbacks() -> None:
     assert canonical_type("phenotypes") == TYPE_PHENOTYPE
     assert canonical_type("phenotypicfeature") == TYPE_PHENOTYPE
     assert canonical_type("phenotypic_feature") == TYPE_PHENOTYPE
+    # The production fine-tune's fused label canonicalizes to the disease fallback.
+    assert canonical_type("DiseaseOrPhenotype") == TYPE_DISEASE
     assert canonical_type("CHEMICAL") == "chemical"  # unknown label -> lowercased
     assert canonical_type("") == ""  # empty -> empty fallback
     assert canonical_type("   ") == ""  # whitespace-only -> empty fallback

@@ -312,7 +312,7 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
             from dakp_pipeline.ner.ner import DiseaseNER
 
             ctx = _ctx()
-            # Production composite NER (curated gazetteer anchors + GLiNER zero-shot recall) mines
+            # Production composite NER (curated gazetteer anchors + domain-fine-tuned GLiNER recall) mines
             # contraindication diseases far beyond any fixed gazetteer. It loads the GLiNER
             # checkpoint acquire_ner_models cached under the workdir. Offline tests inject their
             # own deterministic backend (or fall back to the gazetteer); this production wiring is

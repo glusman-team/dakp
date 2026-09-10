@@ -54,7 +54,7 @@ uv run dakp export-medliner --fixtures --out tmp/medliner-bundle  # offline, fro
 - **acquire**: real, idempotent downloaders for DailyMed, Drugs@FDA, and FAERS. Artifacts are
   content-addressed and freshness-gated (7-day cache window), so re-runs skip tens of GB.
 - **extract**: heavy parsers run as native Go workers ([`go/`](./go)).
-- **NER**: a composite DiseaseNER (curated gazetteer + GLiNER zero-shot) mines
+- **NER**: a composite DiseaseNER (curated gazetteer + domain-fine-tuned GLiNER) mines
   disease/phenotype mentions from DailyMed contraindication sections; it emits mentions only,
   never ontology CURIEs.
 - **aggregate**: joins the extracts and NER mentions into three TSV assertion tables.
