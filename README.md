@@ -47,7 +47,9 @@ uv run dakp export-medliner --out /path/to/bundle                 # from a mater
 uv run dakp export-medliner --fixtures --out tmp/medliner-bundle  # offline, from committed fixtures
 ```
 
-`dakp clean` removes caches, `tmp/`, and the Go worker binary when you want a fresh slate.
+`dakp clean` removes caches, `tmp/`, and the Go worker binary when you want a fresh slate;
+`dakp clean --ner-only` (`-no`) removes only the NER mention cache (the Pebble store of
+BLAKE3-keyed mentions under `tmp/cache/ner/`), e.g. to force re-mining without losing the rest.
 
 ## Pipeline stages
 
