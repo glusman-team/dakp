@@ -107,7 +107,9 @@ def gliner_predictor(threshold: float = GLINER_GENERATION_FLOOR, accept_threshol
     """Production mode with an EMPTY gazetteer: GLiNER only (isolates the model)."""
     from dakp_pipeline.ner.ner import DiseaseNER
 
-    ner = DiseaseNER(offline=False, gazetteer={}, threshold=threshold, accept_threshold=accept_threshold if accept_threshold is not None else threshold)
+    ner = DiseaseNER(
+        offline=False, gazetteer={}, threshold=threshold, accept_threshold=accept_threshold if accept_threshold is not None else threshold
+    )
     return lambda text: [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text)]
 
 
@@ -205,9 +207,14 @@ def run(json_out: Path | None = None, *, sweep: Sequence[float] = ()) -> dict[st
         print(f"\nAcceptance sweep (generation floor = {GLINER_GENERATION_FLOOR:.2f}):")
         print(f"{'accept':>8} {'approach':<12} {'P':>7} {'R':>7} {'F1':>7} {'TP':>5} {'FP':>5} {'FN':>5}")
         for accept in sweep:
-            for name, predictor in (("gliner", gliner_predictor(accept_threshold=accept)), ("composite", composite_predictor(accept_threshold=accept))):
+            for name, predictor in (
+                ("gliner", gliner_predictor(accept_threshold=accept)),
+                ("composite", composite_predictor(accept_threshold=accept)),
+            ):
                 strict = score(predictor, cases)
-                print(f"{accept:>8.2f} {name:<12} {strict.precision:>7.3f} {strict.recall:>7.3f} {strict.f1:>7.3f} {strict.tp:>5} {strict.fp:>5} {strict.fn:>5}")
+                print(
+                    f"{accept:>8.2f} {name:<12} {strict.precision:>7.3f} {strict.recall:>7.3f} {strict.f1:>7.3f} {strict.tp:>5} {strict.fp:>5} {strict.fn:>5}"
+                )
 
     if json_out is not None:
         payload = {"schema_version": "dakp.ner.benchmark.v1", "cases": len(cases), "gold_mentions": total_gold, "results": results}
