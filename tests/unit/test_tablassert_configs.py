@@ -551,7 +551,9 @@ def test_off_label_subject_denylist_reindex() -> None:
 
     table = "faers_applied_to_treat_assertions"
     section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
-    filters = [(entry.column, str(entry.comparison), str(entry.comparator)) for entry in section.source.reindex or []]
+    filters = [(entry.column, str(entry.comparison), str(entry.comparator)) for entry in section.source.reindex or [] if entry.column == "A"]
+    # No stray columns: the FAERS table filters exactly subject (A) and object (F).
+    assert {entry.column for entry in section.source.reindex or []} == {"A", "F"}
     expected = [
         "METHYL ALCHOL",
         "methyl alchol",
@@ -571,23 +573,67 @@ def test_off_label_subject_denylist_reindex() -> None:
         "PLACEBO",
         "placebo",
         "Placebo",
+        "*PLACEBO",
+        "*placebo",  # leading '*': capitalize == lower (first char is the '*'), so lower dedups it
+        "*Placebo",
     ]
     assert filters == [("A", "ne", comparator) for comparator in expected]
 
     # Every denylisted name is covered in all four renderings a FAERS reporter may have typed:
     # casefolded, the emitted comparators are exactly the denylist (no entry left case-sensitive).
+    subject_filters = [comparator for _column, _comparison, comparator in filters]
     denylisted = tablassert_configs._TABLE_SUBJECT_DENYLIST[table]
-    assert {comparator.casefold() for _column, _comparison, comparator in filters} == {name.casefold() for name in denylisted}
+    assert {comparator.casefold() for comparator in subject_filters} == {name.casefold() for name in denylisted}
     for name in denylisted:
-        renderings = {comparator for _column, _comparison, comparator in filters if comparator.casefold() == name.casefold()}
+        renderings = {comparator for comparator in subject_filters if comparator.casefold() == name.casefold()}
         assert renderings == {name.upper(), name.lower(), name.title(), name.capitalize()}
 
-    # The denylist is off-label-only: the on-label and contraindication tables stay untouched.
+    # The subject denylist is off-label-only: the on-label and contraindication tables carry no
+    # subject_text filters (the object denylist below covers their object_text column instead).
     for other in TABLES:
         if other == table:
             continue
         other_section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(other))["template"])
-        assert other_section.source.reindex is None
+        assert all(entry.column != "A" for entry in other_section.source.reindex or [])
+
+
+def test_object_denylist_reindex() -> None:
+    # "Hypersensitivity" is DailyMed contraindication-section boilerplate (the #1 entry on nearly
+    # every label — a reaction the drug CAUSES, not a condition it treats) and an adverse-event
+    # word in FAERS indications, so every mention wording resolving into the allergy/
+    # hypersensitivity CURIE family is denied on the object_text column of ALL THREE tables.
+    # Enumerated from the deployed 1.11.2 KG; specific drug-allergy findings ("allergy to
+    # benzocaine" -> UMLS:C0570648 etc.) resolve outside that family and are kept, and
+    # "LEUKOCYTOCLASTIC VASCULITIS" is not denied because it also resolves to its own distinct
+    # CURIE MONDO:0001290. Exercises the Reindex model through Section validation like the
+    # subject-denylist test above.
+    from tablassert.models import Section
+
+    for table in TABLES:
+        section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
+        # No stray columns: every table filters its object column (F); only the FAERS table
+        # additionally filters the subject column (A) via _TABLE_SUBJECT_DENYLIST.
+        expected_columns = {"A", "F"} if table == "faers_applied_to_treat_assertions" else {"F"}
+        assert {entry.column for entry in section.source.reindex or []} == expected_columns
+        object_filters = [str(entry.comparator) for entry in section.source.reindex or [] if entry.column == "F"]
+        expected = [variant for name in tablassert_configs._TABLE_OBJECT_DENYLIST for variant in tablassert_configs._casing_variants(name)]
+        assert object_filters == expected
+        # Every denylisted mention is covered in all its emitted renderings — casefolded, the
+        # emitted comparators are exactly the denylist (no entry left case-sensitive).
+        assert {comparator.casefold() for comparator in object_filters} == {name.casefold() for name in tablassert_configs._TABLE_OBJECT_DENYLIST}
+        for name in tablassert_configs._TABLE_OBJECT_DENYLIST:
+            renderings = {comparator for comparator in object_filters if comparator.casefold() == name.casefold()}
+            assert renderings == {name.upper(), name.lower(), name.title(), name.capitalize()}
+
+    # The known GENERIC family wordings are all present (spot-check the boundary entries).
+    denied = {name.casefold() for name in tablassert_configs._TABLE_OBJECT_DENYLIST}
+    for wording in ("hypersensitivity", "drug hypersensitivity", "allergic reaction", "allergy", "sensitivity"):
+        assert wording in denied
+    # Drug-specific findings are deliberately kept: "hypersensitivity to <drug>" names a specific
+    # pharmacogenomic phenotype (UMLS:C5768819 etc.), and "leukocytoclastic vasculitis" also
+    # resolves to its own distinct CURIE MONDO:0001290.
+    assert "hypersensitivity to abacavir" not in denied
+    assert "leukocytoclastic vasculitis" not in denied
 
 
 # --- graph config structure -------------------------------------------------------
