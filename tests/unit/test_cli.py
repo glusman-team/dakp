@@ -530,7 +530,7 @@ def test_clean_ner_only_removes_just_the_ner_cache(monkeypatch: pytest.MonkeyPat
     assert code == 0
     assert "Cleaned the NER mention cache" in capsys.readouterr().out
     assert not ner_store.exists()
-    assert not (ner_store.parent / "ner").exists()  # cache/ner gone, parent cache/ remains
+    assert ner_store.parent.exists()  # cache/ parent survives, only the ner/ store is gone
     # everything a full clean would remove is untouched
     assert (sandbox / ".pytest_cache").exists()
     assert (sandbox / "tmp").exists()
@@ -556,6 +556,23 @@ def test_clean_ner_only_stops_a_live_nercache_server(monkeypatch: pytest.MonkeyP
     assert terminated == [4242]
     assert not server_file.parent.exists()  # the whole cache/ner dir (server.json included) is gone
     assert (sandbox / "tmp").exists()  # --ner-only leaves the rest of the workdir alone
+
+def test_clean_ner_only_refuses_when_nercache_survives_sigterm(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """--ner-only is refused too when the SIGTERMed server survives — never delete under a live Pebble."""
+    monkeypatch.setattr(cli, "_REPO_ROOT", sandbox)
+    server_file = sandbox / "work" / "cache" / "ner" / "server.json"
+    server_file.parent.mkdir(parents=True)
+    server_file.write_text(json.dumps({"pid": 4242, "port": 9999}), encoding="utf-8")
+    terminated: list[int] = []
+    monkeypatch.setattr(cli, "pid_alive", lambda pid: True)  # never dies
+    monkeypatch.setattr(cli, "terminate", terminated.append)
+
+    code = cli.run_clean(ner_only=True)
+
+    assert code == 1
+    assert terminated == [4242]
+    assert server_file.parent.exists()  # the Pebble store is untouched
+    assert "refusing" in capsys.readouterr().out
 
 
 # --- cyclopts command wrappers (exit codes) ---------------------------------------
