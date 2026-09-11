@@ -271,7 +271,7 @@ def test_second_observation_of_same_pair_unions_support(tmp_path: Path) -> None:
         row["supporting_spl_sets"]
         == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A|https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-B"
     )  # both observations unioned
-    assert row["source_score"] == "1"
+    assert row["ner_confidence_score"] == "1"
 
 
 # --- _max_score guard -----------------------------------------------------------

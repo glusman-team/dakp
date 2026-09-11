@@ -686,12 +686,13 @@ def _sources_template(table: str) -> list[dict[str, Any]]:
 #   pattern as ``edge_evidence`` -> ``publications``. DAKP annotates it with
 #   ``split_by: "|"`` so the pipe-joined cell reaches the final KGX edge as its own top-level
 #   JSON ARRAY (the legacy ``approvals`` list shape) instead of a joined scalar.
-#   ``source_score`` still has no reachable
-#   slot and no carve-out, so it folds into ``supporting_text`` as a ``"name: value"`` string —
-#   visible provenance, deliberately kept. ``has_confidence_score``
-#   would be mechanically available for ``source_score``, but that column is the max NER SPAN score
-#   — confidence that a mention was recognized, not that the statement is true — so promoting it
-#   would mislead any consumer that weights edges by confidence.
+#   ``ner_confidence_score`` still has no reachable slot and no carve-out, so it folds into
+#   ``supporting_text`` as a ``"name: value"`` string — visible provenance, deliberately kept.
+#   ``has_confidence_score`` would be mechanically available for it, but the column is the max NER
+#   SPAN score — confidence that the disease MENTION was recognized, not that the statement is true
+#   — so promoting it would mislead any consumer that weights edges by confidence. The column name
+#   says so on the edge itself, so a reader of the folded ``supporting_text`` string sees what the
+#   number measures without consulting this file.
 # * ``supporting_case_ids`` (``list[str]``, Tablassert >= 16.6) is a Tablassert edge EXTRA, not a
 #   Biolink slot — the build-internal carrier of the exact per-case token set behind
 #   ``number_of_cases`` (one token per distinct FAERS case; see
@@ -721,7 +722,7 @@ _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
         # ``evidence_text`` (the SPL contraindication prose) is deliberately NOT annotated: mapped
         # to ``supporting_text`` it buried every edge under full sentences, making the KGX output
         # unreadable. The column stays in the assertion TSV as provenance; only the edge drops it.
-        ("source_score", "source_score", None),
+        ("ner_confidence_score", "ner_confidence_score", None),
     ),
 }
 

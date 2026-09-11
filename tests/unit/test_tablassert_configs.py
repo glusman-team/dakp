@@ -137,7 +137,7 @@ EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
 # Biolink model (4.4.4 still declares the value as ``FDA_regulatory_approvals``), so the TSV column
 # keeps its FDA-prefixed name while the annotation renames it onto the canonical edge slot; DAKP
 # splits it with ``split_by`` so the edge carries the legacy ``approvals`` JSON-ARRAY shape;
-# ``source_score`` still folds into ``supporting_text``. ``case_ids`` maps to
+# ``ner_confidence_score`` still folds into ``supporting_text``. ``case_ids`` maps to
 # ``supporting_case_ids`` — a Tablassert edge EXTRA (>= 16.6), not a Biolink slot: the
 # build-internal carrier the ``uuid_on_collision: merge`` dedup unions to recompute
 # ``number_of_cases`` as the exact unique-case count, stripped before the final NDJSON.
@@ -159,7 +159,7 @@ EXPECTED_ANNOTATIONS = {
         "publications": ("edge_evidence", "|"),
         # ``evidence_text`` is deliberately NOT annotated onto ``supporting_text`` (full SPL
         # sentences made the edges unreadable); the column stays TSV-only provenance.
-        "source_score": ("source_score", None),
+        "ner_confidence_score": ("ner_confidence_score", None),
     },
 }
 
@@ -427,7 +427,7 @@ def test_annotation_slots_survive_dakp_association_class(table: str) -> None:
         granted = CLASS_FIELD_OVERRIDES.get(cls.__name__, frozenset())
         for name in EXPECTED_ANNOTATIONS[table]:
             if name not in ALLOWED_EDGE_FIELDS:
-                continue  # deliberately folded into ``supporting_text`` (e.g. ``source_score``)
+                continue  # deliberately folded into ``supporting_text`` (e.g. ``ner_confidence_score``)
             if name in KNOWN_PENDING_EDGE_FIELDS:
                 continue  # curated Tablassert pass-through; no association class declares it
             if name in granted:
@@ -464,7 +464,7 @@ def test_category_override_pins_every_allowed_object_category() -> None:
             assert cls.__name__ == pinned, f"{pinned} does not accept {predicate}; rows demote to {cls.__name__}"
             for name in EXPECTED_ANNOTATIONS[table]:
                 if name not in ALLOWED_EDGE_FIELDS:
-                    continue  # deliberately folded into ``supporting_text`` (e.g. ``source_score``)
+                    continue  # deliberately folded into ``supporting_text`` (e.g. ``ner_confidence_score``)
                 if name in KNOWN_PENDING_EDGE_FIELDS:
                     continue  # curated Tablassert pass-through (``supporting_case_ids``); no class declares it
                 if name in CLASS_FIELD_OVERRIDES.get(pinned, frozenset()):

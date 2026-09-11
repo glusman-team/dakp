@@ -91,7 +91,7 @@ CONTRAINDICATION_COLUMNS = [
     "supporting_spl_sets",
     "supporting_spl_documents",
     "supporting_spl_evidence",
-    "source_score",
+    "ner_confidence_score",
     "knowledge_level",
     "agent_type",
     "primary_knowledge_source",

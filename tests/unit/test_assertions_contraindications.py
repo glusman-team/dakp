@@ -52,7 +52,7 @@ def test_mines_contraindication_from_dailymed_section(dailymed_refs: list[Artifa
     assert ibu["edge_evidence"] == "dailymed:SETID-IBUPROFEN-002"
     assert ibu["FDA_regulatory_approvals"] == "NDA017977"
     # The offline gazetteer is a high-confidence direct match (score 1.0).
-    assert ibu["source_score"] == "1"
+    assert ibu["ner_confidence_score"] == "1"
 
 
 def test_provenance_columns_are_dailymed_text_mining(dailymed_refs: list[ArtifactRef], fixture_root: Path) -> None:

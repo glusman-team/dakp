@@ -33,7 +33,9 @@ every one of its actives would over-attribute the contraindication to each compo
 zero or multiple active ingredients are skipped (``skipped_multi_ingredient_sets`` counts the
 latter). Rows are aggregated by ``(subject_text, object_text, disease_context_text)``:
 ``supporting_spl_sets``, ``supporting_spl_documents``, and evidence sentences are unioned within
-that key, and ``source_score`` takes the max NER span score.
+that key, and ``ner_confidence_score`` takes the max NER span score — confidence that the disease
+MENTION was recognized, not confidence that the statement is true (see the annotation note in
+:mod:`dakp_pipeline.tablassert`, which keeps it out of ``has_confidence_score``).
 
 Ontology mapping is Tablassert-only
 -----------------------------------
@@ -673,7 +675,7 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         edge_evidence=edge_evidence_pipe(
             spl_evidence_pipe(agg["sets"], agg["docs"]).split("|") if spl_evidence_pipe(agg["sets"], agg["docs"]) else []
         ),
-        source_score=_max_score(agg["scores"]),
+        ner_confidence_score=_max_score(agg["scores"]),
         knowledge_level=KL_ASSERTION,
         agent_type=AT_MANUAL,
         primary_knowledge_source=INFORES_DAKP,

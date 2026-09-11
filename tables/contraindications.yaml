@@ -526,6 +526,6 @@ template:
       method: column
       encoding: U
       split_by: "|"
-    - annotation: source_score
+    - annotation: ner_confidence_score
       method: column
       encoding: O
