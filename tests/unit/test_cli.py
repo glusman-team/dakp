@@ -557,7 +557,10 @@ def test_clean_ner_only_stops_a_live_nercache_server(monkeypatch: pytest.MonkeyP
     assert not server_file.parent.exists()  # the whole cache/ner dir (server.json included) is gone
     assert (sandbox / "tmp").exists()  # --ner-only leaves the rest of the workdir alone
 
-def test_clean_ner_only_refuses_when_nercache_survives_sigterm(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+
+def test_clean_ner_only_refuses_when_nercache_survives_sigterm(
+    monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """--ner-only is refused too when the SIGTERMed server survives — never delete under a live Pebble."""
     monkeypatch.setattr(cli, "_REPO_ROOT", sandbox)
     server_file = sandbox / "work" / "cache" / "ner" / "server.json"
