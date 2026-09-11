@@ -50,9 +50,11 @@ classifiers = [
 # required: the emitted configs use
 # `statement.category_override` (SkyeAv/Tablassert#118, 15.0) to pin
 # `EntityToDiseaseAssociation` / `EntityToPhenotypicFeatureAssociation` per object category, and
-# rely on 15.0's case-preserving annotation names (#117) so the `FDA_regulatory_approvals`
-# Biolink slot survives instead of lowercasing into an unknown field that folds into
-# `supporting_text`. Both are emitted UNCONDITIONALLY — no compat probe. 15.1's
+# 18.0's class-scoped `regulatory_approvals` grant (`CLASS_FIELD_OVERRIDES`) keeps the canonical
+# approvals edge slot on those pinned classes ahead of the pinned Biolink model (4.4.4 still
+# declares the value only as `FDA_regulatory_approvals`), so it survives `prune_to_class`
+# instead of being nulled and rescued into the pruned column. Both are emitted UNCONDITIONALLY — no
+# compat probe. 15.1's
 # `CLASS_FIELD_OVERRIDES` (#120) grants `disease_context_qualifier` to those pinned classes
 # (Biolink declares it only on the chemical-to-disease lineage), so the contraindication table's
 # nullable qualifier survives `prune_to_class` on the edge instead of being nulled and rescued

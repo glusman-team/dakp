@@ -419,7 +419,7 @@ template:
       method: column
       encoding: K
       split_by: "|"
-    - annotation: FDA_regulatory_approvals
+    - annotation: regulatory_approvals
       method: column
       encoding: Q
       split_by: "|"

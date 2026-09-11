@@ -110,7 +110,7 @@ EXPECTED_SOURCES = {
 # a qualifier entity get entries (see ``_TABLE_QUALIFIERS`` for the per-table justification). The
 # contraindication context qualifier rides Tablassert 15.1's ``CLASS_FIELD_OVERRIDES`` grant
 # (SkyeAv/Tablassert#120): the association classes ``OBJECT_CATEGORY_OVERRIDE`` pins for
-# ``FDA_regulatory_approvals`` do not natively declare ``disease_context_qualifier`` — the grant
+# ``regulatory_approvals`` do not natively declare ``disease_context_qualifier`` — the grant
 # keeps it on the edge anyway.
 EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
     "approved_treats_assertions": {},
@@ -131,30 +131,31 @@ EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
 # since Tablassert 15.1's ``STUDY_SIZE_EXEMPT_PATTERN`` (#119) stopped the study-size classifier
 # from renaming it onto ``Study.study_size`` (DAKP used the ``evidence_count`` alias before that).
 # ``split_by: "|"``
-# makes the pipe-joined cells emit as real JSON arrays. ``FDA_regulatory_approvals`` is the Biolink
-# slot for FDA application numbers (declared by ``EntityToDiseaseAssociation`` /
-# ``EntityToPhenotypicFeatureAssociation``) and the name ``NCATSTranslator/translator-ingests``
-# maps DAKP's approvals onto, so the column and the annotation share it; DAKP splits it with
-# ``split_by`` so the edge carries the legacy ``approvals`` JSON-ARRAY shape;
+# makes the pipe-joined cells emit as real JSON arrays. ``regulatory_approvals`` is the CANONICAL
+# multivalued slot for FDA application numbers that Tablassert 18 grants to
+# ``EntityToDiseaseAssociation`` / ``EntityToPhenotypicFeatureAssociation`` ahead of the pinned
+# Biolink model (4.4.4 still declares the value as ``FDA_regulatory_approvals``), so the TSV column
+# keeps its FDA-prefixed name while the annotation renames it onto the canonical edge slot; DAKP
+# splits it with ``split_by`` so the edge carries the legacy ``approvals`` JSON-ARRAY shape;
 # ``source_score`` still folds into ``supporting_text``. ``case_ids`` maps to
 # ``supporting_case_ids`` — a Tablassert edge EXTRA (>= 16.6), not a Biolink slot: the
 # build-internal carrier the ``uuid_on_collision: merge`` dedup unions to recompute
 # ``number_of_cases`` as the exact unique-case count, stripped before the final NDJSON.
 EXPECTED_ANNOTATIONS = {
     "approved_treats_assertions": {
-        "FDA_regulatory_approvals": ("FDA_regulatory_approvals", "|"),
+        "regulatory_approvals": ("FDA_regulatory_approvals", "|"),
         "publications": ("edge_evidence", "|"),
         "clinical_approval_status": ("clinical_approval_status", None),
     },
     "faers_applied_to_treat_assertions": {
         "number_of_cases": ("number_of_cases", None),
         "supporting_case_ids": ("case_ids", "|"),
-        "FDA_regulatory_approvals": ("FDA_regulatory_approvals", "|"),
+        "regulatory_approvals": ("FDA_regulatory_approvals", "|"),
         "publications": ("edge_evidence", "|"),
         "clinical_approval_status": ("clinical_approval_status", None),
     },
     "contraindication_assertions": {
-        "FDA_regulatory_approvals": ("FDA_regulatory_approvals", "|"),
+        "regulatory_approvals": ("FDA_regulatory_approvals", "|"),
         "publications": ("edge_evidence", "|"),
         # ``evidence_text`` is deliberately NOT annotated onto ``supporting_text`` (full SPL
         # sentences made the edges unreadable); the column stays TSV-only provenance.
@@ -336,7 +337,7 @@ def test_qualifier_slots_are_valid_biolink_qualifiers() -> None:
 
 def test_disease_context_qualifier_survives_the_pinned_association_classes() -> None:
     # The contraindication table pins EntityToDiseaseAssociation / EntityToPhenotypicFeatureAssociation
-    # (for ``FDA_regulatory_approvals``), and Biolink declares ``disease_context_qualifier`` only on
+    # (for the ``regulatory_approvals`` grant), and Biolink declares ``disease_context_qualifier`` only on
     # the chemical-to-disease lineage — the qualifier rides Tablassert 15.1's ``CLASS_FIELD_OVERRIDES``
     # grant (SkyeAv/Tablassert#120) instead. Pin the grant here so a Tablassert downgrade (<15.1, or a
     # release that drops the override) fails at TEST time rather than silently pruning the qualifier
@@ -414,16 +415,29 @@ def test_annotation_slots_survive_dakp_association_class(table: str) -> None:
     junk drawer this contract exists to keep DAKP out of. ``supporting_documents`` used to land
     there, and ``number_of_cases`` did until ``category_override`` pinned the classes that
     declare it; this fails loudly if either (or a newly added annotation) comes back.
+    ``regulatory_approvals`` rides Tablassert 18's class-scoped ``CLASS_FIELD_OVERRIDES`` grant —
+    deliberately ahead of the pinned Biolink model — so the granted name is pinned here: a
+    Tablassert release that drops the grant fails at TEST time rather than silently pruning the
+    approvals off every edge at build time.
     """
-    from tablassert.biolink import ALLOWED_EDGE_FIELDS, KNOWN_PENDING_EDGE_FIELDS, class_fields
+    from tablassert.biolink import ALLOWED_EDGE_FIELDS, CLASS_FIELD_OVERRIDES, KNOWN_PENDING_EDGE_FIELDS, class_fields
 
     for cls in _dakp_association_classes(table):
         slots = class_fields(cls)
+        granted = CLASS_FIELD_OVERRIDES.get(cls.__name__, frozenset())
         for name in EXPECTED_ANNOTATIONS[table]:
             if name not in ALLOWED_EDGE_FIELDS:
                 continue  # deliberately folded into ``supporting_text`` (e.g. ``source_score``)
             if name in KNOWN_PENDING_EDGE_FIELDS:
                 continue  # curated Tablassert pass-through; no association class declares it
+            if name in granted:
+                # class-scoped Tablassert grant (``regulatory_approvals``), ahead of the pinned
+                # model: ``prune_to_class`` keeps granted fields on the class, so assert the grant
+                # itself rather than a declared slot.
+                assert name in CLASS_FIELD_OVERRIDES.get(cls.__name__, frozenset()), (
+                    f"{cls.__name__} lost the {name} grant — the approvals edge field requires tablassert>=18"
+                )
+                continue
             assert name in slots, f"{name} is not a slot of {cls.__name__}; it would be relocated onto the supporting study"
 
 
@@ -431,12 +445,12 @@ def test_category_override_pins_every_allowed_object_category() -> None:
     """Every object category DAKP allows is pinned, and pinned to a class that holds its slots.
 
     A category absent from ``category_override`` falls back to the derived (subject role, object
-    role) pair — ``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``, which declares neither
-    ``FDA_regulatory_approvals`` nor ``number_of_cases`` — so a widened
+    role) pair — ``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``, which neither declares
+    ``number_of_cases`` nor receives the ``regulatory_approvals`` grant — so a widened
     :data:`OBJECT_PRIORITIZE` must widen the override with it or those rows silently lose both
     slots to ``prune_to_class``.
     """
-    from tablassert.biolink import ALLOWED_EDGE_FIELDS, KNOWN_PENDING_EDGE_FIELDS, class_fields, resolve_association_class
+    from tablassert.biolink import ALLOWED_EDGE_FIELDS, CLASS_FIELD_OVERRIDES, KNOWN_PENDING_EDGE_FIELDS, class_fields, resolve_association_class
 
     assert set(tablassert_configs.OBJECT_CATEGORY_OVERRIDE) == set(OBJECT_PRIORITIZE)
     for table in TABLES:
@@ -453,6 +467,8 @@ def test_category_override_pins_every_allowed_object_category() -> None:
                     continue  # deliberately folded into ``supporting_text`` (e.g. ``source_score``)
                 if name in KNOWN_PENDING_EDGE_FIELDS:
                     continue  # curated Tablassert pass-through (``supporting_case_ids``); no class declares it
+                if name in CLASS_FIELD_OVERRIDES.get(pinned, frozenset()):
+                    continue  # class-scoped Tablassert grant (``regulatory_approvals``); ahead of the pinned model
                 assert name in class_fields(cls), f"{name} is not a slot of {pinned}"
 
 
@@ -593,7 +609,7 @@ def test_graph_config_structure() -> None:
     # (original_subject/original_object) are NOT identity: distinct source mentions resolving to
     # one canonical CURIE are ONE edge, merged downstream by `uuid_on_collision: merge`
     # (Tablassert >= 16.2) instead of aborting the build with `uuid-fields-not-a-key`. Evidence
-    # fields (publications, FDA_regulatory_approvals, number_of_cases) are NOT identity either:
+    # fields (publications, regulatory_approvals, number_of_cases) are NOT identity either:
     # rows agreeing on the identity fields are merged upstream by the assertion shapers into one
     # edge whose evidence is the sorted, deduplicated union.
     # A declared field absent from an edge record contributes nothing to the hash, so the
@@ -843,7 +859,7 @@ def test_rig_target_info_pins_modeling_considerations_and_rejects_type_summaries
     considerations = target["future_considerations"]
     assert [entry["category"] for entry in considerations] == ["qualifiers", "edge_properties"]
     assert "disease_context_qualifier" in considerations[0]["consideration"]
-    assert "FDA_regulatory_approvals" in considerations[1]["consideration"]
+    assert "regulatory_approvals" in considerations[1]["consideration"]
     assert any("generated by Tablassert" in note for note in target["additional_notes"])
 
     info = RIGConfig.model_validate(tablassert_configs.graph_config()["rig"]).target_info

@@ -17,7 +17,7 @@ Pure, testable building blocks used by every assertion shaper:
   this approval?" without re-scanning frames.
 * **FDA application-number expansion** — :class:`FDAApprovalIndex` turns the prefix-stripped
   number a source records (FAERS ``125514``) back into the FDA form every consumer expects
-  (``BLA125514``), the ``FDA_regulatory_approvals`` edge values.
+  (``BLA125514``), the ``regulatory_approvals`` edge values.
 * **Table resolution + output writing** — find interim parquet tables among
   ``inputs`` and register the uncompressed assertion TSV.
 

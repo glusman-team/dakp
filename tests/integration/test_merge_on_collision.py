@@ -117,7 +117,7 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
     assert edge["original_subject"] == "Advil|Ibuprofen"
     assert edge["original_object"] == "headache"
     # List-valued evidence unions (sorted).
-    assert edge["FDA_regulatory_approvals"] == ["017977", "021010"]
+    assert edge["regulatory_approvals"] == ["017977", "021010"]
     # The carrier never ships as an edge field (16.6 strips it; older Tablassert folds it into
     # supporting_text, never a top-level key).
     assert "supporting_case_ids" not in edge

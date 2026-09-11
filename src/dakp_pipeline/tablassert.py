@@ -23,7 +23,7 @@ The configs match the ACTUAL current Tablassert schema (verified against
   8.2.1+ models ``source.url`` as a ``list`` of one or more URLs per section and DAKP assertion
   rows aggregate across quarters, releases, and applications, so no per-row URL is truthful at
   row granularity; the dataset-level URLs are the honest RIG record, and per-row precision
-  stays on the edge via ``publications`` (SPL set links) and ``FDA_regulatory_approvals`` (FDA
+  stays on the edge via ``publications`` (SPL set links) and ``regulatory_approvals`` (FDA
   application numbers);
 * column-encoded ``statement.subject`` / ``statement.object`` / ``statement.predicate``
   with drug / disease ``prioritize`` categories plus a HARD category allow-list each:
@@ -178,7 +178,7 @@ FULLMAP_DEFAULT = ".fullmap"
 #: ``supporting_case_ids`` list (one token per distinct case), and Tablassert >= 16.6 recomputes
 #: the merged count as the union size — the extra unique cases are ADDED — then strips the
 #: carrier before the final NDJSON. Other evidence fields (``publications``,
-#: ``FDA_regulatory_approvals``) are NOT identity either: rows agreeing on the identity fields
+#: ``regulatory_approvals``) are NOT identity either: rows agreeing on the identity fields
 #: are ONE
 #: edge whose evidence is the merged union (deduplicated, sorted, pipe-joined — the
 #: :func:`~dakp_pipeline.assertions.evidence.sorted_pipe` convention). That merging happens in
@@ -330,7 +330,7 @@ RIG_SUPPORTING_DATA_SOURCES: tuple[dict[str, Any], ...] = (
 #: ``fields_used`` names exactly what the assertion tables consume from SPL — the four mined
 #: section kinds' text (indications_and_usage, contraindications, boxed warnings,
 #: warnings/precautions), SPL set identifiers feeding ``publications``, and FDA application
-#: numbers feeding ``FDA_regulatory_approvals``. Unlike ``relevant_files``, ``included_content`` is NOT
+#: numbers feeding ``regulatory_approvals``. Unlike ``relevant_files``, ``included_content`` is NOT
 #: audit-cross-checked by Tablassert, so these entries document intent rather than gate the build.
 RIG_INCLUDED_CONTENT: tuple[dict[str, str], ...] = (
     {
@@ -433,16 +433,18 @@ RIG_TARGET_FUTURE_CONSIDERATIONS: tuple[dict[str, str], ...] = (
             "disease_context_qualifier is emitted on contraindication edges via Tablassert's CLASS_FIELD_OVERRIDES grant "
             "(SkyeAv/Tablassert#120), which is deliberately ahead of the pinned Biolink model: Biolink declares the slot only on "
             "ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation, while these edges pin EntityToDisease/EntityToPhenotypicFeature "
-            "for FDA_regulatory_approvals. Drop reliance on the grant once upstream Biolink widens disease_context_qualifier to the "
-            "entity-to-disease classes"
+            "for the regulatory_approvals grant. Drop reliance on the grant once upstream Biolink widens disease_context_qualifier "
+            "to the entity-to-disease classes"
         ),
     },
     {
         "category": "edge_properties",
         "consideration": (
-            "FDA application numbers are emitted on the Biolink FDA_regulatory_approvals slot, which only "
-            "EntityToDiseaseAssociation and EntityToPhenotypicFeatureAssociation declare, so every edge pins one of those classes by object "
-            "category; monitor whether the slot is widened to the chemical-to-disease association classes"
+            "FDA application numbers are emitted on the canonical regulatory_approvals edge slot, which Tablassert 18's "
+            "CLASS_FIELD_OVERRIDES grants to EntityToDiseaseAssociation and EntityToPhenotypicFeatureAssociation ahead of the "
+            "pinned Biolink model (4.4.4 still declares the value as FDA_regulatory_approvals on those classes), so every edge pins "
+            "one of those classes by object category; monitor whether upstream Biolink attaches regulatory_approvals so the grant "
+            "can be retired"
         ),
     },
 )
@@ -672,15 +674,18 @@ def _sources_template(table: str) -> list[dict[str, Any]]:
 #   it and the count landed on the inlined supporting study as ``Study.study_size``. 15.1's
 #   ``STUDY_SIZE_EXEMPT_PATTERN`` (SkyeAv/Tablassert#119) exempts the exact slot, so the column
 #   reaches the edge as ``number_of_cases`` — DAKP used the ``evidence_count`` alias before that;
-# * ``FDA_regulatory_approvals`` (FDA application numbers) IS a Biolink slot — "numbers that
-#   identify specific drug applications", multivalued, declared by ``EntityToDiseaseAssociation``
-#   and ``EntityToPhenotypicFeatureAssociation``, the classes
-#   :data:`OBJECT_CATEGORY_OVERRIDE` pins. DAKP annotates it with ``split_by: "|"`` so the
-#   pipe-joined cell reaches the final KGX edge as its own top-level JSON ARRAY (the legacy
-#   ``approvals`` list shape) instead of a joined scalar. Its mixed case survives because
-#   Tablassert >= 15.0 canonicalizes a declared annotation name onto the allow-listed slot
-#   spelling instead of lowercasing it (SkyeAv/Tablassert#117); before that it reached the fold
-#   sweep as ``fda_regulatory_approvals``, matched no slot, and folded into ``supporting_text``.
+# * ``regulatory_approvals`` (FDA application numbers) is the CANONICAL multivalued slot —
+#   "numbers that identify specific drug applications" — Tablassert 18 grants to
+#   ``EntityToDiseaseAssociation`` and ``EntityToPhenotypicFeatureAssociation``, the classes
+#   :data:`OBJECT_CATEGORY_OVERRIDE` pins, ahead of the pinned Biolink model (4.4.4 still
+#   declares the value as ``FDA_regulatory_approvals`` on those classes; the grant rides
+#   Tablassert's ``CLASS_FIELD_OVERRIDES`` so ``prune_to_class`` keeps the field on the pinned
+#   classes instead of nulling it). The assertion TSV column keeps its
+#   ``FDA_regulatory_approvals`` name (the FDA-specific provenance contract) and the
+#   annotation renames it onto the canonical edge slot — the same column-to-slot mapping
+#   pattern as ``edge_evidence`` -> ``publications``. DAKP annotates it with
+#   ``split_by: "|"`` so the pipe-joined cell reaches the final KGX edge as its own top-level
+#   JSON ARRAY (the legacy ``approvals`` list shape) instead of a joined scalar.
 #   ``source_score`` still has no reachable
 #   slot and no carve-out, so it folds into ``supporting_text`` as a ``"name: value"`` string —
 #   visible provenance, deliberately kept. ``has_confidence_score``
@@ -699,19 +704,19 @@ def _sources_template(table: str) -> list[dict[str, Any]]:
 #   reaches the published NDJSON.
 _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
     "approved_treats_assertions": (
-        ("FDA_regulatory_approvals", "FDA_regulatory_approvals", "|"),
+        ("FDA_regulatory_approvals", "regulatory_approvals", "|"),
         ("edge_evidence", "publications", "|"),
         ("clinical_approval_status", "clinical_approval_status", None),
     ),
     "faers_applied_to_treat_assertions": (
         ("number_of_cases", "number_of_cases", None),
         ("case_ids", "supporting_case_ids", "|"),
-        ("FDA_regulatory_approvals", "FDA_regulatory_approvals", "|"),
+        ("FDA_regulatory_approvals", "regulatory_approvals", "|"),
         ("edge_evidence", "publications", "|"),
         ("clinical_approval_status", "clinical_approval_status", None),
     ),
     "contraindication_assertions": (
-        ("FDA_regulatory_approvals", "FDA_regulatory_approvals", "|"),
+        ("FDA_regulatory_approvals", "regulatory_approvals", "|"),
         ("edge_evidence", "publications", "|"),
         # ``evidence_text`` (the SPL contraindication prose) is deliberately NOT annotated: mapped
         # to ``supporting_text`` it buried every edge under full sentences, making the KGX output
@@ -732,9 +737,10 @@ OBJECT_PRIORITIZE = ("Disease", "PhenotypicFeature")
 #: ``statement.category_override`` (Tablassert >= 15.0): the association class each object
 #: category pins, in place of the derived ``(subject role, object role)`` pair lookup. Tablassert
 #: derives ``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` for every DAKP pair, and that
-#: class declares NEITHER ``FDA_regulatory_approvals`` nor ``number_of_cases`` — Biolink attaches
-#: both to ``EntityToDiseaseAssociation`` / ``EntityToPhenotypicFeatureAssociation`` instead — so
-#: ``prune_to_class`` nulled them off the edge and rescued them into the pruned column. Pinning the
+#: class neither declares ``number_of_cases`` nor receives the ``regulatory_approvals`` grant —
+#: Biolink/model policy keeps both on ``EntityToDiseaseAssociation`` /
+#: ``EntityToPhenotypicFeatureAssociation`` instead — so ``prune_to_class`` nulled them off the
+#: edge and rescued them into the pruned column. Pinning the
 #: two classes per object category is the split the legacy KG made for the same reason
 #: (``ref/legacy/bin/dakp-postprocess2jsonlBL.py``: ``biolink:EntityToDiseaseAssociation`` for
 #: Disease objects, ``biolink:EntityToPhenotypicFeatureAssociation`` for PhenotypicFeature ones,
@@ -751,8 +757,9 @@ OBJECT_CATEGORY_OVERRIDE: dict[str, str] = {"Disease": "EntityToDiseaseAssociati
 # (SkyeAv/Tablassert#120): Biolink declares ``disease_context_qualifier`` on
 # ``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` ONLY, while
 # :data:`OBJECT_CATEGORY_OVERRIDE` pins ``EntityToDiseaseAssociation`` /
-# ``EntityToPhenotypicFeatureAssociation`` — the only classes declaring
-# ``FDA_regulatory_approvals`` — so without the grant a contraindication edge could carry the
+# ``EntityToPhenotypicFeatureAssociation`` — the only classes carrying the
+# ``regulatory_approvals`` grant — so without the qualifier grant a contraindication edge
+# could carry the
 # approvals or the qualifier, never both (``prune_to_class`` would null the qualifier into the
 # pruned column). The grant is deliberately ahead of the pinned Biolink model; drop this note
 # once upstream Biolink widens the slot to the entity-to-disease classes.
