@@ -12,6 +12,7 @@ Commands::
     uv run dakp up             # build+pack the Go bundle, start Airflow, run dakp_pipeline, wait
     uv run dakp down           # stop the local Airflow started by `up`
     uv run dakp clean          # stop a live NER cache server, then remove caches, coverage data, tmp/, and the Go worker binary
+    uv run dakp clean -no      # remove only the NER mention cache (Pebble store + hash keys)
     uv run dakp export-medliner --out <dir>   # export the MEDliNER training-data bundle (--fixtures = offline path)
 
 ``up`` is a faithful Python port of ``dakp_up.sh``: preflight-verifies the Airflow install
@@ -415,13 +416,15 @@ def run_down() -> int:
 # --- clean (port of `make clean`) -------------------------------------------------
 
 
-def run_clean() -> int:
+def run_clean(ner_only: bool = False) -> int:
     """Remove caches, coverage data, ``tmp/``, stray ``__pycache__`` dirs, and the Go worker binary.
 
     A live ``dakp-nercache`` server (``<workdir>/cache/ner/server.json`` pid probe) is SIGTERMed
     first — Pebble holds an exclusive directory lock, so deleting under a running server would
     corrupt nothing but the server would keep serving the deleted store. If the server survives
-    the SIGTERM, the clean is refused.
+    the SIGTERM, the clean is refused. With ``ner_only`` just the NER mention cache
+    (``<workdir>/cache/ner/`` — the Pebble store keyed by the BLAKE3 mention hashes) is removed;
+    every other cache, coverage artifact, and binary is left alone.
     """
     server_file = _DEFAULT_WORKDIR / "cache" / "ner" / "server.json"
     if server_file.exists():
@@ -436,6 +439,10 @@ def run_clean() -> int:
             if pid_alive(pid):
                 print(f"error: dakp-nercache pid {pid} survived SIGTERM; refusing to clean while it serves {_DEFAULT_WORKDIR / 'cache' / 'ner'}")
                 return 1
+    if ner_only:
+        shutil.rmtree(_DEFAULT_WORKDIR / "cache" / "ner", ignore_errors=True)
+        print("Cleaned the NER mention cache (Pebble store + hash keys)")
+        return 0
     for name in (".pytest_cache", ".ruff_cache", ".coverage", "htmlcov", "tmp"):
         target = _REPO_ROOT / name
         if target.is_dir():
@@ -588,9 +595,13 @@ def down() -> None:
 
 
 @app.command
-def clean() -> None:
-    """Remove caches, coverage data, ``tmp/``, and the Go worker binary (stops a live NER cache server first)."""
-    raise SystemExit(run_clean())
+def clean(*, ner_only: Annotated[bool, Parameter(name=["--ner-only", "-no"])] = False) -> None:
+    """Remove caches, coverage data, ``tmp/``, and the Go worker binary (stops a live NER cache server first).
+
+    ``--ner-only`` cleans just the NER mention cache (``<workdir>/cache/ner/``: the Pebble store
+    of BLAKE3-keyed mentions) and leaves every other cache, ``tmp/``, and the Go binary alone.
+    """
+    raise SystemExit(run_clean(ner_only=ner_only))
 
 
 __all__ = [

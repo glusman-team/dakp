@@ -513,6 +513,51 @@ def test_clean_refuses_when_nercache_survives_sigterm(monkeypatch: pytest.Monkey
     assert "refusing" in capsys.readouterr().out
 
 
+def test_clean_ner_only_removes_just_the_ner_cache(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """--ner-only removes only <workdir>/cache/ner (Pebble store + hash keys), leaving every other artifact."""
+    monkeypatch.setattr(cli, "_REPO_ROOT", sandbox)
+    ner_store = sandbox / "work" / "cache" / "ner"
+    (ner_store / "000003.log").parent.mkdir(parents=True)  # pebble-style store files
+    (ner_store / "000003.log").write_text("db", encoding="utf-8")
+    (sandbox / ".pytest_cache").mkdir()
+    (sandbox / "tmp").mkdir()
+    (sandbox / ".coverage").write_text("x", encoding="utf-8")
+    (sandbox / "go").mkdir()
+    (sandbox / "go" / "dakp-worker").write_text("bin", encoding="utf-8")
+
+    code = cli.run_clean(ner_only=True)
+
+    assert code == 0
+    assert "Cleaned the NER mention cache" in capsys.readouterr().out
+    assert not ner_store.exists()
+    assert not (ner_store.parent / "ner").exists()  # cache/ner gone, parent cache/ remains
+    # everything a full clean would remove is untouched
+    assert (sandbox / ".pytest_cache").exists()
+    assert (sandbox / "tmp").exists()
+    assert (sandbox / ".coverage").exists()
+    assert (sandbox / "go" / "dakp-worker").exists()
+
+
+def test_clean_ner_only_stops_a_live_nercache_server(monkeypatch: pytest.MonkeyPatch, sandbox: Path) -> None:
+    """--ner-only still SIGTERMs a live server first (Pebble holds an exclusive dir lock)."""
+    monkeypatch.setattr(cli, "_REPO_ROOT", sandbox)
+    server_file = sandbox / "work" / "cache" / "ner" / "server.json"
+    server_file.parent.mkdir(parents=True)
+    server_file.write_text(json.dumps({"pid": 4242, "port": 9999}), encoding="utf-8")
+    (sandbox / "tmp").mkdir()
+    terminated: list[int] = []
+    alive = iter([True, False])
+    monkeypatch.setattr(cli, "pid_alive", lambda pid: next(alive))
+    monkeypatch.setattr(cli, "terminate", terminated.append)
+
+    code = cli.run_clean(ner_only=True)
+
+    assert code == 0
+    assert terminated == [4242]
+    assert not server_file.parent.exists()  # the whole cache/ner dir (server.json included) is gone
+    assert (sandbox / "tmp").exists()  # --ner-only leaves the rest of the workdir alone
+
+
 # --- cyclopts command wrappers (exit codes) ---------------------------------------
 
 
