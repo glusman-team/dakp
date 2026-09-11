@@ -170,6 +170,20 @@ template:
         - Virus
         - WebPage
         - Zygosity
+      exclude_regex:
+        - "^UMLS:C0678941$"
+        - "^UMLS:C1704793$"
+        - "^UMLS:C1704939$"
+        - "^UMLS:C1705261$"
+        - "^UMLS:C1705341$"
+        - "^UMLS:C1706334$"
+        - "^UMLS:C1706590$"
+        - "^UMLS:C1708130$"
+        - "^UMLS:C2987167$"
+        - "^UMLS:C3272498$"
+        - "^UMLS:C3538796$"
+        - "^UMLS:C3811318$"
+        - "^UMLS:C3889972$"
     predicate: treats
     object:
       method: column
@@ -335,6 +349,20 @@ template:
         - Virus
         - WebPage
         - Zygosity
+      exclude_regex:
+        - "^UMLS:C0678941$"
+        - "^UMLS:C1704793$"
+        - "^UMLS:C1704939$"
+        - "^UMLS:C1705261$"
+        - "^UMLS:C1705341$"
+        - "^UMLS:C1706334$"
+        - "^UMLS:C1706590$"
+        - "^UMLS:C1708130$"
+        - "^UMLS:C2987167$"
+        - "^UMLS:C3272498$"
+        - "^UMLS:C3538796$"
+        - "^UMLS:C3811318$"
+        - "^UMLS:C3889972$"
     category_override:
       Disease: EntityToDiseaseAssociation
       PhenotypicFeature: EntityToPhenotypicFeatureAssociation
