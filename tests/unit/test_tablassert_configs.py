@@ -263,6 +263,9 @@ def test_table_config_structure(table: str) -> None:
     assert statement["object"]["encoding"] == tablassert_configs.column_letter(table, "object_text")
     assert statement["object"]["prioritize"] == ["Disease", "PhenotypicFeature"]
     assert statement["object"]["avoid"] == category_avoid_list(OBJECT_PRIORITIZE)
+    # CURIE-level exclusions on the object side (wording filters cannot express "drop this CURIE,
+    # keep that one"; see _OBJECT_EXCLUDE_REGEX).
+    assert statement["object"]["exclude_regex"] == list(tablassert_configs._OBJECT_EXCLUDE_REGEX)
 
     # ManualProvenance override carrying DAKP as the primary source (no publication alongside
     # override).
@@ -598,15 +601,23 @@ def test_off_label_subject_denylist_reindex() -> None:
 
 
 def test_object_denylist_reindex() -> None:
-    # "Hypersensitivity" is DailyMed contraindication-section boilerplate (the #1 entry on nearly
-    # every label — a reaction the drug CAUSES, not a condition it treats) and an adverse-event
-    # word in FAERS indications, so every mention wording resolving into the allergy/
-    # hypersensitivity CURIE family is denied on the object_text column of ALL THREE tables.
-    # Enumerated from the deployed 1.11.2 KG; specific drug-allergy findings ("allergy to
-    # benzocaine" -> UMLS:C0570648 etc.) resolve outside that family and are kept, and
-    # "LEUKOCYTOCLASTIC VASCULITIS" is not denied because it also resolves to its own distinct
-    # CURIE MONDO:0001290. Exercises the Reindex model through Section validation like the
-    # subject-denylist test above.
+    # Two derivation groups, both enumerated against the deployed 1.11.2 KG and denied on the
+    # object_text column of ALL THREE tables:
+    # (1) "Hypersensitivity" is DailyMed contraindication-section boilerplate (the #1 entry on
+    #     nearly every label — a reaction the drug CAUSES, not a condition it treats) and an
+    #     adverse-event word in FAERS indications, so every wording resolving into the generic
+    #     allergy/hypersensitivity CURIE family is denied.
+    # (2) Non-disease measurement/procedure/outcome meta-terms ("blood pressure" -> NCIT:C54707
+    #     Blood Pressure Finding, "adverse event"/"adverse reaction"/"side effect(s)" -> the
+    #     UMLS:C0877248/C0879626/C0559546 reporting meta-terms, "disease progression" ->
+    #     UMLS:C0242656) are not conditions at all; "heart rate", "laboratory test(s)",
+    #     "treatment failure" and "condition aggravated" are denied preventively.
+    # ``ne`` is an exact whole-cell compare, so disease-naming relatives survive: specific
+    # drug-allergy findings ("allergy to benzocaine" -> UMLS:C0570648 etc.) resolve outside the
+    # family, "LEUKOCYTOCLASTIC VASCULITIS" also resolves to its own distinct CURIE MONDO:0001290,
+    # and qualified findings ("high blood pressure" -> MONDO:0005044, "heart rate increased" ->
+    # HP:0001649) are real diseases. Exercises the Reindex model through Section validation like
+    # the subject-denylist test above.
     from tablassert.models import Section
 
     for table in TABLES:
@@ -625,15 +636,119 @@ def test_object_denylist_reindex() -> None:
             renderings = {comparator for comparator in object_filters if comparator.casefold() == name.casefold()}
             assert renderings == {name.upper(), name.lower(), name.title(), name.capitalize()}
 
-    # The known GENERIC family wordings are all present (spot-check the boundary entries).
+    # Group (1): the known GENERIC family wordings are all present (spot-check the boundary entries).
     denied = {name.casefold() for name in tablassert_configs._TABLE_OBJECT_DENYLIST}
     for wording in ("hypersensitivity", "drug hypersensitivity", "allergic reaction", "allergy", "sensitivity"):
         assert wording in denied
+    # Group (2): the non-disease meta-terms the user reported, plus their morphological relatives
+    # (singular/plural, the canonical "adverse drug reaction" parent) and the reporter misspelling.
+    for wording in (
+        "blood pressure",
+        "heart rate",
+        "laboratory test",
+        "laboratory tests",
+        "adverse event",
+        "adverse events",
+        "adverse effect",
+        "adverse effects",
+        "adverse reaction",
+        "adverse reactions",
+        "adverse drug reaction",
+        "adverse drug reactions",
+        "side effect",
+        "side effects",
+        "disease progression",
+        "treatment failure",
+        "condition aggravated",
+        "condition aggrivated",
+    ):
+        assert wording in denied
+    # Group (3): the outcome/exposure/event placeholders and mapping artifacts from the 1.11.2
+    # audit — procedure wordings, exposure events, generic outcome placeholders, a lab-test
+    # result, a trial-outcome meta-term, a behavior, and a test procedure.
+    for wording in (
+        "anaesthesia",
+        "anesthesia",
+        "overdose",
+        "drug overdose",
+        "drug overdoses",
+        "intentional overdose",
+        "poisoning",
+        "injury",
+        "traumatic injury",
+        "death",
+        "sudden death",
+        "hiv test positive",
+        "unevaluable event",
+        "substance use",
+        "glucose tolerance test",
+    ):
+        assert wording in denied
+    # THE critical guard: "depression" must NEVER be wording-denied — fullmap ties it to BOTH
+    # UMLS:C0812393 (junk phrase concept) and MONDO:0002050 (depressive disorder, a real disease
+    # with 622 edges); the junk CURIE is dropped via _OBJECT_EXCLUDE_REGEX instead.
+    assert "depression" not in denied
     # Drug-specific findings are deliberately kept: "hypersensitivity to <drug>" names a specific
     # pharmacogenomic phenotype (UMLS:C5768819 etc.), and "leukocytoclastic vasculitis" also
     # resolves to its own distinct CURIE MONDO:0001290.
     assert "hypersensitivity to abacavir" not in denied
     assert "leukocytoclastic vasculitis" not in denied
+    # Group (2) kept relatives: qualified findings that name REAL diseases/phenotypes must survive
+    # the exact whole-cell compare — only the bare meta-terms are denied. These are all present in
+    # the 1.11.2 KG resolving to real concepts (MONDO:0005044 hypertensive disorder, HP:0001649
+    # tachycardia, HP:0001662 bradycardia, MONDO:0007263 cardiac rhythm disease, HP:0002910
+    # elevated hepatic transaminases, UMLS:C2721654 AEFI, UMLS:C4087225 immune-mediated adverse
+    # reaction). ("hiv test positive" and "glucose tolerance test" were kept at group (2) time
+    # but are denied as group (3) per the 1.11.2 audit.)
+    for wording in (
+        "high blood pressure",
+        "elevated blood pressure",
+        "blood pressure increased",
+        "blood pressure decreased",
+        "heart rate increased",
+        "heart rate decreased",
+        "heart rate abnormal",
+        "rapid heart rate",
+        "fetal heart rate",
+        "abnormal liver function tests",
+        "adverse event following immunisation",
+        "immune-mediated adverse reaction",
+    ):
+        assert wording not in denied
+    # Group (3) kept relatives — REAL conditions and qualified forms the exact compare preserves:
+    # "sensory loss" is the real phenotype NCIT:C182234 also (wrongly) carries; "substance abuse"
+    # is a DSM disorder (only the behavior wording "substance use" is denied); "wound" a
+    # treatable traumatic condition; and the qualified poisonings/injuries are specific diseases.
+    for wording in (
+        "sensory loss",
+        "substance abuse",
+        "substance use disorder",
+        "wound",
+        "wounds and injuries",
+        "methanol poisoning",
+        "lead poisoning",
+        "spinal cord injury",
+        "brain injury",
+        "sudden cardiac death",
+        "accidental overdose",
+    ):
+        assert wording not in denied
+
+
+def test_object_exclude_regex_on_all_tables() -> None:
+    # CURIE-level object exclusions: UMLS:C0812393 ("Cancer patients and suicide and depression")
+    # is reachable almost only via "depression", which fullmap ties to the REAL MONDO:0002050 —
+    # a wording deny would kill the disease's 622 edges, so the junk CURIE is dropped at
+    # resolution via the object NodeEncoding's exclude_regex (Tablassert >= 16). Exercises the
+    # Section model's polars-compatibility validator on each pattern.
+    from tablassert.models import Section
+
+    expected = [r"^UMLS:C0812393$"]
+    assert list(tablassert_configs._OBJECT_EXCLUDE_REGEX) == expected
+    for table in TABLES:
+        section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
+        assert list(section.statement.object.exclude_regex or []) == expected
+        assert section.statement.subject.exclude_regex is None  # CURIE exclusions are object-only
 
 
 # --- graph config structure -------------------------------------------------------
