@@ -681,6 +681,7 @@ template:
         - GeneticInheritance
         - Genome
         - GenomicBackgroundExposure
+        - GenomicEntity
         - Genotype
         - GenotypicSex
         - GeographicExposure
@@ -860,6 +861,7 @@ template:
         - GeneticInheritance
         - Genome
         - GenomicBackgroundExposure
+        - GenomicEntity
         - Genotype
         - GenotypicSex
         - GeographicExposure
@@ -1043,6 +1045,7 @@ template:
           - GeneticInheritance
           - Genome
           - GenomicBackgroundExposure
+          - GenomicEntity
           - Genotype
           - GenotypicSex
           - GeographicExposure

@@ -89,9 +89,14 @@ now sizes itself automatically — so DAKP passes no worker count anywhere. 17.0
 (SkyeAv/Tablassert#145) makes the fullmap resolver retain every CURIE tied on a term's best
 ranking tier instead of keeping one arbitrary winner, so a DAKP mention that maps equally
 well to several CURIEs expands to one edge per tied CURIE (level-one still beats level-two).
-18.0.0 retains ``original_*`` edge fields and deterministically aggregates distinct values
-across collision merges as sorted pipe-delimited strings while removing ``--no-original``;
-nothing else in the emitted config changes, only resolved KG content.
+18.1.0 closes the category-vocabulary hole behind the v1.11.2 bare-Association leak: the
+config ``Categories`` enum now names every category the fullmap emits (``GenomicEntity`` and
+other biolink mixins are first-class via ``CATEGORY_OVERRIDES``), ``filter_and_rank`` drops
+unnameable categories when ``avoid`` is set, and ``--qc`` fails on any edge demoted to bare
+``biolink:Association`` under a declared ``category_override``; 18.0.0 retains ``original_*``
+edge fields and deterministically aggregates distinct values across collision merges as sorted
+pipe-delimited strings while removing ``--no-original``; nothing else in the emitted config
+changes, only resolved KG content.
 Fullmaps must
 be ``tablassert.fullmap.v5`` redb files — the on-disk format since Tablassert 8.2, unchanged
 in 13.0; older ones (v1-v4) are rejected on read.
