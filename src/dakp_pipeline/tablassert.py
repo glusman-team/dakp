@@ -89,9 +89,14 @@ now sizes itself automatically — so DAKP passes no worker count anywhere. 17.0
 (SkyeAv/Tablassert#145) makes the fullmap resolver retain every CURIE tied on a term's best
 ranking tier instead of keeping one arbitrary winner, so a DAKP mention that maps equally
 well to several CURIEs expands to one edge per tied CURIE (level-one still beats level-two).
-18.0.0 retains ``original_*`` edge fields and deterministically aggregates distinct values
-across collision merges as sorted pipe-delimited strings while removing ``--no-original``;
-nothing else in the emitted config changes, only resolved KG content.
+18.1.0 closes the category-vocabulary hole behind the v1.11.2 bare-Association leak: the
+config ``Categories`` enum now names every category the fullmap emits (``GenomicEntity`` and
+other biolink mixins are first-class via ``CATEGORY_OVERRIDES``), ``filter_and_rank`` drops
+unnameable categories when ``avoid`` is set, and ``--qc`` fails on any edge demoted to bare
+``biolink:Association`` under a declared ``category_override``; 18.0.0 retains ``original_*``
+edge fields and deterministically aggregates distinct values across collision merges as sorted
+pipe-delimited strings while removing ``--no-original``; nothing else in the emitted config
+changes, only resolved KG content.
 Fullmaps must
 be ``tablassert.fullmap.v5`` redb files — the on-disk format since Tablassert 8.2, unchanged
 in 13.0; older ones (v1-v4) are rejected on read.
@@ -892,79 +897,6 @@ OBJECT_PRIORITIZE = ("Disease", "PhenotypicFeature")
 #: the derived pair.
 OBJECT_CATEGORY_OVERRIDE: dict[str, str] = {"Disease": "EntityToDiseaseAssociation", "PhenotypicFeature": "EntityToPhenotypicFeatureAssociation"}
 
-#: CURIEs the fullmap resolves DAKP mentions to whose category is off DAKP's allow-lists but that
-#: the generated ``avoid`` lists CANNOT name — emitted as anchored ``exclude_regex`` patterns on
-#: every node encoding (subject, object, and the contraindication qualifier) of every table.
-#:
-#: ``NodeEncoding.avoid`` validates against Tablassert's ``Categories`` enum, which
-#: ``tablassert.biolink._entity_category_names`` builds from Biolink ``Entity`` SUBCLASSES only.
-#: Biolink MIXINS are not ``Entity`` subclasses, so none of the 51 in model 4.4.4
-#: (``GenomicEntity``, ``GeneOrGeneProduct``, ``Occurrent``, ...) is an enum member and no config
-#: can avoid them. ``GenomicEntity`` is the only such category the production fullmap (2026jul22)
-#: actually produces — its 46-category vocabulary is otherwise fully covered by the enum — so it is
-#: the one hole in the allow-list guarantee :func:`category_avoid_list` documents, and every CURIE
-#: below is a ``GenomicEntity`` concept (``Gene Mutant`` plus UMLS ``wt Allele`` gene concepts).
-#:
-#: What the hole shipped in v1.11.2 (49 edges, the complete ``biolink:GenomicEntity`` node set):
-#:
-#: * 17 ``applied_to_treat`` edges with a GenomicEntity OBJECT — the reported bug. The object's
-#:   category matches no :data:`OBJECT_CATEGORY_OVERRIDE` key, so the derived
-#:   ``(subject role, object role)`` class lookup falls back to plain ``biolink:Association``,
-#:   which declares none of ``number_of_cases`` / ``clinical_approval_status`` /
-#:   ``regulatory_approvals``; ``prune_to_class`` nulls all three off the edge and relocates them
-#:   into the inlined ``has_supporting_studies`` study description, so the case counts survived
-#:   only as ``number_of_cases=15.0`` description text;
-#: * 18 ``contraindicated_in`` edges with a GenomicEntity object (NER-mined gene/protein mentions
-#:   — "cyp3a", "p gp", "pde5", "gi", "gnrh", "flame", "acth") degraded the same way;
-#: * 14 ``applied_to_treat`` edges with a GenomicEntity SUBJECT — a FAERS ``drugname`` such as
-#:   "ASS" resolving to ``ASS1 wt Allele``. Their objects were real diseases, so the class pinned
-#:   normally and ``number_of_cases`` survived, but a gene asserted as the treating drug is out of
-#:   scope for exactly the same reason.
-#:
-#: Denied by CURIE rather than by mention wording on purpose: ``exclude_regex`` is applied in
-#: ``tablassert.fullmap.filter_and_rank`` at the SAME candidate-filtering stage as ``avoid`` and
-#: BEFORE ranking, so the concept is unreachable from every spelling that resolves to it. A
-#: ``source.reindex`` term denylist (the :data:`_TABLE_SUBJECT_DENYLIST` mechanism) would only
-#: cover the exact wordings enumerated — "gene mutations", a doubled space, or a raw-passthrough
-#: indication spelling would slip through — and would keep dropping the row even if a future
-#: fullmap resolved that wording onto a legitimate Disease CURIE.
-#:
-#: Equivalence: the legacy DAKP KG (``drug_approvals_kg_edges.jsonl.gz``) ships ZERO edges to any
-#: CURIE below, and the RIG scopes this graph to drug -> disease/phenotype statements, so denying
-#: them restores legacy-equivalent content instead of losing knowledge.
-#:
-#: Accepted caveat: this is a point-in-time census of one fullmap. A rebuild can introduce new
-#: ``GenomicEntity`` concepts, and nothing here detects that. The structural fix is upstream — once
-#: Tablassert's ``Categories`` enum admits mixin categories, the generated ``avoid`` complement
-#: covers every wording and CURIE and this list can be retired
-#: (``test_genomic_entity_still_outside_the_categories_enum`` is the tripwire). Until then the
-#: unwired ``validate_kgx`` ``INCOMPATIBLE_OBJECT_CATEGORY`` check in
-#: :mod:`dakp_pipeline.translator` is the post-build detector that would flag a recurrence.
-UNAVOIDABLE_OFF_ALLOWLIST_CURIES: tuple[str, ...] = (
-    "UMLS:C0678941",  # Gene Mutant — the object of the 17 applied_to_treat edges lacking number_of_cases
-    "UMLS:C1704793",  # POMC wt Allele
-    "UMLS:C1704939",  # ABCB1 wt Allele
-    "UMLS:C1705261",  # CYP3A4 wt Allele
-    "UMLS:C1705341",  # PTK2B wt Allele
-    "UMLS:C1706334",  # GNRH1 wt Allele
-    "UMLS:C1706590",  # BCL10 wt Allele
-    "UMLS:C1708130",  # GNAI1 wt Allele
-    "UMLS:C2987167",  # PDE5A wt Allele
-    "UMLS:C3272498",  # CFLAR wt Allele
-    "UMLS:C3538796",  # TNFAIP1 wt Allele
-    "UMLS:C3811318",  # ZMYND10 wt Allele
-    "UMLS:C3889972",  # ASS1 wt Allele
-)
-
-
-def unavoidable_off_allowlist_regex() -> list[str]:
-    """Fresh anchored ``exclude_regex`` patterns denying :data:`UNAVOIDABLE_OFF_ALLOWLIST_CURIES`.
-
-    Anchored (``^...$``) so a CURIE is denied exactly, never as a substring of a longer one. A new
-    list per call keeps the emitted encodings from aliasing one mutable list.
-    """
-    return [f"^{curie}$" for curie in UNAVOIDABLE_OFF_ALLOWLIST_CURIES]
-
 
 # Per-table biolink statement qualifiers: (qualifier slot, backing assertion column). Emitted as
 # ``statement.qualifiers`` entries ONLY where a column actually carries the qualifier's entity.
@@ -1098,9 +1030,9 @@ def table_config(table: str) -> dict[str, Any]:
     them), ``provenance.override`` (ManualProvenance), and column-encoded ``annotations`` for the
     table's evidence columns. Subject/object carry ``prioritize`` (soft ranking) plus ``avoid`` —
     the hard allow-list guard computed by :func:`category_avoid_list` from the side's ``prioritize``
-    tuple — and, because ``avoid`` cannot name categories Tablassert's ``Categories`` enum omits,
-    the ``exclude_regex`` CURIE guard :func:`unavoidable_off_allowlist_regex` on every node encoding
-    (subject, object, and qualifiers). Qualifier values use their own category guard:
+    tuple. Since Tablassert 18.1.0 the ``Categories`` enum names every category the fullmap emits
+    (biolink mixins like ``GenomicEntity`` are first-class via ``CATEGORY_OVERRIDES``), so the
+    complement needs no CURIE-level stopgap. Qualifier values use their own category guard:
     contraindication context is constrained
     to ``Disease`` (not the object's broader Disease/PhenotypicFeature list), and is nullable so
     absent or unresolved context omits only the qualifier rather than deleting the edge. A table
@@ -1125,7 +1057,6 @@ def table_config(table: str) -> dict[str, Any]:
             "nullable": table == "contraindication_assertions",
             "prioritize": ["Disease"],
             "avoid": category_avoid_list(("Disease",)),
-            "exclude_regex": unavoidable_off_allowlist_regex(),
         }
         for qualifier, column in _TABLE_QUALIFIERS[table]
     ]
@@ -1135,7 +1066,6 @@ def table_config(table: str) -> dict[str, Any]:
             "encoding": column_letter(table, SUBJECT_COLUMN),
             "prioritize": list(SUBJECT_PRIORITIZE),
             "avoid": category_avoid_list(SUBJECT_PRIORITIZE),
-            "exclude_regex": unavoidable_off_allowlist_regex(),
         },
         "predicate": predicate,
         "object": {
@@ -1143,7 +1073,7 @@ def table_config(table: str) -> dict[str, Any]:
             "encoding": column_letter(table, OBJECT_COLUMN),
             "prioritize": list(OBJECT_PRIORITIZE),
             "avoid": category_avoid_list(OBJECT_PRIORITIZE),
-            "exclude_regex": [*unavoidable_off_allowlist_regex(), *_OBJECT_EXCLUDE_REGEX],
+            "exclude_regex": list(_OBJECT_EXCLUDE_REGEX),
         },
         "category_override": dict(OBJECT_CATEGORY_OVERRIDE),
     }
@@ -1505,6 +1435,69 @@ def _find_graph(config_refs: list[ArtifactRef], ctx: TaskContext) -> Path:
     return Workdir(ctx.workdir).root / "tables" / "graph.yaml"
 
 
+#: Cap on contract problems mirrored into the handoff report / error message — enough to
+#: diagnose the failure mode without bloating the report or the task log.
+_CONTRACT_PROBLEM_LIMIT = 10
+
+
+def _graph_stem(graph_yaml: Path) -> str:
+    """The ``<name>_<version>`` stem Tablassert names the emitted pair with, read from the graph config the build actually used.
+
+    The generator's own minimal emitter writes both as top-level keys (``name:`` /
+    ``version:``) on the first lines; read only those rather than assuming the
+    :data:`GRAPH_NAME` / ``__version__`` defaults (a ``graph_config(version=...)`` override
+    would make the defaults lie).
+    """
+    name: str | None = None
+    version: str | None = None
+    for line in graph_yaml.read_text(encoding="utf-8").splitlines():
+        if line.startswith("name: "):
+            name = line.removeprefix("name: ").strip().strip('"')
+        elif line.startswith("version: "):
+            version = line.removeprefix("version: ").strip().strip('"')
+        if name is not None and version is not None:
+            return f"{name}_{version}"
+    msg = f"graph config {graph_yaml} is missing top-level name/version keys"
+    raise RuntimeError(msg)
+
+
+def validate_kgx_contract(ctx: TaskContext, graph_yaml: Path) -> list[str]:
+    """Validate the KGX pair a successful ``build-kg`` just emitted against the DAKP contract.
+
+    Streams the pair Tablassert named ``<name>_<version>.{nodes,edges}.ndjson`` from the workdir
+    KGX dir through :func:`dakp_pipeline.translator.validate_kgx` and returns the rendered
+    problem lines (empty when the pair is contract-clean). A missing pair after a successful
+    build raises ``RuntimeError`` — Tablassert just wrote it, so absence means the emission
+    convention moved and downstream stages would silently read stale files (the caller records
+    that as a contract ``error`` in the handoff report before failing).
+
+    This gate is what the v1.11.2 35-edge ``GenomicEntity``-object leak shipped without:
+    edges that escaped the pinned association classes (bare ``biolink:Association`` with
+    evidence slots pruned into ``has_supporting_studies`` descriptions) reached the publish
+    stage because nothing validated the REAL build output — ``validate_kgx`` only ever ran
+    over test fixtures. Now every successful handoff must pass it before the export/publish
+    stages run.
+    """
+    from dakp_pipeline.translator import read_kgx_jsonl, validate_kgx  # local: keeps module import light
+
+    kgx_dir = Workdir(ctx.workdir).kgx
+    stem = _graph_stem(graph_yaml)
+
+    def _emitted(kind: str) -> Path:
+        matches = sorted(kgx_dir.glob(f"{stem}.{kind}.ndjson"))
+        if len(matches) != 1:
+            msg = f"expected exactly one {stem}.{kind}.ndjson under {kgx_dir} after a successful build-kg, found {len(matches)}"
+            raise RuntimeError(msg)
+        return matches[0]
+
+    problems = validate_kgx(read_kgx_jsonl(_emitted("nodes")), read_kgx_jsonl(_emitted("edges"))).problems
+    if problems:
+        logger.error("run_tablassert: KGX contract validation failed with {} problem(s):", len(problems))
+        for problem in problems[:_CONTRACT_PROBLEM_LIMIT]:
+            logger.error("  {p}", p=problem)
+    return problems
+
+
 @dataclass(frozen=True)
 class TablassertRunner:
     """Run the INSTALLED ``tablassert`` CLI (a core DAKP dependency) as a subprocess.
@@ -1512,9 +1505,14 @@ class TablassertRunner:
     Builds ``tablassert build-kg <graph.yaml> [--qc] [--release]`` (the graph config carries the
     fullmap path — Tablassert 8.1 removed the ``build-kg --fullmap`` flag), streams the
     subprocess output live into the task log (:func:`stream_subprocess`), and records the full
-    stdout / stderr / exit code in the handoff report. A non-zero exit is captured as
-    ``status: failed`` in the report (written to disk before raising) and then raises
-    :class:`TablassertError` so the calling task (Airflow or stage harness) fails correctly.
+    stdout / stderr / exit code in the handoff report. On a successful build the emitted KGX
+    pair is validated against the DAKP Translator contract
+    (:func:`validate_kgx_contract`): violations are recorded in the report (``kgx_contract``)
+    and raise :class:`TablassertError`, so a graph that escapes the pinned association
+    classes (bare ``biolink:Association`` edges) can never reach the export/publish stages.
+    A non-zero exit is captured as ``status: failed`` in the report (written to disk before
+    raising) and then raises :class:`TablassertError` so the calling task (Airflow or stage
+    harness) fails correctly.
     Raises ``RuntimeError`` when ``tablassert`` is unavailable and no editable-checkout
     override is configured (reinstall with ``uv sync``).
     """
@@ -1572,6 +1570,13 @@ class TablassertRunner:
             logger.error("{}: exited {} — stderr = {}", event, completed.returncode, (completed.stderr or "").strip())
 
         report = _base_report("real", assertion_refs, config_refs)
+        contract_problems: list[str] = []
+        contract_error: str | None = None
+        if completed.returncode == 0:  # validate only a build that actually emitted a KGX pair
+            try:
+                contract_problems = validate_kgx_contract(ctx, graph_yaml)
+            except RuntimeError as exc:  # missing/ambiguous pair: the emission convention moved
+                contract_error = str(exc)
         report.update(
             {
                 "status": status,
@@ -1586,10 +1591,25 @@ class TablassertRunner:
                 "release": release,
             }
         )
+        if completed.returncode == 0:
+            report["kgx_contract"] = {
+                "status": "error" if contract_error else ("failed" if contract_problems else "ok"),
+                "problem_count": len(contract_problems),
+                "problems": contract_problems[:_CONTRACT_PROBLEM_LIMIT],
+            }
+            if contract_error:
+                report["kgx_contract"]["error"] = contract_error
         refs = [_write_report(report, assertion_refs, ctx)]
         if completed.returncode != 0:
             raise TablassertError(
                 f"Tablassert exited {completed.returncode}; see handoff report: {refs[0].uri}\n{(completed.stderr or '').strip()[:500]}"
+            )
+        if contract_error:
+            raise TablassertError(f"{contract_error}; see handoff report: {refs[0].uri}")
+        if contract_problems:
+            raise TablassertError(
+                f"KGX contract validation failed with {len(contract_problems)} problem(s); see handoff report: {refs[0].uri}\n"
+                + "\n".join(contract_problems[:_CONTRACT_PROBLEM_LIMIT])
             )
         return refs
 
@@ -1641,7 +1661,6 @@ __all__ = [
     "INFORES_DAKP",
     "REPORT_NAME",
     "TABLASERT_DIR_ENV",
-    "UNAVOIDABLE_OFF_ALLOWLIST_CURIES",
     "DeferredTablassertRunner",
     "TablassertError",
     "TablassertRunner",
@@ -1657,5 +1676,5 @@ __all__ = [
     "tablassert_available",
     "table_config",
     "table_yaml",
-    "unavoidable_off_allowlist_regex",
+    "validate_kgx_contract",
 ]

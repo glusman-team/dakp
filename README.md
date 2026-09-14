@@ -61,7 +61,9 @@ BLAKE3-keyed mentions under `tmp/cache/ner/`), e.g. to force re-mining without l
   never ontology CURIEs.
 - **aggregate**: joins the extracts and NER mentions into three TSV assertion tables.
 - **Tablassert handoff**: generates a graph config plus one table config per assertion table,
-  then delegates to `tablassert build-kg`.
+  then delegates to `tablassert build-kg` and validates the emitted KGX against the DAKP
+  Translator contract — bare-`biolink:Association` edges, off-allow-list node categories, or
+  values relocated into `has_supporting_studies` fail the build before export/publish.
 - **legacy TSV export**: retrofits the KGX pair into the pre-rewrite DAKP TSV schema for the
   internal service that still consumes it.
 - **MEDliNER export**: hands the annotation corpus to MEDliNER as a deterministic,

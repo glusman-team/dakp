@@ -14,14 +14,17 @@ from pathlib import Path
 from dakp_pipeline import translator as contract
 from dakp_pipeline.translator import (
     DUPLICATE_NODE_ID,
+    INCOMPATIBLE_EDGE_CATEGORY,
     INCOMPATIBLE_OBJECT_CATEGORY,
     INCOMPATIBLE_SUBJECT_CATEGORY,
     INVALID_NODE_CATEGORY,
     INVALID_PREDICATE,
+    INVALID_SUPPORTING_STUDIES,
     MISSING_EDGE_FIELD,
     MISSING_NODE_FIELD,
     MISSING_NODE_REFERENCE,
     MISSING_PROVENANCE,
+    PINNED_EDGE_CATEGORIES,
     ContractReport,
     read_kgx_jsonl,
     validate,
@@ -173,3 +176,101 @@ def test_legacy_validate_reports_missing_assertion_tables() -> None:
     assert report.ok is False
     assert any("approved_treats_assertions" in problem for problem in report.problems)
     assert report.kgx_problems == []  # legacy path never populates KGX problems
+
+
+# --- pinned association classes: the bare-biolink:Association leak class --------------
+
+
+def test_bare_association_edge_fails_the_pin() -> None:
+    """A DAKP-family edge on bare biolink:Association violates the pinned-class contract."""
+    nodes = [{"id": "CHEBI:1", "name": "drug", "category": ["biolink:Drug"]}, {"id": "MONDO:1", "name": "disease", "category": ["biolink:Disease"]}]
+    edges = [
+        {
+            "id": "e1",
+            "subject": "CHEBI:1",
+            "predicate": "biolink:treats",
+            "object": "MONDO:1",
+            "category": ["biolink:Association"],  # escaped the OBJECT_CATEGORY_OVERRIDE pin
+            "knowledge_level": "knowledge_assertion",
+            "agent_type": "manual_validation_of_automated_agent",
+            "primary_knowledge_source": "infores:multiomics-drugapprovals",
+            "sources": [{"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:dailymed", "infores:faers"]}],
+        }
+    ]
+    report = validate_kgx(nodes, edges)
+    assert INCOMPATIBLE_EDGE_CATEGORY in _codes(report)
+    assert report.ok is False
+
+
+def test_genomic_entity_object_leak_shape_fails_both_category_checks() -> None:
+    """The exact v1.11.2 35-edge shape: bare biolink:Association edge onto a GenomicEntity object.
+
+    Both the escaped edge class and the off-allow-list object category are flagged; 35 such
+    edges (17 applied_to_treat + 18 contraindicated_in) shipped because no stage validated the
+    real build output against this contract.
+    """
+    nodes = [
+        {"id": "CHEBI:28901", "name": "busulfan", "category": ["biolink:SmallMolecule"]},
+        {"id": "UMLS:C0678941", "name": "Gene Mutant", "category": ["biolink:GenomicEntity"]},
+    ]
+    edges = [
+        {
+            "id": "uuid-leak-1",
+            "subject": "CHEBI:28901",
+            "original_subject": "BUSULFAN",
+            "predicate": "biolink:applied_to_treat",
+            "object": "UMLS:C0678941",
+            "original_object": "gene mutation",
+            "category": ["biolink:Association"],
+            "knowledge_level": "observation",
+            "agent_type": "manual_validation_of_automated_agent",
+            "primary_knowledge_source": "infores:multiomics-drugapprovals",
+            "sources": [
+                {"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:dailymed", "infores:faers"]},
+                {"resource_id": "infores:faers", "resource_role": "supporting_data_source"},
+            ],
+            "has_supporting_studies": {"faers_applied_to_treat": {"id": "faers_applied_to_treat", "has_study_results": []}},
+        }
+    ]
+    report = validate_kgx(nodes, edges)
+    assert {INCOMPATIBLE_EDGE_CATEGORY, INCOMPATIBLE_OBJECT_CATEGORY} <= _codes(report)
+    assert report.ok is False
+
+
+def test_junk_drawer_supporting_studies_descriptions_fail() -> None:
+    """Evidence slots pruned into has_supporting_studies descriptions violate the contract.
+
+    The second half of the leak shape: a bare row-reference study is legitimate; any
+    ``description`` string means a value DAKP owns was relocated off the edge.
+    """
+    nodes = [{"id": "CHEBI:1", "name": "drug", "category": ["biolink:Drug"]}, {"id": "MONDO:1", "name": "disease", "category": ["biolink:Disease"]}]
+    base = {
+        "id": "e1",
+        "subject": "CHEBI:1",
+        "predicate": "biolink:treats",
+        "object": "MONDO:1",
+        "category": ["biolink:EntityToDiseaseAssociation"],
+        "knowledge_level": "knowledge_assertion",
+        "agent_type": "manual_validation_of_automated_agent",
+        "primary_knowledge_source": "infores:multiomics-drugapprovals",
+        "sources": [{"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:dailymed", "infores:faers"]}],
+    }
+    clean = {**base, "has_supporting_studies": {"table": {"id": "table", "has_study_results": [{"id": "row:1"}]}}}
+    assert INVALID_SUPPORTING_STUDIES not in _codes(validate_kgx(nodes, [clean]))
+    junked = {
+        **base,
+        "has_supporting_studies": {"table": {"id": "table", "has_study_results": [{"id": "row:1", "description": "number_of_cases=15.0"}]}},
+    }
+    assert INVALID_SUPPORTING_STUDIES in _codes(validate_kgx(nodes, [junked]))
+
+
+def test_pinned_edge_categories_match_the_category_override() -> None:
+    """The validator's pinned classes are exactly the override's pinned classes, biolink-prefixed.
+
+    ``OBJECT_CATEGORY_OVERRIDE`` is widened only with a matching validator update; otherwise a
+    real build that resolves the new object category would be rejected by the gate that exists
+    to accept it.
+    """
+    from dakp_pipeline.tablassert import OBJECT_CATEGORY_OVERRIDE
+
+    assert {f"biolink:{pinned}" for pinned in OBJECT_CATEGORY_OVERRIDE.values()} == set(PINNED_EDGE_CATEGORIES)

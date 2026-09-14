@@ -744,6 +744,7 @@ template:
         - GeneticInheritance
         - Genome
         - GenomicBackgroundExposure
+        - GenomicEntity
         - Genotype
         - GenotypicSex
         - GeographicExposure
@@ -828,20 +829,6 @@ template:
         - Virus
         - WebPage
         - Zygosity
-      exclude_regex:
-        - "^UMLS:C0678941$"
-        - "^UMLS:C1704793$"
-        - "^UMLS:C1704939$"
-        - "^UMLS:C1705261$"
-        - "^UMLS:C1705341$"
-        - "^UMLS:C1706334$"
-        - "^UMLS:C1706590$"
-        - "^UMLS:C1708130$"
-        - "^UMLS:C2987167$"
-        - "^UMLS:C3272498$"
-        - "^UMLS:C3538796$"
-        - "^UMLS:C3811318$"
-        - "^UMLS:C3889972$"
     predicate: applied_to_treat
     object:
       method: column
@@ -923,6 +910,7 @@ template:
         - GeneticInheritance
         - Genome
         - GenomicBackgroundExposure
+        - GenomicEntity
         - Genotype
         - GenotypicSex
         - GeographicExposure
@@ -1008,19 +996,6 @@ template:
         - WebPage
         - Zygosity
       exclude_regex:
-        - "^UMLS:C0678941$"
-        - "^UMLS:C1704793$"
-        - "^UMLS:C1704939$"
-        - "^UMLS:C1705261$"
-        - "^UMLS:C1705341$"
-        - "^UMLS:C1706334$"
-        - "^UMLS:C1706590$"
-        - "^UMLS:C1708130$"
-        - "^UMLS:C2987167$"
-        - "^UMLS:C3272498$"
-        - "^UMLS:C3538796$"
-        - "^UMLS:C3811318$"
-        - "^UMLS:C3889972$"
         - "^UMLS:C0812393$"
     category_override:
       Disease: EntityToDiseaseAssociation
