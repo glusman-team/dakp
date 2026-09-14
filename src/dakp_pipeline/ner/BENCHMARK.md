@@ -6,7 +6,9 @@ backend selector). Harness + gold fixture: `tests/eval/benchmark_ner.py`, `tests
 ## Fixture
 
 34 cases / 42 gold disease/phenotype spans: 20 DailyMed "Contraindications" sections
-(LOINC `34070-3`) + 14 FAERS indication strings. Includes 3 **out-of-gazetteer** rare
+(LOINC `34070-3`) + 14 held-out FAERS indication strings. The FAERS examples remain only as
+backend evaluation coverage; the production observed-use path bypasses NER. Includes 3
+**out-of-gazetteer** rare
 diseases (porphyria, myasthenia gravis, pheochromocytoma) to probe model generalization
 that a gazetteer alone cannot provide, 4 cases added 2026-08-10 that expose fixed
 weaknesses: a population descriptor with no mention (`dailymed-childbearing`), a maximal-span
@@ -37,8 +39,9 @@ The fixture has 34 cases and 42 gold spans.
 
 Historical-merge rows generated candidates at `0.35` without the strict extension floor. The
 final production rows use the strict extension floor `0.95` as well as the shared generation floor.
-The precision-first indication/observed-use profile therefore uses acceptance `0.95`; the
-contraindication profile uses the lower `0.35` acceptance point to preserve recall. The two
+The precision-first DailyMed indication profile therefore uses acceptance `0.95`; FAERS
+observed-use shaping does not invoke NER. The contraindication profile uses the lower `0.35`
+acceptance point to preserve recall. The two
 generic `0.35` defaults are no longer the production policy: they represent the named generation
 floor and the recall-first contraindication profile respectively.
 
@@ -243,8 +246,8 @@ unchanged FP count, i.e. the formerly-abstained band spans that reach gold are c
 
 ## Small-example checks (hand verification, 2026-08-10)
 
-Short DailyMed-style snippets and FAERS indication strings through `DiseaseNER` offline +
-production (real model):
+Short DailyMed-style snippets and held-out FAERS indication strings through `DiseaseNER`
+offline + production (real model) for backend evaluation only:
 
 * `Contraindicated in patients with known hypersensitivity to any component of the product.`
   — `hypersensitivity`:phenotype exact in both modes ✓

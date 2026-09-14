@@ -5,8 +5,8 @@ FAERS adverse-event reports, without any approval claim.
 
 Aggregation rule (explicit and tested)
 ---------------------------------------
-Each distinct indication string is first resolved to its object (disease-map match, single NER
-mention, or raw passthrough); FAERS case rows (``cases.parquet``) are then aggregated by
+Each distinct indication string is first resolved to its object (disease-map match or raw
+passthrough); FAERS case rows (``cases.parquet``) are then aggregated by
 ``(drugname, resolved object_text)`` — the edge-identity key — so wordings that resolve to the
 same object merge into ONE row. ``number_of_cases`` is the number of **distinct cases**
 (``primaryid``) across all merged wordings (falls back to row count when ``primaryid`` is
@@ -33,22 +33,13 @@ FAERS drugnames while approved-treats subjects are DailyMed ingredient text, so 
 ("Advil" vs "Ibuprofen") MISS and read as ``off_label_use`` for actually-approved pairs — the
 same caveat the legacy pipeline carried.
 
-Object cleanup (the NER channel)
---------------------------------
-``indi_pt`` is messy free text: qualifiers (``Migraine prophylaxis``) and symptom-vs-disease
-confusion pollute ``object_text`` and the blanket ``Disease`` category. When a backend is
-injected (``params["ner"]``, production GLiNER wiring in the DAG; else the deterministic
-offline gazetteer from :func:`~dakp_pipeline.assertions.ner_dispatch.default_ner`), every
-stop-list-passing indication the dictionary misses is mined — deduplicated by normalized text,
-multi-GPU dispatched in production. An indication yielding EXACTLY ONE disease/phenotype
-mention resolves to that mention: ``object_text``/``object_name`` = the normalized mention text
-and ``object_category`` from the mention type (``disease``→Disease, ``phenotype``→PhenotypicFeature).
-Zero or several mentions (no unambiguous head condition) keep the raw passthrough. Resolution
-happens BEFORE aggregation (see the aggregation rule above), so two wordings NER-resolving to
-one mention land in a single row with an exact merged distinct-case count. Offline the
-gazetteer is word-bounded where :func:`~dakp_pipeline.assertions.match_diseases` is
-plain-substring, so every gazetteer hit is already a dictionary hit and offline output is
-byte-identical to the lexical baseline.
+FAERS text handling
+-------------------
+FAERS ``drugname`` values are passed through as text-first intervention subjects. Tablassert
+tries to resolve those raw drug names to intervention concepts during the downstream fullmap
+build. FAERS ``indi_pt`` values are not sent through the biomedical NER model: known conditions
+still use the fast lexical disease-map baseline, while unknown conditions remain raw text for
+Tablassert's object resolution.
 
 Provenance: DAKP aggregates FAERS primary observations with DailyMed support; FAERS is the
 primary upstream source, DailyMed the supporting one. Object CURIEs come from the lexical disease
@@ -58,8 +49,7 @@ baseline; subjects carry no CURIE (FAERS gives no drug id here). Canonical mappi
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
-from typing import Any
+from collections.abc import Mapping
 
 import polars as pl
 
@@ -75,12 +65,9 @@ from dakp_pipeline.assertions.evidence import (
     sorted_pipe,
     write_assertion_table,
 )
-from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu, _resolve_devices, default_ner, mine_with_cache
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.logging_setup import logger, progress, stats, step
+from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
-from dakp_pipeline.ner.mention_cache import MentionCache
-from dakp_pipeline.ner.ner import DiseaseNER, Mention
 
 _TABLE = "faers_applied_to_treat_assertions"
 _PREDICATE = "biolink:applied_to_treat"
@@ -93,12 +80,6 @@ _STATUS_OFF_LABEL = "off_label_use"
 #: carries no off-label information). All three values are ``ClinicalApprovalStatusEnum`` members.
 _STATUS_NOT_PROVIDED = "not_provided"
 _KNOWLEDGE_LEVEL = "statistical_association"
-
-#: One INFO progress line per this many mined indication strings (GLiNER is the slow step).
-_MINING_PROGRESS_EVERY = 500
-
-#: NER mention type -> biolink-ish object category for mention-resolved FAERS objects.
-_MENTION_TYPE_CATEGORIES = {"disease": "Disease", "phenotype": "PhenotypicFeature", "phenotypicfeature": "PhenotypicFeature"}
 
 # FAERS ``indi_pt`` is free text and carries non-disease usage-context values that name no real
 # condition (placeholders like "Product used for unknown indication", generic procedures like a
@@ -132,9 +113,6 @@ class ObservedUsesShaper:
     def transform(self, inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
         with step(logger, "shape_faers_applied_to_treat"):
             disease_map: dict[str, dict[str, str]] = ctx.params.get("disease_map", {})  # type: ignore[assignment]
-            ner_param = ctx.params.get("ner")
-            ner = ner_param if isinstance(ner_param, DiseaseNER) else default_ner(ctx.fixture_root)
-            devices = _resolve_devices(ner)
             stats(logger, "shape_faers_applied_to_treat", inputs=len(inputs), disease_map_terms=len(disease_map))
             # Projection: only the three columns the aggregation needs (the production case table
             # is tens of millions of rows wide; reading all 17 columns wastes gigabytes).
@@ -142,68 +120,10 @@ class ObservedUsesShaper:
             approved = find_table(inputs, "approved_treats_assertions.tsv")
             approved_pairs = _approved_pair_index(approved) if approved is not None else None
             approvals = build_fda_approval_index(inputs)
-            with MentionCache(ctx.workdir) as cache:
-                rows = build_observed_use_rows(
-                    faers_cases,
-                    disease_map,
-                    approved_pairs,
-                    approvals=approvals,
-                    ner=ner,
-                    devices=devices,
-                    cache=cache,
-                    faers_quarter_urls=faers_quarter_urls(inputs),
-                )
+            rows = build_observed_use_rows(
+                faers_cases, disease_map, approved_pairs, approvals=approvals, faers_quarter_urls=faers_quarter_urls(inputs)
+            )
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_faers_applied_to_treat")
-
-
-def _mine_indication_mentions(
-    texts: list[str], ner: DiseaseNER, devices: Sequence[str] | None, cache: MentionCache | None = None
-) -> dict[str, list[Mention]]:
-    """Mine distinct dictionary-miss indication strings, returning ``{normalized_text: [mentions]}``.
-
-    Deduplication happens upstream (``texts`` are distinct normalized strings), so each unique
-    string is mined exactly once — the production case table's millions of rows collapse to a
-    bounded set of distinct indications. Production runs dispatch across GPUs
-    (:func:`~dakp_pipeline.assertions.ner_dispatch._mine_multi_gpu`); the offline gazetteer
-    backend runs sequentially with periodic progress narration. When ``cache`` is given,
-    previously mined texts are served from the persistent mention cache
-    (:func:`~dakp_pipeline.assertions.ner_dispatch.mine_with_cache`).
-    """
-    if not texts:
-        return {}
-    work_items = [(text, text, text) for text in texts]
-
-    def mine(items: Sequence[Any]) -> dict[tuple[str, str], list[Mention]]:
-        if devices and len(items) > 1 and not ner._offline:
-            return _mine_multi_gpu(items, ner, devices)
-        mined: dict[tuple[str, str], list[Mention]] = {}
-        for done, (set_id, doc_id, text) in enumerate(items, start=1):
-            mined[(set_id, doc_id)] = ner.extract(text)
-            progress(logger, "shape_faers_applied_to_treat", done, len(items), every=_MINING_PROGRESS_EVERY)
-        return mined
-
-    mined_all = mine_with_cache(work_items, ner, mine, cache)
-    return {set_id: mentions for (set_id, _doc_id), mentions in mined_all.items()}
-
-
-def _ner_object(indication: str, indication_mentions: Mapping[str, list[Mention]] | None) -> dict[str, str] | None:
-    """The single clean disease/phenotype mention for a dictionary-miss indication, else None.
-
-    Only an unambiguous single mention resolves the object — zero mentions (nothing found) or
-    several (a conjunction like ``rheumatoid arthritis and diabetes``) keep the raw passthrough
-    rather than guess at one head condition.
-    """
-    if indication_mentions is None:
-        return None
-    mentions = indication_mentions.get(normalize_text(indication), [])
-    if len(mentions) != 1:
-        return None
-    mention = mentions[0]
-    category = _MENTION_TYPE_CATEGORIES.get(str(mention.type).lower())
-    text = normalize_text(mention.text)
-    if category is None or not text:
-        return None
-    return {"text": text, "curie": "", "name": text, "category": category}
 
 
 def _approved_pair_index(approved: pl.DataFrame) -> set[tuple[str, str]]:
@@ -228,15 +148,18 @@ def build_observed_use_rows(
     approved_pairs: set[tuple[str, str]] | None = None,
     *,
     approvals: FDAApprovalIndex | None = None,
-    ner: DiseaseNER | None = None,
-    devices: Sequence[str] | None = None,
-    cache: MentionCache | None = None,
     faers_quarter_urls: Mapping[str, str] | None = None,
+    # Kept for source compatibility with callers from before the FAERS NER bypass. These
+    # parameters are deliberately ignored: FAERS fields are never sent to NER.
+    ner: object | None = None,
+    devices: object | None = None,
+    cache: object | None = None,
 ) -> list[dict[str, str]]:
     """Aggregate FAERS drug-indication case counts into applied-to-treat rows (deterministic).
 
-    Indication strings are resolved to their object (disease-map match, single NER mention, or
-    raw passthrough) BEFORE aggregation, and the distinct-case counting then runs as ONE Polars
+    Indication strings are resolved to their object (disease-map match or raw passthrough) BEFORE
+    aggregation. FAERS text is never sent through the biomedical NER model; the distinct-case
+    counting then runs as ONE Polars
     group-by on ``(drugname, object_text)`` (never Python row iteration), so the
     full-production case table (tens of millions of rows) aggregates in a few seconds with
     bounded memory. Resolution-first makes the rows unique on the edge-identity key: two raw
@@ -263,17 +186,13 @@ def build_observed_use_rows(
     (:func:`_approved_pair_index`), or ``None`` when that table is unavailable — in which case
     every row degrades to ``clinical_approval_status = not_provided``.
 
-    When ``ner`` is given, stop-list-passing indications the dictionary misses are mined once per
-    distinct normalized string (:func:`_mine_indication_mentions`); a single unambiguous mention
-    supplies the object text/name/category (:func:`_ner_object`). ``cache`` (a persistent mention
-    cache) only changes WHERE mentions come from, never their content.
-
     ``approvals`` expands the FAERS application numbers, which FAERS records with both the
     application-type prefix and the leading zeros stripped (``125514``), back to the FDA form
     every other source uses (``BLA125514``). Without it the bare FAERS number is emitted.
     """
     if faers_cases is None:
         return []
+    del ner, devices, cache
     approvals = approvals if approvals is not None else FDAApprovalIndex()
 
     def _text_column(name: str) -> pl.Expr:
@@ -310,22 +229,11 @@ def build_observed_use_rows(
         else:
             misses.append(indication)
 
-    # Mine the distinct stop-list-passing, dictionary-miss indication strings once (NER channel).
-    indication_mentions: dict[str, list[Mention]] | None = None
-    if ner is not None:
-        miss_texts = sorted({normalize_text(indication) for indication in misses} - {""})
-        indication_mentions = _mine_indication_mentions(miss_texts, ner, devices, cache)
-
-    ner_resolved = 0
     for indication in misses:
-        mention_obj = _ner_object(indication, indication_mentions)
-        if mention_obj is not None:
-            ner_resolved += 1
-        resolution[indication] = mention_obj or {"text": indication, "curie": "", "name": indication, "category": "Disease"}
+        resolution[indication] = {"text": indication, "curie": "", "name": indication, "category": "Disease"}
 
     # Canonical object attributes per resolved object text (first indication in sorted order
-    # wins), so a pathological mention-type conflict between merged wordings stays
-    # deterministic and the group-by aggregates per-group-constant attribute columns.
+    # wins), so dictionary-key casing variants stay deterministic when merged.
     canonical: dict[str, dict[str, str]] = {}
     for indication in sorted(resolution):
         canonical.setdefault(resolution[indication]["text"], resolution[indication])
@@ -433,14 +341,7 @@ def build_observed_use_rows(
                 upstream_resource_ids=join_pipe(INFORES_FAERS, INFORES_DAILYMED),
             )
         )
-    stats(
-        logger,
-        "shape_faers_applied_to_treat",
-        indications=len(indications),
-        stoplist_drops=stoplist_drops,
-        ner_resolved=ner_resolved,
-        assertions=len(rows),
-    )
+    stats(logger, "shape_faers_applied_to_treat", indications=len(indications), stoplist_drops=stoplist_drops, assertions=len(rows))
     return rows
 
 

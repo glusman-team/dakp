@@ -38,10 +38,11 @@ DOWNLOAD_POOL = "dakp_download"
 #: dropped extract_faers peak RSS from ≫50 GB to ~6-15 GB, removing the memory pressure that
 #: previously forced the two heavy extracts to serialize via weighted pool slots.
 EXTRACT_POOL = "dakp_extract"
-#: Pool serializing the three GLiNER-mining shape tasks (1 slot, provisioned by the CLI): each
+#: Pool serializing the two GLiNER-mining shape tasks (1 slot, provisioned by the CLI): each
 #: shape task spawns up to one worker per GPU, and concurrent shape tasks would oversubscribe
-#: the cards. A scheduler hint only — the per-device flock in ``ner/ner.py`` (:func:`_acquire_gpu_lock`)
-#: is the hard one-model-per-GPU guarantee.
+#: the cards. FAERS observed-use shaping does not use this pool because it bypasses NER. A scheduler
+#: hint only — the per-device flock in ``ner/ner.py`` (:func:`_acquire_gpu_lock`) is the hard
+#: one-model-per-GPU guarantee.
 NER_MINING_POOL = "ner_mining"
 
 #: Airflow Variable (JSON) holding the per-run config (workdir / fixture_root / threads / limits).
@@ -54,9 +55,10 @@ The DAG is organized into six visual TaskGroups while preserving the historical 
 
 1. **acquire** — network/model acquisition, bounded by `dakp_download`.
 2. **extract** — native Go SDK stubs on the `golang` queue, bounded by `dakp_extract`.
-3. **shape** — Python assertion-table shaping over artifact manifests; the three GLiNER-mining
-   tasks serialize on the 1-slot `ner_mining` pool so concurrent shape tasks can't oversubscribe
-   the GPUs (the per-device flock in `ner/ner.py` is the hard guarantee).
+3. **shape** — Python assertion-table shaping over artifact manifests; the two DailyMed GLiNER-mining
+   tasks serialize on the 1-slot `ner_mining` pool so concurrent shape tasks can't
+   oversubscribe the GPUs (the per-device flock in `ner/ner.py` is the hard guarantee). FAERS
+   observed-use shaping bypasses NER and goes directly to intervention mapping.
 4. **tablassert** — config generation and optional real Tablassert KGX handoff.
 5. **export** — retrofit the KGX pair into the legacy DAKP TSV schema and publish the final
    ndjson/tsv pair plus the Tablassert RIG under the legacy `drug_approvals_kg_*_v<version>`
@@ -257,19 +259,13 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                 return _refs_to_xcom(out)
 
         @task(
-            pool=NER_MINING_POOL,
-            doc_md="Shape FAERS observed-use assertions from FAERS cases + DailyMed/Drugs@FDA refs, cross-referenced with the approved-treats table for the approval status.",
+            doc_md="Shape FAERS observed-use assertions from FAERS cases + DailyMed/Drugs@FDA refs, cross-referenced with the approved-treats table for the approval status. FAERS text bypasses NER and goes directly to intervention mapping."
         )
         def shape_faers_use_tables(
-            faers_ext: Any, dm_ext: Any, drugsfda_ext: Any, approved: Any, ner_models_ref: Any
+            faers_ext: Any, dm_ext: Any, drugsfda_ext: Any, approved: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
-            # ``ner_models_ref`` is an ordering dependency: the production NER lazily loads the
-            # GLiNER weights cached by acquire_ner_models (the model refs aren't inputs).
-            del ner_models_ref
             from dakp_pipeline.assertions import observed_uses
             from dakp_pipeline.assertions.evidence import cached_shape_outputs
-            from dakp_pipeline.io.contracts import TaskContext
-            from dakp_pipeline.ner.ner import DiseaseNER
 
             ctx = _ctx()
             with step(logger, "task shape_faers_use_tables"):
@@ -283,11 +279,9 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                     drugsfda_refs=len(drugsfda_refs),
                     approved_refs=len(approved_refs),
                 )
-                # Observed uses share the indication precision-first profile: false-positive
-                # observed-use edges are more harmful than missed weak indications.
-                ner = DiseaseNER.for_indications(offline=False, workdir=ctx.workdir)
-                ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
-                # Drugs@FDA is the authoritative FDA application register: it expands the
+                # FAERS indications are intentionally not sent through NER: their compact values
+                # are retained as raw condition text for downstream mapping. Drugs@FDA is the
+                # authoritative FDA application register: it expands the
                 # prefix-stripped FAERS application numbers back to their FDA form (BLA125514).
                 in_refs = [*faers_refs, *dailymed_refs, *drugsfda_refs, *approved_refs]
                 # Already-done skip: identical inputs + config fingerprint => cached outputs.
@@ -344,7 +338,7 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
         approved = shape_treatment_tables(extracts.dailymed, extracts.drugsfda, extracts.faers, ner_models)
         return AssertionOutputs(
             approved=approved,
-            uses=shape_faers_use_tables(extracts.faers, extracts.dailymed, extracts.drugsfda, approved, ner_models),
+            uses=shape_faers_use_tables(extracts.faers, extracts.dailymed, extracts.drugsfda, approved),
             contraindications=shape_contraindication_tables(extracts.dailymed, extracts.drugsfda, ner_models),
         )
 

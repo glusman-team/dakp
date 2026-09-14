@@ -1,6 +1,6 @@
 """Shared NER dispatch plumbing for the assertion shapers.
 
-Every shaper that mines DailyMed/FAERS text with the composite NER backend
+Every shaper that mines DailyMed text with the composite NER backend
 (:class:`~dakp_pipeline.ner.ner.DiseaseNER`) needs the same three things:
 
 * **backend construction** — :func:`default_ner` builds the deterministic **offline**
@@ -214,7 +214,7 @@ MineFn = Callable[[Sequence[Any]], dict[tuple[str, str], list[Mention]]]
 def mine_with_cache(work_items: Sequence[Any], ner: DiseaseNER, mine: MineFn, cache: MentionCache | None) -> dict[tuple[str, str], list[Mention]]:
     """Run ``mine`` over ``work_items``, serving repeats from the persistent mention cache.
 
-    Central caching seam for all three NER shapers. Text-level flow: every item's cache key
+    Central caching seam for the DailyMed NER shapers. Text-level flow: every item's cache key
     (:func:`~dakp_pipeline.ner.mention_cache.mention_key` over model id + model content b3 +
     config fingerprint + normalized text) is batch-fetched up front; only MISSES reach
     ``mine`` (one representative item per distinct missing key, so duplicate texts are mined

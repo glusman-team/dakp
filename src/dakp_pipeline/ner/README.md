@@ -1,7 +1,8 @@
-# NER layer — one composite backend, mentions only
+# NER layer — one composite backend, DailyMed mentions only
 
 DAKP extracts disease/phenotype **mentions** (text spans + entity type) from DailyMed SPL
-sections and FAERS indication strings. There is **one**
+sections. FAERS observed-use rows bypass NER and pass raw drug names to downstream intervention
+mapping. There is **one**
 NER backend (`ner.py`, `DiseaseNER`) with **one** entry point — no pluggable backend selector.
 DAKP never resolves terms to ontology CURIEs; ontology mapping is exclusively Tablassert's job
 (fullmap/BABEL at `tablassert build-kg`). Assertion tables carry mention **text**; Tablassert
@@ -16,8 +17,9 @@ resolves the CURIEs.
 - `assertions/approved_treats.py` — mines indication sections once per document and uses the
   mentions as a corroboration channel for `treats` candidates the dictionary matcher missed
   (recall for label prose that names a more specific condition than the FDA indication string).
-- `assertions/observed_uses.py` — mines FAERS indication strings that the dictionary matcher
-  missed and resolves exactly-one disease/phenotype mention into an `observed_use` object.
+- `assertions/observed_uses.py` — aggregates FAERS indication strings using the lexical disease
+  baseline and passes raw FAERS drug names through for downstream intervention mapping; it does
+  not invoke NER.
 - `assertions/ner_dispatch.py` — the shared plumbing for these consumers: `default_ner`, GPU
   device resolution, and multi-pass multi-GPU dispatch (`mine_passes_multi_gpu`).
 
@@ -42,7 +44,8 @@ Benchmarked on a hand-labeled fixture (34 cases / 42 gold spans, `tests/eval/`):
   the generic head for qualified diseases (`hypertension` for `pulmonary hypertension`).
 * **Production mode (`offline=False`):** the same gazetteer anchors high-precision spans and
   a domain fine-tuned GLiNER (`SkyeAv/drug-approvals-gliner-small-v2.1`, trained on FAERS and
-  DailyMed indication/contraindication text) fills out-of-gazetteer gaps. On overlap the **most specific span wins**: a model span that
+  DailyMed indication/contraindication text) fills out-of-gazetteer gaps when invoked on DailyMed
+  sections. On overlap the **most specific span wins**: a model span that
   strictly contains a gazetteer span supersedes it (`pulmonary hypertension` over
   `hypertension`), taking the model's boundary and the gazetteer's type. Equal spans, partial
   overlaps, and spans covering several gazetteer terms (a conjunction) go to the gazetteer.
@@ -66,12 +69,13 @@ The backend separates a model-generation floor from use-specific acceptance prof
 | setting | default | role |
 | ---- | ------- | ---- |
 | `GLINER_GENERATION_FLOOR` / `threshold` | `0.35` | candidate **generation**, passed to GLiNER |
-| `INDICATION_ACCEPT_THRESHOLD` | `0.95` | precision-first acceptance for indications and observed uses |
+| `INDICATION_ACCEPT_THRESHOLD` | `0.95` | precision-first acceptance for DailyMed indications |
 | `CONTRAINDICATION_ACCEPT_THRESHOLD` | `0.35` | recall-first acceptance for contraindications |
 | `STRICT_GAZETTEER_EXTENSION_THRESHOLD` | `0.95` | minimum model score to replace an exact gazetteer anchor with a longer span |
 
 The `0.35` generation floor exists so specificity candidates remain visible to the merge. It is
-not the indication operating point. The current-model local sweep selected `0.95` for indications:
+not the DailyMed indication operating point. The current-model local sweep selected `0.95` for
+DailyMed indications:
 on the 34-case fixture, the full composite reached precision 1.000 with 39/42 recall. The lower
 contraindication point preserves rare/OOV candidates because a missed contraindication is more
 harmful; it is intentionally not the same production policy as indications. These values were

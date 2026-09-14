@@ -57,9 +57,11 @@ BLAKE3-keyed mentions under `tmp/cache/ner/`), e.g. to force re-mining without l
   content-addressed and freshness-gated (7-day cache window), so re-runs skip tens of GB.
 - **extract**: heavy parsers run as native Go workers ([`go/`](./go)).
 - **NER**: a composite DiseaseNER (curated gazetteer + domain-fine-tuned GLiNER) mines
-  disease/phenotype mentions from DailyMed contraindication sections; it emits mentions only,
-  never ontology CURIEs.
-- **aggregate**: joins the extracts and NER mentions into three TSV assertion tables.
+  disease/phenotype mentions from DailyMed sections; it emits mentions only, never ontology
+  CURIEs. FAERS observed-use shaping bypasses NER and leaves FAERS drug names as text-first
+  intervention subjects for Tablassert mapping.
+- **aggregate**: joins the extracts and NER mentions into the DailyMed-backed tables and
+  aggregates FAERS observed-use rows without NER.
 - **Tablassert handoff**: generates a graph config plus one table config per assertion table,
   then delegates to `tablassert build-kg` and validates the emitted KGX against the DAKP
   Translator contract — bare-`biolink:Association` edges, off-allow-list node categories, or

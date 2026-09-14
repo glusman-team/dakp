@@ -3,8 +3,8 @@
 The DAG always imports and constructs (no optional-extra guard). These tests assert the module
 constants, the 15-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
 three ``extract_*`` tasks are native Go SDK stubs routed to the ``golang`` queue, that
-acquisition/extraction resource pools let those tasks run concurrently, that the three
-GLiNER-mining shape tasks serialize on the 1-slot ``ner_mining`` pool, and that the MEDliNER
+acquisition/extraction resource pools let those tasks run concurrently, that the two DailyMed GLiNER-mining shape tasks serialize on the 1-slot ``ner_mining`` pool,
+that FAERS observed-use shaping bypasses NER, and that the MEDliNER
 export task branches off the DailyMed + FAERS extracts as a default-pool leaf.
 """
 
@@ -87,11 +87,15 @@ def test_acquisition_tasks_use_download_pool(dakp_build) -> None:
 
 
 def test_shape_tasks_use_ner_mining_pool(dakp_build) -> None:
-    # Every GLiNER-mining shape task sits on the 1-slot pool so concurrent shape tasks
+    # DailyMed GLiNER-mining shape tasks sit on the 1-slot pool so concurrent shape tasks
     # serialize instead of oversubscribing the GPUs (the per-device flock is the backstop).
     dag = dakp_build.dag_obj
-    for task_id in _EXPECTED_GROUP_MEMBERS["shape"]:
+    ner_tasks = {"shape_treatment_tables", "shape_contraindication_tables"}
+    for task_id in ner_tasks:
         assert dag.get_task(task_id).pool == dakp_build.NER_MINING_POOL
+    # FAERS observed-use shaping performs lexical lookup and downstream intervention mapping;
+    # it must not reserve the GPU/NER pool.
+    assert dag.get_task("shape_faers_use_tables").pool == "default_pool"
 
 
 def test_dag_task_graph(dakp_build) -> None:
@@ -113,13 +117,7 @@ def test_dag_task_graph(dakp_build) -> None:
     # models). Every shaper takes Drugs@FDA: it is the FDA application register that expands the
     # prefix-stripped application numbers into their FDA form for FDA_regulatory_approvals.
     assert upstream("shape_treatment_tables") == {"extract_dailymed", "extract_drugsfda", "extract_faers", "acquire_ner_models"}
-    assert upstream("shape_faers_use_tables") == {
-        "extract_faers",
-        "extract_dailymed",
-        "extract_drugsfda",
-        "shape_treatment_tables",
-        "acquire_ner_models",
-    }
+    assert upstream("shape_faers_use_tables") == {"extract_faers", "extract_dailymed", "extract_drugsfda", "shape_treatment_tables"}
     assert upstream("shape_contraindication_tables") == {"extract_dailymed", "extract_drugsfda", "acquire_ner_models"}
 
     shapes = {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"}

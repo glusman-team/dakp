@@ -13,7 +13,8 @@ Composite design (gazetteer-first, GLiNER-augmented)
   and offline runs.
 * **Production mode (``offline=False``):** the same gazetteer anchors high-precision spans and
   a domain fine-tuned GLiNER (``SkyeAv/drug-approvals-gliner-small-v2.1``, trained on FAERS and
-  DailyMed indication/contraindication text) fills out-of-gazetteer gaps.
+  DailyMed indication/contraindication text) fills out-of-gazetteer gaps when invoked on DailyMed
+  sections.
   Non-overlapping GLiNER spans add recall; on overlap the **most specific span wins** — a model
   span that strictly contains a gazetteer span supersedes it (``pulmonary hypertension`` beats
   ``hypertension``), taking the model's boundary and the gazetteer's type. Equal spans, partial
@@ -61,7 +62,8 @@ from dakp_pipeline.ner.lexical import LexicalMatcher, Mention
 from dakp_pipeline.ner.model_cache import NERDependencyError, default_model_cache_dir, ensure_model
 
 # Domain fine-tune of ``urchade/gliner_small-v2.1`` for FAERS/DailyMed indication and
-# contraindication text (deberta-v3-small encoder, max_len 384 word tokens). Override for
+# contraindication text (deberta-v3-small encoder, max_len 384 word tokens). DAKP invokes it on
+# DailyMed sections only. Override for
 # another GLiNER checkpoint.
 DEFAULT_MODEL = "SkyeAv/drug-approvals-gliner-small-v2.1"
 #: Labels the production checkpoint is fine-tuned for (see its model card), requested verbatim
@@ -73,8 +75,8 @@ MODEL_LABEL = TYPE_DISEASE
 #: floor, not a production operating point: the specificity merge needs to see low-scoring
 #: specific spans before a use-specific acceptance policy decides whether to assert them.
 GLINER_GENERATION_FLOOR = 0.35
-#: Precision-first indication/observed-use acceptance point, selected from the current-model
-#: sweep. At 0.95 the local 34-case fixture had no composite false positives (39/42 recall).
+#: Precision-first DailyMed indication acceptance point, selected from the current-model sweep.
+#: At 0.95 the local 34-case fixture had no composite false positives (39/42 recall).
 INDICATION_ACCEPT_THRESHOLD = 0.95
 #: Contraindications use the model floor as their acceptance point: a missed contraindication is
 #: more harmful than a low-confidence candidate. This aliases the one generation-floor constant
@@ -571,8 +573,8 @@ class DiseaseNER:
             :data:`GLINER_GENERATION_FLOOR`.
         accept_threshold: DAKP-side **acceptance** floor (production mode). A model span below it
             is abstained on — emitted as nothing, never downgraded to the generic gazetteer term
-            it was competing with. Use :data:`INDICATION_ACCEPT_THRESHOLD` for indications and
-            observed uses; use :data:`CONTRAINDICATION_ACCEPT_THRESHOLD` for contraindications.
+            it was competing with. Use :data:`INDICATION_ACCEPT_THRESHOLD` for DailyMed
+            indications; use :data:`CONTRAINDICATION_ACCEPT_THRESHOLD` for contraindications.
             Keep ``threshold <= accept_threshold``; an ``accept_threshold`` below ``threshold`` is
             simply a no-op (GLiNER already filtered).
         chunk_words: window budget in GLiNER word tokens for long texts (production mode);
@@ -629,7 +631,7 @@ class DiseaseNER:
 
     @classmethod
     def for_indications(cls, **kwargs: Any) -> DiseaseNER:
-        """Build the precision-first profile for indications and observed uses."""
+        """Build the precision-first profile for DailyMed indication sections."""
         return cls(
             threshold=GLINER_GENERATION_FLOOR,
             accept_threshold=INDICATION_ACCEPT_THRESHOLD,
