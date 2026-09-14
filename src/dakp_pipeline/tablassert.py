@@ -574,31 +574,67 @@ _TABLE_SUBJECT_DENYLIST: dict[str, tuple[str, ...]] = {
 
 # object_text row exclusions applied to EVERY assertion table (the same mention wording can be
 # mined from any source), emitted as ``source.reindex`` ``ne`` filters exactly like the subject
-# denylist above. These are every distinct object_text mention that resolved into the
-# GENERIC allergy/hypersensitivity CURIE family in the deployed 1.11.2 KG (MONDO:0000605
-# hypersensitivity reaction disease, MONDO:0005271 allergic disease, MONDO:0000775 drug allergy,
-# MONDO:0002459 type IV hypersensitivity disease, MONDO:0017853 hypersensitivity pneumonitis,
-# MONDO:0006794 hypersensitivity vasculitis, MONDO:0007817 IgE responsiveness atopic,
-# UMLS:C4552319 hypersensitivity myocarditis, UMLS:C0585186 allergic disorder of skin).
-# "Hypersensitivity" is contraindication-section boilerplate — the #1 entry on nearly every
-# DailyMed label, naming a reaction the drug itself CAUSES — and in FAERS indications it is an
-# adverse-event word, not a treatable condition, so edges to this family are semantically wrong
-# in all three tables (2,905 of 110,454 edges in 1.11.2: 2,249 contraindicated_in, 613
-# applied_to_treat, 43 treats). On the contraindication side the boilerplate is also
-# non-discriminative: "drug X contraindicated_in hypersensitivity" is asserted for essentially
-# every labeled drug, so the edge distinguishes nothing and drowns the mined disease signal.
-# Deliberately KEPT — the drug-SPECIFIC hypersensitivity and allergy findings: the UMLS
+# denylist above. ``ne`` is an exact whole-cell compare, so an entry drops ONLY rows whose
+# object_text IS that wording — qualified and disease-naming forms are untouched ("high blood
+# pressure" -> MONDO:0005044 hypertensive disorder, "heart rate increased" -> HP:0001649
+# tachycardia, "heart rate decreased" -> HP:0001662 bradycardia, "cardiac failure", "renal
+# failure", "status epilepticus", ...). Two derivation groups, both enumerated against the
+# deployed 1.11.2 KG:
+#
+# (1) The GENERIC allergy/hypersensitivity CURIE family — every distinct object_text mention that
+#     resolved into MONDO:0000605 hypersensitivity reaction disease, MONDO:0005271 allergic
+#     disease, MONDO:0000775 drug allergy, MONDO:0002459 type IV hypersensitivity disease,
+#     MONDO:0017853 hypersensitivity pneumonitis, MONDO:0006794 hypersensitivity vasculitis,
+#     MONDO:0007817 IgE responsiveness atopic, UMLS:C4552319 hypersensitivity myocarditis,
+#     UMLS:C0585186 allergic disorder of skin. "Hypersensitivity" is contraindication-section
+#     boilerplate — the #1 entry on nearly every DailyMed label, naming a reaction the drug itself
+#     CAUSES — and in FAERS indications it is an adverse-event word, not a treatable condition, so
+#     edges to this family are semantically wrong in all three tables (2,905 of 110,454 edges in
+#     1.11.2: 2,249 contraindicated_in, 613 applied_to_treat, 43 treats). On the contraindication
+#     side the boilerplate is also non-discriminative: "drug X contraindicated_in
+#     hypersensitivity" is asserted for essentially every labeled drug, so the edge distinguishes
+#     nothing and drowns the mined disease signal.
+#
+# (2) NON-DISEASE measurement / procedure / outcome meta-terms mined out of label prose and FAERS
+#     free text — not conditions at all, so a drug->X edge about them is meaningless in every
+#     table. "Blood pressure" resolves to NCIT:C54707 (Blood Pressure Finding, a MEASUREMENT
+#     finding: 431 edges in 1.11.2 — the largest non-disease meta-term object in the KG); the
+#     reporting meta-terms resolve to UMLS:C0877248 (Adverse event: 103 edges), UMLS:C0879626
+#     (Adverse effects: 15) and UMLS:C0559546 (Adverse reactions: 55); "disease progression"
+#     resolves to UMLS:C0242656 (Disease Progression: 62) — a trial OUTCOME, not something a drug
+#     treats or is contraindicated in. Those five CURIEs are 666 edges of 1.11.2. "Heart rate",
+#     "laboratory test(s)", "treatment failure" and "condition aggravated" carry no edges in
+#     1.11.2 but are the same MedDRA/CTCAE meta-term class and are denied preventively:
+#     "CONDITION AGGRAVATED" is the MedDRA PT spelling and "CONDITION AGGRIVATED" the reporter
+#     misspelling, denied on the same precedent as FAERS's own "METHYL ALCHOL" on the subject
+#     side. "ADVERSE DRUG REACTION(S)" is the canonical regulatory parent of the "adverse
+#     reaction"/"adverse event" wordings and a standing DailyMed section heading, so it is denied
+#     with them (the FAERS indication channel already substring-blocks that wording via
+#     ``_NON_DISEASE_INDICATION_RE`` in ``assertions/observed_uses.py``; the reindex entries cover
+#     the contraindication channel and any future one). Caveat, same spirit as the casing note
+#     below: three of the preventive entries can structurally never fire — fullmap resolves bare
+#     "heart rate" (a physiologic function), "laboratory test(s)" (UMLS:C0022885, a Procedure)
+#     and "condition aggravated" (UMLS:C0235874, a Phenomenon) to categories OUTSIDE
+#     ``OBJECT_PRIORITIZE``, so the ``avoid`` guard already drops them — only "treatment failure"
+#     (NCIT:C200647, PhenotypicFeature) resolves into an allowed category; the entries are kept
+#     as load-time insurance against fullmap re-ranking.
+#
+# Deliberately KEPT — drug-SPECIFIC and mechanism-specific members of both classes: the UMLS
 # "Hypersensitivity to <drug>" concepts (C5768819 abacavir, C5817290 gentamicin, C5817291
 # erythromycin, C5817297 hydrocortisone — 5 contraindication edges in 1.11.2) name a specific
-# pharmacogenomic/drug-specific phenotype rather than the generic boilerplate, and specific
-# drug-allergy findings ("allergy to benzocaine" -> UMLS:C0570648 etc.) resolve OUTSIDE this
-# CURIE family anyway. "LEUKOCYTOCLASTIC VASCULITIS" is also not denied: it is the one family
-# wording that independently resolves to its own distinct CURIE (MONDO:0001290), so denying it
-# would take out two real disease edges in 1.11.2; the residual is that MONDO:0006794 can still
-# be reached via that synonym. See :func:`_casing_variants` for the casing renderings each entry
-# ships (the contraindications table's ``object_text`` is always ``normalize_text``-lowercased,
-# so only the lowercase rendering can ever match there; the rest are harmless defense-in-depth).
+# pharmacogenomic phenotype rather than the generic boilerplate, and specific drug-allergy
+# findings ("allergy to benzocaine" -> UMLS:C0570648 etc.) resolve OUTSIDE that CURIE family
+# anyway. Likewise "adverse event following immunisation" (UMLS:C2721654), "immune-mediated
+# adverse reaction" (UMLS:C4087225) and "abnormal liver function tests" (HP:0002910) name defined
+# entities/findings — none is the bare meta-term. "LEUKOCYTOCLASTIC VASCULITIS" is also not denied: it is the one
+# family wording that independently resolves to its own distinct CURIE (MONDO:0001290), so
+# denying it would take out two real disease edges in 1.11.2; the residual is that MONDO:0006794
+# can still be reached via that synonym. See :func:`_casing_variants` for the casing renderings
+# each entry ships (the contraindications table's ``object_text`` is always
+# ``normalize_text``-lowercased, so only the lowercase rendering can ever match there; the rest
+# are harmless defense-in-depth).
 _TABLE_OBJECT_DENYLIST: tuple[str, ...] = (
+    # (1) generic allergy/hypersensitivity family
     "HYPERSENSITIVITY",
     "HYPERSENSITIVITY REACTION",
     "HYPERSENSITIVITY REACTIONS",
@@ -618,7 +654,63 @@ _TABLE_OBJECT_DENYLIST: tuple[str, ...] = (
     "ALLERGIES",
     "DRUG ALLERGY",
     "SENSITIVITY",
+    # (2) non-disease measurement / procedure / outcome meta-terms
+    "BLOOD PRESSURE",
+    "HEART RATE",
+    "LABORATORY TEST",
+    "LABORATORY TESTS",
+    "ADVERSE EVENT",
+    "ADVERSE EVENTS",
+    "ADVERSE EFFECT",
+    "ADVERSE EFFECTS",
+    "ADVERSE REACTION",
+    "ADVERSE REACTIONS",
+    "ADVERSE DRUG REACTION",
+    "ADVERSE DRUG REACTIONS",
+    "SIDE EFFECT",
+    "SIDE EFFECTS",
+    "DISEASE PROGRESSION",
+    "TREATMENT FAILURE",
+    "CONDITION AGGRAVATED",
+    "CONDITION AGGRIVATED",
+    # (3) outcome / exposure / event placeholders and mapping artifacts (1.11.2 audit)
+    "ANAESTHESIA",
+    "ANESTHESIA",
+    "OVERDOSE",
+    "DRUG OVERDOSE",
+    "DRUG OVERDOSES",
+    "INTENTIONAL OVERDOSE",
+    "POISONING",
+    "INJURY",
+    "TRAUMATIC INJURY",
+    "DEATH",
+    "SUDDEN DEATH",
+    "HIV TEST POSITIVE",
+    "UNEVALUABLE EVENT",
+    "SUBSTANCE USE",
+    "GLUCOSE TOLERANCE TEST",
 )
+
+# CURIEs dropped from the OBJECT side during entity resolution via the object NodeEncoding's
+# ``exclude_regex`` (Tablassert >= 16): a wording-level ``ne`` filter cannot express "drop this
+# CURIE, keep that one". UMLS:C0812393 ("Cancer patients and suicide and depression", 623 edges
+# in 1.11.2 — a literature/phrase concept, not a disease) is reached almost entirely through
+# "depression", which fullmap ties to BOTH C0812393 and MONDO:0002050 (depressive disorder, a
+# real disease, 622 edges): denying the wording would destroy the real disease's edges, so the
+# junk CURIE is excluded at resolution instead — "depression" keeps resolving to MONDO:0002050
+# and the tied C0812393 candidate is dropped ("suicide", whose only candidate is C0812393, then
+# resolves to nothing and its 7 edges drop as unresolved). Each pattern is anchored to the whole
+# CURIE; extend this tuple only with CURIEs whose wording channels are shared with real diseases
+# — wording-only junk belongs in :data:`_TABLE_OBJECT_DENYLIST` above.
+_OBJECT_EXCLUDE_REGEX: tuple[str, ...] = (r"^UMLS:C0812393$",)
+
+# Deliberately KEPT — the outcome/exposure relatives that name REAL conditions: "sensory loss"
+# (the real phenotype NCIT:C182234 wrongly also carries the procedure wording "anaesthesia"; its
+# own wording survives, so only the 212 procedure-worded edges die), "substance abuse"
+# (MONDO:0002491, a DSM disorder — only the behavior wording "substance use" is denied),
+# "wound"/"wounds and injuries" (treatable traumatic conditions), and every QUALIFIED form
+# ("methanol poisoning", "spinal cord injury", "drug withdrawal", "sudden cardiac death", …) —
+# the ``ne`` exact whole-cell compare keeps them by construction.
 
 # assertion table -> (config basename, predicate, knowledge_level, agent_type). Knowledge levels
 # match the DINGO translator-ingest provenance contract
@@ -1015,7 +1107,8 @@ def table_config(table: str) -> dict[str, Any]:
     with a :data:`_TABLE_SUBJECT_DENYLIST` entry additionally carries ``source.reindex`` ``ne``
     filters — one per :func:`_casing_variants` rendering of each entry — that drop those
     subject_text rows before entity resolution, and EVERY table carries the same ``ne`` filters for
-    :data:`_TABLE_OBJECT_DENYLIST` on its object_text column.
+    :data:`_TABLE_OBJECT_DENYLIST` on its object_text column plus the object NodeEncoding's
+    :data:`_OBJECT_EXCLUDE_REGEX` CURIE exclusions.
     """
     _basename, predicate, knowledge_level, agent_type = _TABLE_SPECS[table]  # KeyError for unknown tables
     annotations: list[dict[str, Any]] = []
@@ -1050,7 +1143,7 @@ def table_config(table: str) -> dict[str, Any]:
             "encoding": column_letter(table, OBJECT_COLUMN),
             "prioritize": list(OBJECT_PRIORITIZE),
             "avoid": category_avoid_list(OBJECT_PRIORITIZE),
-            "exclude_regex": unavoidable_off_allowlist_regex(),
+            "exclude_regex": [*unavoidable_off_allowlist_regex(), *_OBJECT_EXCLUDE_REGEX],
         },
         "category_override": dict(OBJECT_CATEGORY_OVERRIDE),
     }

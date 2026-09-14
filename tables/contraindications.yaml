@@ -222,6 +222,384 @@ template:
       - column: F
         comparison: ne
         comparator: Sensitivity
+      - column: F
+        comparison: ne
+        comparator: "BLOOD PRESSURE"
+      - column: F
+        comparison: ne
+        comparator: "blood pressure"
+      - column: F
+        comparison: ne
+        comparator: "Blood Pressure"
+      - column: F
+        comparison: ne
+        comparator: "Blood pressure"
+      - column: F
+        comparison: ne
+        comparator: "HEART RATE"
+      - column: F
+        comparison: ne
+        comparator: "heart rate"
+      - column: F
+        comparison: ne
+        comparator: "Heart Rate"
+      - column: F
+        comparison: ne
+        comparator: "Heart rate"
+      - column: F
+        comparison: ne
+        comparator: "LABORATORY TEST"
+      - column: F
+        comparison: ne
+        comparator: "laboratory test"
+      - column: F
+        comparison: ne
+        comparator: "Laboratory Test"
+      - column: F
+        comparison: ne
+        comparator: "Laboratory test"
+      - column: F
+        comparison: ne
+        comparator: "LABORATORY TESTS"
+      - column: F
+        comparison: ne
+        comparator: "laboratory tests"
+      - column: F
+        comparison: ne
+        comparator: "Laboratory Tests"
+      - column: F
+        comparison: ne
+        comparator: "Laboratory tests"
+      - column: F
+        comparison: ne
+        comparator: "ADVERSE EVENT"
+      - column: F
+        comparison: ne
+        comparator: "adverse event"
+      - column: F
+        comparison: ne
+        comparator: "Adverse Event"
+      - column: F
+        comparison: ne
+        comparator: "Adverse event"
+      - column: F
+        comparison: ne
+        comparator: "ADVERSE EVENTS"
+      - column: F
+        comparison: ne
+        comparator: "adverse events"
+      - column: F
+        comparison: ne
+        comparator: "Adverse Events"
+      - column: F
+        comparison: ne
+        comparator: "Adverse events"
+      - column: F
+        comparison: ne
+        comparator: "ADVERSE EFFECT"
+      - column: F
+        comparison: ne
+        comparator: "adverse effect"
+      - column: F
+        comparison: ne
+        comparator: "Adverse Effect"
+      - column: F
+        comparison: ne
+        comparator: "Adverse effect"
+      - column: F
+        comparison: ne
+        comparator: "ADVERSE EFFECTS"
+      - column: F
+        comparison: ne
+        comparator: "adverse effects"
+      - column: F
+        comparison: ne
+        comparator: "Adverse Effects"
+      - column: F
+        comparison: ne
+        comparator: "Adverse effects"
+      - column: F
+        comparison: ne
+        comparator: "ADVERSE REACTION"
+      - column: F
+        comparison: ne
+        comparator: "adverse reaction"
+      - column: F
+        comparison: ne
+        comparator: "Adverse Reaction"
+      - column: F
+        comparison: ne
+        comparator: "Adverse reaction"
+      - column: F
+        comparison: ne
+        comparator: "ADVERSE REACTIONS"
+      - column: F
+        comparison: ne
+        comparator: "adverse reactions"
+      - column: F
+        comparison: ne
+        comparator: "Adverse Reactions"
+      - column: F
+        comparison: ne
+        comparator: "Adverse reactions"
+      - column: F
+        comparison: ne
+        comparator: "ADVERSE DRUG REACTION"
+      - column: F
+        comparison: ne
+        comparator: "adverse drug reaction"
+      - column: F
+        comparison: ne
+        comparator: "Adverse Drug Reaction"
+      - column: F
+        comparison: ne
+        comparator: "Adverse drug reaction"
+      - column: F
+        comparison: ne
+        comparator: "ADVERSE DRUG REACTIONS"
+      - column: F
+        comparison: ne
+        comparator: "adverse drug reactions"
+      - column: F
+        comparison: ne
+        comparator: "Adverse Drug Reactions"
+      - column: F
+        comparison: ne
+        comparator: "Adverse drug reactions"
+      - column: F
+        comparison: ne
+        comparator: "SIDE EFFECT"
+      - column: F
+        comparison: ne
+        comparator: "side effect"
+      - column: F
+        comparison: ne
+        comparator: "Side Effect"
+      - column: F
+        comparison: ne
+        comparator: "Side effect"
+      - column: F
+        comparison: ne
+        comparator: "SIDE EFFECTS"
+      - column: F
+        comparison: ne
+        comparator: "side effects"
+      - column: F
+        comparison: ne
+        comparator: "Side Effects"
+      - column: F
+        comparison: ne
+        comparator: "Side effects"
+      - column: F
+        comparison: ne
+        comparator: "DISEASE PROGRESSION"
+      - column: F
+        comparison: ne
+        comparator: "disease progression"
+      - column: F
+        comparison: ne
+        comparator: "Disease Progression"
+      - column: F
+        comparison: ne
+        comparator: "Disease progression"
+      - column: F
+        comparison: ne
+        comparator: "TREATMENT FAILURE"
+      - column: F
+        comparison: ne
+        comparator: "treatment failure"
+      - column: F
+        comparison: ne
+        comparator: "Treatment Failure"
+      - column: F
+        comparison: ne
+        comparator: "Treatment failure"
+      - column: F
+        comparison: ne
+        comparator: "CONDITION AGGRAVATED"
+      - column: F
+        comparison: ne
+        comparator: "condition aggravated"
+      - column: F
+        comparison: ne
+        comparator: "Condition Aggravated"
+      - column: F
+        comparison: ne
+        comparator: "Condition aggravated"
+      - column: F
+        comparison: ne
+        comparator: "CONDITION AGGRIVATED"
+      - column: F
+        comparison: ne
+        comparator: "condition aggrivated"
+      - column: F
+        comparison: ne
+        comparator: "Condition Aggrivated"
+      - column: F
+        comparison: ne
+        comparator: "Condition aggrivated"
+      - column: F
+        comparison: ne
+        comparator: ANAESTHESIA
+      - column: F
+        comparison: ne
+        comparator: anaesthesia
+      - column: F
+        comparison: ne
+        comparator: Anaesthesia
+      - column: F
+        comparison: ne
+        comparator: ANESTHESIA
+      - column: F
+        comparison: ne
+        comparator: anesthesia
+      - column: F
+        comparison: ne
+        comparator: Anesthesia
+      - column: F
+        comparison: ne
+        comparator: OVERDOSE
+      - column: F
+        comparison: ne
+        comparator: overdose
+      - column: F
+        comparison: ne
+        comparator: Overdose
+      - column: F
+        comparison: ne
+        comparator: "DRUG OVERDOSE"
+      - column: F
+        comparison: ne
+        comparator: "drug overdose"
+      - column: F
+        comparison: ne
+        comparator: "Drug Overdose"
+      - column: F
+        comparison: ne
+        comparator: "Drug overdose"
+      - column: F
+        comparison: ne
+        comparator: "DRUG OVERDOSES"
+      - column: F
+        comparison: ne
+        comparator: "drug overdoses"
+      - column: F
+        comparison: ne
+        comparator: "Drug Overdoses"
+      - column: F
+        comparison: ne
+        comparator: "Drug overdoses"
+      - column: F
+        comparison: ne
+        comparator: "INTENTIONAL OVERDOSE"
+      - column: F
+        comparison: ne
+        comparator: "intentional overdose"
+      - column: F
+        comparison: ne
+        comparator: "Intentional Overdose"
+      - column: F
+        comparison: ne
+        comparator: "Intentional overdose"
+      - column: F
+        comparison: ne
+        comparator: POISONING
+      - column: F
+        comparison: ne
+        comparator: poisoning
+      - column: F
+        comparison: ne
+        comparator: Poisoning
+      - column: F
+        comparison: ne
+        comparator: INJURY
+      - column: F
+        comparison: ne
+        comparator: injury
+      - column: F
+        comparison: ne
+        comparator: Injury
+      - column: F
+        comparison: ne
+        comparator: "TRAUMATIC INJURY"
+      - column: F
+        comparison: ne
+        comparator: "traumatic injury"
+      - column: F
+        comparison: ne
+        comparator: "Traumatic Injury"
+      - column: F
+        comparison: ne
+        comparator: "Traumatic injury"
+      - column: F
+        comparison: ne
+        comparator: DEATH
+      - column: F
+        comparison: ne
+        comparator: death
+      - column: F
+        comparison: ne
+        comparator: Death
+      - column: F
+        comparison: ne
+        comparator: "SUDDEN DEATH"
+      - column: F
+        comparison: ne
+        comparator: "sudden death"
+      - column: F
+        comparison: ne
+        comparator: "Sudden Death"
+      - column: F
+        comparison: ne
+        comparator: "Sudden death"
+      - column: F
+        comparison: ne
+        comparator: "HIV TEST POSITIVE"
+      - column: F
+        comparison: ne
+        comparator: "hiv test positive"
+      - column: F
+        comparison: ne
+        comparator: "Hiv Test Positive"
+      - column: F
+        comparison: ne
+        comparator: "Hiv test positive"
+      - column: F
+        comparison: ne
+        comparator: "UNEVALUABLE EVENT"
+      - column: F
+        comparison: ne
+        comparator: "unevaluable event"
+      - column: F
+        comparison: ne
+        comparator: "Unevaluable Event"
+      - column: F
+        comparison: ne
+        comparator: "Unevaluable event"
+      - column: F
+        comparison: ne
+        comparator: "SUBSTANCE USE"
+      - column: F
+        comparison: ne
+        comparator: "substance use"
+      - column: F
+        comparison: ne
+        comparator: "Substance Use"
+      - column: F
+        comparison: ne
+        comparator: "Substance use"
+      - column: F
+        comparison: ne
+        comparator: "GLUCOSE TOLERANCE TEST"
+      - column: F
+        comparison: ne
+        comparator: "glucose tolerance test"
+      - column: F
+        comparison: ne
+        comparator: "Glucose Tolerance Test"
+      - column: F
+        comparison: ne
+        comparator: "Glucose tolerance test"
   statement:
     subject:
       method: column
@@ -580,6 +958,7 @@ template:
         - "^UMLS:C3538796$"
         - "^UMLS:C3811318$"
         - "^UMLS:C3889972$"
+        - "^UMLS:C0812393$"
     category_override:
       Disease: EntityToDiseaseAssociation
       PhenotypicFeature: EntityToPhenotypicFeatureAssociation
