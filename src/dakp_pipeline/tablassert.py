@@ -563,12 +563,62 @@ _TABLE_ORDER = ("approved_treats_assertions", "faers_applied_to_treat_assertions
 # not a treatment — an ``applied_to_treat`` edge for it is semantically wrong ("METHYL ALCHOL" is
 # FAERS's own spelling of the ingredient). "GENERIC DRUG"/"GENERIC DRUGS" are FAERS verbatim
 # drug-name placeholders that name no real substance, and "PLACEBO" is the control arm: by
-# definition it treats nothing. Entries are written in their canonical uppercase form and matched
-# case-insensitively (see :func:`_casing_variants`). Reindex conditions AND together: a row
-# survives only when its subject_text matches no denylist entry in any emitted casing.
+# definition it treats nothing — FAERS prefixes a bare ``*`` onto some reporter-entered names, and
+# "*PLACEBO" is that spelling's survivor in the deployed 1.11.2 KG. Entries are written in their
+# canonical uppercase form and matched case-insensitively (see :func:`_casing_variants`). Reindex
+# conditions AND together: a row survives only when its subject_text matches no denylist entry in
+# any emitted casing.
 _TABLE_SUBJECT_DENYLIST: dict[str, tuple[str, ...]] = {
-    "faers_applied_to_treat_assertions": ("METHYL ALCHOL", "METHANOL", "GENERIC DRUG", "GENERIC DRUGS", "PLACEBO")
+    "faers_applied_to_treat_assertions": ("METHYL ALCHOL", "METHANOL", "GENERIC DRUG", "GENERIC DRUGS", "PLACEBO", "*PLACEBO")
 }
+
+# object_text row exclusions applied to EVERY assertion table (the same mention wording can be
+# mined from any source), emitted as ``source.reindex`` ``ne`` filters exactly like the subject
+# denylist above. These are every distinct object_text mention that resolved into the
+# GENERIC allergy/hypersensitivity CURIE family in the deployed 1.11.2 KG (MONDO:0000605
+# hypersensitivity reaction disease, MONDO:0005271 allergic disease, MONDO:0000775 drug allergy,
+# MONDO:0002459 type IV hypersensitivity disease, MONDO:0017853 hypersensitivity pneumonitis,
+# MONDO:0006794 hypersensitivity vasculitis, MONDO:0007817 IgE responsiveness atopic,
+# UMLS:C4552319 hypersensitivity myocarditis, UMLS:C0585186 allergic disorder of skin).
+# "Hypersensitivity" is contraindication-section boilerplate — the #1 entry on nearly every
+# DailyMed label, naming a reaction the drug itself CAUSES — and in FAERS indications it is an
+# adverse-event word, not a treatable condition, so edges to this family are semantically wrong
+# in all three tables (2,905 of 110,454 edges in 1.11.2: 2,249 contraindicated_in, 613
+# applied_to_treat, 43 treats). On the contraindication side the boilerplate is also
+# non-discriminative: "drug X contraindicated_in hypersensitivity" is asserted for essentially
+# every labeled drug, so the edge distinguishes nothing and drowns the mined disease signal.
+# Deliberately KEPT — the drug-SPECIFIC hypersensitivity and allergy findings: the UMLS
+# "Hypersensitivity to <drug>" concepts (C5768819 abacavir, C5817290 gentamicin, C5817291
+# erythromycin, C5817297 hydrocortisone — 5 contraindication edges in 1.11.2) name a specific
+# pharmacogenomic/drug-specific phenotype rather than the generic boilerplate, and specific
+# drug-allergy findings ("allergy to benzocaine" -> UMLS:C0570648 etc.) resolve OUTSIDE this
+# CURIE family anyway. "LEUKOCYTOCLASTIC VASCULITIS" is also not denied: it is the one family
+# wording that independently resolves to its own distinct CURIE (MONDO:0001290), so denying it
+# would take out two real disease edges in 1.11.2; the residual is that MONDO:0006794 can still
+# be reached via that synonym. See :func:`_casing_variants` for the casing renderings each entry
+# ships (the contraindications table's ``object_text`` is always ``normalize_text``-lowercased,
+# so only the lowercase rendering can ever match there; the rest are harmless defense-in-depth).
+_TABLE_OBJECT_DENYLIST: tuple[str, ...] = (
+    "HYPERSENSITIVITY",
+    "HYPERSENSITIVITY REACTION",
+    "HYPERSENSITIVITY REACTIONS",
+    "HYPERSENSITIVITY SYMPTOMS",
+    "HYPERSENSITIVITY ALLERGIC REACTION",
+    "TYPE I HYPERSENSITIVITY",
+    "TYPE IV HYPERSENSITIVITY REACTION",
+    "DRUG HYPERSENSITIVITY",
+    "SKIN HYPERSENSITIVITY",
+    "HYPERSENSITIVITY PNEUMONITIS",
+    "HYPERSENSITIVITY MYOCARDITIS",
+    "HYPERSENSITIVITY VASCULITIS",
+    "ALLERGIC REACTION",
+    "ALLERGIC REACTIONS",
+    "ALLERGIC DISORDERS",
+    "ALLERGY",
+    "ALLERGIES",
+    "DRUG ALLERGY",
+    "SENSITIVITY",
+)
 
 # assertion table -> (config basename, predicate, knowledge_level, agent_type). Knowledge levels
 # match the DINGO translator-ingest provenance contract
@@ -843,17 +893,21 @@ def excel_column(index: int) -> str:
 
 
 def _casing_variants(name: str) -> tuple[str, ...]:
-    """Casing renderings of a :data:`_TABLE_SUBJECT_DENYLIST` entry, canonical uppercase first.
+    """Casing renderings of a denylist entry, canonical uppercase first.
 
     Tablassert's ``ne`` reindex filter is polars ``!=`` — an exact, case-SENSITIVE string compare
     (``tablassert.lib.reindex``, ``cast=False`` for ``eq``/``ne``) — and the ``Comparisons`` enum
     has no case-insensitive member, so case-insensitive denial has to be spelled out as one ``ne``
-    per rendering. FAERS ``drugname`` is reporter-entered free text carried through verbatim as
-    ``subject_text``: uppercase dominates, with title ("Generic Drug"), sentence ("Generic drug")
-    and lower renderings all occurring in practice, so those four cover the realistic space.
-    Deduplicated (single-word entries collapse title into sentence case) and order-stable so the
-    committed configs stay byte-reproducible. Known gap: a mid-word oddity ("PLaCEBO") still slips
-    through — closing it needs a case-insensitive comparison in Tablassert itself.
+    per rendering. On the subject side FAERS ``drugname`` is reporter-entered free text carried
+    through verbatim: uppercase dominates, with title ("Generic Drug"), sentence ("Generic drug")
+    and lower renderings all occurring in practice. On the object side the casing varies by
+    channel — disease-map dictionary keys, raw FAERS indication strings, and
+    ``normalize_text``-lowercased NER mentions — but the same four renderings cover the realistic
+    space (see the deployed 1.11.2 KG, where "hypersensitivity", "HYPERSENSITIVITY",
+    "Hypersensitivity" and "Drug hypersensitivity" all occur). Deduplicated (single-word entries
+    collapse title into sentence case) and order-stable so the committed configs stay
+    byte-reproducible. Known gap: a mid-word oddity ("PLaCEBO") still slips through — closing it
+    needs a case-insensitive comparison in Tablassert itself.
     """
     return tuple(dict.fromkeys((name.upper(), name.lower(), name.title(), name.capitalize())))
 
@@ -883,7 +937,8 @@ def table_config(table: str) -> dict[str, Any]:
     absent or unresolved context omits only the qualifier rather than deleting the edge. A table
     with a :data:`_TABLE_SUBJECT_DENYLIST` entry additionally carries ``source.reindex`` ``ne``
     filters — one per :func:`_casing_variants` rendering of each entry — that drop those
-    subject_text rows before entity resolution.
+    subject_text rows before entity resolution, and EVERY table carries the same ``ne`` filters for
+    :data:`_TABLE_OBJECT_DENYLIST` on its object_text column.
     """
     _basename, predicate, knowledge_level, agent_type = _TABLE_SPECS[table]  # KeyError for unknown tables
     annotations: list[dict[str, Any]] = []
@@ -922,12 +977,18 @@ def table_config(table: str) -> dict[str, Any]:
     if qualifiers:  # no backing column => no ``qualifiers`` key (Tablassert treats absent and empty alike; keep configs minimal)
         statement["qualifiers"] = qualifiers
     source: dict[str, Any] = {"kind": "text", "local": f"tabular/{table}.tsv", "url": [_TABLE_SOURCE_URLS[table]], "delimiter": "\t"}
-    denylist = _TABLE_SUBJECT_DENYLIST.get(table)
-    if denylist:
+    reindex: list[dict[str, Any]] = []
+    subject_denylist = _TABLE_SUBJECT_DENYLIST.get(table)
+    if subject_denylist:
         subject_letter = column_letter(table, SUBJECT_COLUMN)
-        source["reindex"] = [
-            {"column": subject_letter, "comparison": "ne", "comparator": variant} for name in denylist for variant in _casing_variants(name)
+        reindex += [
+            {"column": subject_letter, "comparison": "ne", "comparator": variant} for name in subject_denylist for variant in _casing_variants(name)
         ]
+    object_letter = column_letter(table, OBJECT_COLUMN)
+    reindex += [
+        {"column": object_letter, "comparison": "ne", "comparator": variant} for name in _TABLE_OBJECT_DENYLIST for variant in _casing_variants(name)
+    ]
+    source["reindex"] = reindex
     return {
         "source": source,
         "statement": statement,

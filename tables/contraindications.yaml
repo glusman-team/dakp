@@ -5,6 +5,223 @@ template:
     url:
       - "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
     delimiter: "\t"
+    reindex:
+      - column: F
+        comparison: ne
+        comparator: HYPERSENSITIVITY
+      - column: F
+        comparison: ne
+        comparator: hypersensitivity
+      - column: F
+        comparison: ne
+        comparator: Hypersensitivity
+      - column: F
+        comparison: ne
+        comparator: "HYPERSENSITIVITY REACTION"
+      - column: F
+        comparison: ne
+        comparator: "hypersensitivity reaction"
+      - column: F
+        comparison: ne
+        comparator: "Hypersensitivity Reaction"
+      - column: F
+        comparison: ne
+        comparator: "Hypersensitivity reaction"
+      - column: F
+        comparison: ne
+        comparator: "HYPERSENSITIVITY REACTIONS"
+      - column: F
+        comparison: ne
+        comparator: "hypersensitivity reactions"
+      - column: F
+        comparison: ne
+        comparator: "Hypersensitivity Reactions"
+      - column: F
+        comparison: ne
+        comparator: "Hypersensitivity reactions"
+      - column: F
+        comparison: ne
+        comparator: "HYPERSENSITIVITY SYMPTOMS"
+      - column: F
+        comparison: ne
+        comparator: "hypersensitivity symptoms"
+      - column: F
+        comparison: ne
+        comparator: "Hypersensitivity Symptoms"
+      - column: F
+        comparison: ne
+        comparator: "Hypersensitivity symptoms"
+      - column: F
+        comparison: ne
+        comparator: "HYPERSENSITIVITY ALLERGIC REACTION"
+      - column: F
+        comparison: ne
+        comparator: "hypersensitivity allergic reaction"
+      - column: F
+        comparison: ne
+        comparator: "Hypersensitivity Allergic Reaction"
+      - column: F
+        comparison: ne
+        comparator: "Hypersensitivity allergic reaction"
+      - column: F
+        comparison: ne
+        comparator: "TYPE I HYPERSENSITIVITY"
+      - column: F
+        comparison: ne
+        comparator: "type i hypersensitivity"
+      - column: F
+        comparison: ne
+        comparator: "Type I Hypersensitivity"
+      - column: F
+        comparison: ne
+        comparator: "Type i hypersensitivity"
+      - column: F
+        comparison: ne
+        comparator: "TYPE IV HYPERSENSITIVITY REACTION"
+      - column: F
+        comparison: ne
+        comparator: "type iv hypersensitivity reaction"
+      - column: F
+        comparison: ne
+        comparator: "Type Iv Hypersensitivity Reaction"
+      - column: F
+        comparison: ne
+        comparator: "Type iv hypersensitivity reaction"
+      - column: F
+        comparison: ne
+        comparator: "DRUG HYPERSENSITIVITY"
+      - column: F
+        comparison: ne
+        comparator: "drug hypersensitivity"
+      - column: F
+        comparison: ne
+        comparator: "Drug Hypersensitivity"
+      - column: F
+        comparison: ne
+        comparator: "Drug hypersensitivity"
+      - column: F
+        comparison: ne
+        comparator: "SKIN HYPERSENSITIVITY"
+      - column: F
+        comparison: ne
+        comparator: "skin hypersensitivity"
+      - column: F
+        comparison: ne
+        comparator: "Skin Hypersensitivity"
+      - column: F
+        comparison: ne
+        comparator: "Skin hypersensitivity"
+      - column: F
+        comparison: ne
+        comparator: "HYPERSENSITIVITY PNEUMONITIS"
+      - column: F
+        comparison: ne
+        comparator: "hypersensitivity pneumonitis"
+      - column: F
+        comparison: ne
+        comparator: "Hypersensitivity Pneumonitis"
+      - column: F
+        comparison: ne
+        comparator: "Hypersensitivity pneumonitis"
+      - column: F
+        comparison: ne
+        comparator: "HYPERSENSITIVITY MYOCARDITIS"
+      - column: F
+        comparison: ne
+        comparator: "hypersensitivity myocarditis"
+      - column: F
+        comparison: ne
+        comparator: "Hypersensitivity Myocarditis"
+      - column: F
+        comparison: ne
+        comparator: "Hypersensitivity myocarditis"
+      - column: F
+        comparison: ne
+        comparator: "HYPERSENSITIVITY VASCULITIS"
+      - column: F
+        comparison: ne
+        comparator: "hypersensitivity vasculitis"
+      - column: F
+        comparison: ne
+        comparator: "Hypersensitivity Vasculitis"
+      - column: F
+        comparison: ne
+        comparator: "Hypersensitivity vasculitis"
+      - column: F
+        comparison: ne
+        comparator: "ALLERGIC REACTION"
+      - column: F
+        comparison: ne
+        comparator: "allergic reaction"
+      - column: F
+        comparison: ne
+        comparator: "Allergic Reaction"
+      - column: F
+        comparison: ne
+        comparator: "Allergic reaction"
+      - column: F
+        comparison: ne
+        comparator: "ALLERGIC REACTIONS"
+      - column: F
+        comparison: ne
+        comparator: "allergic reactions"
+      - column: F
+        comparison: ne
+        comparator: "Allergic Reactions"
+      - column: F
+        comparison: ne
+        comparator: "Allergic reactions"
+      - column: F
+        comparison: ne
+        comparator: "ALLERGIC DISORDERS"
+      - column: F
+        comparison: ne
+        comparator: "allergic disorders"
+      - column: F
+        comparison: ne
+        comparator: "Allergic Disorders"
+      - column: F
+        comparison: ne
+        comparator: "Allergic disorders"
+      - column: F
+        comparison: ne
+        comparator: ALLERGY
+      - column: F
+        comparison: ne
+        comparator: allergy
+      - column: F
+        comparison: ne
+        comparator: Allergy
+      - column: F
+        comparison: ne
+        comparator: ALLERGIES
+      - column: F
+        comparison: ne
+        comparator: allergies
+      - column: F
+        comparison: ne
+        comparator: Allergies
+      - column: F
+        comparison: ne
+        comparator: "DRUG ALLERGY"
+      - column: F
+        comparison: ne
+        comparator: "drug allergy"
+      - column: F
+        comparison: ne
+        comparator: "Drug Allergy"
+      - column: F
+        comparison: ne
+        comparator: "Drug allergy"
+      - column: F
+        comparison: ne
+        comparator: SENSITIVITY
+      - column: F
+        comparison: ne
+        comparator: sensitivity
+      - column: F
+        comparison: ne
+        comparator: Sensitivity
   statement:
     subject:
       method: column
