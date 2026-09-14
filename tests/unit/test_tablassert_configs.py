@@ -36,6 +36,7 @@ from dakp_pipeline.tablassert import (
     OBJECT_PRIORITIZE,
     SUBJECT_PRIORITIZE,
     TABLASERT_DIR_ENV,
+    UNAVOIDABLE_OFF_ALLOWLIST_CURIES,
     DeferredTablassertRunner,
     TablassertError,
     TablassertRunner,
@@ -43,6 +44,7 @@ from dakp_pipeline.tablassert import (
     category_avoid_list,
     qc_runtime_available,
     tablassert_available,
+    unavoidable_off_allowlist_regex,
 )
 from dakp_pipeline.tablassert import run as run_tablassert
 
@@ -259,10 +261,12 @@ def test_table_config_structure(table: str) -> None:
     assert statement["subject"]["encoding"] == tablassert_configs.column_letter(table, "subject_text")
     assert statement["subject"]["prioritize"] == ["Drug", "SmallMolecule", "ChemicalEntity"]
     assert statement["subject"]["avoid"] == category_avoid_list(SUBJECT_PRIORITIZE)
+    assert statement["subject"]["exclude_regex"] == unavoidable_off_allowlist_regex()
     assert statement["object"]["method"] == "column"
     assert statement["object"]["encoding"] == tablassert_configs.column_letter(table, "object_text")
     assert statement["object"]["prioritize"] == ["Disease", "PhenotypicFeature"]
     assert statement["object"]["avoid"] == category_avoid_list(OBJECT_PRIORITIZE)
+    assert statement["object"]["exclude_regex"] == unavoidable_off_allowlist_regex()
 
     # ManualProvenance override carrying DAKP as the primary source (no publication alongside
     # override).
@@ -301,6 +305,9 @@ def test_table_config_qualifiers(table: str) -> None:
             assert "nullable" not in entry
             assert entry["prioritize"] == list(OBJECT_PRIORITIZE)
             assert entry["avoid"] == category_avoid_list(OBJECT_PRIORITIZE)
+        # The CURIE guard covers qualifiers too: an off-allow-list concept must not survive as a
+        # context qualifier either (a nullable qualifier would silently keep the edge minus it).
+        assert entry["exclude_regex"] == unavoidable_off_allowlist_regex()
 
 
 def test_declared_qualifier_emits_a_column_encoding() -> None:
@@ -318,6 +325,7 @@ def test_declared_qualifier_emits_a_column_encoding() -> None:
             "nullable": True,
             "prioritize": ["Disease"],
             "avoid": category_avoid_list(["Disease"]),
+            "exclude_regex": unavoidable_off_allowlist_regex(),
         }
     ]
 
@@ -487,7 +495,10 @@ def test_category_avoid_list_is_sorted_complement_of_allowed() -> None:
         avoid = category_avoid_list(allowed)
         assert avoid == sorted(avoid)  # deterministic YAML emission
         assert set(avoid).isdisjoint(allowed)
-        # Exact partition of the installed Biolink universe: nothing off-list can ever resolve.
+        # Exact partition of the ENUM universe. That is weaker than "nothing off-list can ever
+        # resolve": the fullmap also produces categories the enum omits (every Biolink mixin —
+        # ``GenomicEntity`` among them), which ``avoid`` cannot name. The CURIE guard
+        # :data:`tablassert_configs.UNAVOIDABLE_OFF_ALLOWLIST_CURIES` covers the ones observed.
         assert set(avoid) | set(allowed) == universe
 
 
@@ -508,6 +519,86 @@ def test_table_config_category_guards(table: str) -> None:
 def test_category_avoid_list_unknown_allowed_category_raises() -> None:
     with pytest.raises(ValueError, match="not in the installed Tablassert Biolink model"):
         category_avoid_list(["Drug", "DefinitelyNotACategory"])
+
+
+@pytest.mark.parametrize("table", TABLES)
+def test_unavoidable_off_allowlist_curies_guard_every_node_encoding(table: str) -> None:
+    # ``avoid`` cannot express every off-allow-list category (see the enum-gap tripwire below), so
+    # each node encoding ALSO carries the anchored CURIE guard. Asserted through Tablassert's own
+    # ``Section`` model, so an unusable pattern (or a dropped field) fails config validation here.
+    from tablassert.models import Section
+
+    section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
+    expected = unavoidable_off_allowlist_regex()
+    encodings = [section.statement.subject, section.statement.object, *(section.statement.qualifiers or [])]
+    assert len(encodings) >= 2
+    for encoding in encodings:
+        assert encoding.exclude_regex == expected
+
+    # One anchored pattern per denied CURIE (exact match, never a substring of a longer CURIE),
+    # deduplicated so the emitted lists stay minimal and byte-reproducible.
+    assert expected == [f"^{curie}$" for curie in UNAVOIDABLE_OFF_ALLOWLIST_CURIES]
+    assert len(set(UNAVOIDABLE_OFF_ALLOWLIST_CURIES)) == len(UNAVOIDABLE_OFF_ALLOWLIST_CURIES)
+
+
+def test_genomic_entity_object_candidates_never_survive_resolution() -> None:
+    # Resolver-level regression test for the reported bug, using the two candidates the production
+    # fullmap (2026jul22) actually holds for the FAERS indication wording behind the 17 v1.11.2
+    # ``applied_to_treat`` edges that shipped WITHOUT ``number_of_cases``. Both are off the object
+    # allow-list, but only ``BiologicalProcess`` is expressible in ``avoid`` — ``GenomicEntity`` is
+    # a Biolink mixin the ``Categories`` enum omits — so ``avoid`` alone lets UMLS:C0678941 win the
+    # term, the edge falls back to plain ``biolink:Association``, and ``prune_to_class`` relocates
+    # ``number_of_cases`` into a study description. Runs Tablassert's own ``filter_and_rank``, the
+    # candidate filter ``build-kg`` applies before ranking.
+    import polars as pl
+    from tablassert.biolink import Categories
+    from tablassert.fullmap import filter_and_rank
+
+    raw = pl.DataFrame(
+        {
+            "term": ["gene mutation", "gene mutation", "headache"],
+            "CURIE": ["UMLS:C0596611", "UMLS:C0678941", "HP:0002315"],
+            "PREFERRED_NAME": ["Gene Mutation", "Gene Mutant", "headache"],
+            "CATEGORY_NAME": ["BiologicalProcess", "GenomicEntity", "PhenotypicFeature"],
+            "TAXON_ID": [0, 0, 0],
+            "SOURCE_NAME": ["biologicalprocess.txt", "umls.txt", "umls.txt"],
+            "SOURCE_VERSION": ["2026jul22", "2026jul22", "2026jul22"],
+        }
+    )
+    terms = pl.DataFrame({"term": ["gene mutation", "headache"], "nlp_level": [1, 1]})
+    # ``filter_and_rank`` normalizes either spelling (``_category_values``): production hands it
+    # the plain strings the YAML config deserializes to, a direct caller the enum members.
+    avoid = [Categories(name) for name in category_avoid_list(OBJECT_PRIORITIZE)]
+    prioritize = [Categories(name) for name in OBJECT_PRIORITIZE]
+
+    # The bug, reproduced: ``avoid`` drops the BiologicalProcess candidate but cannot name
+    # GenomicEntity, so the off-allow-list concept survives and wins the term outright.
+    unguarded = filter_and_rank(raw, terms, None, prioritize, avoid, False)
+    assert unguarded.filter(pl.col("term") == "gene mutation")["CURIE"].to_list() == ["UMLS:C0678941"]
+
+    # The fix: the CURIE guard denies the concept for EVERY wording, so the mention resolves to
+    # nothing and the row emits no edge (subject/object resolve strict) — while a legitimate
+    # disease mention passes through untouched.
+    guarded = filter_and_rank(raw, terms, None, prioritize, avoid, False, exclude_regex=unavoidable_off_allowlist_regex())
+    assert guarded.filter(pl.col("term") == "gene mutation").height == 0
+    assert guarded.filter(pl.col("term") == "headache")["CURIE"].to_list() == ["HP:0002315"]
+
+
+def test_genomic_entity_still_outside_the_categories_enum() -> None:
+    # Tripwire for the :data:`UNAVOIDABLE_OFF_ALLOWLIST_CURIES` stopgap. Tablassert builds its
+    # ``Categories`` enum from Biolink ``Entity`` subclasses only, so EVERY mixin (51 in model
+    # 4.4.4: ``GenomicEntity``, ``GeneOrGeneProduct``, ``Occurrent``, ...) is unnameable in
+    # ``avoid``; ``GenomicEntity`` is the only one the current production fullmap produces, and so
+    # the only hole the CURIE guard has to paper over today. When a Tablassert release admits mixin
+    # categories this fails ON PURPOSE: regenerate the committed configs (the ``avoid`` lists grow)
+    # and retire the CURIE guard, which the structural allow-list then supersedes.
+    categories = tablassert_configs._biolink_categories()
+    assert "GenomicEntity" not in categories, (
+        "Tablassert's Categories enum now covers GenomicEntity: regenerate tables/*.yaml so the "
+        "avoid complements deny it, then retire UNAVOIDABLE_OFF_ALLOWLIST_CURIES and this test."
+    )
+    assert "GenomicEntity" not in category_avoid_list(OBJECT_PRIORITIZE)
+    assert "GenomicEntity" not in category_avoid_list(SUBJECT_PRIORITIZE)
 
 
 @pytest.mark.parametrize("table", TABLES)
