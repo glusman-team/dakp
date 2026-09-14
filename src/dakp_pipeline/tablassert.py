@@ -1505,6 +1505,69 @@ def _find_graph(config_refs: list[ArtifactRef], ctx: TaskContext) -> Path:
     return Workdir(ctx.workdir).root / "tables" / "graph.yaml"
 
 
+#: Cap on contract problems mirrored into the handoff report / error message — enough to
+#: diagnose the failure mode without bloating the report or the task log.
+_CONTRACT_PROBLEM_LIMIT = 10
+
+
+def _graph_stem(graph_yaml: Path) -> str:
+    """The ``<name>_<version>`` stem Tablassert names the emitted pair with, read from the graph config the build actually used.
+
+    The generator's own minimal emitter writes both as top-level keys (``name:`` /
+    ``version:``) on the first lines; read only those rather than assuming the
+    :data:`GRAPH_NAME` / ``__version__`` defaults (a ``graph_config(version=...)`` override
+    would make the defaults lie).
+    """
+    name: str | None = None
+    version: str | None = None
+    for line in graph_yaml.read_text(encoding="utf-8").splitlines():
+        if line.startswith("name: "):
+            name = line.removeprefix("name: ").strip().strip('"')
+        elif line.startswith("version: "):
+            version = line.removeprefix("version: ").strip().strip('"')
+        if name is not None and version is not None:
+            return f"{name}_{version}"
+    msg = f"graph config {graph_yaml} is missing top-level name/version keys"
+    raise RuntimeError(msg)
+
+
+def validate_kgx_contract(ctx: TaskContext, graph_yaml: Path) -> list[str]:
+    """Validate the KGX pair a successful ``build-kg`` just emitted against the DAKP contract.
+
+    Streams the pair Tablassert named ``<name>_<version>.{nodes,edges}.ndjson`` from the workdir
+    KGX dir through :func:`dakp_pipeline.translator.validate_kgx` and returns the rendered
+    problem lines (empty when the pair is contract-clean). A missing pair after a successful
+    build raises ``RuntimeError`` — Tablassert just wrote it, so absence means the emission
+    convention moved and downstream stages would silently read stale files (the caller records
+    that as a contract ``error`` in the handoff report before failing).
+
+    This gate is what the v1.11.2 35-edge ``GenomicEntity``-object leak shipped without:
+    edges that escaped the pinned association classes (bare ``biolink:Association`` with
+    evidence slots pruned into ``has_supporting_studies`` descriptions) reached the publish
+    stage because nothing validated the REAL build output — ``validate_kgx`` only ever ran
+    over test fixtures. Now every successful handoff must pass it before the export/publish
+    stages run.
+    """
+    from dakp_pipeline.translator import read_kgx_jsonl, validate_kgx  # local: keeps module import light
+
+    kgx_dir = Workdir(ctx.workdir).kgx
+    stem = _graph_stem(graph_yaml)
+
+    def _emitted(kind: str) -> Path:
+        matches = sorted(kgx_dir.glob(f"{stem}.{kind}.ndjson"))
+        if len(matches) != 1:
+            msg = f"expected exactly one {stem}.{kind}.ndjson under {kgx_dir} after a successful build-kg, found {len(matches)}"
+            raise RuntimeError(msg)
+        return matches[0]
+
+    problems = validate_kgx(read_kgx_jsonl(_emitted("nodes")), read_kgx_jsonl(_emitted("edges"))).problems
+    if problems:
+        logger.error("run_tablassert: KGX contract validation failed with {} problem(s):", len(problems))
+        for problem in problems[:_CONTRACT_PROBLEM_LIMIT]:
+            logger.error("  {p}", p=problem)
+    return problems
+
+
 @dataclass(frozen=True)
 class TablassertRunner:
     """Run the INSTALLED ``tablassert`` CLI (a core DAKP dependency) as a subprocess.
@@ -1512,9 +1575,14 @@ class TablassertRunner:
     Builds ``tablassert build-kg <graph.yaml> [--qc] [--release]`` (the graph config carries the
     fullmap path — Tablassert 8.1 removed the ``build-kg --fullmap`` flag), streams the
     subprocess output live into the task log (:func:`stream_subprocess`), and records the full
-    stdout / stderr / exit code in the handoff report. A non-zero exit is captured as
-    ``status: failed`` in the report (written to disk before raising) and then raises
-    :class:`TablassertError` so the calling task (Airflow or stage harness) fails correctly.
+    stdout / stderr / exit code in the handoff report. On a successful build the emitted KGX
+    pair is validated against the DAKP Translator contract
+    (:func:`validate_kgx_contract`): violations are recorded in the report (``kgx_contract``)
+    and raise :class:`TablassertError`, so a graph that escapes the pinned association
+    classes (bare ``biolink:Association`` edges) can never reach the export/publish stages.
+    A non-zero exit is captured as ``status: failed`` in the report (written to disk before
+    raising) and then raises :class:`TablassertError` so the calling task (Airflow or stage
+    harness) fails correctly.
     Raises ``RuntimeError`` when ``tablassert`` is unavailable and no editable-checkout
     override is configured (reinstall with ``uv sync``).
     """
@@ -1572,6 +1640,13 @@ class TablassertRunner:
             logger.error("{}: exited {} — stderr = {}", event, completed.returncode, (completed.stderr or "").strip())
 
         report = _base_report("real", assertion_refs, config_refs)
+        contract_problems: list[str] = []
+        contract_error: str | None = None
+        if completed.returncode == 0:  # validate only a build that actually emitted a KGX pair
+            try:
+                contract_problems = validate_kgx_contract(ctx, graph_yaml)
+            except RuntimeError as exc:  # missing/ambiguous pair: the emission convention moved
+                contract_error = str(exc)
         report.update(
             {
                 "status": status,
@@ -1586,10 +1661,25 @@ class TablassertRunner:
                 "release": release,
             }
         )
+        if completed.returncode == 0:
+            report["kgx_contract"] = {
+                "status": "error" if contract_error else ("failed" if contract_problems else "ok"),
+                "problem_count": len(contract_problems),
+                "problems": contract_problems[:_CONTRACT_PROBLEM_LIMIT],
+            }
+            if contract_error:
+                report["kgx_contract"]["error"] = contract_error
         refs = [_write_report(report, assertion_refs, ctx)]
         if completed.returncode != 0:
             raise TablassertError(
                 f"Tablassert exited {completed.returncode}; see handoff report: {refs[0].uri}\n{(completed.stderr or '').strip()[:500]}"
+            )
+        if contract_error:
+            raise TablassertError(f"{contract_error}; see handoff report: {refs[0].uri}")
+        if contract_problems:
+            raise TablassertError(
+                f"KGX contract validation failed with {len(contract_problems)} problem(s); see handoff report: {refs[0].uri}\n"
+                + "\n".join(contract_problems[:_CONTRACT_PROBLEM_LIMIT])
             )
         return refs
 
@@ -1658,4 +1748,5 @@ __all__ = [
     "table_config",
     "table_yaml",
     "unavoidable_off_allowlist_regex",
+    "validate_kgx_contract",
 ]

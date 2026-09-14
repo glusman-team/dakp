@@ -139,11 +139,18 @@ def _fake_tablassert_subprocess(command: list[str], cwd: Path | None = None) -> 
     data = (cwd or Path.cwd()) / "kgx"
     data.mkdir(parents=True, exist_ok=True)
     (data / f"{GRAPH_NAME}_{__version__}.nodes.ndjson").write_text(
-        '{"id":"CHEBI:1000001","name":"Examplestatin","category":["biolink:Drug"]}\n', encoding="utf-8"
+        '{"id":"CHEBI:1000001","name":"Examplestatin","category":["biolink:Drug"]}\n'
+        '{"id":"MONDO:0005154","name":"type 2 diabetes mellitus","category":["biolink:Disease"]}\n',
+        encoding="utf-8",
     )
+    # Contract-clean edge (pinned association class + declared object + DAKP/dailymed/faers
+    # provenance): the runner's post-build gate (validate_kgx_contract) streams this pair, so
+    # the smoke run exercises the gate's PASSING branch exactly like a real clean build.
     (data / f"{GRAPH_NAME}_{__version__}.edges.ndjson").write_text(
         '{"id":"fake-edge","subject":"CHEBI:1000001","predicate":"biolink:treats","object":"MONDO:0005154",'
+        '"category":["biolink:EntityToDiseaseAssociation"],'
         '"knowledge_level":"knowledge_assertion","agent_type":"manual_validation_of_automated_agent",'
+        '"sources":[{"resource_id":"infores:multiomics-drugapprovals","resource_role":"primary_knowledge_source","upstream_resource_ids":["infores:dailymed","infores:faers"]}],'
         '"regulatory_approvals":["NDA1"]}\n',
         encoding="utf-8",
     )

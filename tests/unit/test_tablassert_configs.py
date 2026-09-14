@@ -211,6 +211,22 @@ def _read_report(workdir: Workdir) -> dict:
     return json.loads((workdir.reports / "tablassert_handoff.json").read_text(encoding="utf-8"))
 
 
+# The contract-clean fixture pair the runner's post-build gate streams (mirror of what a
+# successful build-kg emits under <workdir>/kgx).
+_KGX_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "kgx"
+
+
+def _fake_build_kgx(workdir: Workdir) -> None:
+    """Emit the contract-clean fixture KGX pair as a successful ``build-kg`` would."""
+    from dakp_pipeline import __version__
+
+    kgx_dir = workdir.kgx
+    kgx_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"{tablassert_configs.GRAPH_NAME}_{__version__}"
+    for kind in ("nodes", "edges"):
+        shutil.copyfile(_KGX_FIXTURES / f"{kind}.jsonl", kgx_dir / f"{stem}.{kind}.ndjson")
+
+
 # --- Excel column-letter mapping --------------------------------------------------
 
 
@@ -1300,6 +1316,7 @@ def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
     def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         calls.append((command, cwd))
+        _fake_build_kgx(workdir)  # a successful build-kg emits the KGX pair the contract gate reads
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="built kg\n", stderr="")
 
     _patch_installed(monkeypatch)
@@ -1320,6 +1337,7 @@ def test_real_runner_captures_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
     report = _read_report(workdir)
     assert report["mode"] == "real"
     assert report["status"] == "ok"
+    assert report["kgx_contract"] == {"status": "ok", "problem_count": 0, "problems": []}
     assert report["exit_code"] == 0
     assert report["stdout"] == "built kg\n"
     assert report["command"] == command
@@ -1350,6 +1368,68 @@ def test_real_runner_records_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert report["status"] == "failed"
     assert report["exit_code"] == 2
     assert report["stderr"] == "boom"
+    assert "kgx_contract" not in report  # no KGX was emitted to validate
+
+
+def test_real_runner_fails_on_kgx_contract_violation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A successful build whose KGX escapes the pinned classes fails the handoff.
+
+    The v1.11.2 leak shape: an edge demoted to bare ``biolink:Association`` — exactly what
+    escaped ``OBJECT_CATEGORY_OVERRIDE`` when ``GenomicEntity`` objects resolved — must fail
+    the task (``TablassertError``) with the violations recorded in the handoff report, so a
+    broken graph can never reach the export/publish stages.
+    """
+    workdir = Workdir(tmp_path / "work")
+    workdir.create()
+    assertion_refs = _assertion_refs(workdir)
+    config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
+
+    def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        _fake_build_kgx(workdir)
+        from dakp_pipeline import __version__
+
+        emitted = workdir.kgx / f"{tablassert_configs.GRAPH_NAME}_{__version__}.edges.ndjson"
+        demoted = json.loads(emitted.read_text(encoding="utf-8").splitlines()[0])
+        demoted["id"] = "uuid-demoted-e1"
+        demoted["category"] = ["biolink:Association"]  # escaped the category pin
+        emitted.write_text(emitted.read_text(encoding="utf-8") + json.dumps(demoted) + "\n", encoding="utf-8")
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    _patch_installed(monkeypatch)
+    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
+    with pytest.raises(TablassertError, match="KGX contract validation failed"):
+        TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="/maps/fullmap.redb"))
+
+    report = _read_report(workdir)
+    assert report["status"] == "ok"  # the build itself succeeded
+    assert report["kgx_contract"]["status"] == "failed"
+    assert report["kgx_contract"]["problem_count"] == 1
+    assert any("incompatible_edge_category" in problem for problem in report["kgx_contract"]["problems"])
+
+
+def test_real_runner_missing_kgx_after_success_is_loud(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A zero exit with no emitted KGX pair fails with the report on disk first.
+
+    ``build-kg`` just ran successfully, so the pair MUST exist; absence means the emission
+    convention moved. The failure is recorded as a contract ``error`` in the handoff report
+    (written before raising) so a long build's logs are never lost with it.
+    """
+    workdir = Workdir(tmp_path / "work")
+    workdir.create()
+    assertion_refs = _assertion_refs(workdir)
+    config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
+
+    def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")  # emits nothing
+
+    _patch_installed(monkeypatch)
+    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
+    with pytest.raises(TablassertError, match="expected exactly one"):
+        TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, fullmap="/maps/fullmap.redb"))
+
+    report = _read_report(workdir)
+    assert report["kgx_contract"]["status"] == "error"
+    assert "expected exactly one" in report["kgx_contract"]["error"]
 
 
 def test_real_runner_honors_ctx_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1362,6 +1442,7 @@ def test_real_runner_honors_ctx_overrides(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         seen.append(command)
+        _fake_build_kgx(workdir)  # a successful build-kg emits the KGX pair the contract gate reads
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
     # A tablassert_dir override selects the editable-checkout prefix AND bypasses the availability
@@ -1408,6 +1489,7 @@ def test_real_runner_appends_qc_when_runtime_available(monkeypatch: pytest.Monke
 
     def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         seen.append(command)
+        _fake_build_kgx(workdir)  # a successful build-kg emits the KGX pair the contract gate reads
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
     _patch_installed(monkeypatch)
@@ -1429,6 +1511,7 @@ def test_real_runner_skips_qc_when_runtime_missing(monkeypatch: pytest.MonkeyPat
 
     def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         seen.append(command)
+        _fake_build_kgx(workdir)  # a successful build-kg emits the KGX pair the contract gate reads
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
     _patch_installed(monkeypatch)
@@ -1450,6 +1533,7 @@ def test_real_runner_appends_release_flag(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         seen.append(command)
+        _fake_build_kgx(workdir)  # a successful build-kg emits the KGX pair the contract gate reads
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
     _patch_installed(monkeypatch)
@@ -1470,6 +1554,7 @@ def test_real_runner_omits_no_original_flag_and_report_field(monkeypatch: pytest
 
     def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         seen.append(command)
+        _fake_build_kgx(workdir)  # a successful build-kg emits the KGX pair the contract gate reads
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
     _patch_installed(monkeypatch)
@@ -1507,6 +1592,7 @@ def test_run_dispatches_to_real_with_run_tablassert(monkeypatch: pytest.MonkeyPa
     config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
 
     def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        _fake_build_kgx(workdir)  # a successful build-kg emits the KGX pair the contract gate reads
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok", stderr="")
 
     _patch_installed(monkeypatch)
@@ -1514,3 +1600,13 @@ def test_run_dispatches_to_real_with_run_tablassert(monkeypatch: pytest.MonkeyPa
 
     run_tablassert(assertion_refs, config_refs, _ctx(workdir, run_tablassert=True, fullmap="/maps/fullmap.redb"))
     assert _read_report(workdir)["mode"] == "real"
+
+
+def test_graph_stem_raises_when_keys_missing(tmp_path: Path) -> None:
+    """The stem is read from the graph config the build used; a config without name/version fails loudly."""
+    config = tmp_path / "graph.yaml"
+    config.write_text("fullmap: '.fullmap'\n", encoding="utf-8")
+    from dakp_pipeline.tablassert import _graph_stem
+
+    with pytest.raises(RuntimeError, match="missing top-level name/version"):
+        _graph_stem(config)

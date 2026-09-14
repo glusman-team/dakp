@@ -367,7 +367,9 @@ def _build_tablassert_stage(assertions: AssertionOutputs) -> TablassertOutputs:
                 stats(logger, "task generate_tablassert_configs", output_refs=len(out))
                 return _refs_to_xcom(out)
 
-        @task(doc_md="Run the installed Tablassert CLI when a fullmap is configured; otherwise emit a deferred handoff report.")
+        @task(
+            doc_md="Run the installed Tablassert CLI when a fullmap is configured (the emitted KGX is validated against the DAKP contract — violations fail the task); otherwise emit a deferred handoff report."
+        )
         def run_tablassert(
             approved: Any, uses: Any, contra: Any, configs: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime

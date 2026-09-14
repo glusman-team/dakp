@@ -8,6 +8,7 @@ compares the literal to the packaging metadata.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -19,3 +20,13 @@ _PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 def test_version_matches_pyproject() -> None:
     declared = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))["project"]["version"]
     assert __version__ == declared, f"dakp_pipeline.__version__ ({__version__}) != pyproject project.version ({declared})"
+
+
+_CITATION = Path(__file__).resolve().parents[2] / "CITATION.cff"
+
+
+def test_version_matches_citation() -> None:
+    """``CITATION.cff`` carries the same version (it drifted once: version bumps forgot it)."""
+    match = re.search(r"^version: (.+)$", _CITATION.read_text(encoding="utf-8"), flags=re.MULTILINE)
+    assert match is not None, "CITATION.cff has no version field"
+    assert __version__ == match.group(1).strip(), f"dakp_pipeline.__version__ ({__version__}) != CITATION.cff version ({match.group(1).strip()})"

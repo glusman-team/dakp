@@ -18,7 +18,9 @@ import-safe and monkeypatchable. Three public entry points:
   4. **category/predicate compatibility** — the three DAKP edge families (``treats`` /
      ``applied_to_treat`` / ``contraindicated_in``) with chemical/drug subject categories and
      Disease/PhenotypicFeature object categories, matching ``../DINGO`` ``dakp_rig.yaml``
-     ``edge_type_info``;
+     ``edge_type_info``, plus the pinned association classes
+     (:data:`PINNED_EDGE_CATEGORIES`) every family edge must carry — bare
+     ``biolink:Association`` is the signature of a row that escaped the category pin;
   5. **source provenance** — the ``infores:multiomics-drugapprovals`` chain plus the upstream
      infores required per family (dailymed/faers).
 
@@ -82,6 +84,15 @@ DISEASE_PHENOTYPE_CATEGORIES: tuple[str, ...] = ("biolink:Disease", "biolink:Phe
 _CHEMICAL_SET = frozenset(CHEMICAL_DRUG_CATEGORIES)
 _DISEASE_SET = frozenset(DISEASE_PHENOTYPE_CATEGORIES)
 
+#: The only association classes DAKP edges may carry: exactly the classes
+#: :data:`dakp_pipeline.tablassert.OBJECT_CATEGORY_OVERRIDE` pins per object category. A
+#: DAKP-family edge on any other class (most damningly bare ``biolink:Association``) means a
+#: row escaped the pin — the shape the v1.11.2 35-edge ``GenomicEntity``-object leak shipped
+#: with, whose ``prune_to_class`` then nulled every evidence slot into the inlined
+#: ``has_supporting_studies`` junk drawer.
+PINNED_EDGE_CATEGORIES: tuple[str, ...] = ("biolink:EntityToDiseaseAssociation", "biolink:EntityToPhenotypicFeatureAssociation")
+_PINNED_SET = frozenset(PINNED_EDGE_CATEGORIES)
+
 PREDICATE_TREATS = "biolink:treats"
 PREDICATE_APPLIED_TO_TREAT = "biolink:applied_to_treat"
 PREDICATE_CONTRAINDICATED_IN = "biolink:contraindicated_in"
@@ -116,8 +127,10 @@ DUPLICATE_NODE_ID = "duplicate_node_id"
 MISSING_EDGE_FIELD = "missing_edge_field"
 DUPLICATE_EDGE_ID = "duplicate_edge_id"
 INVALID_PREDICATE = "invalid_predicate"
+INCOMPATIBLE_EDGE_CATEGORY = "incompatible_edge_category"
 INCOMPATIBLE_SUBJECT_CATEGORY = "incompatible_subject_category"
 INCOMPATIBLE_OBJECT_CATEGORY = "incompatible_object_category"
+INVALID_SUPPORTING_STUDIES = "invalid_supporting_studies"
 MISSING_PROVENANCE = "missing_provenance"
 
 
@@ -292,6 +305,43 @@ def _check_edge(
     if obj and object_node is None:
         problems.append(ContractProblem(MISSING_NODE_REFERENCE, "edge", entity_id, "object", f"edge {entity_id} object {obj!r} not found in nodes"))
     if family is not None:
+        if not (_category_set(edge) & _PINNED_SET):
+            problems.append(
+                ContractProblem(
+                    INCOMPATIBLE_EDGE_CATEGORY,
+                    "edge",
+                    entity_id,
+                    "category",
+                    f"edge {entity_id} category must be one of the pinned association classes {PINNED_EDGE_CATEGORIES} for {predicate}, "
+                    f"not {sorted(_category_set(edge))} (bare biolink:Association means the row escaped the category pin and its evidence slots were pruned into has_supporting_studies)",
+                )
+            )
+
+        # The junk-drawer half of the leak shape: evidence slots ``prune_to_class`` nulls
+        # off the edge are rescued as ``"name=value"`` strings in a supporting-study result
+        # ``description``. DAKP's contract is that nothing is ever relocated there — a bare
+        # row-reference study is fine, any description is not (matches
+        # ``tests/integration/test_kgx_end_to_end.py``).
+        studies = edge.get("has_supporting_studies")
+        if isinstance(studies, Mapping):
+            relocated = sum(
+                1
+                for study in studies.values()
+                if isinstance(study, Mapping)
+                for result in (study.get("has_study_results") or [])
+                if isinstance(result, Mapping) and str(result.get("description") or "").strip()
+            )
+            if relocated:
+                problems.append(
+                    ContractProblem(
+                        INVALID_SUPPORTING_STUDIES,
+                        "edge",
+                        entity_id,
+                        "has_supporting_studies",
+                        f"edge {entity_id} relocated {relocated} value(s) into has_supporting_studies descriptions — "
+                        "evidence slots pruned off the edge into the study junk drawer",
+                    )
+                )
         if subject_node is not None and not (_category_set(subject_node) & _CHEMICAL_SET):
             problems.append(
                 ContractProblem(
@@ -538,6 +588,7 @@ __all__ = [
     "EDGE_FAMILIES",
     "EXPECTED_FAMILIES",
     "FAMILY_INVARIANTS",
+    "INCOMPATIBLE_EDGE_CATEGORY",
     "INCOMPATIBLE_OBJECT_CATEGORY",
     "INCOMPATIBLE_SUBJECT_CATEGORY",
     "INFORES_DAILYMED",
@@ -545,10 +596,12 @@ __all__ = [
     "INFORES_FAERS",
     "INVALID_NODE_CATEGORY",
     "INVALID_PREDICATE",
+    "INVALID_SUPPORTING_STUDIES",
     "MISSING_EDGE_FIELD",
     "MISSING_NODE_FIELD",
     "MISSING_NODE_REFERENCE",
     "MISSING_PROVENANCE",
+    "PINNED_EDGE_CATEGORIES",
     "PREDICATE_APPLIED_TO_TREAT",
     "PREDICATE_CONTRAINDICATED_IN",
     "PREDICATE_TREATS",
