@@ -1,11 +1,23 @@
-"""Normalized disease/phenotype gazetteer for mention **span detection only**.
+"""Normalized disease/phenotype gazetteer + the canonical mention-type vocabulary.
 
 This is the deterministic, high-precision anchor of DAKP's single composite NER backend
-(see ``ner/BENCHMARK.md``). It indexes normalized term phrases to an entity **type**
-(``disease`` / ``phenotype``) so the lexical matcher can locate mention spans. It does
-**NOT** resolve terms to ontology CURIEs/names/categories — ontology mapping is exclusively
-Tablassert's job (fullmap/BABEL at ``tablassert build-kg``). DAKP emits mention text spans +
-type only.
+(see ``ner/BENCHMARK.md``). It indexes normalized term phrases to a canonical entity **type**
+from :data:`MENTION_TYPES` so the lexical matcher can locate object and qualifier spans. It does
+**NOT** resolve terms to ontology CURIEs/names/categories — ontology mapping is
+exclusively Tablassert's job (fullmap/BABEL at ``tablassert build-kg``). DAKP emits mention
+text spans + type only.
+
+Type vocabulary
+---------------
+:data:`MENTION_TYPES` is the closed set of ``Mention.type`` values DAKP produces. It splits
+into two channels: :data:`OBJECT_TYPES` (``Disease`` / ``PhenotypicFeature``) may become
+assertion **objects**, while :data:`QUALIFIER_TYPES` describe an object (anatomical site, sex,
+population, taxon, frequency, temporal context/interval) and are consumed as qualifiers only.
+Object types are the exact ``tablassert.biolink.Categories`` values the assertion tables already
+prioritize, so a DAKP mention type needs no second vocabulary translation downstream.
+:func:`canonical_type` folds every label dialect a model or fixture may emit (``biolink:Disease``,
+legacy ``disease``, ``PhenotypicFeature``) onto one canonical value; anything outside
+:data:`MENTION_TYPES` is dropped by the span adapter.
 
 Normalization is deterministic and shared with :mod:`dakp_pipeline.ner.lexical`: lowercase,
 strip HTML tags, drop possessive ``'s``, fold non-alphanumerics to single spaces.
@@ -23,26 +35,66 @@ import polars as pl
 
 # --- canonical entity types ----------------------------------------------------
 
-TYPE_DISEASE = "disease"
-TYPE_PHENOTYPE = "phenotype"
+# Object channel: the types a DAKP assertion may target. These are the exact
+# ``tablassert.biolink.Categories`` values (``Categories.DISEASE.value`` == "Disease",
+# ``Categories.PHENOTYPIC_FEATURE.value`` == "PhenotypicFeature") that the assertion tables
+# already list under ``prioritize:`` / ``object_category_override:``, so no second vocabulary
+# translation is needed between mining and ``tablassert build-kg``.
+TYPE_DISEASE = "Disease"
+TYPE_PHENOTYPE = "PhenotypicFeature"
 
-# The object types a contraindication assertion targets (disease / phenotype mentions).
-CONTRAINDICATION_DISEASE_TYPES: tuple[str, ...] = (TYPE_DISEASE, TYPE_PHENOTYPE)
+# Qualifier channel: Biolink categories that describe an object rather than being one.
+TYPE_ANATOMICAL_ENTITY = "AnatomicalEntity"
+TYPE_BIOLOGICAL_SEX = "BiologicalSex"
+TYPE_POPULATION_OF_INDIVIDUAL_ORGANISMS = "PopulationOfIndividualOrganisms"
+TYPE_ORGANISM_TAXON = "OrganismTaxon"
+# Qualifier channel: DAKP field-named qualifiers (no Biolink category of that name exists).
+TYPE_FREQUENCY_QUALIFIER = "frequency_qualifier"
+TYPE_TEMPORAL_CONTEXT_QUALIFIER = "temporal_context_qualifier"
+TYPE_TEMPORAL_INTERVAL_QUALIFIER = "temporal_interval_qualifier"
 
-# Raw label -> canonical type. Unknown labels canonicalize to their lowercased form.
+#: Types that may become an assertion **object** (a contraindication/treatment target).
+OBJECT_TYPES: tuple[str, ...] = (TYPE_DISEASE, TYPE_PHENOTYPE)
+#: Types that only ever describe an object; shapers must never treat them as objects.
+#: ``disease_context_qualifier`` is deliberately absent: it shares :data:`TYPE_DISEASE`.
+QUALIFIER_TYPES: tuple[str, ...] = (
+    TYPE_ANATOMICAL_ENTITY,
+    TYPE_BIOLOGICAL_SEX,
+    TYPE_POPULATION_OF_INDIVIDUAL_ORGANISMS,
+    TYPE_ORGANISM_TAXON,
+    TYPE_FREQUENCY_QUALIFIER,
+    TYPE_TEMPORAL_CONTEXT_QUALIFIER,
+    TYPE_TEMPORAL_INTERVAL_QUALIFIER,
+)
+#: The closed set of ``Mention.type`` values DAKP emits. A label canonicalizing outside it is
+#: dropped at the span adapter, so a checkpoint emitting a qualifier DAKP has no column for can
+#: never reach a shaper.
+MENTION_TYPES: tuple[str, ...] = OBJECT_TYPES + QUALIFIER_TYPES
+
+#: Biolink CURIE prefix carried by model labels (``biolink:Disease``).
+_BIOLINK_PREFIX = "biolink:"
+
+# Raw label -> canonical type. Every canonical name is its own alias case-insensitively; the
+# explicit legacy entries cover the pre-Biolink dialect still present in fixtures and older
+# caches. Unknown labels canonicalize to their lowercased, prefix-stripped form (and are then
+# dropped as outside MENTION_TYPES).
 _TYPE_ALIASES: Mapping[str, str] = {
-    "disease": TYPE_DISEASE,
+    **{name.lower(): name for name in MENTION_TYPES},
     "diseases": TYPE_DISEASE,
     "phenotype": TYPE_PHENOTYPE,
     "phenotypes": TYPE_PHENOTYPE,
-    "phenotypicfeature": TYPE_PHENOTYPE,
     "phenotypic_feature": TYPE_PHENOTYPE,
 }
 
 
 def canonical_type(raw: str) -> str:
-    """Canonicalize a raw entity label (e.g. ``"PhenotypicFeature"`` -> ``"phenotype"``)."""
-    key = raw.strip().lower()
+    """Canonicalize a raw entity label (``"biolink:Disease"``/``"disease"`` -> ``"Disease"``).
+
+    The ``biolink:`` prefix is stripped and the remainder matched case-insensitively against
+    :data:`MENTION_TYPES` plus the legacy aliases; an unrecognized label falls back to that
+    lowercased form, which is outside :data:`MENTION_TYPES` and therefore dropped downstream.
+    """
+    key = raw.strip().lower().removeprefix(_BIOLINK_PREFIX)
     return _TYPE_ALIASES.get(key, key)
 
 
@@ -126,8 +178,8 @@ def normalize_with_map(text: str) -> tuple[str, list[int]]:
 class Gazetteer:
     """Immutable, deterministic normalized-phrase -> entity-type index (span detection only).
 
-    Keys are normalized term phrases; values are canonical entity types
-    (:data:`TYPE_DISEASE` / :data:`TYPE_PHENOTYPE`). No CURIE/name/category is stored or
+    Keys are normalized term phrases; values are canonical entity types from
+    :data:`MENTION_TYPES`. No CURIE/name/category is stored or
     assigned — the gazetteer only answers "is this phrase a disease/phenotype mention, and
     which type?". Multiple surface forms may normalize to the same key; the type is whichever
     was inserted last for that key (deterministic for a given input mapping).
@@ -186,4 +238,21 @@ class Gazetteer:
         return len(self._by_normalized)
 
 
-__all__ = ["CONTRAINDICATION_DISEASE_TYPES", "TYPE_DISEASE", "TYPE_PHENOTYPE", "Gazetteer", "canonical_type", "normalize_text", "normalize_with_map"]
+__all__ = [
+    "MENTION_TYPES",
+    "OBJECT_TYPES",
+    "QUALIFIER_TYPES",
+    "TYPE_ANATOMICAL_ENTITY",
+    "TYPE_BIOLOGICAL_SEX",
+    "TYPE_DISEASE",
+    "TYPE_FREQUENCY_QUALIFIER",
+    "TYPE_ORGANISM_TAXON",
+    "TYPE_PHENOTYPE",
+    "TYPE_POPULATION_OF_INDIVIDUAL_ORGANISMS",
+    "TYPE_TEMPORAL_CONTEXT_QUALIFIER",
+    "TYPE_TEMPORAL_INTERVAL_QUALIFIER",
+    "Gazetteer",
+    "canonical_type",
+    "normalize_text",
+    "normalize_with_map",
+]
