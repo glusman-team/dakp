@@ -82,6 +82,9 @@ class Mention:
     normalized: str = ""
     notes: str = ""
     section: str = ""
+    context: str = ""
+    context_model: str = ""
+    context_model_score: float = 0.0
 
     def to_dict(self) -> dict[str, str | int | float]:
         """Lossless JSON-serializable form (all fields; used by the persistent mention cache)."""
@@ -94,6 +97,9 @@ class Mention:
             "normalized": self.normalized,
             "notes": self.notes,
             "section": self.section,
+            "context": self.context,
+            "context_model": self.context_model,
+            "context_model_score": self.context_model_score,
         }
 
     @classmethod
@@ -108,6 +114,9 @@ class Mention:
             normalized=str(data.get("normalized", "")),
             notes=str(data.get("notes", "")),
             section=str(data.get("section", "")),
+            context=str(data.get("context", "")),
+            context_model=str(data.get("context_model", "")),
+            context_model_score=float(data.get("context_model_score", 0.0)),
         )
 
 

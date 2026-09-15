@@ -51,6 +51,15 @@ APPROVED_TREATS_COLUMNS = [
     "edge_evidence",
     "supporting_faers_records",
     "supporting_faers_urls",
+    "assertion_context",
+    "assertion_context_model",
+    "assertion_context_model_score",
+    "anatomical_context_text",
+    "sex_text",
+    "population_context_text",
+    "species_context_text",
+    "frequency_text",
+    "temporal_context_text",
 ]
 
 FAERS_APPLIED_TO_TREAT_COLUMNS = [
@@ -74,6 +83,15 @@ FAERS_APPLIED_TO_TREAT_COLUMNS = [
     "edge_evidence",
     "supporting_faers_records",
     "supporting_faers_urls",
+    "assertion_context",
+    "assertion_context_model",
+    "assertion_context_model_score",
+    "anatomical_context_text",
+    "sex_text",
+    "population_context_text",
+    "species_context_text",
+    "frequency_text",
+    "temporal_context_text",
 ]
 
 CONTRAINDICATION_COLUMNS = [
@@ -98,6 +116,15 @@ CONTRAINDICATION_COLUMNS = [
     "upstream_resource_ids",
     "FDA_regulatory_approvals",
     "edge_evidence",
+    "assertion_context",
+    "assertion_context_model",
+    "assertion_context_model_score",
+    "anatomical_context_text",
+    "sex_text",
+    "population_context_text",
+    "species_context_text",
+    "frequency_text",
+    "temporal_context_text",
 ]
 
 FAERS_CASES_COLUMNS = [

@@ -170,7 +170,7 @@ def _counting_extract(ner: DiseaseNER, monkeypatch: pytest.MonkeyPatch) -> list[
 
     def fake_extract(text: str) -> list[Mention]:
         calls.append(text)
-        return [Mention(text=text, start=0, end=len(text), type="disease", score=0.9)]
+        return [Mention(text=text, start=0, end=len(text), type="Disease", score=0.9)]
 
     monkeypatch.setattr(ner, "extract", fake_extract)
     return calls

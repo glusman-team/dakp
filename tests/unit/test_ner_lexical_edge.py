@@ -79,27 +79,27 @@ def test_overlaps_any_new_span_before_covered_is_false() -> None:
 
 
 def test_mention_sort_key_is_start_end_type_text() -> None:
-    mention = Mention(text="asthma", start=3, end=9, type="disease", score=DIRECT_SCORE)
-    assert _mention_sort_key(mention) == (3, 9, "disease", "asthma")
+    mention = Mention(text="asthma", start=3, end=9, type="Disease", score=DIRECT_SCORE)
+    assert _mention_sort_key(mention) == (3, 9, "Disease", "asthma")
 
 
 # --- Mention dataclass ----------------------------------------------------------
 
 
 def test_mention_default_optional_fields_are_empty() -> None:
-    mention = Mention(text="x", start=0, end=1, type="disease", score=DIRECT_SCORE)
+    mention = Mention(text="x", start=0, end=1, type="Disease", score=DIRECT_SCORE)
     assert (mention.normalized, mention.notes, mention.section) == ("", "", "")
 
 
 def test_mention_is_frozen() -> None:
-    mention = Mention(text="asthma", start=0, end=6, type="disease", score=DIRECT_SCORE)
+    mention = Mention(text="asthma", start=0, end=6, type="Disease", score=DIRECT_SCORE)
     with pytest.raises(FrozenInstanceError):
         mention.text = "changed"  # type: ignore[misc]
 
 
 def test_mention_is_hashable_and_value_equal() -> None:
-    a = Mention(text="asthma", start=0, end=6, type="disease", score=DIRECT_SCORE)
-    b = Mention(text="asthma", start=0, end=6, type="disease", score=DIRECT_SCORE)
+    a = Mention(text="asthma", start=0, end=6, type="Disease", score=DIRECT_SCORE)
+    b = Mention(text="asthma", start=0, end=6, type="Disease", score=DIRECT_SCORE)
     assert a == b
     assert hash(a) == hash(b)
     assert len({a, b}) == 1
