@@ -12,7 +12,9 @@ from pathlib import Path
 import polars as pl
 
 from dakp_pipeline.ner.dictionary import (
-    CONTRAINDICATION_DISEASE_TYPES,
+    MENTION_TYPES,
+    OBJECT_TYPES,
+    QUALIFIER_TYPES,
     TYPE_DISEASE,
     TYPE_PHENOTYPE,
     Gazetteer,
@@ -25,9 +27,12 @@ from dakp_pipeline.ner.dictionary import (
 
 
 def test_entity_type_constants() -> None:
-    assert TYPE_DISEASE == "disease"
-    assert TYPE_PHENOTYPE == "phenotype"
-    assert CONTRAINDICATION_DISEASE_TYPES == ("disease", "phenotype")
+    """Object types are the tablassert Categories values; the vocabulary is the two channels."""
+    assert TYPE_DISEASE == "Disease"
+    assert TYPE_PHENOTYPE == "PhenotypicFeature"
+    assert OBJECT_TYPES == (TYPE_DISEASE, TYPE_PHENOTYPE)
+    assert MENTION_TYPES == OBJECT_TYPES + QUALIFIER_TYPES
+    assert set(OBJECT_TYPES).isdisjoint(QUALIFIER_TYPES)
 
 
 # --- normalize_text ------------------------------------------------------------
@@ -200,4 +205,4 @@ def test_normalized_terms_sorted() -> None:
 
 def test_items_yields_sorted_pairs() -> None:
     gaz = Gazetteer({"pain": "disease", "asthma": "disease", "fever": "phenotype"})
-    assert list(gaz.items()) == [("asthma", "disease"), ("fever", "phenotype"), ("pain", "disease")]
+    assert list(gaz.items()) == [("asthma", TYPE_DISEASE), ("fever", TYPE_PHENOTYPE), ("pain", TYPE_DISEASE)]

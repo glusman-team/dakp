@@ -130,7 +130,7 @@ class _BlankNER(DiseaseNER):
     """A backend that extracts a single whitespace-only span (to exercise the blank-skip)."""
 
     def extract(self, text: str) -> list[Mention]:
-        return [Mention(text="   ", start=0, end=3, type="disease", score=1.0)]
+        return [Mention(text="   ", start=0, end=3, type="Disease", score=1.0)]
 
 
 def _ctx(tmp_path: Path, params: Mapping[str, Any]) -> TaskContext:
@@ -760,10 +760,11 @@ def test_custom_keywords_filter_indication_section(tmp_path: Path) -> None:
 
 
 class _TermScanningGLiNERModel:
-    """Fake GLiNER model that returns entities for known disease terms found in text.
+    """Fake gliner2 model that returns entities for known disease terms found in text.
 
     Unlike a fixed-prediction mock, this model scans the input text for known disease terms
-    and returns them as entities. This lets tests verify that the sentence filter prevents
+    and returns them as entities (grouped into gliner2's ``{"entities": {label: [...]}}``
+    result shape). This lets tests verify that the sentence filter prevents
     indication-context diseases from ever reaching the model.
     """
 
@@ -771,9 +772,9 @@ class _TermScanningGLiNERModel:
         self._terms = terms  # lowercase term -> entity type
         self.calls: list[str] = []
 
-    def predict_entities(self, text: str, labels: list[str], threshold: float = 0.5) -> list[dict[str, Any]]:
+    def extract_entities(self, text: str, entity_types: list[str], threshold: float = 0.5, **_kwargs: Any) -> dict[str, Any]:
         self.calls.append(text)
-        preds: list[dict[str, Any]] = []
+        entities: dict[str, list[dict[str, Any]]] = {}
         lower = text.lower()
         for term, etype in sorted(self._terms.items(), key=lambda x: -len(x[0])):  # longest first
             idx = 0
@@ -781,21 +782,28 @@ class _TermScanningGLiNERModel:
                 found = lower.find(term, idx)
                 if found == -1:
                     break
-                preds.append({"text": text[found : found + len(term)], "start": found, "end": found + len(term), "label": etype, "score": 0.8})
+                entities.setdefault(etype, []).append(
+                    {"text": text[found : found + len(term)], "confidence": 0.8, "start": found, "end": found + len(term)}
+                )
                 idx = found + len(term)
-        return preds
+        return {"entities": entities}
+
+    def batch_extract_entities(
+        self, texts: list[str], entity_types: list[str], batch_size: int = 8, threshold: float = 0.5, **_kwargs: Any
+    ) -> list[dict[str, Any]]:
+        return [self.extract_entities(text, entity_types, threshold=threshold) for text in texts]
 
 
 def _install_term_scanning_gliner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, terms: dict[str, str]) -> _TermScanningGLiNERModel:
-    """Install a fake gliner module whose ``predict_entities`` scans text for known disease terms.
+    """Install a fake gliner2 module whose ``extract_entities`` scans text for known disease terms.
 
     Also patches ``ensure_model`` so the production NER backend can load without network access.
     Returns the fake model so tests can inspect ``.calls`` to verify which texts reached GLiNER.
     """
     model = _TermScanningGLiNERModel(terms)
-    module = types.ModuleType("gliner")
-    module.GLiNER = type("GLiNER", (), {"from_pretrained": staticmethod(lambda *a, **kw: model)})  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "gliner", module)
+    module = types.ModuleType("gliner2")
+    module.AutoExtractor = type("AutoExtractor", (), {"from_pretrained": staticmethod(lambda *a, **kw: model)})  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gliner2", module)
 
     import dakp_pipeline.ner.ner as ner_module
     from dakp_pipeline.ner.model_cache import ModelRef
@@ -976,7 +984,7 @@ def test_legacy_tuple_item_classifies_by_section_default() -> None:
     dedicated 34070-3 section: evidence is the whole mined text, and the mention is accepted
     on section context even when the sentence carries no explicit trigger word."""
     text = "Avoid use in asthma."
-    mention = Mention(text="asthma", start=13, end=19, type="disease", score=1.0)
+    mention = Mention(text="asthma", start=13, end=19, type="Disease", score=1.0)
     decision = _classify_mention(("SET-A", "DOC-A", text), mention)
     assert decision.accepted
     assert decision.trigger == "contraindication_section"
@@ -996,10 +1004,10 @@ def test_work_item_evidence_resolves_spans_and_falls_back() -> None:
         (EvidenceSpan(0, 12, 0, 12, "First clean."), EvidenceSpan(13, 32, 40, 59, "Second with asthma.")),
     )
     # Mention inside the SECOND joined span: the first span is skipped without overlap.
-    in_second = Mention(text="asthma", start=25, end=31, type="disease", score=1.0)
+    in_second = Mention(text="asthma", start=25, end=31, type="Disease", score=1.0)
     assert _work_item_evidence(item, in_second) == "Second with asthma."
     # Mention past every span: falls back to the full source text.
-    orphan = Mention(text="asthma", start=33, end=39, type="disease", score=1.0)
+    orphan = Mention(text="asthma", start=33, end=39, type="Disease", score=1.0)
     assert _work_item_evidence(item, orphan) == source
     # Legacy tuple items carry no spans: the whole mined text is the evidence.
     assert _work_item_evidence(("SET-A", "DOC-A", " plain text "), in_second) == "plain text"
@@ -1009,10 +1017,10 @@ def test_mention_local_span_maps_overlap_and_returns_none_without_any() -> None:
     """A mapped mention yields ``(sentence, local start, local end, source start)`` offsets;
     a mention overlapping NO span maps to None so qualifier logic can skip it safely."""
     item = ContraWorkItem("SET-A", "DOC-A", "xxxx asthma", "src asthma text", (EvidenceSpan(5, 11, 20, 26, "asthma"),))
-    overlapping = Mention(text="asthma", start=5, end=11, type="disease", score=1.0)
+    overlapping = Mention(text="asthma", start=5, end=11, type="Disease", score=1.0)
     assert _mention_local_span(item, overlapping) == ("asthma", 0, 6, 20)
     # Disjoint mention: the loop finds no overlapping span -> None.
-    disjoint = Mention(text="xxxx", start=0, end=4, type="disease", score=1.0)
+    disjoint = Mention(text="xxxx", start=0, end=4, type="Disease", score=1.0)
     assert _mention_local_span(item, disjoint) is None
 
 
@@ -1021,8 +1029,8 @@ def test_classify_mentions_keeps_unmapped_mentions_out_of_qualifier_grouping() -
     per-sentence patient-clause grouping (there is no sentence to group on)."""
     spans = (EvidenceSpan(0, 7, 30, 37, "asthma."),)
     item = ContraWorkItem("SET-A", "DOC-A", "asthma. diabetes.", "asthma. diabetes.", spans)
-    mapped = Mention(text="asthma", start=0, end=6, type="disease", score=1.0)
-    unmapped = Mention(text="diabetes", start=8, end=16, type="disease", score=1.0)
+    mapped = Mention(text="asthma", start=0, end=6, type="Disease", score=1.0)
+    unmapped = Mention(text="diabetes", start=8, end=16, type="Disease", score=1.0)
     decisions = _classify_mentions(item, [mapped, unmapped])
     # Both keep their section-context acceptance; the unmapped one just skips grouping.
     assert [(d.accepted, d.trigger, d.context_text) for d in decisions] == [
@@ -1109,8 +1117,8 @@ def test_context_qualifier_skipped_when_context_normalizes_blank() -> None:
     sentence = "Contraindicated for treatment of --- in patients with asthma."
     spans = (EvidenceSpan(0, len(sentence), 0, len(sentence), sentence),)
     item = ContraWorkItem("SET-A", "DOC-A", sentence, sentence, spans)
-    context = Mention(text="---", start=33, end=36, type="disease", score=1.0)
-    asthma = Mention(text="asthma", start=54, end=60, type="disease", score=1.0)
+    context = Mention(text="---", start=33, end=36, type="Disease", score=1.0)
+    asthma = Mention(text="asthma", start=54, end=60, type="Disease", score=1.0)
     decisions = _classify_mentions(item, [context, asthma])
     assert [(d.accepted, d.trigger, d.context_text) for d in decisions] == [(True, "contraindicated", ""), (True, "contraindicated", "")]
 
@@ -1144,7 +1152,7 @@ def test_accumulate_skips_blank_evidence_text() -> None:
     """Blank evidence must not enter the evidence union — the sorted-pipe evidence column may
     only contain real sentences, while support/scores still accumulate."""
     aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
-    mention = Mention(text="asthma", start=0, end=6, type="disease", score=0.9)
+    mention = Mention(text="asthma", start=0, end=6, type="Disease", score=0.9)
     _accumulate(aggregated, "SET-A", "DOC-A", "DrugX", "UNII:X", "asthma", mention, evidence_text="   ")
     agg = next(iter(aggregated.values()))
     assert agg["evidence_texts"] == []
@@ -1157,7 +1165,7 @@ def test_accumulate_sanitizes_pipe_delimiters_in_label_prose() -> None:
     DailyMed warnings prose crashed ``shape_contraindication_tables`` when the pipe reached the
     sorted-pipe evidence encoder). Free-form text is sanitized, not rejected."""
     aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
-    mention = Mention(text="asthma", start=0, end=6, type="disease", score=0.9)
+    mention = Mention(text="asthma", start=0, end=6, type="Disease", score=0.9)
     _accumulate(
         aggregated,
         "SET-A",

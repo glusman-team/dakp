@@ -116,7 +116,7 @@ def test_dailymed_fallback_blank_mention_is_skipped() -> None:
         def extract(self, text: str, **kwargs: Any) -> Any:
             from dakp_pipeline.ner.lexical import Mention
 
-            return [Mention(text="!!!", start=0, end=3, type="disease", score=0.9)]
+            return [Mention(text="!!!", start=0, end=3, type="Disease", score=0.9)]
 
     assert build_approved_treats_rows(None, ev, _MAPPING, {}, ner=_BlankMentionNER()) == []
 
@@ -162,12 +162,12 @@ def test_production_ner_dispatches_multi_gpu(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_production_ner_single_section_stays_sequential(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A single section is mined inline even with devices available (no pool for one item)."""
-    # Keep the inline production extract hermetic (no torch/model download): a fake gliner
+    # Keep the inline production extract hermetic (no torch/model download): a fake gliner2
     # module plus a stubbed ensure_model, the same seam test_ner_edge.py uses.
-    fake_model = types.SimpleNamespace(predict_entities=lambda text, labels, threshold=0.0: [])
-    module = types.ModuleType("gliner")
-    module.GLiNER = type("GLiNER", (), {"from_pretrained": staticmethod(lambda *a, **kw: fake_model)})  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "gliner", module)
+    fake_model = types.SimpleNamespace(extract_entities=lambda text, entity_types, threshold=0.5, **_kwargs: {"entities": {}})
+    module = types.ModuleType("gliner2")
+    module.AutoExtractor = type("AutoExtractor", (), {"from_pretrained": staticmethod(lambda *a, **kw: fake_model)})  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gliner2", module)
     monkeypatch.setattr(
         ner_module,
         "ensure_model",
