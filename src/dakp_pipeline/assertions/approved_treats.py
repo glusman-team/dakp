@@ -65,11 +65,23 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 import polars as pl
 
-from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_FAERS, KL_ASSERTION, join_pipe, match_diseases, row_for
+from dakp_pipeline.assertions import (
+    AT_MANUAL,
+    INFORES_DAILYMED,
+    INFORES_DAKP,
+    INFORES_FAERS,
+    KL_ASSERTION,
+    join_pipe,
+    match_diseases,
+    object_mentions,
+    row_for,
+)
+from dakp_pipeline.assertions.contexts import assertion_context, attach_qualifiers_with_scores
 from dakp_pipeline.assertions.evidence import (
     DailyMedEvidence,
     FDAApprovalIndex,
@@ -81,7 +93,6 @@ from dakp_pipeline.assertions.evidence import (
     faers_record_url,
     find_faers_cases,
     load_or_build_dailymed_evidence,
-    merge_unique,
     sorted_pipe,
     spl_evidence_pipe,
     write_assertion_table,
@@ -90,7 +101,7 @@ from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu, _resolve_devi
 from dakp_pipeline.assertions.observed_uses import is_non_disease_indication
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
-from dakp_pipeline.ner.dictionary import normalize_text
+from dakp_pipeline.ner.dictionary import normalize_text, normalize_with_map
 from dakp_pipeline.ner.mention_cache import MentionCache
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
 
@@ -116,6 +127,100 @@ _NEGATION_CUES = re.compile(r"\b(?:not indicated|not recommended|not approved|no
 #: section's bulleted lines; sentence-final punctuation followed by whitespace separates prose
 #: sentences within a line.
 _SENTENCE_BOUNDARY = re.compile(r"(?:\r?\n)+|(?<=[.!?])\s+")
+
+
+def _sentence_spans(text: str) -> list[tuple[int, int, str]]:
+    """Return non-empty sentence/bullet spans with offsets into one indication section."""
+    spans: list[tuple[int, int, str]] = []
+    start = 0
+    for match in _SENTENCE_BOUNDARY.finditer(text):
+        raw = text[start : match.start()]
+        if raw.strip():
+            left = start + len(raw) - len(raw.lstrip())
+            spans.append((left, start + len(raw.rstrip()), text[left : start + len(raw.rstrip())]))
+        start = match.end()
+    raw = text[start:]
+    if raw.strip():
+        left = start + len(raw) - len(raw.lstrip())
+        spans.append((left, start + len(raw.rstrip()), text[left : start + len(raw.rstrip())]))
+    return spans
+
+
+def _candidate_mention(sentence: str, candidate: Mapping[str, str], offset: int) -> Mention | None:
+    """Create a lexical host only when the candidate is explicitly present in this sentence."""
+    needle = normalize_text(candidate["object_text"])
+    if not needle:
+        return None
+    match = re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", sentence, re.IGNORECASE)
+    if match is None:
+        normalized_sentence, index_map = normalize_with_map(sentence)
+        match = re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", normalized_sentence, re.IGNORECASE)
+        if match is None:
+            return None
+        original_start = index_map[match.start()]
+        original_end = index_map[match.end() - 1] + 1
+    else:
+        original_start, original_end = match.start(), match.end()
+    start = offset + original_start
+    return Mention(text=sentence[original_start:original_end], start=start, end=offset + original_end, type=candidate["object_category"], score=1.0)
+
+
+def _model_matches_candidate(mention: Mention, candidate_text: str) -> bool:
+    mention_text = normalize_text(mention.text)
+    needle = normalize_text(candidate_text)
+    return bool(mention_text and (mention_text == needle or f" {mention_text} " in f" {needle} "))
+
+
+def _indication_observations(
+    dailymed: DailyMedEvidence,
+    sets: Sequence[str],
+    candidate: Mapping[str, str],
+    disease_map: Mapping[str, Mapping[str, str]],
+    mentions: Mapping[tuple[str, str], list[Mention]] | None,
+) -> list[dict[str, Any]]:
+    """Preserve the sentence, context, host, and model corroboration for each support document."""
+    observations: list[dict[str, Any]] = []
+    for set_id in sets:
+        for doc_id, text in dailymed.indication_docs.get(set_id, []):
+            doc_mentions = list((mentions or {}).get((set_id, doc_id), []))
+            if not _section_mentions_condition(text, candidate, disease_map, doc_mentions):
+                continue
+            for start, _end, sentence in _sentence_spans(text):
+                if not _section_mentions_condition(sentence, candidate, disease_map, doc_mentions):
+                    continue
+                sentence_mentions = [m for m in doc_mentions if m.start < start + len(sentence) and start < m.end]
+                local_mentions = [
+                    replace(m, start=m.start - start, end=m.end - start, text=sentence[m.start - start : m.end - start]) for m in sentence_mentions
+                ]
+                objects = object_mentions(local_mentions)
+                host = [m for m in objects if _model_matches_candidate(m, candidate["object_text"])]
+                if not host:
+                    lexical = _candidate_mention(sentence, candidate, 0)
+                    if lexical is not None:
+                        host = [lexical]
+                qualifiers = [m for m in local_mentions if m not in objects]
+                sentence_of = lambda _mention, value=sentence: value
+                attached, qualifier_scores = attach_qualifiers_with_scores(host, qualifiers, sentence_of) if host else ({}, {})
+                merged_qualifiers: dict[str, str] = {}
+                merged_scores: dict[str, tuple[float, str]] = {}
+                for (host_index, field), score in qualifier_scores.items():
+                    if field not in merged_scores or score > merged_scores[field]:
+                        merged_scores[field] = score
+                        merged_qualifiers[field] = attached[host_index][field]
+                context = assertion_context("dailymed", "34067-9", sentence)
+                best_model = max((m for m in host if m.context_model), key=lambda m: (m.context_model_score, m.context_model), default=None)
+                observations.append(
+                    {
+                        "set_id": set_id,
+                        "doc_id": doc_id,
+                        "context": context,
+                        "qualifiers": merged_qualifiers,
+                        "qualifier_scores": merged_scores,
+                        "model": best_model.context_model if best_model else "",
+                        "model_score": best_model.context_model_score if best_model else 0.0,
+                    }
+                )
+    return observations
 
 
 def _positive_context_text(section_text: str) -> str:
@@ -216,7 +321,7 @@ def build_approved_treats_rows(
         else _dailymed_candidates(dailymed, disease_map, mentions)
     )
 
-    aggregated: dict[tuple[str, str], dict[str, Any]] = {}
+    aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
     candidates_seen = 0
     dropped_no_ingredient_map = 0
     dropped_no_spl_support = 0
@@ -232,39 +337,59 @@ def build_approved_treats_rows(
         if not sets:  # (2)+(3) DailyMed approval AND SPL indication-section support
             dropped_no_spl_support += 1
             continue
-        sets = _condition_corroborated_sets(dailymed, sets, cand, disease_map, mentions)
-        if not sets:  # (4) the condition must actually appear on a supporting label
+        support_sets = _condition_corroborated_sets(dailymed, sets, cand, disease_map, mentions)
+        if not support_sets:  # (4) the condition must actually appear on a supporting label
             dropped_no_label_term_support += 1
             continue
-        docs = merge_unique(doc_id for set_id in sets for doc_id, _text in dailymed.indication_docs[set_id])
-        subject_text, subject_curie = _subject_for_sets(dailymed, sets, cand["fallback_subject"])
+        observations = _indication_observations(dailymed, support_sets, cand, disease_map, mentions)
+        if not observations:
+            dropped_no_label_term_support += 1
+            continue
+        subject_text, subject_curie = _subject_for_sets(dailymed, support_sets, cand["fallback_subject"])
         if not subject_text:
             dropped_no_subject += 1
             continue
-        key = (subject_text, cand["object_text"])
-        agg = aggregated.setdefault(
-            key,
-            {
-                "subject_text": subject_text,
-                "subject_curie": subject_curie,
-                "object_text": cand["object_text"],
-                "object_curie": cand["object_curie"],
-                "object_name": cand["object_name"],
-                "object_category": cand["object_category"],
-                "FDA_regulatory_approvals": [],
-                "sets": [],
-                "docs": [],
-                "faers_source_records": [],
-                "faers_urls": [],
-            },
-        )
-        agg["FDA_regulatory_approvals"].extend(approvals.expand(dailymed.approval_display.get(norm) or norm))
-        agg["sets"].extend(sets)
-        agg["docs"].extend(docs)
-        agg["faers_source_records"].extend(cand.get("faers_source_records", []))
-        agg["faers_urls"].extend(cand.get("faers_urls", []))
-        if not agg["subject_curie"] and subject_curie:
-            agg["subject_curie"] = subject_curie
+        for observation in observations:
+            context = observation["context"]
+            key = (subject_text, cand["object_text"], context)
+            agg = aggregated.setdefault(
+                key,
+                {
+                    "subject_text": subject_text,
+                    "subject_curie": subject_curie,
+                    "object_text": cand["object_text"],
+                    "object_curie": cand["object_curie"],
+                    "object_name": cand["object_name"],
+                    "object_category": cand["object_category"],
+                    "FDA_regulatory_approvals": [],
+                    "sets": [],
+                    "docs": [],
+                    "faers_source_records": [],
+                    "faers_urls": [],
+                    "assertion_context": context,
+                    "assertion_context_model": "",
+                    "assertion_context_model_score": 0.0,
+                    "qualifiers": {},
+                    "qualifier_scores": {},
+                },
+            )
+            agg["FDA_regulatory_approvals"].extend(approvals.expand(dailymed.approval_display.get(norm) or norm))
+            agg["sets"].append(observation["set_id"])
+            agg["docs"].append(observation["doc_id"])
+            agg["faers_source_records"].extend(cand.get("faers_source_records", []))
+            agg["faers_urls"].extend(cand.get("faers_urls", []))
+            model_score = float(observation["model_score"])
+            if model_score > float(agg["assertion_context_model_score"]):
+                agg["assertion_context_model"] = observation["model"]
+                agg["assertion_context_model_score"] = model_score
+            for field, value in observation["qualifiers"].items():
+                score = observation.get("qualifier_scores", {}).get(field, (0.0, value))
+                previous = agg["qualifier_scores"].get(field)
+                if previous is None or score > previous:
+                    agg["qualifier_scores"][field] = score
+                    agg["qualifiers"][field] = value
+            if not agg["subject_curie"] and subject_curie:
+                agg["subject_curie"] = subject_curie
         # object_curie needs no back-fill: it is a deterministic function of object_text (the
         # aggregation key), so every candidate for a key carries the same value already set above.
 
@@ -293,6 +418,7 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         object_curie=agg["object_curie"],
         object_name=agg["object_name"],
         object_category=agg["object_category"],
+        assertion_context=agg.get("assertion_context", "indication"),
         FDA_regulatory_approvals=sorted_pipe(agg["FDA_regulatory_approvals"]),
         supporting_spl_sets=sorted_pipe(dailymed_set_url(set_id) for set_id in agg["sets"]),
         supporting_spl_documents=sorted_pipe(dailymed_document_url(doc_id) for doc_id in agg["docs"]),
@@ -300,6 +426,9 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         edge_evidence=spl_evidence_pipe(agg["sets"], agg["docs"]),
         supporting_faers_records=sorted_pipe(agg.get("faers_source_records", [])),
         supporting_faers_urls=sorted_pipe(agg.get("faers_urls", [])),
+        assertion_context_model=agg.get("assertion_context_model", ""),
+        assertion_context_model_score=agg.get("assertion_context_model_score", ""),
+        **agg.get("qualifiers", {}),
         clinical_approval_status=_STATUS,
         knowledge_level=KL_ASSERTION,
         agent_type=AT_MANUAL,
@@ -362,7 +491,7 @@ def _section_mentions_condition(
     normalized_section = normalize_text(positive_text)
     if f" {needle} " in f" {normalized_section} ":
         return True
-    for mention in mentions or []:
+    for mention in object_mentions(mentions or []):
         mention_text = normalize_text(mention.text)
         if mention_text and f" {mention_text} " in f" {normalized_section} " and (mention_text == needle or f" {mention_text} " in f" {needle} "):
             return True
@@ -467,6 +596,8 @@ def _dailymed_candidates(
     (CURIE/name/category resolved via :func:`_object_attrs`, empty when unknown). A mention whose
     normalized text equals a dictionary match on the same document is skipped — offline
     (gazetteer) mentions coincide with dictionary matches, so offline candidates are unchanged.
+    Only object-channel mentions are considered: qualifier mentions describe an object and must
+    never become one (see :func:`~dakp_pipeline.assertions.object_mentions`).
     """
     set_to_ndas: dict[str, set[str]] = {}
     for norm, sets in dailymed.approval_sets.items():
@@ -495,7 +626,7 @@ def _dailymed_candidates(
                         "fallback_subject": "",
                     }
             dictionary_texts = {normalize_text(match["text"]) for match in matches}
-            for mention in (mentions or {}).get((set_id, doc_id), []):
+            for mention in object_mentions((mentions or {}).get((set_id, doc_id), [])):
                 object_text = normalize_text(mention.text)
                 if not object_text or object_text in dictionary_texts:
                     continue
