@@ -12,9 +12,11 @@ Composite design (gazetteer-first, GLiNER-augmented)
   0.955 on the benchmark fixture, zero heavy dependencies, fully deterministic. Used by tests
   and offline runs.
 * **Production mode (``offline=False``):** the same gazetteer anchors high-precision spans and
-  a domain fine-tuned GLiNER (``SkyeAv/drug-approvals-gliner-small-v2.1``, trained on FAERS and
-  DailyMed indication/contraindication text) fills out-of-gazetteer gaps when invoked on DailyMed
-  sections.
+  a GLiNER2 boundary checkpoint (``fastino/gliner2.5-base-v1``, loaded via ``gliner2.AutoExtractor``)
+  fills out-of-gazetteer gaps when invoked on DailyMed sections. The previous v1 domain fine-tune
+  (``SkyeAv/drug-approvals-gliner-small-v2.1``) is NOT loadable by gliner2 (its knowledgator config
+  schema and BiLSTM head layout predate the gliner2 architecture split); re-fine-tuning that
+  FAERS/DailyMed corpus for gliner2 is a recorded follow-up.
   Non-overlapping GLiNER spans add recall; on overlap the **most specific span wins** — a model
   span that strictly contains a gazetteer span supersedes it (``pulmonary hypertension`` beats
   ``hypertension``), taking the model's boundary and the gazetteer's type. Equal spans, partial
@@ -26,13 +28,19 @@ Composite design (gazetteer-first, GLiNER-augmented)
   — the same 0.35 floor by default (the lowest score at which GLiNER is still accurate), so
   nothing generated is abstained; raise ``accept_threshold`` to decide narrower than you
   generate. Below the floor the backend **abstains** rather than asserting a low-confidence
-  mention or falling back to a less specific one. GLiNER is natively multi-entity and the
-  shipped fine-tune is trained for the two labels ``disease`` and ``phenotype``; inference
-  requests both labels and preserves the model's type. The gazetteer stays the type authority
-  whenever a span contests a gazetteer term. GLiNER silently truncates inputs past
-  ``config.max_len`` word tokens (384 on the shipped fine-tune), so long sections are
-  predicted in exact-substring windows (:func:`_windows`) whose spans are remapped back into
-  full-text offsets before the merge. ``gliner`` is a core
+  mention or falling back to a less specific one. GLiNER2 is natively multi-entity and
+  schema-conditioned: one inference call carries the whole :data:`MODEL_LABELS` vocabulary
+  (Biolink category labels **with** per-label descriptions) and every returned span is routed to
+  one of two channels by its canonical type — the **object** channel (``Disease`` /
+  ``PhenotypicFeature``) runs the full gazetteer merge described above, while the **qualifier**
+  channel (anatomical site, sex, population, taxon, frequency, temporal) is emitted as
+  strip-aligned spans at :data:`QUALIFIER_ACCEPT_THRESHOLD` with ``notes="gliner:qualifier"`` and
+  no hedge trimming, gazetteer merge or population filter (those exist to sharpen object spans
+  and would delete exactly the surfaces the qualifier labels extract). The gazetteer
+  stays the type authority whenever an object span contests a gazetteer term. GLiNER2 silently truncates
+  inputs past ``config.max_len`` word tokens (4096 on the shipped checkpoint), so long sections
+  are predicted in exact-substring windows (:func:`_windows`) whose spans are remapped back into
+  full-text offsets before the merge. ``gliner2`` is a core
   DAKP dependency but is imported lazily on first use (no torch at module load), raising
   :class:`~dakp_pipeline.ner.model_cache.NERDependencyError` ("reinstall with `uv sync`") if it is
   somehow not importable.
@@ -57,20 +65,109 @@ from pathlib import Path
 from typing import Any
 
 from dakp_pipeline.logging_setup import logger, stats
-from dakp_pipeline.ner.dictionary import CONTRAINDICATION_DISEASE_TYPES, TYPE_DISEASE, TYPE_PHENOTYPE, Gazetteer, canonical_type, normalize_text
+from dakp_pipeline.ner.dictionary import (
+    MENTION_TYPES,
+    OBJECT_TYPES,
+    TYPE_BIOLOGICAL_SEX,
+    TYPE_DISEASE,
+    TYPE_PHENOTYPE,
+    Gazetteer,
+    canonical_type,
+    normalize_text,
+)
 from dakp_pipeline.ner.lexical import LexicalMatcher, Mention
 from dakp_pipeline.ner.model_cache import NERDependencyError, default_model_cache_dir, ensure_model
 
-# Domain fine-tune of ``urchade/gliner_small-v2.1`` for FAERS/DailyMed indication and
-# contraindication text (deberta-v3-small encoder, max_len 384 word tokens). DAKP invokes it on
-# DailyMed sections only. Override for
-# another GLiNER checkpoint.
-DEFAULT_MODEL = "SkyeAv/drug-approvals-gliner-small-v2.1"
-#: Labels the production checkpoint is fine-tuned for (see its model card), requested verbatim
-#: in every GLiNER inference call — label matching is exact.
-MODEL_LABELS: tuple[str, ...] = (TYPE_DISEASE, TYPE_PHENOTYPE)
-#: Backward-compatible singular alias for callers that imported the old constant.
-MODEL_LABEL = TYPE_DISEASE
+# GLiNER2-native large span checkpoint. The previous v1 domain fine-tune of
+# ``urchade/gliner_small-v2.1`` is NOT loadable by gliner2 — its knowledgator config schema and
+# BiLSTM head layout predate the gliner2 architecture split — so re-fine-tuning that
+# FAERS/DailyMed corpus for gliner2 is a recorded follow-up. The compatible large checkpoint
+# improved the isolated zero-shot benchmark while preserving the composite score; see
+# ``BENCHMARK.md``. Override for another GLiNER2 checkpoint.
+DEFAULT_MODEL = "fastino/gliner2-large-v1"
+#: The prompt-engineered label vocabulary: label -> description, passed VERBATIM as gliner2's
+#: ``entity_types`` on every inference call. Both call paths DAKP uses funnel it straight into
+#: ``Schema.entities()`` (``inference/runtime.py:1293`` per-text, ``:1335`` batched), which
+#: accepts ``Dict[str, str]`` and stores each string as that label's description
+#: (``inference/schema.py:296,321,418``); ``processor._process_entities`` then renders it into
+#: the prompt as ``[DESCRIPTION] <label>: <description>`` (``processor.py:947,973-978,1116``)
+#: whenever a description is present. Entity labels support descriptions only — few-shot
+#: example pairs are a classification-task feature (``processor.py:948``), so descriptions are
+#: phrased as *what span to draw* with inline positive exemplars, never as an instruction and
+#: never as an input->output example.
+#:
+#: Descriptions are deterministic module constants on purpose: the mention cache folds the label
+#: material into its config fingerprint (``mention_cache.config_fingerprint``), so any
+#: non-determinism here would silently invalidate cached mentions.
+#:
+#: Labels are Biolink category IDs, not the bare words: measured on this host (cached
+#: checkpoint, CPU) plain ``["disease", "phenotype"]`` mistyped "pregnancy" as a disease at 0.82
+#: and emitted "childbearing potential" at 0.40, while the category labels plus descriptions gave
+#: ``biolink:PhenotypicFeature`` "pregnancy" 1.00, ``biolink:BiologicalSex`` "women" 1.00 and
+#: ``biolink:PopulationOfIndividualOrganisms`` "women of childbearing potential" 0.86.
+#:
+#: Exemplar choice is measured, not stylistic. On this host with the vocabulary below:
+#: ``hypersensitivity`` -> PhenotypicFeature 1.00 and ``asthma`` -> Disease 1.00 on the ibuprofen
+#: contraindication sentence; ``renal impairment`` -> PhenotypicFeature 1.00 and ``hypertension``
+#: -> Disease 0.94 on the renal/history sentence, with ``history of hypertension`` ->
+#: temporal_context_qualifier 0.65 (the qualifier the object channel's hedge trimmer would have
+#: destroyed). Listing ``pregnancy`` as a PhenotypicFeature exemplar is what recovers it (1.00 on
+#: both "Contraindicated in pregnancy." and "...during pregnancy and in women of childbearing
+#: potential."); WITHOUT that exemplar the checkpoint emits no pregnancy span at all, and with
+#: ``during`` listed as a temporal-context exemplar it mistypes "pregnancy" as
+#: temporal_context_qualifier 0.64. Both wording choices below are the measured-best pair.
+#:
+#: Order matters (it is the prompt order) and cross-label overlap is allowed — de-overlapping is
+#: per label — so a qualifier span may coexist with the maximal object span over the same words
+#: (observed: ``biolink:Disease`` "renal impairment" 0.41 next to PhenotypicFeature 1.00; the
+#: object channel's de-overlap keeps the higher-scoring one).
+#: ``disease_context_qualifier`` gets no label of its own: it shares ``biolink:Disease``.
+MODEL_LABELS: dict[str, str] = {
+    "biolink:Disease": (
+        "A named disorder, disease or syndrome, drawn as the maximal qualified term including its "
+        "anatomical, severity or course modifiers, e.g. asthma, pulmonary hypertension, severe heart "
+        "failure, active liver disease."
+    ),
+    "biolink:PhenotypicFeature": (
+        "A clinical finding, symptom, lab abnormality or condition-state, not a named disorder, drawn "
+        "as the maximal qualified term, e.g. hypersensitivity, pregnancy, renal impairment, QT "
+        "prolongation, bleeding."
+    ),
+    "biolink:AnatomicalEntity": (
+        "An organ, tissue or body site named as such, drawn on the site phrase alone and never "
+        "including the condition it localizes, e.g. liver, kidney, lung, gastrointestinal tract, "
+        "central nervous system."
+    ),
+    "biolink:BiologicalSex": "The sex or gender word describing the patient, drawn on that word alone, e.g. women, men, female, male.",
+    "biolink:PopulationOfIndividualOrganisms": (
+        "A described patient group or subpopulation the statement is about, drawn as the whole group "
+        "phrase including its modifiers, e.g. women of childbearing potential, pregnant women, "
+        "pediatric patients, elderly patients."
+    ),
+    "biolink:OrganismTaxon": "A species or taxon named as such, drawn on the species or taxon word alone, e.g. humans, rodents, rats.",
+    "frequency_qualifier": (
+        "How often or at what rate a drug is given, drawn on the frequency wording alone and never "
+        "including the drug name, e.g. once daily, every 8 hours, twice weekly, as needed."
+    ),
+    "temporal_context_qualifier": (
+        "The temporal or evidential wording framing when or how a condition holds, drawn on that "
+        "wording alone, e.g. history of, prior to, currently, recently, known, suspected."
+    ),
+    "temporal_interval_qualifier": (
+        "A bounded time interval or duration, drawn as the whole interval including its endpoints and "
+        "units, e.g. within 24 hours, for 14 days, during the first trimester, up to 6 weeks."
+    ),
+}
+#: The same vocabulary as names only, for callers that need the label list without descriptions.
+MODEL_LABEL_NAMES: tuple[str, ...] = tuple(MODEL_LABELS)
+#: Provenance recorded on every qualifier-channel mention (``gliner`` / ``gliner:extends`` mark
+#: object-channel model spans).
+QUALIFIER_NOTES = "gliner:qualifier"
+#: Acceptance floor for the qualifier channel. Qualifiers are generated at the same
+#: :data:`GLINER_GENERATION_FLOOR` as objects but are asserted at a higher floor: they narrow an
+#: existing object assertion, so a wrong qualifier silently distorts a true edge, and 0.5 is the
+#: point at which the measured qualifier labels were reliable.
+QUALIFIER_ACCEPT_THRESHOLD = 0.5
 #: Lowest model score retained for merge consideration. This is deliberately a generation
 #: floor, not a production operating point: the specificity merge needs to see low-scoring
 #: specific spans before a use-specific acceptance policy decides whether to assert them.
@@ -94,19 +191,26 @@ DEFAULT_THRESHOLD = GLINER_GENERATION_FLOOR
 #: historical constructor; production DAG tasks use explicit indication/contraindication profiles.
 DEFAULT_ACCEPT_THRESHOLD = CONTRAINDICATION_ACCEPT_THRESHOLD
 
-# GLiNER counts input in word tokens from its whitespace splitter and silently truncates anything
-# past ``config.max_len`` tokens (only a UserWarning). Mirror that exact token pattern (gliner's
-# ``WhitespaceTokenSplitter``: every punctuation glyph is its own token) so windows never exceed
-# the model's budget.
-_GLINER_TOKEN = re.compile(r"\w+(?:[-_]\w+)*|\S")
+# GLiNER2 counts input in word tokens from its whitespace splitter and silently truncates anything
+# past ``config.max_len`` tokens (only a UserWarning). Mirror that exact token pattern (gliner2's
+# ``WhitespaceTokenSplitter``: URLs, emails and @handles stay single tokens; every other
+# punctuation glyph is its own token) so windows never exceed the model's budget.
+_GLINER_TOKEN = re.compile(
+    r"(?:https?://[^\s]+|www\.[^\s]+)"
+    r"|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}"
+    r"|@[a-z0-9_]+"
+    r"|\w+(?:[-_]\w+)*"
+    r"|\S",
+    re.IGNORECASE,
+)
 
 # Sentence-ish piece for window packing: a run of non-terminal characters, trailing terminal
 # punctuation, trailing whitespace. Matches tile the text when the tiling check in
 # :func:`_sentence_piece_spans` holds; otherwise the whole text is one piece.
 _SENTENCE_PIECE = re.compile(r"[^.!?;]+[.!?;]*\s*")
 
-#: Window-budget fallback (GLiNER word tokens) when a model exposes no ``config.max_len``; the
-#: shipped fine-tune sets ``max_len: 384``.
+#: Window-budget fallback (GLiNER2 word tokens) when a model exposes no ``config.max_len``; the
+#: shipped checkpoint sets ``max_len: 4096``.
 _DEFAULT_WORD_BUDGET = 384
 
 # Curated high-precision disease/phenotype gazetteer — the offline mode's embedded vocabulary
@@ -171,6 +275,23 @@ EMBEDDED_GAZETTEER: dict[str, str] = {
     "vomiting": TYPE_PHENOTYPE,
     "fatigue": TYPE_PHENOTYPE,
 }
+
+# Closed, deterministic qualifier vocabulary. Keep this separate from ``EMBEDDED_GAZETTEER``:
+# object and qualifier channels have different downstream contracts, and a qualifier must never
+# become an assertion object. These surfaces are unambiguous biological-sex terms; broader
+# demographic/population wording remains model-only until it has an equivalently reviewable
+# lexicon. The lexical matcher normalizes case, punctuation, and possessives before matching.
+QUALIFIER_GAZETTEER: dict[str, str] = {
+    "female": TYPE_BIOLOGICAL_SEX,
+    "females": TYPE_BIOLOGICAL_SEX,
+    "male": TYPE_BIOLOGICAL_SEX,
+    "males": TYPE_BIOLOGICAL_SEX,
+    "men": TYPE_BIOLOGICAL_SEX,
+    "woman": TYPE_BIOLOGICAL_SEX,
+    "women": TYPE_BIOLOGICAL_SEX,
+}
+#: Provenance recorded for an accepted deterministic qualifier mention.
+QUALIFIER_GAZETTEER_NOTES = "gazetteer:qualifier"
 
 # Population/demographic descriptors GLiNER likes to tag as phenotypes in contraindication text
 # ("Contraindicated in women of childbearing potential." — observed false positive, score ~0.5-0.6).
@@ -258,6 +379,46 @@ _HEDGE_TOKENS: frozenset[str] = frozenset(
 
 def _install_message(module: str) -> str:
     return f"NER production mode requires the '{module}' package (a core DAKP dependency) but it is not importable. Install all dependencies with: uv sync"
+
+
+def _strip_aligned(window: str, start: int, end: int) -> tuple[int, int]:
+    """Advance ``start`` / pull back ``end`` over whitespace so the span surface is trimmed.
+
+    gliner2 returns each span's surface ``.strip()``ed but the char offsets untrimmed
+    (``runtime._find_spans`` records the raw token-span bounds), so ``window[start:end]`` can
+    carry whitespace padding. This restores the half-open invariant
+    ``window[start:end] == span["text"]`` that the merge and the mention contract rely on.
+    """
+    while start < end and window[start].isspace():
+        start += 1
+    while end > start and window[end - 1].isspace():
+        end -= 1
+    return start, end
+
+
+def _spans_from_result(result: Mapping[str, Any], window: str) -> list[_ModelSpan]:
+    """Flatten one gliner2 result dict into window-relative :class:`_ModelSpan` candidates.
+
+    gliner2 (``extract_entities`` / per-item ``batch_extract_entities`` entries) returns
+    ``{"entities": {label: [{"text", "confidence", "start", "end"}, ...]}}`` with window-relative
+    offsets. Labels whose canonical type is outside
+    :data:`~dakp_pipeline.ner.dictionary.MENTION_TYPES` are dropped here, so a checkpoint
+    emitting a qualifier DAKP does not model (a severity qualifier, say) or an unrelated category
+    (``CHEMICAL``) can never reach a channel, and offsets are strip-aligned
+    (:func:`_strip_aligned`) against the window they were predicted on. Both channels are
+    returned; callers route them with :meth:`DiseaseNER._channel_spans`.
+    """
+    spans: list[_ModelSpan] = []
+    for label, entries in result.get("entities", {}).items():
+        etype = canonical_type(str(label))
+        if etype not in MENTION_TYPES:
+            continue
+        for entry in entries:
+            start, end = _strip_aligned(window, int(entry["start"]), int(entry["end"]))
+            if start >= end:
+                continue
+            spans.append(_ModelSpan(start=start, end=end, type=etype, score=float(entry["confidence"])))
+    return spans
 
 
 def _sort_key(mention: Mention) -> tuple[int, int, str, str]:
@@ -552,10 +713,10 @@ def _acquire_gpu_lock(device: str, lock_dir: Path) -> int:
 
 
 class DiseaseNER:
-    """The single composite disease/phenotype mention extractor.
+    """The single composite mention extractor (object + qualifier channels).
 
-    Constructing a ``DiseaseNER`` never imports heavy deps — even in production mode ``gliner``
-    is imported only on the first :meth:`extract` (no torch at module load). ``gliner`` is a core
+    Constructing a ``DiseaseNER`` never imports heavy deps — even in production mode ``gliner2``
+    is imported only on the first :meth:`extract` (no torch at module load). ``gliner2`` is a core
     DAKP dependency (installed by ``uv sync``); the lazy import keeps ``import dakp_pipeline.ner.ner``
     — and the whole test suite — fast and light.
 
@@ -564,9 +725,10 @@ class DiseaseNER:
             fine-tuned GLiNER recall.
         gazetteer: a :class:`Gazetteer`, a ``{surface: type}`` mapping, or ``None`` to use the
             curated :data:`EMBEDDED_GAZETTEER`.
-        model_id: GLiNER checkpoint (production mode).
-        model_labels: labels passed to GLiNER. Defaults to the two labels trained into
-            :data:`DEFAULT_MODEL`; provide the labels expected by an explicitly overridden checkpoint.
+        model_id: GLiNER2 checkpoint (production mode).
+        model_labels: the ``label -> description`` vocabulary handed to GLiNER2 verbatim as
+            ``entity_types``. Defaults to :data:`MODEL_LABELS` (Biolink category labels with
+            descriptions); provide the vocabulary an explicitly overridden checkpoint expects.
         inference_batch_size: number of windows per GLiNER inference batch.
         threshold: GLiNER candidate-**generation** threshold (production mode). Generate wide:
             this only decides what the merge gets to look at. Production profiles use
@@ -595,7 +757,7 @@ class DiseaseNER:
         offline: bool = True,
         gazetteer: Gazetteer | Mapping[str, str] | None = None,
         model_id: str = DEFAULT_MODEL,
-        model_labels: tuple[str, ...] = MODEL_LABELS,
+        model_labels: Mapping[str, str] = MODEL_LABELS,
         threshold: float = DEFAULT_THRESHOLD,
         accept_threshold: float = DEFAULT_ACCEPT_THRESHOLD,
         chunk_words: int | None = None,
@@ -613,11 +775,14 @@ class DiseaseNER:
             resolved = Gazetteer(gazetteer)
         self._gazetteer = resolved
         self._matcher = LexicalMatcher(resolved)
+        self._qualifier_matcher = LexicalMatcher(Gazetteer(QUALIFIER_GAZETTEER))
         self._offline = offline
         if not model_labels:
             raise ValueError("model_labels must contain at least one label")
         self._model_id = model_id
-        self._model_labels = tuple(model_labels)
+        # Copied, not aliased: a caller mutating its own mapping must not change what an already
+        # constructed backend requests (the mention-cache fingerprint is taken from this value).
+        self._model_labels: dict[str, str] = dict(model_labels)
         self._threshold = threshold
         self._accept = accept_threshold
         self._chunk_words = chunk_words
@@ -657,31 +822,41 @@ class DiseaseNER:
 
     # -- extraction ------------------------------------------------------------
     def extract(self, text: str) -> list[Mention]:
-        """Extract disease/phenotype mentions, deterministically ordered.
+        """Extract mentions, deterministically ordered.
 
-        Offline: gazetteer spans only. Production: gazetteer spans merged with GLiNER spans,
-        most specific span winning on containment (see :meth:`_merge_model_spans`). Empty/blank
-        text yields no mentions — as does text whose only candidates fall below the acceptance
-        floor, so callers must always handle an empty list.
+        Offline: gazetteer spans only (object channel — the gazetteer holds no qualifier terms).
+        Production: ONE inference call per window carrying the whole :data:`MODEL_LABELS`
+        vocabulary, whose spans are routed by canonical type — object spans merged with the
+        gazetteer (most specific span winning on containment, see :meth:`_merge_model_spans`)
+        and qualifier spans emitted as strip-aligned mentions with ``notes="gliner:qualifier"``.
+        The returned list is therefore MIXED-CHANNEL: consumers that build assertion objects must
+        filter to :data:`~dakp_pipeline.ner.dictionary.OBJECT_TYPES`.
+
+        Empty/blank text yields no mentions — as does text whose only candidates fall below the
+        acceptance floor, so callers must always handle an empty list.
         """
         if not text or not text.strip():
             return []
-        mentions = list(self._matcher.match(text))
-        if not self._offline:
-            mentions = self._merge_model_spans(text, mentions)
-        return sorted(mentions, key=_sort_key)
+        object_mentions = list(self._matcher.match(text))
+        lexical_qualifiers = self._gazetteer_qualifier_mentions(text)
+        if self._offline:
+            return sorted(object_mentions + lexical_qualifiers, key=_sort_key)
+        emitted = self._merge_model_spans(text, object_mentions)
+        return sorted(self._merge_qualifier_mentions(lexical_qualifiers, emitted), key=_sort_key)
 
     def extract_batch(self, texts: Sequence[str]) -> list[list[Mention]]:
-        """Extract several texts with one padded GLiNER inference stream.
+        """Extract several texts with one padded GLiNER2 inference stream.
 
-        Each text retains its own sentence-aware windows and merge, while all windows are
-        submitted together to GLiNER's batched ``inference`` API. This is the hot path used by
-        per-device workers; offline extraction remains a cheap deterministic loop.
+        Each text retains its own sentence-aware windows and per-channel merge, while all windows
+        are submitted together to GLiNER2's batched ``batch_extract_entities`` API. This is the
+        hot path used by per-device workers; offline extraction remains a cheap deterministic
+        loop. Results are mixed-channel, exactly like :meth:`extract`.
         """
         values = list(texts)
         if self._offline:
             return [self.extract(text) for text in values]
         gazetteer = [list(self._matcher.match(text)) if text and text.strip() else [] for text in values]
+        lexical_qualifiers = [self._gazetteer_qualifier_mentions(text) if text and text.strip() else [] for text in values]
         active = [(index, text) for index, text in enumerate(values) if text and text.strip()]
         if not active:
             return [[] for _ in values]
@@ -690,38 +865,34 @@ class DiseaseNER:
         windows: list[tuple[int, int, str]] = []
         for text_index, text in active:
             windows.extend((text_index, start, window) for start, window in _windows(text, budget))
-        raw_batches = model.inference(
+        raw_batches = model.batch_extract_entities(
             [window for _text_index, _start, window in windows],
-            list(self._model_labels),
-            threshold=self._threshold,
+            self._model_labels,
             batch_size=self._inference_batch_size,
+            threshold=self._threshold,
+            include_confidence=True,
+            include_spans=True,
         )
-        spans_by_text: dict[int, list[list[_ModelSpan]]] = {index: [] for index, _text in active}
-        for (text_index, window_start, _window), raw in zip(windows, raw_batches, strict=True):
-            spans: list[_ModelSpan] = []
-            text = values[text_index]
-            for entity in raw:
-                etype = canonical_type(str(entity["label"]))
-                if etype not in CONTRAINDICATION_DISEASE_TYPES:
-                    continue
-                start, end = window_start + int(entity["start"]), window_start + int(entity["end"])
-                if normalize_text(text[start:end]) in _POPULATION_PHRASES:
-                    continue
-                spans.append(_ModelSpan(start=start, end=end, type=etype, score=float(entity["score"])))
-            spans_by_text[text_index].append(spans)
+        object_spans: dict[int, list[list[_ModelSpan]]] = {index: [] for index, _text in active}
+        qualifier_spans: dict[int, list[_ModelSpan]] = {index: [] for index, _text in active}
+        for (text_index, window_start, window), raw in zip(windows, raw_batches, strict=True):
+            objects, qualifiers = self._channel_spans(values[text_index], _spans_from_result(raw, window), window_start)
+            object_spans[text_index].append(objects)
+            qualifier_spans[text_index].extend(qualifiers)
         output: list[list[Mention]] = []
         for index, text in enumerate(values):
             if not text or not text.strip():
                 output.append([])
                 continue
             text_windows = [(start, window) for text_index, start, window in windows if text_index == index]
-            text_spans = spans_by_text[index]
+            text_spans = object_spans[index]
             _merge_straddling_spans(text_windows, text_spans)
             trimmed = self._trimmed_spans(text, [span for spans in text_spans for span in spans])
             gazetteer_spans = [(mention.start, mention.end) for mention in gazetteer[index]]
             candidates = _select_candidates(_candidates_vs_gazetteer(trimmed, gazetteer_spans))
             candidates = self._strict_gazetteer_candidates(candidates)
-            output.append(sorted(self._emit(text, gazetteer[index], candidates), key=_sort_key))
+            emitted = self._emit(text, gazetteer[index], candidates) + self._qualifier_mentions(text, qualifier_spans[index])
+            output.append(sorted(self._merge_qualifier_mentions(lexical_qualifiers[index], emitted), key=_sort_key))
         return output
 
     # -- production model (lazy) -----------------------------------------------
@@ -729,13 +900,13 @@ class DiseaseNER:
         if self._model is None:
             stats(logger, "ner_model_load", model_id=self._model_id)
             try:
-                from gliner import GLiNER  # lazy: no torch at module load  # type: ignore[import-not-found]
+                from gliner2 import AutoExtractor  # lazy: no torch at module load  # type: ignore[import-not-found]
             except ImportError as exc:
-                raise NERDependencyError(_install_message("gliner")) from exc
+                raise NERDependencyError(_install_message("gliner2")) from exc
             ref = ensure_model(self._model_id, cache_dir=self._cache_dir, workdir=self._workdir)
             device = self._device or _model_device()
             if device.startswith("cuda"):
-                # One GLiNER per GPU is a hard cap (16 GB cards OOM with two models). The
+                # One GLiNER2 model per GPU is a hard cap (16 GB cards OOM with two models). The
                 # Airflow ``ner_mining`` pool serializes shape tasks at the scheduler level,
                 # but this per-device flock is the correctness guarantee for any concurrent
                 # loader (second DAG run, manual trigger, CLI). The fd is held on the instance
@@ -743,7 +914,7 @@ class DiseaseNER:
                 # lifecycle of a spawned GPU worker. CPU and offline loads never lock.
                 self._gpu_lock_fd = _acquire_gpu_lock(device, _gpu_lock_dir(cache_dir=self._cache_dir, workdir=self._workdir))
             started = time.monotonic()
-            self._model = GLiNER.from_pretrained(str(ref.path), map_location=device)
+            self._model = AutoExtractor.from_pretrained(str(ref.path), map_location=device)
             stats(logger, "ner_model_load", model_id=self._model_id, device=device, b3=ref.b3, elapsed_s=round(time.monotonic() - started, 3))
         return self._model
 
@@ -770,46 +941,135 @@ class DiseaseNER:
         }
 
     def _merge_model_spans(self, text: str, gazetteer_mentions: list[Mention]) -> list[Mention]:
-        """Merge GLiNER spans with the gazetteer, preferring the **most specific** span.
+        """Run ONE inference call per window and route its spans to both channels.
 
         GLiNER silently truncates inputs past ``config.max_len`` word tokens, so long text is
         predicted in exact-substring windows (:func:`_windows`) and each span's offsets are
-        shifted back into full-text coordinates first. Model spans whose normalized surface is a
-        population descriptor (:data:`_POPULATION_PHRASES`) are dropped, and spans a hard split
-        cut across a phrase boundary are re-joined (:func:`_merge_straddling_spans`) — the rejoin
-        runs before trimming so window-flush offsets still line up.
+        shifted back into full-text coordinates first (:meth:`_channel_spans`), which also splits
+        the spans by canonical type.
 
-        Surviving spans are then hedge-trimmed (:func:`_trim_hedges`), contested against the
-        gazetteer (:func:`_candidates_vs_gazetteer`), de-overlapped longest-first
-        (:func:`_select_candidates`) and finally gated on :data:`DEFAULT_ACCEPT_THRESHOLD` — see
+        The **object** channel (``Disease`` / ``PhenotypicFeature``) keeps the historical path
+        unchanged: population descriptors (:data:`_POPULATION_PHRASES`) are dropped, spans a hard
+        split cut across a phrase boundary are re-joined (:func:`_merge_straddling_spans`, run
+        before trimming so window-flush offsets still line up), then hedge-trimmed
+        (:func:`_trim_hedges`), contested against the gazetteer
+        (:func:`_candidates_vs_gazetteer`), de-overlapped longest-first
+        (:func:`_select_candidates`) and gated on :data:`DEFAULT_ACCEPT_THRESHOLD` — see
         :meth:`_emit`.
+
+        The **qualifier** channel is emitted by :meth:`_qualifier_mentions` and deliberately
+        bypasses all of that.
         """
         model = self._load_model()
         budget = _token_budget(model, self._chunk_words)
-        # Request the exact label vocabulary configured for this checkpoint. The published
-        # production fine-tune uses ``disease`` and ``phenotype``; an explicit ``model_labels``
-        # override supports checkpoints with a different vocabulary.
-        labels = list(self._model_labels)
+        # Request the exact label vocabulary configured for this checkpoint: the label ->
+        # description mapping goes to gliner2 verbatim so its processor renders each description
+        # into the prompt (see :data:`MODEL_LABELS`). An explicit ``model_labels`` override
+        # supports checkpoints with a different vocabulary.
         windows = _windows(text, budget)
-        spans_by_window: list[list[_ModelSpan]] = []
+        object_spans_by_window: list[list[_ModelSpan]] = []
+        qualifier_spans: list[_ModelSpan] = []
         for window_start, window in windows:
-            raw = model.predict_entities(window, labels, threshold=self._threshold)
-            spans: list[_ModelSpan] = []
-            for entity in raw:
-                etype = canonical_type(str(entity["label"]))
-                if etype not in CONTRAINDICATION_DISEASE_TYPES:
-                    continue
-                start, end = window_start + int(entity["start"]), window_start + int(entity["end"])
-                if normalize_text(text[start:end]) in _POPULATION_PHRASES:
-                    continue
-                spans.append(_ModelSpan(start=start, end=end, type=etype, score=float(entity["score"])))
-            spans_by_window.append(spans)
-        _merge_straddling_spans(windows, spans_by_window)
-        trimmed = self._trimmed_spans(text, [span for spans in spans_by_window for span in spans])
+            raw = model.extract_entities(window, self._model_labels, threshold=self._threshold, include_confidence=True, include_spans=True)
+            objects, qualifiers = self._channel_spans(text, _spans_from_result(raw, window), window_start)
+            object_spans_by_window.append(objects)
+            qualifier_spans.extend(qualifiers)
+        _merge_straddling_spans(windows, object_spans_by_window)
+        trimmed = self._trimmed_spans(text, [span for spans in object_spans_by_window for span in spans])
         gazetteer_spans = [(mention.start, mention.end) for mention in gazetteer_mentions]
         candidates = _select_candidates(_candidates_vs_gazetteer(trimmed, gazetteer_spans))
         candidates = self._strict_gazetteer_candidates(candidates)
-        return self._emit(text, gazetteer_mentions, candidates)
+        return self._emit(text, gazetteer_mentions, candidates) + self._qualifier_mentions(text, qualifier_spans)
+
+    def _channel_spans(self, text: str, spans: list[_ModelSpan], window_start: int) -> tuple[list[_ModelSpan], list[_ModelSpan]]:
+        """Remap one window's spans into full-text offsets and split them by channel.
+
+        Returns ``(object_spans, qualifier_spans)`` keyed on the span's canonical type
+        (:data:`~dakp_pipeline.ner.dictionary.OBJECT_TYPES` = object channel, everything else in
+        the vocabulary = qualifier channel). The population-descriptor filter applies to the
+        object channel ONLY: :data:`_POPULATION_PHRASES` holds exactly "women of childbearing
+        potential", "women" and "pregnant women" — the very surfaces the population and sex
+        qualifier labels exist to extract — so filtering them here would delete every population
+        qualifier before it could be routed.
+        """
+        objects: list[_ModelSpan] = []
+        qualifiers: list[_ModelSpan] = []
+        for span in spans:
+            start, end = window_start + span.start, window_start + span.end
+            if span.type not in OBJECT_TYPES:
+                qualifiers.append(_ModelSpan(start=start, end=end, type=span.type, score=span.score))
+            elif normalize_text(text[start:end]) not in _POPULATION_PHRASES:
+                objects.append(_ModelSpan(start=start, end=end, type=span.type, score=span.score))
+        return objects, qualifiers
+
+    def _gazetteer_qualifier_mentions(self, text: str) -> list[Mention]:
+        """Emit closed lexical qualifiers with explicit deterministic provenance.
+
+        This matcher is intentionally separate from the object gazetteer: the returned mentions
+        cannot become assertion objects, and only exact ``(start, end, type)`` collisions with
+        model qualifiers are resolved (in favor of this known lexical surface).
+        """
+        return [
+            Mention(
+                text=mention.text,
+                start=mention.start,
+                end=mention.end,
+                type=mention.type,
+                score=mention.score,
+                normalized=mention.normalized,
+                notes=QUALIFIER_GAZETTEER_NOTES,
+            )
+            for mention in self._qualifier_matcher.match(text)
+        ]
+
+    @staticmethod
+    def _merge_qualifier_mentions(lexical: list[Mention], emitted: list[Mention]) -> list[Mention]:
+        """Combine independent qualifier sources without crossing into object extraction.
+
+        A closed gazetteer hit wins only an exact same-type/same-span collision; otherwise model
+        and lexical qualifiers coexist, including overlaps, because qualifiers describe objects.
+        """
+        lexical_keys = {(mention.start, mention.end, mention.type) for mention in lexical}
+        return lexical + [
+            mention for mention in emitted if mention.type in OBJECT_TYPES or (mention.start, mention.end, mention.type) not in lexical_keys
+        ]
+
+    def _qualifier_mentions(self, text: str, spans: list[_ModelSpan]) -> list[Mention]:
+        """Emit the qualifier channel: strip-aligned spans, no object-channel post-processing.
+
+        Qualifiers get NO hedge trimming, NO gazetteer merge and NO population filter, all three
+        measured as harmful to them: :func:`_trim_hedges` would strip the informative head off
+        ``history of hypertension`` (a temporal-context qualifier), and the gazetteer merge
+        de-overlaps per channel, so a qualifier over the same words as an object span must
+        survive rather than lose a contest it is not part of.
+
+        Spans below :data:`QUALIFIER_ACCEPT_THRESHOLD` are abstained on (logged, never emitted),
+        duplicates on ``(start, end, type)`` collapse to the highest-scoring one, and the sort
+        makes that choice independent of the order gliner2 returned its labels in.
+        """
+        seen: set[tuple[int, int, str]] = set()
+        mentions: list[Mention] = []
+        for span in sorted(spans, key=lambda item: (item.start, item.end, item.type, -item.score)):
+            surface = text[span.start : span.end]
+            if span.score < QUALIFIER_ACCEPT_THRESHOLD:
+                self._abstain(surface, span.score, "qualifier_below_accept_floor")
+                continue
+            key = (span.start, span.end, span.type)
+            if key in seen:
+                continue
+            seen.add(key)
+            mentions.append(
+                Mention(
+                    text=surface,
+                    start=span.start,
+                    end=span.end,
+                    type=span.type,
+                    score=span.score,
+                    normalized=normalize_text(surface),
+                    notes=QUALIFIER_NOTES,
+                )
+            )
+        return mentions
 
     def _strict_gazetteer_candidates(self, candidates: list[_Candidate]) -> list[_Candidate]:
         """Keep only sufficiently confident model extensions of exact gazetteer anchors.
@@ -911,15 +1171,20 @@ def extract_contraindication_diseases(text: str, ner: DiseaseNER | None = None) 
 
 __all__ = [
     "CONTRAINDICATION_ACCEPT_THRESHOLD",
-    "CONTRAINDICATION_DISEASE_TYPES",
     "DEFAULT_ACCEPT_THRESHOLD",
     "DEFAULT_MODEL",
     "DEFAULT_THRESHOLD",
     "EMBEDDED_GAZETTEER",
     "GLINER_GENERATION_FLOOR",
     "INDICATION_ACCEPT_THRESHOLD",
-    "MODEL_LABEL",
+    "MENTION_TYPES",
     "MODEL_LABELS",
+    "MODEL_LABEL_NAMES",
+    "OBJECT_TYPES",
+    "QUALIFIER_ACCEPT_THRESHOLD",
+    "QUALIFIER_GAZETTEER",
+    "QUALIFIER_GAZETTEER_NOTES",
+    "QUALIFIER_NOTES",
     "STRICT_GAZETTEER_EXTENSION_THRESHOLD",
     "TYPE_DISEASE",
     "TYPE_PHENOTYPE",

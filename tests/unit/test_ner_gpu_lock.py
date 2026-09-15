@@ -2,7 +2,7 @@
 
 The ``_acquire_gpu_lock`` helper is exercised directly for the blocking/serialization
 semantics (kernel flock on separately-opened fds conflicts even within one process, so
-threads suffice), and ``_load_model`` is exercised with the same fake ``gliner`` /
+threads suffice), and ``_load_model`` is exercised with the same fake ``gliner2`` /
 ``ensure_model`` stubs as ``test_ner_edge.py`` to prove the CUDA path locks and the
 CPU/offline paths never do.
 """
@@ -32,25 +32,25 @@ def _try_lock(path: Path) -> int:
     return fd
 
 
-class _FakeGLiNERModel:
-    def predict_entities(self, text: str, labels: list[str], threshold: float = 0.0) -> list[dict[str, Any]]:
-        return []
+class _FakeExtractorModel:
+    def extract_entities(self, text: str, entity_types: list[str], threshold: float = 0.5, **_kwargs: Any) -> dict[str, Any]:
+        return {"entities": {}}
 
 
-class _FakeGLiNER:
+class _FakeAutoExtractor:
     loaded_map_location: ClassVar[list[str]] = []
 
     @staticmethod
-    def from_pretrained(path: str, map_location: str = "cpu") -> _FakeGLiNERModel:
-        _FakeGLiNER.loaded_map_location.append(map_location)
-        return _FakeGLiNERModel()
+    def from_pretrained(path: str, map_location: str = "cpu") -> _FakeExtractorModel:
+        _FakeAutoExtractor.loaded_map_location.append(map_location)
+        return _FakeExtractorModel()
 
 
-def _install_fake_gliner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _FakeGLiNER.loaded_map_location = []
-    module = types.ModuleType("gliner")
-    module.GLiNER = _FakeGLiNER  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "gliner", module)
+def _install_fake_gliner2(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _FakeAutoExtractor.loaded_map_location = []
+    module = types.ModuleType("gliner2")
+    module.AutoExtractor = _FakeAutoExtractor  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gliner2", module)
 
     def _fake_ensure_model(model_id: str, **kwargs: Any) -> ModelRef:
         return ModelRef(model_id=model_id, source="huggingface", path=tmp_path, b3="b3:deadbeef", manifest=tmp_path / "manifest.json")
@@ -129,12 +129,12 @@ def test_acquire_gpu_lock_closes_fd_when_flock_fails(monkeypatch: pytest.MonkeyP
 
 
 def test_load_model_locks_the_cuda_device(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _install_fake_gliner(monkeypatch, tmp_path)
+    _install_fake_gliner2(monkeypatch, tmp_path)
     monkeypatch.setenv("DAKP_GPU_LOCK_DIR", str(tmp_path / "locks"))
     backend = DiseaseNER(offline=False, device="cuda:1", workdir=tmp_path)
     backend.extract("some text")
     assert backend._gpu_lock_fd is not None
-    assert _FakeGLiNER.loaded_map_location == ["cuda:1"]
+    assert _FakeAutoExtractor.loaded_map_location == ["cuda:1"]
     lock_path = tmp_path / "locks" / "cuda-1.lock"
     assert lock_path.exists()
     with pytest.raises(BlockingIOError):  # the lock is held for the life of the model
@@ -142,7 +142,7 @@ def test_load_model_locks_the_cuda_device(monkeypatch: pytest.MonkeyPatch, tmp_p
 
 
 def test_load_model_on_cpu_never_locks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _install_fake_gliner(monkeypatch, tmp_path)
+    _install_fake_gliner2(monkeypatch, tmp_path)
     monkeypatch.setenv("DAKP_GPU_LOCK_DIR", str(tmp_path / "locks"))
     backend = DiseaseNER(offline=False, device="cpu", workdir=tmp_path)
     backend.extract("some text")

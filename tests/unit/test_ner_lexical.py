@@ -30,7 +30,7 @@ def test_match_finds_mention_with_true_offsets() -> None:
     m = mentions[0]
     # The half-open offsets slice back to the exact surface form.
     assert text[m.start : m.end] == m.text == "hypercholesterolemia"
-    assert m.type == "disease"
+    assert m.type == "Disease"
     assert m.normalized == "hypercholesterolemia"
     assert m.score == DIRECT_SCORE
     assert m.notes == "exact"
@@ -58,7 +58,7 @@ def test_multiword_phrase_offsets_span_the_full_surface() -> None:
     m = mentions[0]
     assert m.text == "peptic ulcer disease"
     assert text[m.start : m.end] == "peptic ulcer disease"
-    assert m.type == "disease"
+    assert m.type == "Disease"
 
 
 def test_match_returns_empty_for_unknown_or_blank_text() -> None:
@@ -100,7 +100,7 @@ def test_shorter_term_before_longer_phrase_both_match() -> None:
     # A shorter term occurring BEFORE an already-covered longer phrase is not an overlap.
     matcher = _matcher({"peptic ulcer disease": "disease", "pain": "phenotype"})
     mentions = matcher.match("pain and peptic ulcer disease")
-    assert [(m.text, m.type) for m in mentions] == [("pain", "phenotype"), ("peptic ulcer disease", "disease")]
+    assert [(m.text, m.type) for m in mentions] == [("pain", "PhenotypicFeature"), ("peptic ulcer disease", "Disease")]
 
 
 def test_repeat_non_overlapping_occurrences_all_match() -> None:

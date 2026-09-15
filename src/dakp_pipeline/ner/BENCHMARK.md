@@ -23,7 +23,7 @@ part of the span while temporal/evidential hedges are not.
 
 ### Current-model local run
 
-The checked-in default checkpoint (`SkyeAv/drug-approvals-gliner-small-v2.1`) was available in
+The then-default checkpoint (`SkyeAv/drug-approvals-gliner-small-v2.1`) was available in
 this checkout's cache and was benchmarked on CPU. This checkout is not the deployment machine,
 so these are provisional local measurements and should be rerun on deployment hardware/cache.
 The fixture has 34 cases and 42 gold spans.
@@ -62,11 +62,47 @@ Current (2026-08-14, after the specificity merge + abstention below):
 The composite holds perfect precision *and* recall across the widened fixture: the two qualified
 diseases and the hedge-prefixed mention all come out exactly right.
 
-> **Checkpoint change (2026-09-10):** the production default is now the domain fine-tune
+> **Checkpoint change (2026-09-10):** the production default became the domain fine-tune
 > `SkyeAv/drug-approvals-gliner-small-v2.1` (deberta-v3-small, `max_len: 384`, trained on
 > `disease` and `phenotype` labels; model output preserves its type; gazetteer types
 > still win on overlap). All numbers on this page were measured with `gliner_large-v2.5`;
 > re-run `tests/eval/benchmark_ner.py` to re-measure against the fine-tune.
+>
+> **Checkpoint change (gliner2 large evaluation):** the production default is the compatible
+> large span checkpoint `fastino/gliner2-large-v1`, prompted with the schema-conditioned
+> vocabulary below. On the historical two-label fixture it improved GLiNER-only F1 from 0.651
+> (27 TP / 14 FP / 15 FN) to 0.675 (28 TP / 13 FP / 14 FN), while both checkpoints kept
+> composite F1 at 1.000. GLiNER2.5 has no English large checkpoint (only small/base/multilingual
+> multi); `gliner2-large-v1` loads through `AutoExtractor`. Re-run
+> `tests/eval/benchmark_ner.py --model <checkpoint>` to compare a replacement reproducibly.
+>
+> **Schema change (prompt-engineered vocabulary + two channels):** inference no longer asks for
+> the bare words `disease`/`phenotype`. `MODEL_LABELS` is a `{label: description}` mapping of
+> Biolink category IDs (`biolink:Disease`, `biolink:PhenotypicFeature`, four qualifier
+> categories, three field-named qualifiers) handed to gliner2 verbatim, which renders each
+> description into the prompt; gold `type` values were renamed to the canonical `Mention.type`
+> strings (`Disease` / `PhenotypicFeature`) and the harness scores the **object channel only**.
+> **Every table on this page predates that change and has NOT been re-measured** — the numbers
+> below are the historical `disease`/`phenotype` record. What follows is spot-check evidence for
+> the schema itself, measured on the build host (cached checkpoint, CPU fallback; empty
+> gazetteer, so only the model channel speaks):
+>
+> | text | extracted `(surface, type, score)` |
+> | ---- | ---------------------------------- |
+> | `Contraindicated in patients with pulmonary hypertension.` | `('pulmonary hypertension', 'Disease', 1.0)` |
+> | `Contraindicated during pregnancy and in women of childbearing potential.` | `('pregnancy', 'PhenotypicFeature', 1.0)`, `('women', 'BiologicalSex', 1.0)`, `('women of childbearing potential', 'PopulationOfIndividualOrganisms', 1.0)` |
+> | `Not recommended in patients with renal impairment or a history of hypertension.` (generation floor 0.35) | `('renal impairment', 'PhenotypicFeature', 1.0)`, `('hypertension', 'Disease', 0.94)`, `('history of hypertension', 'temporal_context_qualifier', 0.65)` |
+>
+> The baseline this replaces: the same checkpoint prompted with plain `['disease', 'phenotype']`
+> mistyped "pregnancy" as a disease at 0.82 and emitted "childbearing potential" at 0.40.
+> Two description wordings proved load-bearing (both measured): listing `pregnancy` as a
+> `biolink:PhenotypicFeature` exemplar is what recovers it at 1.00 — without it the checkpoint
+> emits no pregnancy span at all — and listing `during` as a `temporal_context_qualifier`
+> exemplar makes it mistype "pregnancy" as `temporal_context_qualifier` 0.64, so `during` is not
+> an exemplar. Note the third row's cross-label overlap (`renal impairment` under both
+> `biolink:PhenotypicFeature` 1.0 and `biolink:Disease` 0.41): de-overlapping is per label, and
+> the object channel's longest-then-highest-score selection keeps the 1.0 one.
+> Re-run `tests/eval/benchmark_ner.py` to re-measure the table against this schema.
 
 The **gazetteer** row moved down (was 1.000 / 0.923 / 0.960 on 31 cases) and that is expected,
 not a regression. Offline mode was deliberately left unchanged (see "Specificity merge" below),
@@ -111,6 +147,25 @@ to CPU under the cu126 torch build's arch gate and still benchmarks in ~15 s). G
 natively multi-entity (one `predict_entities` call scores every label — disease and phenotype
 here — and returns any number of spans per label). SciSpacy required two workarounds in this
 environment and still underperformed; it is dropped from the shipped extra.
+
+## GLiNER2 large checkpoint evaluation (2026-09-15)
+
+The requested large-model evaluation compared the default `fastino/gliner2-large-v1` (340M,
+DeBERTa-v3-large span architecture) with the former `fastino/gliner2.5-base-v1` (194M,
+DeBERTa-v3-base boundary architecture) through the production `DiseaseNER` path on the 34-case,
+42-span fixture. Both load through `gliner2.AutoExtractor` and preserve the gazetteer-first
+composite's perfect strict score; the large model improves the isolated zero-shot baseline.
+
+| checkpoint | GLiNER-only P/R/F1 | GLiNER-only TP/FP/FN | composite P/R/F1 |
+| --- | --- | --- | --- |
+| `fastino/gliner2.5-base-v1` | 0.659 / 0.643 / 0.651 | 27 / 14 / 15 | 1.000 / 1.000 / 1.000 |
+| `fastino/gliner2-large-v1` | **0.683 / 0.667 / 0.675** | **28 / 13 / 14** | 1.000 / 1.000 / 1.000 |
+
+The 2.5 family has no English `large` checkpoint (only small/base/multilingual multi); the
+available GLiNER2 large checkpoint is the compatible span model above. `fastino/gliner2-large-v1`
+is therefore the production default. The benchmark accepts `--model <checkpoint>` so a future
+checkpoint or fine-tune can be compared with the same fixture and threshold sweep before replacing
+it.
 
 ## Composite precision improvements (2026-08-10)
 
