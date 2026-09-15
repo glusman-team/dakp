@@ -17,12 +17,18 @@ import polars as pl
 import pytest
 
 from dakp_pipeline.assertions import approved_treats
-from dakp_pipeline.assertions.approved_treats import ApprovedTreatsShaper, _mine_indication_mentions, build_approved_treats_rows
+from dakp_pipeline.assertions.approved_treats import (
+    ApprovedTreatsShaper,
+    _candidate_mention,
+    _indication_observations,
+    _mine_indication_mentions,
+    build_approved_treats_rows,
+)
 from dakp_pipeline.assertions.evidence import DailyMedEvidence
 from dakp_pipeline.io.contracts import TaskContext
 from dakp_pipeline.ner import ner as ner_module
 from dakp_pipeline.ner.model_cache import ModelRef
-from dakp_pipeline.ner.ner import DiseaseNER
+from dakp_pipeline.ner.ner import DiseaseNER, Mention
 
 
 def _supported_evidence(section_text: str) -> DailyMedEvidence:
@@ -78,6 +84,194 @@ def test_mention_channel_off_without_ner() -> None:
 
 
 # --- DailyMed fallback: NER mention candidates ------------------------------------
+
+
+def test_observations_skip_documents_and_sentences_without_candidate() -> None:
+    """Observation mining must ignore unsupported documents and sentences rather than inventing hosts."""
+    from dakp_pipeline.assertions.approved_treats import _indication_observations
+
+    evidence = DailyMedEvidence(indication_docs={"SET-A": [("DOC-A", "other condition.")]})
+    candidate = {"object_text": "asthma", "object_category": "Disease"}
+    assert _indication_observations(evidence, ["SET-A"], candidate, {}, None) == []
+
+
+def test_sentence_and_candidate_helpers_abstain_on_empty_or_missing_text() -> None:
+    """Blank and absent candidate surfaces must not manufacture lexical hosts or spans."""
+    from dakp_pipeline.assertions.approved_treats import _candidate_mention, _sentence_spans
+
+    assert _sentence_spans("  .\n\n  asthma.  ") == [(2, 3, "."), (7, 14, "asthma.")]
+    assert _sentence_spans("  ") == []
+    assert _sentence_spans("  first.\n\n  second  ") == [(2, 8, "first."), (12, 18, "second")]
+    assert _sentence_spans("\n\n asthma.") == [(3, 10, "asthma.")]
+    assert _candidate_mention("migraine", {"object_text": "migraine", "object_category": "Disease"}, 0) is not None
+    assert _candidate_mention("migraine", {"object_text": "mi graine", "object_category": "Disease"}, 0) is None
+    assert _candidate_mention("No condition here", {"object_text": "", "object_category": "Disease"}, 0) is None
+    assert _candidate_mention("No condition here", {"object_text": "migraine", "object_category": "Disease"}, 0) is None
+
+
+def test_candidate_fallback_preserves_original_offsets_and_qualifier_attachment() -> None:
+    sentence = "Examplestatin is indicated for heart--   failure in women."
+    candidate = {"object_text": "heart failure", "object_category": "Disease"}
+    mention = _candidate_mention(sentence, candidate, 0)
+    assert mention is not None
+    assert mention.text == "heart--   failure"
+    assert mention.text == sentence[mention.start : mention.end]
+    qualifier_start = sentence.index("women")
+    observations = _indication_observations(
+        DailyMedEvidence(indication_docs={"SET-A": [("DOC-A", sentence)]}),
+        ["SET-A"],
+        candidate,
+        {},
+        {("SET-A", "DOC-A"): [Mention("women", qualifier_start, qualifier_start + 5, "BiologicalSex", 0.9)]},
+    )
+    assert observations[0]["qualifiers"] == {"sex_text": "women"}
+
+
+def test_patient_template_merges_qualifier_from_nonzero_host() -> None:
+    """A patient-template qualifier must survive when its selected host is not object index zero.
+
+    This guards the prior ``attached.get(0)`` bug: the pre-marker disease and patient-template
+    disease are both candidate mentions, but only the post-marker host may receive ``women``.
+    """
+    sentence = "Not for asthma alone; indicated in patients with asthma in women."
+    asthma = [index for index in range(len(sentence)) if sentence.startswith("asthma", index)]
+    mentions = {
+        ("SET-A", "SET-A#34067-9"): [
+            Mention("asthma", asthma[0], asthma[0] + 6, "Disease", 1.0),
+            Mention("asthma", asthma[1], asthma[1] + 6, "Disease", 1.0),
+            Mention("women", sentence.index("women"), sentence.index("women") + 5, "BiologicalSex", 0.9),
+        ]
+    }
+    observations = _indication_observations(
+        DailyMedEvidence(indication_docs={"SET-A": [("SET-A#34067-9", sentence)]}),
+        ["SET-A"],
+        {"object_text": "asthma"},
+        {},
+        mentions,
+    )
+    assert observations[0]["qualifiers"] == {"sex_text": "women"}
+
+
+def test_dailymed_offsets_rebase_before_attachment() -> None:
+    """Document-relative NER spans must attach like sentence-relative spans after rebasing.
+
+    This guards the position-dependent false negative caused by passing a sentence at offset 500
+    into a helper that compares offsets against sentence-local marker geometry.
+    """
+    sentence = "Drug is used in women."
+    prefix = "x" * 500 + "\n"
+    text = prefix + sentence
+    base = len(prefix)
+    mentions = {
+        ("SET-A", "SET-A#34067-9"): [
+            Mention("Drug", base, base + 4, "Disease", 1.0),
+            Mention("women", base + 16, base + 21, "BiologicalSex", 0.9),
+        ]
+    }
+    observations = _indication_observations(
+        DailyMedEvidence(indication_docs={"SET-A": [("SET-A#34067-9", text)]}),
+        ["SET-A"],
+        {"object_text": "Drug", "object_category": "Disease"},
+        {},
+        mentions,
+    )
+    assert observations[0]["qualifiers"] == {"sex_text": "women"}
+
+
+def test_indication_observation_merges_duplicate_host_qualifiers_by_score(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Duplicate model hosts must keep the highest qualifier score within one source sentence."""
+    text = "Examplestatin is indicated for asthma."
+    host_start = text.index("asthma")
+    monkeypatch.setattr(
+        approved_treats,
+        "attach_qualifiers_with_scores",
+        lambda *_args: (
+            {0: {"sex_text": "men"}, 1: {"sex_text": "women"}, 2: {"sex_text": "adults"}},
+            {(0, "sex_text"): (0.8, "men"), (1, "sex_text"): (0.9, "women"), (2, "sex_text"): (0.7, "adults")},
+        ),
+    )
+    observations = _indication_observations(
+        _supported_evidence(text),
+        ["SET-A"],
+        {"object_text": "asthma", "object_category": "Disease"},
+        {},
+        {("SET-A", "SET-A#34067-9"): [Mention("asthma", host_start, host_start + 6, "Disease", 1.0)]},
+    )
+    assert observations[0]["qualifiers"] == {"sex_text": "women"}
+
+
+def test_dailymed_context_and_qualifiers_aggregate_model_metadata() -> None:
+    """DailyMed sentence context and qualifiers must survive aggregation, with the best model vote.
+
+    This protects the one-pass NER observation path: unrelated sentences cannot supply a host,
+    while repeated support documents may upgrade context metadata deterministically.
+    """
+    text = "Examplestatin is indicated for asthma in women once daily."
+    ev = _supported_evidence(text)
+    host_start = text.index("asthma")
+    mentions = {
+        ("SET-A", "SET-A#34067-9"): [
+            Mention("asthma", host_start, host_start + 6, "Disease", 1.0, context_model="prevention", context_model_score=0.8),
+            Mention("women", text.index("women"), text.index("women") + 5, "BiologicalSex", 0.9),
+        ]
+    }
+    observations = _indication_observations(ev, ["SET-A"], {"object_text": "asthma"}, {}, mentions)
+    assert observations[0]["context"] == "indication"
+    assert observations[0]["qualifiers"] == {"sex_text": "women"}
+    assert observations[0]["model"] == "prevention"
+
+
+def test_approved_qualifier_merge_keeps_highest_score_and_deterministic_tie(monkeypatch: pytest.MonkeyPatch) -> None:
+    observations = [
+        {
+            "set_id": "SET-A",
+            "doc_id": "DOC-A",
+            "context": "indication",
+            "qualifiers": {"sex_text": "men"},
+            "qualifier_scores": {"sex_text": (0.8, "men")},
+            "model": "",
+            "model_score": 0.0,
+        },
+        {
+            "set_id": "SET-A",
+            "doc_id": "DOC-B",
+            "context": "indication",
+            "qualifiers": {"sex_text": "women"},
+            "qualifier_scores": {"sex_text": (0.9, "women")},
+            "model": "",
+            "model_score": 0.0,
+        },
+        {
+            "set_id": "SET-A",
+            "doc_id": "DOC-C",
+            "context": "indication",
+            "qualifiers": {"sex_text": "adults"},
+            "qualifier_scores": {"sex_text": (0.9, "adults")},
+            "model": "",
+            "model_score": 0.0,
+        },
+    ]
+    monkeypatch.setattr(approved_treats, "_condition_corroborated_sets", lambda *args: ["SET-A"])
+    monkeypatch.setattr(approved_treats, "_indication_observations", lambda *args: observations)
+    rows = build_approved_treats_rows(_cases("asthma"), _supported_evidence("asthma"), _MAPPING, {})
+    assert rows[0]["sex_text"] == "women"  # score wins; lexical value wins the equal-score tie
+    assert "qualifier_scores" not in rows[0]  # scores stay internal to the score-free row schema
+
+
+def test_approved_aggregation_handles_empty_observations_and_upgrades_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The aggregator must drop empty observations and retain the highest context-model score."""
+    first = {"set_id": "SET-A", "doc_id": "DOC-A", "context": "indication", "qualifiers": {}, "model": "indication", "model_score": 0.2}
+    second = {"set_id": "SET-A", "doc_id": "DOC-B", "context": "indication", "qualifiers": {}, "model": "prevention", "model_score": 0.9}
+    monkeypatch.setattr(approved_treats, "_condition_corroborated_sets", lambda *args: ["SET-A"])
+    monkeypatch.setattr(approved_treats, "_indication_observations", lambda *args: [first, second])
+    cases = _cases("asthma")
+    ev = _supported_evidence("asthma")
+    ev.indication_docs["SET-A"].append(("DOC-B", "asthma"))
+    rows = build_approved_treats_rows(cases, ev, _MAPPING, {}, ner=None)
+    assert rows[0]["assertion_context_model"] == "prevention"
+    monkeypatch.setattr(approved_treats, "_indication_observations", lambda *args: [])
+    assert rows[0]["assertion_context_model_score"] == "0.9"
+    assert build_approved_treats_rows(cases, ev, _MAPPING, {}, ner=None) == []
 
 
 def test_dailymed_fallback_yields_ner_mention_candidates() -> None:

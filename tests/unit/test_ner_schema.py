@@ -142,6 +142,29 @@ def test_label_material_is_a_deterministic_module_constant() -> None:
     assert MODEL_LABELS["biolink:Disease"] != "mutated after construction"
 
 
+def test_context_attribute_payload_accepts_empty_and_legacy_shapes() -> None:
+    """Context attributes are optional and gliner2 has emitted both list and legacy mappings.
+
+    The adapter must preserve empty metadata, ignore malformed entries, and select the highest
+    confidence label without making context metadata a prerequisite for object extraction.
+    """
+    assert (
+        _spans_from_result({"entities": {"biolink:Disease": [{"start": 0, "end": 6, "confidence": 1.0, "assertion_context": {}}]}}, "asthma")[
+            0
+        ].context_model
+        == ""
+    )
+    spans = _spans_from_result(
+        {
+            "entities": {
+                "biolink:Disease": [{"start": 0, "end": 6, "confidence": 1.0, "assertion_context": {"label": "indication", "confidence": 0.8}}]
+            }
+        },
+        "asthma",
+    )
+    assert (spans[0].context_model, spans[0].context_model_score) == ("indication", 0.8)
+
+
 def test_both_call_paths_receive_the_described_vocabulary_verbatim(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """``extract_entities`` (per window) and ``batch_extract_entities`` (worker hot path) must both
     be handed the label->description mapping, not just its keys.
@@ -379,6 +402,69 @@ def test_qualifier_mentions_dedupe_on_start_end_type_keeping_the_best_score(monk
         ("once daily", TYPE_TEMPORAL_INTERVAL_QUALIFIER, 0.8),
     ]
     assert all(m.normalized == "once daily" for m in mentions)
+
+
+def test_schema_attribute_path_is_built_once_for_models_with_extract(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The schema API is the supported gliner2 path and must carry all reviewed context labels."""
+
+    class _AttributeGroup:
+        def __init__(self, labels: list[str], **kwargs: Any) -> None:
+            self.labels, self.kwargs = labels, kwargs
+
+    class _Schema:
+        def entities(self, labels: Any) -> _Schema:
+            self.labels = labels
+            return self
+
+        def entity_attributes(self, attrs: Any) -> _Schema:
+            self.attrs = attrs
+            return self
+
+    class _SchemaModel:
+        def __init__(self) -> None:
+            self.schema = None
+            self.calls = []
+
+        def create_schema(self) -> _Schema:
+            self.schema = _Schema()
+            return self.schema
+
+        def extract(self, text: str, schema: Any, **_kwargs: Any) -> dict[str, Any]:
+            self.calls.append((text, schema))
+            return {"entities": {}}
+
+    import sys
+    import types
+
+    gliner_schema = types.ModuleType("gliner2.inference.schema")
+    gliner_schema.AttributeGroup = _AttributeGroup  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gliner2.inference.schema", gliner_schema)
+    model = _SchemaModel()
+    backend = _backend()
+    backend._model = model
+    assert backend.extract("asthma") == []
+    assert backend._schema_for_model(model) is backend._schema
+    assert model.schema is not None
+    attrs = model.schema.attrs["assertion_context"]
+    assert attrs.labels == ["indication", "contraindication", "prevention", "observed_prevention"]
+    from dakp_pipeline.ner.ner import CONTEXT_ATTRIBUTE_THRESHOLD
+
+    assert attrs.kwargs == {"multi_label": True, "threshold": CONTEXT_ATTRIBUTE_THRESHOLD, "qualify_labels": True}
+
+
+def test_extract_batch_uses_schema_model_batch_extract(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Newer gliner2 exposes ``batch_extract`` and must still receive the attribute schema."""
+
+    class _BatchSchemaModel:
+        def create_schema(self) -> Any:
+            return type("Schema", (), {"entities": lambda self, _labels: self, "entity_attributes": lambda self, _attrs: self})()
+
+        def batch_extract(self, texts: list[str], schema: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+            return [{"entities": {}} for _ in texts]
+
+    backend = _backend()
+    backend._model = _BatchSchemaModel()
+    assert backend.extract_batch(["asthma"]) == [[]]
 
 
 def test_extract_batch_routes_qualifiers_exactly_like_single_extract(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -203,6 +203,64 @@ def test_multi_ingredient_indication_set_is_skipped_in_pass_2(tmp_path: Path) ->
 # --- blank mined span is skipped ------------------------------------------------
 
 
+def test_legacy_tuple_mined_mentions_use_fallback_evidence(tmp_path: Path) -> None:
+    """Legacy tuple work items still carry evidence, while mapped work items preserve qualifiers.
+
+    This protects compatibility for focused callers and the localized qualifier assignment used
+    by production ``ContraWorkItem`` records.
+    """
+    from dakp_pipeline.assertions.contraindications import _mention_local_span
+
+    mention = Mention("asthma", 0, 6, "Disease", 1.0)
+    assert _work_item_parts(("SET", "DOC", "text")) == ("SET", "DOC", "text")
+    assert _work_item_evidence(("SET", "DOC", "text"), mention) == "text"
+    item = ContraWorkItem("SET", "DOC", "asthma in women", "asthma in women", (EvidenceSpan(0, 6, 0, 6, "asthma"),))
+    assert _mention_local_span(item, mention) == ("asthma", 0, 6, 0)
+    assert _mention_local_span(item, Mention("women", 10, 15, "BiologicalSex", 0.9)) is None
+    assert _work_item_evidence(item, Mention("women", 10, 15, "BiologicalSex", 0.9)) == "asthma in women"
+    assert _work_item_evidence(item, Mention("women", 10, 15, "BiologicalSex", 0.9)) == "asthma in women"
+    assert _work_item_evidence(item, mention) == "asthma"
+    assert _work_item_evidence(item, Mention("women", 10, 15, "BiologicalSex", 0.9)) == "asthma in women"
+    assert _work_item_evidence(("SET", "DOC", "text"), Mention("asthma", 0, 6, "Disease", 1.0)) == "text"
+
+
+def test_contraindication_localizes_objects_and_qualifiers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Mapped object and qualifier spans must use local evidence and populate sparse fields.
+
+    This protects the evidence-aware ``ContraWorkItem`` path from regressing to raw offsets or
+    dropping qualifier-only mentions before attachment.
+    """
+    import dakp_pipeline.assertions.contraindications as contra_mod
+
+    sections = _sections(tmp_path, [("SET-Q", "SET-Q#d", "asthma in women")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-Q", "DrugQ", "UNII:Q")])
+    monkeypatch.setattr(
+        contra_mod,
+        "extract_contraindication_diseases",
+        lambda text, ner: [Mention("asthma", 0, 6, "Disease", 0.9), Mention("women", 10, 15, "BiologicalSex", 0.8)],
+    )
+    rows = build_contraindication_rows([sections, ingredients], DiseaseNER(gazetteer={"asthma": "disease"}))
+    assert rows[0]["object_text"] == "asthma"
+    assert rows[0]["sex_text"] == "women"
+
+
+def test_unmapped_work_items_use_fallback_evidence_for_objects_and_qualifiers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """When source mapping misses, object and qualifier mentions still use safe fallback evidence."""
+    import dakp_pipeline.assertions.contraindications as contra_mod
+
+    monkeypatch.setattr(contra_mod, "_mention_local_span", lambda *_args: None)
+    monkeypatch.setattr(
+        contra_mod,
+        "extract_contraindication_diseases",
+        lambda text, ner: [Mention("asthma", 0, 6, "Disease", 0.9), Mention("women", 10, 15, "BiologicalSex", 0.8)],
+    )
+    sections = _sections(tmp_path, [("SET-L", "SET-L#d", "asthma in women")])
+    ingredients = _ingredients(tmp_path, [("active", "SET-L", "DrugL", "UNII:L")])
+    rows = build_contraindication_rows([sections, ingredients], DiseaseNER(gazetteer={"asthma": "disease"}))
+    assert rows[0]["object_text"] == "asthma"
+    assert rows[0]["sex_text"] == "women"
+
+
 def test_blank_mined_span_is_skipped(tmp_path: Path) -> None:
     sections = _sections(tmp_path, [("SET-Y", "SET-Y#d", "asthma")])
     ingredients = _ingredients(tmp_path, [("active", "SET-Y", "DrugY", "UNII:Y")])
@@ -1158,6 +1216,47 @@ def test_accumulate_skips_blank_evidence_text() -> None:
     assert agg["evidence_texts"] == []
     assert agg["sets"] == ["SET-A"]
     assert agg["scores"] == [0.9]
+
+
+def test_accumulate_qualifier_merge_keeps_highest_score_and_deterministic_tie() -> None:
+    aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
+    mention = Mention(text="asthma", start=0, end=6, type="Disease", score=0.9)
+    _accumulate(
+        aggregated,
+        "SET-A",
+        "DOC-A",
+        "DrugX",
+        "UNII:X",
+        "asthma",
+        mention,
+        qualifier_fields={"sex_text": "men"},
+        qualifier_scores={"sex_text": (0.8, "men")},
+    )
+    _accumulate(
+        aggregated,
+        "SET-B",
+        "DOC-B",
+        "DrugX",
+        "UNII:X",
+        "asthma",
+        mention,
+        qualifier_fields={"sex_text": "women"},
+        qualifier_scores={"sex_text": (0.9, "women")},
+    )
+    _accumulate(
+        aggregated,
+        "SET-C",
+        "DOC-C",
+        "DrugX",
+        "UNII:X",
+        "asthma",
+        mention,
+        qualifier_fields={"sex_text": "adults"},
+        qualifier_scores={"sex_text": (0.9, "adults")},
+    )
+    row = _finalize_row(next(iter(aggregated.values())))
+    assert row["sex_text"] == "women"  # score wins; lexical value wins the equal-score tie
+    assert "qualifier_scores" not in row
 
 
 def test_accumulate_sanitizes_pipe_delimiters_in_label_prose() -> None:

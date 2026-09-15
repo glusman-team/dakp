@@ -54,6 +54,7 @@ from collections.abc import Mapping
 import polars as pl
 
 from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_FAERS, join_pipe, match_diseases, row_for
+from dakp_pipeline.assertions.contexts import assertion_context
 from dakp_pipeline.assertions.evidence import (
     FDAApprovalIndex,
     build_fda_approval_index,
@@ -252,14 +253,19 @@ def build_observed_use_rows(
     mapping = pl.DataFrame(
         mapping_rows,
         schema={"indication": pl.Utf8, "object_text": pl.Utf8, "object_curie": pl.Utf8, "object_name": pl.Utf8, "object_category": pl.Utf8},
+    ).with_columns(
+        pl.col("indication")
+        .map_elements(lambda value: assertion_context("faers", "indication", str(value or "")), return_dtype=pl.Utf8)
+        .alias("assertion_context")
     )
     pairs = (
         cases.join(mapping.lazy(), on="indication", how="inner")  # stop-listed indications carry no mapping entry
-        .group_by("drugname", "object_text")
+        .group_by("drugname", "object_text", "assertion_context")
         .agg(
             pl.col("object_curie").first(),
             pl.col("object_name").first(),
             pl.col("object_category").first(),
+            pl.col("indication").first().alias("context_indication"),
             pl.col("primaryid").filter(pl.col("primaryid") != "").n_unique().alias("distinct_cases"),
             pl.col("primaryid").filter(pl.col("primaryid") == "").len().alias("anon_rows"),
             pl.col("faers_row").unique().alias("faers_rows"),
@@ -328,6 +334,7 @@ def build_observed_use_rows(
                 object_curie=obj["curie"],
                 object_name=obj["name"],
                 object_category=obj["category"],
+                assertion_context=str(rec.get("assertion_context") or "indication"),
                 number_of_cases=int(rec["distinct_cases"]) + int(rec["anon_rows"]),
                 case_ids=sorted_pipe([*case_ids, *anon_tokens]),
                 FDA_regulatory_approvals=sorted_pipe(approval_values),
