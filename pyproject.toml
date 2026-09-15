@@ -76,10 +76,14 @@ classifiers = [
 # churn, never hand-edit). 13.0 also reworks the inlined supporting study (Study.id is the
 # publication CURIE or config stem, no `#` composition; study metadata lands as typed
 # `Study.study_*` fields) and makes `effect_size` a real float Association slot — neither
-# touches DAKP's emitted config, only KG content. Fullmaps must be `tablassert.fullmap.v5`
-# redb files — the on-disk format since Tablassert 8.2, unchanged in 13.0, so a pre-13.0
-# fullmap keeps working; anything older than v5 is rejected on read (rebuild with
-# `tablassert build-fullmap`).
+# touches DAKP's emitted config, only KG content. 19.0's `CLASS_FIELD_OVERRIDES` (#188) grants the
+# sparse qualifier stack (`anatomical_context_qualifier`, `sex_qualifier`,
+# `population_context_qualifier`, `frequency_qualifier`, `temporal_context_qualifier`) to the two
+# pinned classes, so those qualifiers survive `prune_to_class` on the edge. Fullmaps must be
+# `tablassert.fullmap.v6` redb files — 19.0 rebased level-one normalization onto stemmed,
+# deduped, byte-sorted tokens, which changed the RECORDS key SPACE, so a v5 database is not an
+# older layout of the same data and its keys can never be hit by a normalized query; v1-v5 are
+# rejected on read (rebuild with `tablassert build-fullmap`).
 dependencies = [
     # Bundles a statically-linked aria2c binary (PyPI dist `aria2`, import name `aria2c`) so the
     # FAERS + Drugs@FDA fetchers get multi-connection downloads with no separate system install.
@@ -113,7 +117,12 @@ dependencies = [
     "pendulum>=3",
     "polars>=1.30.0",
     "pydantic>=2.12.0",
-    "tablassert[qc]>=18.1.0,<19",
+    # `[cli]` and `[log]` became OPTIONAL in 19.0: the `tablassert` console script `DAKP`'s runner
+    # shells out to now preflights the `[cli]` extra (cyclopts + rich) and exits before importing
+    # the app without it, and logging is a silent no-op without `[log]` (loguru), so a build would
+    # emit no progress or warning logs at all. Both are load-bearing for `run_tablassert`, hence
+    # explicit. `[qc]` still backs the `--qc` audit.
+    "tablassert[cli,log,qc]>=19.0.0,<20",
     # torch is transitive (sentence-transformers via tablassert[qc]; gliner2 needs it too but
     # only declares it under the `[local]`/`[train]` extras we do not use) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host
