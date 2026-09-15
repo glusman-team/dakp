@@ -129,7 +129,7 @@ def write_manifest(path: Path, data: Mapping[str, Any]) -> None:
 def default_downloader(model_id: str, dest: Path) -> None:
     """Download ``model_id`` from the Hugging Face Hub into ``dest`` (lazy import).
 
-    ``huggingface_hub`` is a core DAKP dependency (transitively via ``gliner``); if it is
+    ``huggingface_hub`` is a core DAKP dependency (transitively via ``gliner2``); if it is
     somehow not importable, raises :class:`NERDependencyError` with the install command.
     """
     try:
@@ -173,7 +173,7 @@ def ensure_model(
     written. ``force`` re-downloads unconditionally.
 
     Args:
-        model_id: Upstream model identifier (e.g. ``"SkyeAv/drug-approvals-gliner-small-v2.1"``).
+        model_id: Upstream model identifier (e.g. ``"fastino/gliner2.5-base-v1"``).
         source: Provenance label / cache subdir (default ``"huggingface"``).
         cache_dir: Explicit cache root. Wins over ``workdir`` when both are given.
         workdir: Pipeline workdir; the cache lives at ``<workdir>/models``.
