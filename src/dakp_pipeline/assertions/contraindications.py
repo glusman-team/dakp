@@ -73,7 +73,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, row_for
+from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, object_mentions, row_for
 from dakp_pipeline.assertions.evidence import (
     build_fda_approval_index,
     dailymed_document_url,
@@ -93,7 +93,7 @@ from dakp_pipeline.assertions.ner_dispatch import _shard_by_text_length as _shar
 from dakp_pipeline.assertions.ner_dispatch import _spawn_safe_main as _spawn_safe_main
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
-from dakp_pipeline.ner.dictionary import normalize_text
+from dakp_pipeline.ner.dictionary import TYPE_DISEASE, canonical_type, normalize_text
 from dakp_pipeline.ner.mention_cache import MentionCache
 from dakp_pipeline.ner.ner import DiseaseNER, Mention, extract_contraindication_diseases
 
@@ -329,7 +329,13 @@ def _classify_mentions(item: ContraWorkItem | tuple[str, str, str], mentions: li
     contraindicated object and ``A`` is the disease context. Multiple conditions in the patient
     clause are withheld because a scalar qualifier cannot preserve an AND/OR requirement.
     Medication markers never produce a disease qualifier.
+
+    Only object-channel mentions are classified: the NER backend returns qualifiers too, and a
+    qualifier is never an assertion object (see
+    :func:`~dakp_pipeline.assertions.object_mentions`). The returned decisions are therefore
+    parallel to ``object_mentions(mentions)``, which is what the caller iterates.
     """
+    mentions = object_mentions(mentions)
     decisions = [_classify_mention(item, mention) for mention in mentions]
     if not isinstance(item, ContraWorkItem) or not mentions:
         return decisions
@@ -371,7 +377,7 @@ def _classify_mentions(item: ContraWorkItem | tuple[str, str, str], mentions: li
         context_text = normalize_text(sentence[context_start:context_end])
         if not context_text:
             continue
-        if str(mentions[context_index].type).lower() != "disease":
+        if canonical_type(str(mentions[context_index].type)) != TYPE_DISEASE:
             # Biolink's disease_context_qualifier is disease-ranged. Keep the explicit object
             # edge, but do not put a phenotype/symptom into this qualifier slot.
             decisions[context_index] = MentionDecision(False, "context_not_disease", sentence)
@@ -576,7 +582,7 @@ def build_contraindication_rows(
     for item in all_work_items:
         set_id, doc_id, _text = _work_item_parts(item)
         ingredients = evidence.active_ingredients_by_set.get(set_id, [])
-        mentions = mined.get((set_id, doc_id), [])
+        mentions = object_mentions(mined.get((set_id, doc_id), []))
         decisions = _classify_mentions(item, mentions)
         for mention, decision in zip(mentions, decisions, strict=True):
             mentions_mined += 1

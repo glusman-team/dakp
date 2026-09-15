@@ -15,7 +15,9 @@ is the single composite backend (gazetteer-first, GLiNER-augmented; see ``ner/BE
 from __future__ import annotations
 
 from dakp_pipeline.ner.dictionary import (
-    CONTRAINDICATION_DISEASE_TYPES,
+    MENTION_TYPES,
+    OBJECT_TYPES,
+    QUALIFIER_TYPES,
     TYPE_DISEASE,
     TYPE_PHENOTYPE,
     Gazetteer,
@@ -31,8 +33,10 @@ from dakp_pipeline.ner.ner import (
     EMBEDDED_GAZETTEER,
     GLINER_GENERATION_FLOOR,
     INDICATION_ACCEPT_THRESHOLD,
-    MODEL_LABEL,
+    MODEL_LABEL_NAMES,
     MODEL_LABELS,
+    QUALIFIER_ACCEPT_THRESHOLD,
+    QUALIFIER_NOTES,
     STRICT_GAZETTEER_EXTENSION_THRESHOLD,
     DiseaseNER,
     extract_contraindication_diseases,
@@ -41,7 +45,6 @@ from dakp_pipeline.ner.ner import (
 
 __all__ = [
     "CONTRAINDICATION_ACCEPT_THRESHOLD",
-    "CONTRAINDICATION_DISEASE_TYPES",
     "DEFAULT_IGNORE_TERMS",
     "DEFAULT_MODEL",
     "DEFAULT_THRESHOLD",
@@ -49,8 +52,13 @@ __all__ = [
     "GLINER_GENERATION_FLOOR",
     "INDICATION_ACCEPT_THRESHOLD",
     "LEGACY_SYNONYMS",
-    "MODEL_LABEL",
+    "MENTION_TYPES",
     "MODEL_LABELS",
+    "MODEL_LABEL_NAMES",
+    "OBJECT_TYPES",
+    "QUALIFIER_ACCEPT_THRESHOLD",
+    "QUALIFIER_NOTES",
+    "QUALIFIER_TYPES",
     "STRICT_GAZETTEER_EXTENSION_THRESHOLD",
     "TYPE_DISEASE",
     "TYPE_PHENOTYPE",

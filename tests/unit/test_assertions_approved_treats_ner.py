@@ -116,7 +116,7 @@ def test_dailymed_fallback_blank_mention_is_skipped() -> None:
         def extract(self, text: str, **kwargs: Any) -> Any:
             from dakp_pipeline.ner.lexical import Mention
 
-            return [Mention(text="!!!", start=0, end=3, type="disease", score=0.9)]
+            return [Mention(text="!!!", start=0, end=3, type="Disease", score=0.9)]
 
     assert build_approved_treats_rows(None, ev, _MAPPING, {}, ner=_BlankMentionNER()) == []
 
