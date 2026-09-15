@@ -12,9 +12,11 @@ Composite design (gazetteer-first, GLiNER-augmented)
   0.955 on the benchmark fixture, zero heavy dependencies, fully deterministic. Used by tests
   and offline runs.
 * **Production mode (``offline=False``):** the same gazetteer anchors high-precision spans and
-  a domain fine-tuned GLiNER (``SkyeAv/drug-approvals-gliner-small-v2.1``, trained on FAERS and
-  DailyMed indication/contraindication text) fills out-of-gazetteer gaps when invoked on DailyMed
-  sections.
+  a GLiNER2 span checkpoint (``fastino/gliner2-large-v1``, loaded via ``gliner2.AutoExtractor``)
+  fills out-of-gazetteer gaps when invoked on DailyMed sections. The previous v1 domain fine-tune
+  (``SkyeAv/drug-approvals-gliner-small-v2.1``) is NOT loadable by gliner2 (its knowledgator config
+  schema and BiLSTM head layout predate the gliner2 architecture split); re-fine-tuning that
+  FAERS/DailyMed corpus for gliner2 is a recorded follow-up.
   Non-overlapping GLiNER spans add recall; on overlap the **most specific span wins** — a model
   span that strictly contains a gazetteer span supersedes it (``pulmonary hypertension`` beats
   ``hypertension``), taking the model's boundary and the gazetteer's type. Equal spans, partial
@@ -26,13 +28,13 @@ Composite design (gazetteer-first, GLiNER-augmented)
   — the same 0.35 floor by default (the lowest score at which GLiNER is still accurate), so
   nothing generated is abstained; raise ``accept_threshold`` to decide narrower than you
   generate. Below the floor the backend **abstains** rather than asserting a low-confidence
-  mention or falling back to a less specific one. GLiNER is natively multi-entity and the
-  shipped fine-tune is trained for the two labels ``disease`` and ``phenotype``; inference
-  requests both labels and preserves the model's type. The gazetteer stays the type authority
-  whenever a span contests a gazetteer term. GLiNER silently truncates inputs past
-  ``config.max_len`` word tokens (384 on the shipped fine-tune), so long sections are
-  predicted in exact-substring windows (:func:`_windows`) whose spans are remapped back into
-  full-text offsets before the merge. ``gliner`` is a core
+  mention or falling back to a less specific one. GLiNER2 is natively multi-entity and
+  schema-conditioned: the shipped checkpoint extracts the two zero-shot labels ``disease`` and
+  ``phenotype``; inference requests both labels and preserves the model's type. The gazetteer
+  stays the type authority whenever a span contests a gazetteer term. GLiNER2 silently truncates
+  inputs past ``config.max_len`` word tokens (4096 on the shipped checkpoint), so long sections
+  are predicted in exact-substring windows (:func:`_windows`) whose spans are remapped back into
+  full-text offsets before the merge. ``gliner2`` is a core
   DAKP dependency but is imported lazily on first use (no torch at module load), raising
   :class:`~dakp_pipeline.ner.model_cache.NERDependencyError` ("reinstall with `uv sync`") if it is
   somehow not importable.
@@ -61,13 +63,15 @@ from dakp_pipeline.ner.dictionary import CONTRAINDICATION_DISEASE_TYPES, TYPE_DI
 from dakp_pipeline.ner.lexical import LexicalMatcher, Mention
 from dakp_pipeline.ner.model_cache import NERDependencyError, default_model_cache_dir, ensure_model
 
-# Domain fine-tune of ``urchade/gliner_small-v2.1`` for FAERS/DailyMed indication and
-# contraindication text (deberta-v3-small encoder, max_len 384 word tokens). DAKP invokes it on
-# DailyMed sections only. Override for
-# another GLiNER checkpoint.
-DEFAULT_MODEL = "SkyeAv/drug-approvals-gliner-small-v2.1"
-#: Labels the production checkpoint is fine-tuned for (see its model card), requested verbatim
-#: in every GLiNER inference call — label matching is exact.
+# GLiNER2-native boundary checkpoint (schema-conditioned zero-shot labels ``disease`` /
+# ``phenotype``, ``max_len: 4096``). The previous v1 domain fine-tune of
+# ``urchade/gliner_small-v2.1`` is NOT loadable by gliner2 — its knowledgator config schema and
+# BiLSTM head layout predate the gliner2 architecture split — so re-fine-tuning that
+# FAERS/DailyMed corpus for gliner2 is a recorded follow-up. Override for another GLiNER2
+# checkpoint.
+DEFAULT_MODEL = "fastino/gliner2-large-v1"
+#: Labels requested verbatim in every GLiNER2 inference call (schema-conditioned zero-shot on
+#: the shipped checkpoint) — label matching is exact.
 MODEL_LABELS: tuple[str, ...] = (TYPE_DISEASE, TYPE_PHENOTYPE)
 #: Backward-compatible singular alias for callers that imported the old constant.
 MODEL_LABEL = TYPE_DISEASE
@@ -94,19 +98,26 @@ DEFAULT_THRESHOLD = GLINER_GENERATION_FLOOR
 #: historical constructor; production DAG tasks use explicit indication/contraindication profiles.
 DEFAULT_ACCEPT_THRESHOLD = CONTRAINDICATION_ACCEPT_THRESHOLD
 
-# GLiNER counts input in word tokens from its whitespace splitter and silently truncates anything
-# past ``config.max_len`` tokens (only a UserWarning). Mirror that exact token pattern (gliner's
-# ``WhitespaceTokenSplitter``: every punctuation glyph is its own token) so windows never exceed
-# the model's budget.
-_GLINER_TOKEN = re.compile(r"\w+(?:[-_]\w+)*|\S")
+# GLiNER2 counts input in word tokens from its whitespace splitter and silently truncates anything
+# past ``config.max_len`` tokens (only a UserWarning). Mirror that exact token pattern (gliner2's
+# ``WhitespaceTokenSplitter``: URLs, emails and @handles stay single tokens; every other
+# punctuation glyph is its own token) so windows never exceed the model's budget.
+_GLINER_TOKEN = re.compile(
+    r"(?:https?://[^\s]+|www\.[^\s]+)"
+    r"|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}"
+    r"|@[a-z0-9_]+"
+    r"|\w+(?:[-_]\w+)*"
+    r"|\S",
+    re.IGNORECASE,
+)
 
 # Sentence-ish piece for window packing: a run of non-terminal characters, trailing terminal
 # punctuation, trailing whitespace. Matches tile the text when the tiling check in
 # :func:`_sentence_piece_spans` holds; otherwise the whole text is one piece.
 _SENTENCE_PIECE = re.compile(r"[^.!?;]+[.!?;]*\s*")
 
-#: Window-budget fallback (GLiNER word tokens) when a model exposes no ``config.max_len``; the
-#: shipped fine-tune sets ``max_len: 384``.
+#: Window-budget fallback (GLiNER2 word tokens) when a model exposes no ``config.max_len``; the
+#: shipped checkpoint sets ``max_len: 4096``.
 _DEFAULT_WORD_BUDGET = 384
 
 # Curated high-precision disease/phenotype gazetteer — the offline mode's embedded vocabulary
@@ -258,6 +269,43 @@ _HEDGE_TOKENS: frozenset[str] = frozenset(
 
 def _install_message(module: str) -> str:
     return f"NER production mode requires the '{module}' package (a core DAKP dependency) but it is not importable. Install all dependencies with: uv sync"
+
+
+def _strip_aligned(window: str, start: int, end: int) -> tuple[int, int]:
+    """Advance ``start`` / pull back ``end`` over whitespace so the span surface is trimmed.
+
+    gliner2 returns each span's surface ``.strip()``ed but the char offsets untrimmed
+    (``runtime._find_spans`` records the raw token-span bounds), so ``window[start:end]`` can
+    carry whitespace padding. This restores the half-open invariant
+    ``window[start:end] == span["text"]`` that the merge and the mention contract rely on.
+    """
+    while start < end and window[start].isspace():
+        start += 1
+    while end > start and window[end - 1].isspace():
+        end -= 1
+    return start, end
+
+
+def _spans_from_result(result: Mapping[str, Any], window: str) -> list[_ModelSpan]:
+    """Flatten one gliner2 result dict into window-relative :class:`_ModelSpan` candidates.
+
+    gliner2 (``extract_entities`` / per-item ``batch_extract_entities`` entries) returns
+    ``{"entities": {label: [{"text", "confidence", "start", "end"}, ...]}}`` with window-relative
+    offsets. Labels whose canonical type is outside ``CONTRAINDICATION_DISEASE_TYPES`` are
+    dropped (current behavior: only disease/phenotype mentions are extracted), and offsets are
+    strip-aligned (:func:`_strip_aligned`) against the window they were predicted on.
+    """
+    spans: list[_ModelSpan] = []
+    for label, entries in result.get("entities", {}).items():
+        etype = canonical_type(str(label))
+        if etype not in CONTRAINDICATION_DISEASE_TYPES:
+            continue
+        for entry in entries:
+            start, end = _strip_aligned(window, int(entry["start"]), int(entry["end"]))
+            if start >= end:
+                continue
+            spans.append(_ModelSpan(start=start, end=end, type=etype, score=float(entry["confidence"])))
+    return spans
 
 
 def _sort_key(mention: Mention) -> tuple[int, int, str, str]:
@@ -554,8 +602,8 @@ def _acquire_gpu_lock(device: str, lock_dir: Path) -> int:
 class DiseaseNER:
     """The single composite disease/phenotype mention extractor.
 
-    Constructing a ``DiseaseNER`` never imports heavy deps — even in production mode ``gliner``
-    is imported only on the first :meth:`extract` (no torch at module load). ``gliner`` is a core
+    Constructing a ``DiseaseNER`` never imports heavy deps — even in production mode ``gliner2``
+    is imported only on the first :meth:`extract` (no torch at module load). ``gliner2`` is a core
     DAKP dependency (installed by ``uv sync``); the lazy import keeps ``import dakp_pipeline.ner.ner``
     — and the whole test suite — fast and light.
 
@@ -564,8 +612,8 @@ class DiseaseNER:
             fine-tuned GLiNER recall.
         gazetteer: a :class:`Gazetteer`, a ``{surface: type}`` mapping, or ``None`` to use the
             curated :data:`EMBEDDED_GAZETTEER`.
-        model_id: GLiNER checkpoint (production mode).
-        model_labels: labels passed to GLiNER. Defaults to the two labels trained into
+        model_id: GLiNER2 checkpoint (production mode).
+        model_labels: labels passed to GLiNER2. Defaults to the two labels requested of
             :data:`DEFAULT_MODEL`; provide the labels expected by an explicitly overridden checkpoint.
         inference_batch_size: number of windows per GLiNER inference batch.
         threshold: GLiNER candidate-**generation** threshold (production mode). Generate wide:
@@ -672,11 +720,11 @@ class DiseaseNER:
         return sorted(mentions, key=_sort_key)
 
     def extract_batch(self, texts: Sequence[str]) -> list[list[Mention]]:
-        """Extract several texts with one padded GLiNER inference stream.
+        """Extract several texts with one padded GLiNER2 inference stream.
 
         Each text retains its own sentence-aware windows and merge, while all windows are
-        submitted together to GLiNER's batched ``inference`` API. This is the hot path used by
-        per-device workers; offline extraction remains a cheap deterministic loop.
+        submitted together to GLiNER2's batched ``batch_extract_entities`` API. This is the hot
+        path used by per-device workers; offline extraction remains a cheap deterministic loop.
         """
         values = list(texts)
         if self._offline:
@@ -690,24 +738,23 @@ class DiseaseNER:
         windows: list[tuple[int, int, str]] = []
         for text_index, text in active:
             windows.extend((text_index, start, window) for start, window in _windows(text, budget))
-        raw_batches = model.inference(
+        raw_batches = model.batch_extract_entities(
             [window for _text_index, _start, window in windows],
             list(self._model_labels),
-            threshold=self._threshold,
             batch_size=self._inference_batch_size,
+            threshold=self._threshold,
+            include_confidence=True,
+            include_spans=True,
         )
         spans_by_text: dict[int, list[list[_ModelSpan]]] = {index: [] for index, _text in active}
-        for (text_index, window_start, _window), raw in zip(windows, raw_batches, strict=True):
-            spans: list[_ModelSpan] = []
+        for (text_index, window_start, window), raw in zip(windows, raw_batches, strict=True):
             text = values[text_index]
-            for entity in raw:
-                etype = canonical_type(str(entity["label"]))
-                if etype not in CONTRAINDICATION_DISEASE_TYPES:
-                    continue
-                start, end = window_start + int(entity["start"]), window_start + int(entity["end"])
+            spans: list[_ModelSpan] = []
+            for span in _spans_from_result(raw, window):
+                start, end = window_start + span.start, window_start + span.end
                 if normalize_text(text[start:end]) in _POPULATION_PHRASES:
                     continue
-                spans.append(_ModelSpan(start=start, end=end, type=etype, score=float(entity["score"])))
+                spans.append(_ModelSpan(start=start, end=end, type=span.type, score=span.score))
             spans_by_text[text_index].append(spans)
         output: list[list[Mention]] = []
         for index, text in enumerate(values):
@@ -729,13 +776,13 @@ class DiseaseNER:
         if self._model is None:
             stats(logger, "ner_model_load", model_id=self._model_id)
             try:
-                from gliner import GLiNER  # lazy: no torch at module load  # type: ignore[import-not-found]
+                from gliner2 import AutoExtractor  # lazy: no torch at module load  # type: ignore[import-not-found]
             except ImportError as exc:
-                raise NERDependencyError(_install_message("gliner")) from exc
+                raise NERDependencyError(_install_message("gliner2")) from exc
             ref = ensure_model(self._model_id, cache_dir=self._cache_dir, workdir=self._workdir)
             device = self._device or _model_device()
             if device.startswith("cuda"):
-                # One GLiNER per GPU is a hard cap (16 GB cards OOM with two models). The
+                # One GLiNER2 model per GPU is a hard cap (16 GB cards OOM with two models). The
                 # Airflow ``ner_mining`` pool serializes shape tasks at the scheduler level,
                 # but this per-device flock is the correctness guarantee for any concurrent
                 # loader (second DAG run, manual trigger, CLI). The fd is held on the instance
@@ -743,7 +790,7 @@ class DiseaseNER:
                 # lifecycle of a spawned GPU worker. CPU and offline loads never lock.
                 self._gpu_lock_fd = _acquire_gpu_lock(device, _gpu_lock_dir(cache_dir=self._cache_dir, workdir=self._workdir))
             started = time.monotonic()
-            self._model = GLiNER.from_pretrained(str(ref.path), map_location=device)
+            self._model = AutoExtractor.from_pretrained(str(ref.path), map_location=device)
             stats(logger, "ner_model_load", model_id=self._model_id, device=device, b3=ref.b3, elapsed_s=round(time.monotonic() - started, 3))
         return self._model
 
@@ -786,23 +833,20 @@ class DiseaseNER:
         """
         model = self._load_model()
         budget = _token_budget(model, self._chunk_words)
-        # Request the exact label vocabulary configured for this checkpoint. The published
-        # production fine-tune uses ``disease`` and ``phenotype``; an explicit ``model_labels``
-        # override supports checkpoints with a different vocabulary.
+        # Request the exact label vocabulary configured for this checkpoint. The shipped
+        # gliner2 checkpoint extracts ``disease`` and ``phenotype`` zero-shot; an explicit
+        # ``model_labels`` override supports checkpoints with a different vocabulary.
         labels = list(self._model_labels)
         windows = _windows(text, budget)
         spans_by_window: list[list[_ModelSpan]] = []
         for window_start, window in windows:
-            raw = model.predict_entities(window, labels, threshold=self._threshold)
+            raw = model.extract_entities(window, labels, threshold=self._threshold, include_confidence=True, include_spans=True)
             spans: list[_ModelSpan] = []
-            for entity in raw:
-                etype = canonical_type(str(entity["label"]))
-                if etype not in CONTRAINDICATION_DISEASE_TYPES:
-                    continue
-                start, end = window_start + int(entity["start"]), window_start + int(entity["end"])
+            for span in _spans_from_result(raw, window):
+                start, end = window_start + span.start, window_start + span.end
                 if normalize_text(text[start:end]) in _POPULATION_PHRASES:
                     continue
-                spans.append(_ModelSpan(start=start, end=end, type=etype, score=float(entity["score"])))
+                spans.append(_ModelSpan(start=start, end=end, type=span.type, score=span.score))
             spans_by_window.append(spans)
         _merge_straddling_spans(windows, spans_by_window)
         trimmed = self._trimmed_spans(text, [span for spans in spans_by_window for span in spans])

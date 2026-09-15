@@ -1,9 +1,11 @@
 """Edge-case tests for ``dakp_pipeline.ner.ner`` (drive to 100% branch coverage).
 
-Targets the production (GLiNER) path without network: a fake ``gliner``
-module is injected into ``sys.modules`` and ``ensure_model`` is stubbed, so ``_load_model``'s
-successful-import branch and ``_merge_model_spans`` (gazetteer-wins-on-overlap, type filtering,
-GLiNER recall) are fully exercised. The missing-dep branch skips when ``gliner`` is installed.
+Targets the production (GLiNER2) path without network: a fake ``gliner2`` module is injected
+into ``sys.modules`` and ``ensure_model`` is stubbed, so ``_load_model``'s successful-import
+branch and ``_merge_model_spans`` (gazetteer-wins-on-overlap, type filtering, GLiNER2 recall)
+are fully exercised. The fake mirrors gliner2's real result shape
+(``{"entities": {label: [{"text", "confidence", "start", "end"}, ...]}}``) -- including
+untrimmed offsets around a ``.strip()``ed surface -- as verified against the installed package.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ from dakp_pipeline.ner.ner import (
     _model_device,
     _overlaps_any,
     _sort_key,
+    _spans_from_result,
+    _strip_aligned,
     _token_budget,
     _trim_hedges,
     _windows,
@@ -40,8 +44,8 @@ from dakp_pipeline.ner.ner import (
 
 
 def test_install_message_names_module_and_command() -> None:
-    message = _install_message("gliner")
-    assert "gliner" in message
+    message = _install_message("gliner2")
+    assert "gliner2" in message
     assert "uv sync" in message
 
 
@@ -123,54 +127,155 @@ def test_mention_is_frozen() -> None:
 
 
 def test_load_model_raises_clear_error_without_extra(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Block the gliner import (None in sys.modules raises ImportError) so the missing-dep
-    # branch is exercised deterministically whether or not gliner is installed.
-    monkeypatch.setitem(sys.modules, "gliner", None)
+    # Block the gliner2 import (None in sys.modules raises ImportError) so the missing-dep
+    # branch is exercised deterministically whether or not gliner2 is installed.
+    monkeypatch.setitem(sys.modules, "gliner2", None)
     backend = DiseaseNER(offline=False)
     with pytest.raises(ner_module.NERDependencyError, match=r"uv sync"):
         backend.extract("contraindicated in severe hepatic impairment")
 
 
-# --- _load_model + _merge_model_spans: fake gliner (no network) ----------------
+# --- _load_model + _merge_model_spans: fake gliner2 (no network) ---------------
 
 
-class _FakeGLiNERModel:
+def _gliner2_result(predictions: list[dict[str, Any]], window: str) -> dict[str, Any]:
+    """Convert flat fake predictions into gliner2's real result shape (window-relative offsets,
+    stripped surface text), grouped by label exactly like ``AutoExtractor.extract_entities``.
+    Predictions falling outside this window are skipped: the real model only ever returns
+    offsets into the text it was given."""
+    entities: dict[str, list[dict[str, Any]]] = {}
+    for prediction in predictions:
+        if prediction["end"] > len(window) or prediction["start"] > prediction["end"]:
+            continue
+        span = {
+            "text": window[prediction["start"] : prediction["end"]].strip(),
+            "confidence": prediction["score"],
+            "start": prediction["start"],
+            "end": prediction["end"],
+        }
+        entities.setdefault(prediction["label"], []).append(span)
+    return {"entities": entities}
+
+
+class _FakeExtractorModel:
+    """Fake gliner2 model exposing the extract_entities / batch_extract_entities API."""
+
     def __init__(self, predictions: list[dict[str, Any]]) -> None:
         self._predictions = predictions
         self.calls: list[tuple[str, list[str], float]] = []
 
-    def predict_entities(self, text: str, labels: list[str], threshold: float = 0.0) -> list[dict[str, Any]]:
-        self.calls.append((text, labels, threshold))
-        return self._predictions
+    def extract_entities(
+        self,
+        text: str,
+        entity_types: list[str],
+        threshold: float = 0.5,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+        max_len: int | None = None,
+        overlap_policy: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append((text, list(entity_types), threshold))
+        return _gliner2_result(self._predictions, text)
 
-    def inference(self, texts: list[str], labels: list[str], threshold: float = 0.0, batch_size: int = 8) -> list[list[dict[str, Any]]]:
-        return [self.predict_entities(text, labels, threshold) for text in texts]
+    def batch_extract_entities(
+        self,
+        texts: list[str],
+        entity_types: list[str],
+        batch_size: int = 8,
+        threshold: float = 0.5,
+        format_results: bool = True,
+        include_confidence: bool = False,
+        include_spans: bool = False,
+        max_len: int | None = None,
+        overlap_policy: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return [self.extract_entities(text, entity_types, threshold=threshold) for text in texts]
 
 
-class _FakeGLiNER:
+class _FakeAutoExtractor:
     loaded_from: ClassVar[list[str]] = []
     loaded_map_location: ClassVar[list[str]] = []
-    model = _FakeGLiNERModel([])
+    model = _FakeExtractorModel([])
 
     @staticmethod
-    def from_pretrained(path: str, map_location: str = "cpu") -> _FakeGLiNERModel:
-        _FakeGLiNER.loaded_from.append(path)
-        _FakeGLiNER.loaded_map_location.append(map_location)
-        return _FakeGLiNER.model
+    def from_pretrained(path: str, map_location: str = "cpu") -> _FakeExtractorModel:
+        _FakeAutoExtractor.loaded_from.append(path)
+        _FakeAutoExtractor.loaded_map_location.append(map_location)
+        return _FakeAutoExtractor.model
 
 
-def _install_fake_gliner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, predictions: list[dict[str, Any]], model: Any = None) -> None:
-    _FakeGLiNER.loaded_from = []
-    _FakeGLiNER.loaded_map_location = []
-    _FakeGLiNER.model = model if model is not None else _FakeGLiNERModel(predictions)
-    module = types.ModuleType("gliner")
-    module.GLiNER = _FakeGLiNER  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "gliner", module)
+def _install_fake_gliner2(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, predictions: list[dict[str, Any]], model: Any = None) -> None:
+    _FakeAutoExtractor.loaded_from = []
+    _FakeAutoExtractor.loaded_map_location = []
+    _FakeAutoExtractor.model = model if model is not None else _FakeExtractorModel(predictions)
+    module = types.ModuleType("gliner2")
+    module.AutoExtractor = _FakeAutoExtractor  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gliner2", module)
 
     def _fake_ensure_model(model_id: str, **kwargs: Any) -> ModelRef:
         return ModelRef(model_id=model_id, source="huggingface", path=tmp_path, b3="b3:deadbeef", manifest=tmp_path / "manifest.json")
 
     monkeypatch.setattr(ner_module, "ensure_model", _fake_ensure_model)
+
+
+# --- gliner2 adapter: result flattening + offset strip-alignment ------------------
+
+
+def test_gliner2_offsets_are_strip_aligned_to_the_span_surface(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """gliner2 ``.strip()``s each span's surface but returns the UNTRIMMED char offsets, so a
+    padded prediction would break the mention contract ``text[start:end] == mention.text``.
+    The adapter advances start / pulls back end over whitespace to re-align."""
+
+    class _PaddedFakeModel:
+        def extract_entities(self, text: str, entity_types: list[str], threshold: float = 0.5, **_kwargs: Any) -> dict[str, Any]:
+            surface = "asthma"
+            start = text.index(surface) - 3  # include leading spaces
+            end = text.index(surface) + len(surface) + 2  # include trailing spaces
+            return {"entities": {"disease": [{"text": surface, "confidence": 0.9, "start": start, "end": end}]}}
+
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=_PaddedFakeModel())
+    text = "in   asthma  and porphyria."
+    mentions = DiseaseNER(offline=False, gazetteer={}).extract(text)
+    assert [(m.text, m.type) for m in mentions] == [("asthma", "disease")]
+    assert text[mentions[0].start : mentions[0].end] == "asthma"
+    assert mentions[0].score == pytest.approx(0.9)
+
+
+def test_gliner2_whitespace_only_span_is_dropped(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A span whose surface strips to nothing (offsets over pure whitespace) carries no signal;
+    it is dropped instead of emitting a zero-width mention."""
+
+    class _WhitespaceSpanFakeModel:
+        def extract_entities(self, text: str, entity_types: list[str], threshold: float = 0.5, **_kwargs: Any) -> dict[str, Any]:
+            start = text.index("   ")
+            return {"entities": {"disease": [{"text": "", "confidence": 0.9, "start": start, "end": start + 3}]}}
+
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=_WhitespaceSpanFakeModel())
+    assert DiseaseNER(offline=False, gazetteer={}).extract("a   b") == []
+
+
+def test_spans_from_result_flattens_labels_and_drops_unknown_types() -> None:
+    """Direct check of the flattening contract: label keys become canonical types, spans keep
+    their confidence as score, and labels outside CONTRAINDICATION_DISEASE_TYPES never surface."""
+    window = "  asthma here"
+    result = {
+        "entities": {
+            "DISEASE": [{"text": "asthma", "confidence": 0.8, "start": 2, "end": 8}],
+            "CHEMICAL": [{"text": "junk", "confidence": 0.9, "start": 9, "end": 13}],
+        }
+    }
+    spans = _spans_from_result(result, window)
+    assert [(s.start, s.end, s.type, s.score) for s in spans] == [(2, 8, "disease", 0.8)]
+    assert _spans_from_result({}, window) == []  # a result with no entities key is fine
+
+
+def test_strip_aligned_trims_both_edges_in_place() -> None:
+    """Direct check of the whitespace walker: leading spaces advance start, trailing spaces
+    pull back end, and an already-trimmed span is returned untouched."""
+    assert _strip_aligned("  asthma  ", 0, 10) == (2, 8)
+    assert _strip_aligned("asthma", 0, 6) == (0, 6)
+    assert _strip_aligned("     ", 0, 5) == (5, 5)  # fully-whitespace span collapses empty
 
 
 def test_production_merge_gazetteer_wins_and_gliner_adds_recall(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -181,7 +286,7 @@ def test_production_merge_gazetteer_wins_and_gliner_adds_recall(monkeypatch: pyt
         {"start": 7, "end": 16, "label": "DISEASE", "score": 0.8},  # 'porphyria' -> added (recall)
         {"start": 17, "end": 24, "label": "CHEMICAL", "score": 0.7},  # filtered by type
     ]
-    _install_fake_gliner(monkeypatch, tmp_path, predictions)
+    _install_fake_gliner2(monkeypatch, tmp_path, predictions)
 
     backend = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, model_id="acme/ner", threshold=0.42, cache_dir=tmp_path)
     mentions = backend.extract("asthma porphyria aspirin")
@@ -191,18 +296,18 @@ def test_production_merge_gazetteer_wins_and_gliner_adds_recall(monkeypatch: pyt
     assert porphyria.normalized == "porphyria"
     assert porphyria.score == 0.8
     # The model was loaded from the cached content path with the checkpoint's trained labels.
-    assert _FakeGLiNER.loaded_from == [str(tmp_path)]
-    _text, labels, threshold = _FakeGLiNER.model.calls[0]
+    assert _FakeAutoExtractor.loaded_from == [str(tmp_path)]
+    _text, labels, threshold = _FakeAutoExtractor.model.calls[0]
     assert labels == list(MODEL_LABELS)
     assert threshold == 0.42
 
     # A second extract reuses the cached model (from_pretrained called exactly once).
     backend.extract("asthma")
-    assert len(_FakeGLiNER.loaded_from) == 1
+    assert len(_FakeAutoExtractor.loaded_from) == 1
 
 
 def test_production_with_empty_gazetteer_is_model_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _install_fake_gliner(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "phenotype", "score": 0.6}])
+    _install_fake_gliner2(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "phenotype", "score": 0.6}])
     backend = DiseaseNER(offline=False, gazetteer={})
     mentions = backend.extract("porphyria")
     assert [(m.text, m.type, m.notes) for m in mentions] == [("porphyria", "phenotype", "gliner")]
@@ -210,7 +315,7 @@ def test_production_with_empty_gazetteer_is_model_only(monkeypatch: pytest.Monke
 
 def test_trained_labels_preserve_disease_and_phenotype_types(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The published checkpoint is trained on separate disease and phenotype labels."""
-    _install_fake_gliner(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "phenotype", "score": 0.8}])
+    _install_fake_gliner2(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "phenotype", "score": 0.8}])
     backend = DiseaseNER(offline=False, gazetteer={})
     mentions = backend.extract("porphyria")
     assert [(m.text, m.type, m.notes) for m in mentions] == [("porphyria", "phenotype", "gliner")]
@@ -218,8 +323,8 @@ def test_trained_labels_preserve_disease_and_phenotype_types(monkeypatch: pytest
 
 def test_extract_batch_uses_padded_inference_and_matches_single_texts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A production worker sends multiple windows through one GLiNER batch call."""
-    model = _FakeGLiNERModel([{"start": 0, "end": 9, "label": "phenotype", "score": 0.8}])
-    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    model = _FakeExtractorModel([{"start": 0, "end": 9, "label": "phenotype", "score": 0.8}])
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=model)
     backend = DiseaseNER(offline=False, gazetteer={}, inference_batch_size=2)
     texts = ["porphyria", "porphyria"]
 
@@ -232,8 +337,10 @@ def test_extract_batch_uses_padded_inference_and_matches_single_texts(monkeypatc
 
 
 def test_extract_batch_handles_empty_text_and_model_filters(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    model = _FakeGLiNERModel([{"start": 0, "end": 5, "label": "CHEMICAL", "score": 0.8}, {"start": 0, "end": 5, "label": "phenotype", "score": 0.8}])
-    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    model = _FakeExtractorModel(
+        [{"start": 0, "end": 5, "label": "CHEMICAL", "score": 0.8}, {"start": 0, "end": 5, "label": "phenotype", "score": 0.8}]
+    )
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=model)
     backend = DiseaseNER(offline=False, gazetteer={})
     assert backend.extract_batch([" "]) == [[]]
     assert backend.extract_batch(["women", ""]) == [[], []]
@@ -241,11 +348,11 @@ def test_extract_batch_handles_empty_text_and_model_filters(monkeypatch: pytest.
 
 def test_model_labels_override_is_requested_verbatim(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """An explicitly overridden checkpoint declares its own label vocabulary via model_labels."""
-    _install_fake_gliner(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "phenotype", "score": 0.8}])
+    _install_fake_gliner2(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "phenotype", "score": 0.8}])
     backend = DiseaseNER(offline=False, gazetteer={}, model_id="acme/other-ner", model_labels=("disease", "phenotype"), cache_dir=tmp_path)
     mentions = backend.extract("porphyria")
     assert [(m.text, m.type) for m in mentions] == [("porphyria", "phenotype")]
-    _text, labels, _threshold = _FakeGLiNER.model.calls[0]
+    _text, labels, _threshold = _FakeAutoExtractor.model.calls[0]
     assert labels == ["disease", "phenotype"]
 
 
@@ -258,17 +365,17 @@ def test_load_model_returns_cached_model_without_reimport() -> None:
     sentinel = object()
     backend = DiseaseNER(offline=False)
     backend._model = sentinel  # pre-cache the model
-    # With the model already cached, _load_model returns it without importing gliner.
+    # With the model already cached, _load_model returns it without importing gliner2.
     assert backend._load_model() is sentinel
-    assert "gliner" not in sys.modules
+    assert "gliner2" not in sys.modules
 
 
 def test_default_model_id_is_used(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _FakeGLiNER.loaded_from = []
-    _FakeGLiNER.model = _FakeGLiNERModel([])
-    module = types.ModuleType("gliner")
-    module.GLiNER = _FakeGLiNER  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "gliner", module)
+    _FakeAutoExtractor.loaded_from = []
+    _FakeAutoExtractor.model = _FakeExtractorModel([])
+    module = types.ModuleType("gliner2")
+    module.AutoExtractor = _FakeAutoExtractor  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gliner2", module)
     seen: list[str] = []
 
     def _recording_ensure_model(model_id: str, **kwargs: Any) -> ModelRef:
@@ -287,13 +394,13 @@ def test_production_population_descriptor_spans_are_filtered(monkeypatch: pytest
     """GLiNER loves to tag 'women of childbearing potential' as a phenotype; the blocklist drops it."""
     text = "Contraindicated in women of childbearing potential."
     start, end = text.index("women"), len(text) - 1  # 'women of childbearing potential'
-    _install_fake_gliner(monkeypatch, tmp_path, [{"start": start, "end": end, "label": "phenotype", "score": 0.9}])
+    _install_fake_gliner2(monkeypatch, tmp_path, [{"start": start, "end": end, "label": "phenotype", "score": 0.9}])
     backend = DiseaseNER(offline=False, gazetteer={})
     assert backend.extract(text) == []
 
 
 def test_population_filter_only_drops_exact_population_phrases(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _install_fake_gliner(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "disease", "score": 0.9}])
+    _install_fake_gliner2(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "disease", "score": 0.9}])
     backend = DiseaseNER(offline=False, gazetteer={})
     assert [m.text for m in backend.extract("porphyria cases")] == ["porphyria"]
 
@@ -302,7 +409,7 @@ def test_population_filter_only_drops_exact_population_phrases(monkeypatch: pyte
 
 
 def _span(text: str, phrase: str, label: str, score: float) -> dict[str, Any]:
-    """A fake GLiNER prediction for ``phrase`` at its (unique) offsets in ``text``."""
+    """A fake gliner2 prediction for ``phrase`` at its (unique) offsets in ``text``."""
     start = text.index(phrase)
     return {"start": start, "end": start + len(phrase), "label": label, "score": score}
 
@@ -312,7 +419,7 @@ def test_model_span_containing_a_gazetteer_span_supersedes_it(monkeypatch: pytes
     merge exists for. The model supplies the boundary; the gazetteer keeps the type (GLiNER is
     the documented source of disease<->phenotype confusion, see ner/BENCHMARK.md)."""
     text = "Contraindicated in patients with severe pulmonary hypertension."
-    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "pulmonary hypertension", "phenotype", 0.87)])
+    _install_fake_gliner2(monkeypatch, tmp_path, [_span(text, "pulmonary hypertension", "phenotype", 0.87)])
 
     mentions = DiseaseNER(offline=False, gazetteer={"hypertension": "disease"}).extract(text)
 
@@ -326,7 +433,7 @@ def test_unconfident_specific_span_abstains_instead_of_emitting_the_generic_one(
     """Below the acceptance floor the backend returns NOTHING. It must not fall back to
     'hypertension' — that would assert a broader contraindication than the label supports."""
     text = "Contraindicated in patients with severe pulmonary hypertension."
-    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "pulmonary hypertension", "disease", 0.42)])
+    _install_fake_gliner2(monkeypatch, tmp_path, [_span(text, "pulmonary hypertension", "disease", 0.42)])
 
     backend = DiseaseNER(offline=False, gazetteer={"hypertension": "disease"}, threshold=0.35, accept_threshold=0.5)
     assert backend.extract(text) == []
@@ -335,11 +442,11 @@ def test_unconfident_specific_span_abstains_instead_of_emitting_the_generic_one(
 def test_plain_model_span_below_accept_floor_is_dropped(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A free-standing candidate generated above `threshold` but below `accept_threshold` is
     abstained on rather than asserted."""
-    _install_fake_gliner(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "disease", "score": 0.4}])
+    _install_fake_gliner2(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "disease", "score": 0.4}])
     backend = DiseaseNER(offline=False, gazetteer={}, threshold=0.35, accept_threshold=0.5)
     assert backend.extract("porphyria only") == []
     # ...and the same span clears a floor set below its score.
-    _install_fake_gliner(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "disease", "score": 0.4}])
+    _install_fake_gliner2(monkeypatch, tmp_path, [{"start": 0, "end": 9, "label": "disease", "score": 0.4}])
     lenient = DiseaseNER(offline=False, gazetteer={}, threshold=0.35, accept_threshold=0.35)
     assert [m.text for m in lenient.extract("porphyria only")] == ["porphyria"]
 
@@ -358,14 +465,14 @@ def test_hedge_prefixes_are_trimmed_so_they_never_over_extend(
     """The over-extension that made overlap-extension too risky to ship (ner/BENCHMARK.md):
     temporal/evidential hedges are trimmed, so the model span collapses onto the gazetteer term
     instead of superseding it with a longer, meaningless boundary."""
-    _install_fake_gliner(monkeypatch, tmp_path, [_span(sentence, phrase, "disease", 0.95)])
+    _install_fake_gliner2(monkeypatch, tmp_path, [_span(sentence, phrase, "disease", 0.95)])
     mentions = DiseaseNER(offline=False, gazetteer={term: "disease"}).extract(sentence)
     assert [(m.text, m.notes) for m in mentions] == [(term, "exact")]
 
 
 def test_span_of_only_hedge_tokens_is_dropped(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     text = "Contraindicated in patients with asthma."
-    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "patients with", "disease", 0.9)])
+    _install_fake_gliner2(monkeypatch, tmp_path, [_span(text, "patients with", "disease", 0.9)])
     assert DiseaseNER(offline=False, gazetteer={}).extract(text) == []
 
 
@@ -373,7 +480,7 @@ def test_population_descriptor_revealed_by_trimming_is_still_dropped(monkeypatch
     """'in pregnant women' is not a population phrase until the leading 'in' comes off, so the
     filter has to run again on the trimmed surface."""
     text = "Contraindicated in pregnant women."
-    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "in pregnant women", "phenotype", 0.9)])
+    _install_fake_gliner2(monkeypatch, tmp_path, [_span(text, "in pregnant women", "phenotype", 0.9)])
     assert DiseaseNER(offline=False, gazetteer={}).extract(text) == []
 
 
@@ -381,7 +488,7 @@ def test_span_covering_several_gazetteer_terms_is_a_conjunction_not_a_qualifier(
     """A model span swallowing two gazetteer terms is 'asthma or hypertension', not one more
     specific disease — both gazetteer spans stand and the model span is discarded."""
     text = "Contraindicated in asthma or hypertension."
-    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "asthma or hypertension", "disease", 0.99)])
+    _install_fake_gliner2(monkeypatch, tmp_path, [_span(text, "asthma or hypertension", "disease", 0.99)])
     mentions = DiseaseNER(offline=False, gazetteer={"asthma": "disease", "hypertension": "disease"}).extract(text)
     assert [(m.text, m.notes) for m in mentions] == [("asthma", "exact"), ("hypertension", "exact")]
 
@@ -390,7 +497,7 @@ def test_partial_overlap_still_goes_to_the_gazetteer(monkeypatch: pytest.MonkeyP
     """Neither span contains the other, so there is no specificity gain to bank — the
     high-precision gazetteer span wins, exactly as before this merge existed."""
     text = "congestive heart failure risk"
-    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "failure risk", "phenotype", 0.99)])
+    _install_fake_gliner2(monkeypatch, tmp_path, [_span(text, "failure risk", "phenotype", 0.99)])
     mentions = DiseaseNER(offline=False, gazetteer={"heart failure": "disease"}).extract(text)
     assert [(m.text, m.type, m.notes) for m in mentions] == [("heart failure", "disease", "exact")]
 
@@ -399,18 +506,18 @@ def test_overlapping_model_spans_resolve_longest_first(monkeypatch: pytest.Monke
     """Model-vs-model: the longer span wins even when the shorter one scores higher."""
     text = "severe pulmonary hypertension noted"
     predictions = [_span(text, "hypertension", "disease", 0.95), _span(text, "pulmonary hypertension", "disease", 0.6)]
-    _install_fake_gliner(monkeypatch, tmp_path, predictions)
+    _install_fake_gliner2(monkeypatch, tmp_path, predictions)
     mentions = DiseaseNER(offline=False, gazetteer={}).extract(text)
     assert [(m.text, m.notes) for m in mentions] == [("pulmonary hypertension", "gliner")]
 
 
 def test_equal_length_overlapping_model_spans_break_ties_deterministically(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     text = "alpha beta gamma"
-    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "alpha beta", "disease", 0.6), _span(text, "beta gamma", "disease", 0.9)])
+    _install_fake_gliner2(monkeypatch, tmp_path, [_span(text, "alpha beta", "disease", 0.6), _span(text, "beta gamma", "disease", 0.9)])
     assert [m.text for m in DiseaseNER(offline=False, gazetteer={}).extract(text)] == ["beta gamma"]  # equal length -> higher score
 
     # A full tie falls back to the leftmost span, so repeated runs agree.
-    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "alpha beta", "disease", 0.9), _span(text, "beta gamma", "disease", 0.9)])
+    _install_fake_gliner2(monkeypatch, tmp_path, [_span(text, "alpha beta", "disease", 0.9), _span(text, "beta gamma", "disease", 0.9)])
     assert [m.text for m in DiseaseNER(offline=False, gazetteer={}).extract(text)] == ["alpha beta"]
 
 
@@ -437,19 +544,19 @@ _SPLIT_PROBE = f"{_SPLIT_FILLER} myasthenia gravis must be excluded"
 
 
 class _WindowRoutedFakeModel:
-    """Fake GLiNER whose predictions depend on which window it is given (window-relative
+    """Fake gliner2 model whose predictions depend on which window it is given (window-relative
     offsets, like the real model). The first route whose key occurs in the window wins."""
 
     def __init__(self, routes: dict[str, list[dict[str, Any]]]) -> None:
         self.routes = routes
         self.calls: list[str] = []
 
-    def predict_entities(self, text: str, labels: list[str], threshold: float = 0.0) -> list[dict[str, Any]]:
+    def extract_entities(self, text: str, entity_types: list[str], threshold: float = 0.5, **_kwargs: Any) -> dict[str, Any]:
         self.calls.append(text)
         for key, predictions in self.routes.items():
             if key in text:
-                return predictions
-        return []
+                return _gliner2_result(predictions, text)
+        return {"entities": {}}
 
 
 def _split_probe_span(window: str, phrase: str) -> tuple[int, int]:
@@ -473,7 +580,7 @@ def test_production_straddling_spans_rejoin_across_hard_split(monkeypatch: pytes
             "gravis": [{"start": right_start, "end": right_end, "label": "phenotype", "score": 0.6}],
         }
     )
-    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=model)
 
     mentions = DiseaseNER(offline=False, gazetteer={}, chunk_words=20).extract(_SPLIT_PROBE)
     assert [(m.text, m.type) for m in mentions] == [("myasthenia gravis", "disease")]  # higher-scoring side's type
@@ -491,7 +598,7 @@ def test_production_straddling_rejoin_takes_higher_scoring_type(monkeypatch: pyt
             "gravis": [{"start": right_start, "end": right_end, "label": "phenotype", "score": 0.95}],
         }
     )
-    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=model)
     mentions = DiseaseNER(offline=False, gazetteer={}, chunk_words=20).extract(_SPLIT_PROBE)
     assert [(m.text, m.type) for m in mentions] == [("myasthenia gravis", "phenotype")]
     assert mentions[0].score == pytest.approx(0.95)
@@ -507,7 +614,7 @@ def test_production_straddling_rejoin_tie_keeps_left_type(monkeypatch: pytest.Mo
             "gravis": [{"start": right_start, "end": right_end, "label": "phenotype", "score": 0.8}],
         }
     )
-    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=model)
     mentions = DiseaseNER(offline=False, gazetteer={}, chunk_words=20).extract(_SPLIT_PROBE)
     assert [(m.text, m.type) for m in mentions] == [("myasthenia gravis", "disease")]
 
@@ -519,12 +626,12 @@ def test_production_single_edge_span_is_kept_without_merge(monkeypatch: pytest.M
     right_start, right_end = _split_probe_span(windows[2][1], "gravis")
 
     left_only = _WindowRoutedFakeModel({"myasthenia": [{"start": left_start, "end": left_end, "label": "disease", "score": 0.9}]})
-    _install_fake_gliner(monkeypatch, tmp_path, [], model=left_only)
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=left_only)
     mentions = DiseaseNER(offline=False, gazetteer={}, chunk_words=20).extract(_SPLIT_PROBE)
     assert [(m.text, m.type) for m in mentions] == [("myasthenia", "disease")]
 
     right_only = _WindowRoutedFakeModel({"gravis": [{"start": right_start, "end": right_end, "label": "phenotype", "score": 0.6}]})
-    _install_fake_gliner(monkeypatch, tmp_path, [], model=right_only)
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=right_only)
     mentions = DiseaseNER(offline=False, gazetteer={}, chunk_words=20).extract(_SPLIT_PROBE)
     assert [(m.text, m.type) for m in mentions] == [("gravis", "phenotype")]
 
@@ -541,17 +648,19 @@ def test_production_no_merge_across_contiguous_sentence_boundary(monkeypatch: py
             "Porphyria": [{"start": 0, "end": 9, "label": "disease", "score": 0.9}],
         }
     )
-    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=model)
     mentions = DiseaseNER(offline=False, gazetteer={}, chunk_words=3).extract(text)
-    assert [(m.text, m.type) for m in mentions] == [("Asthma attack. ", "disease"), ("Porphyria", "disease")]
+    # The trailing space of the first span is stripped by gliner2's surface reporting and the
+    # offsets strip-aligned to match, so the mention carries the trimmed surface.
+    assert [(m.text, m.type) for m in mentions] == [("Asthma attack.", "disease"), ("Porphyria", "disease")]
 
 
 # --- windowing: GLiNER truncates long inputs, so long texts are predicted per window ---
 
 
 class _WindowAwareFakeModel:
-    """Fake GLiNER that predicts every occurrence of ``needle`` inside the window it is given
-    (offsets window-relative, exactly like the real model)."""
+    """Fake gliner2 model that predicts every occurrence of ``needle`` inside the window it is
+    given (offsets window-relative, exactly like the real model)."""
 
     def __init__(self, needle: str, label: str = "disease", score: float = 0.9) -> None:
         self.needle = needle
@@ -559,14 +668,14 @@ class _WindowAwareFakeModel:
         self.score = score
         self.calls: list[str] = []
 
-    def predict_entities(self, text: str, labels: list[str], threshold: float = 0.0) -> list[dict[str, Any]]:
+    def extract_entities(self, text: str, entity_types: list[str], threshold: float = 0.5, **_kwargs: Any) -> dict[str, Any]:
         self.calls.append(text)
         entities: list[dict[str, Any]] = []
         index = 0
         while (found := text.find(self.needle, index)) != -1:
-            entities.append({"start": found, "end": found + len(self.needle), "label": self.label, "score": self.score})
+            entities.append({"text": self.needle, "confidence": self.score, "start": found, "end": found + len(self.needle)})
             index = found + len(self.needle)
-        return entities
+        return {"entities": {self.label: entities}}
 
 
 _LONG_FILLER = "The label states the drug is contraindicated under the circumstances described here. " * 10
@@ -575,7 +684,7 @@ _LONG_FILLER = "The label states the drug is contraindicated under the circumsta
 def test_production_long_text_is_windowed_and_offsets_remap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     text = _LONG_FILLER + "Patients with porphyria must not receive it."
     model = _WindowAwareFakeModel("porphyria")
-    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=model)
 
     backend = DiseaseNER(offline=False, gazetteer={}, chunk_words=25)
     mentions = backend.extract(text)
@@ -597,7 +706,7 @@ def test_production_long_text_is_windowed_and_offsets_remap(monkeypatch: pytest.
 
 def test_production_short_text_is_a_single_full_text_window(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     model = _WindowAwareFakeModel("porphyria")
-    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=model)
     text = "porphyria only"
     DiseaseNER(offline=False, gazetteer={}).extract(text)
     assert model.calls == [text]  # nothing ≤ budget changes vs the pre-windowing behavior
@@ -606,7 +715,7 @@ def test_production_short_text_is_a_single_full_text_window(monkeypatch: pytest.
 def test_production_gazetteer_wins_in_later_windows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     text = _LONG_FILLER + "Patients with asthma must not receive it."
     model = _WindowAwareFakeModel("asthma")
-    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=model)
 
     backend = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, chunk_words=25)
     mentions = backend.extract(text)
@@ -620,7 +729,7 @@ def test_production_oversize_single_sentence_is_hard_split(monkeypatch: pytest.M
     filler = " ".join(f"word{i}" for i in range(60))  # one sentence, no terminal punctuation
     text = filler + " porphyria"
     model = _WindowAwareFakeModel("porphyria")
-    _install_fake_gliner(monkeypatch, tmp_path, [], model=model)
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=model)
 
     backend = DiseaseNER(offline=False, gazetteer={}, chunk_words=20)
     mentions = backend.extract(text)
@@ -725,19 +834,19 @@ def test_token_budget_falls_back_to_default() -> None:
 
 def test_device_param_pins_model_to_specified_gpu(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """An explicit ``device`` kwarg flows through to ``map_location`` at model load time."""
-    _install_fake_gliner(monkeypatch, tmp_path, [])
+    _install_fake_gliner2(monkeypatch, tmp_path, [])
     backend = DiseaseNER(offline=False, device="cuda:2", cache_dir=tmp_path)
     backend.extract("some text")
-    assert _FakeGLiNER.loaded_map_location == ["cuda:2"]
+    assert _FakeAutoExtractor.loaded_map_location == ["cuda:2"]
 
 
 def test_device_none_falls_back_to_model_device(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """When ``device`` is None, ``_load_model`` uses ``_model_device()`` (auto-detect)."""
-    _install_fake_gliner(monkeypatch, tmp_path, [])
+    _install_fake_gliner2(monkeypatch, tmp_path, [])
     backend = DiseaseNER(offline=False, cache_dir=tmp_path)  # device=None
     backend.extract("some text")
     # _model_device() returns "cpu" in CI (no CUDA) or "cuda" when available.
-    assert _FakeGLiNER.loaded_map_location[0] in ("cpu", "cuda")
+    assert _FakeAutoExtractor.loaded_map_location[0] in ("cpu", "cuda")
 
 
 # --- _config: serializable construction kwargs for multi-process workers ------------
@@ -774,7 +883,7 @@ def test_config_returns_serializable_construction_kwargs(tmp_path: Path) -> None
 
 def test_strict_extension_profile_keeps_exact_anchor_when_model_extension_is_weak(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     text = "Contraindicated in patients with hypersensitivity to ibuprofen."
-    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "hypersensitivity to ibuprofen.", "phenotype", 0.89)])
+    _install_fake_gliner2(monkeypatch, tmp_path, [_span(text, "hypersensitivity to ibuprofen.", "phenotype", 0.89)])
     backend = DiseaseNER.for_contraindications(offline=False, gazetteer={"hypersensitivity": "phenotype"})
     mentions = backend.extract(text)
     assert [(mention.text, mention.notes) for mention in mentions] == [("hypersensitivity", "exact")]
@@ -782,7 +891,7 @@ def test_strict_extension_profile_keeps_exact_anchor_when_model_extension_is_wea
 
 def test_strict_extension_profile_accepts_confident_specific_boundary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     text = "Contraindicated in patients with pulmonary hypertension."
-    _install_fake_gliner(monkeypatch, tmp_path, [_span(text, "pulmonary hypertension", "disease", 0.99)])
+    _install_fake_gliner2(monkeypatch, tmp_path, [_span(text, "pulmonary hypertension", "disease", 0.99)])
     backend = DiseaseNER.for_contraindications(offline=False, gazetteer={"hypertension": "disease"})
     mentions = backend.extract(text)
     assert [(mention.text, mention.notes) for mention in mentions] == [("pulmonary hypertension", "gliner:extends")]
