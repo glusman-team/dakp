@@ -69,11 +69,12 @@ evidence form; see :func:`~dakp_pipeline.assertions.evidence.spl_evidence_pipe`)
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import Any
 
 from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, object_mentions, row_for
+from dakp_pipeline.assertions.contexts import attach_qualifiers_with_scores
 from dakp_pipeline.assertions.evidence import (
     build_fda_approval_index,
     dailymed_document_url,
@@ -582,9 +583,40 @@ def build_contraindication_rows(
     for item in all_work_items:
         set_id, doc_id, _text = _work_item_parts(item)
         ingredients = evidence.active_ingredients_by_set.get(set_id, [])
-        mentions = object_mentions(mined.get((set_id, doc_id), []))
+        all_mentions = mined.get((set_id, doc_id), [])
+        mentions = object_mentions(all_mentions)
         decisions = _classify_mentions(item, mentions)
-        for mention, decision in zip(mentions, decisions, strict=True):
+        qualifier_fields: dict[int, dict[str, str]] = {}
+        qualifier_scores: dict[int, dict[str, tuple[float, str]]] = {}
+        localized_objects: list[tuple[int, Mention, str]] = []
+        localized_qualifiers: list[tuple[Mention, str]] = []
+        for index, mention in enumerate(mentions):
+            mapped = _mention_local_span(item, mention) if isinstance(item, ContraWorkItem) else None
+            if mapped is None:
+                localized_objects.append((index, mention, _work_item_evidence(item, mention)))
+            else:
+                sentence, start, end, _source_start = mapped
+                localized_objects.append((index, replace(mention, start=start, end=end, text=sentence[start:end]), sentence))
+        for mention in all_mentions:
+            if mention in mentions:
+                continue
+            mapped = _mention_local_span(item, mention) if isinstance(item, ContraWorkItem) else None
+            if mapped is None:
+                localized_qualifiers.append((mention, _work_item_evidence(item, mention)))
+            else:
+                sentence, start, end, _source_start = mapped
+                localized_qualifiers.append((replace(mention, start=start, end=end, text=sentence[start:end]), sentence))
+        for sentence in {value for _index, _mention, value in localized_objects}:
+            object_group = [(index, mention) for index, mention, value in localized_objects if value == sentence]
+            qualifier_group = [mention for mention, value in localized_qualifiers if value == sentence]
+            attached, scores = attach_qualifiers_with_scores(
+                [mention for _index, mention in object_group], qualifier_group, lambda _mention, value=sentence: value
+            )
+            for local_index, fields in attached.items():
+                mention_index = object_group[local_index][0]
+                qualifier_fields[mention_index] = fields
+                qualifier_scores[mention_index] = {field: scores[(local_index, field)] for field in fields}
+        for mention_index, (mention, decision) in enumerate(zip(mentions, decisions, strict=True)):
             mentions_mined += 1
             # Canonicalize the mined mention (lowercase / strip punctuation) so case variants
             # (asthma / Asthma / ASTHMA) aggregate to one object instead of fragmenting the rows.
@@ -603,6 +635,8 @@ def build_contraindication_rows(
                     decision.evidence_text,
                     decision.context_text,
                     approvals.expand_all(evidence.approval_ids_for_sets([set_id])),
+                    qualifier_fields.get(mention_index, {}),
+                    qualifier_scores.get(mention_index, {}),
                 )
 
     stats(logger, "shape_contraindications", mentions_mined=mentions_mined, assertions=len(aggregated))
@@ -620,6 +654,8 @@ def _accumulate(
     evidence_text: str = "",
     context_text: str = "",
     approvals: Iterable[str] = (),
+    qualifier_fields: Mapping[str, str] | None = None,
+    qualifier_scores: Mapping[str, tuple[float, str]] | None = None,
 ) -> None:
     """Add one observation to the ``(subject, object, disease-context)`` aggregate.
 
@@ -649,6 +685,8 @@ def _accumulate(
             "FDA_regulatory_approvals": [],
             "scores": [],
             "evidence_texts": [],
+            "qualifiers": {},
+            "qualifier_scores": {},
         },
     )
     agg["sets"].append(set_id)
@@ -658,6 +696,12 @@ def _accumulate(
     evidence = pipe_safe_text(evidence_text)
     if evidence:
         agg["evidence_texts"].append(evidence)
+    for field, value in (qualifier_fields or {}).items():
+        score = (qualifier_scores or {}).get(field, (0.0, value))
+        previous = agg["qualifier_scores"].get(field)
+        if previous is None or score > previous:
+            agg["qualifier_scores"][field] = score
+            agg["qualifiers"][field] = value
 
 
 def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
@@ -673,7 +717,9 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         object_name=agg["object_name"],
         object_category=agg["object_category"],
         disease_context_text=agg.get("disease_context_text", ""),
+        assertion_context="contraindication",
         evidence_text=sorted_pipe(agg.get("evidence_texts", [])),
+        **agg.get("qualifiers", {}),
         supporting_spl_sets=sorted_pipe(dailymed_set_url(set_id) for set_id in agg["sets"]),
         supporting_spl_documents=sorted_pipe(dailymed_document_url(doc_id) for doc_id in agg["docs"]),
         supporting_spl_evidence=spl_evidence_pipe(agg["sets"], agg["docs"]),
