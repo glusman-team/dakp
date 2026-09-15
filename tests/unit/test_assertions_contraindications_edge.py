@@ -130,7 +130,7 @@ class _BlankNER(DiseaseNER):
     """A backend that extracts a single whitespace-only span (to exercise the blank-skip)."""
 
     def extract(self, text: str) -> list[Mention]:
-        return [Mention(text="   ", start=0, end=3, type="disease", score=1.0)]
+        return [Mention(text="   ", start=0, end=3, type="Disease", score=1.0)]
 
 
 def _ctx(tmp_path: Path, params: Mapping[str, Any]) -> TaskContext:
@@ -984,7 +984,7 @@ def test_legacy_tuple_item_classifies_by_section_default() -> None:
     dedicated 34070-3 section: evidence is the whole mined text, and the mention is accepted
     on section context even when the sentence carries no explicit trigger word."""
     text = "Avoid use in asthma."
-    mention = Mention(text="asthma", start=13, end=19, type="disease", score=1.0)
+    mention = Mention(text="asthma", start=13, end=19, type="Disease", score=1.0)
     decision = _classify_mention(("SET-A", "DOC-A", text), mention)
     assert decision.accepted
     assert decision.trigger == "contraindication_section"
@@ -1004,10 +1004,10 @@ def test_work_item_evidence_resolves_spans_and_falls_back() -> None:
         (EvidenceSpan(0, 12, 0, 12, "First clean."), EvidenceSpan(13, 32, 40, 59, "Second with asthma.")),
     )
     # Mention inside the SECOND joined span: the first span is skipped without overlap.
-    in_second = Mention(text="asthma", start=25, end=31, type="disease", score=1.0)
+    in_second = Mention(text="asthma", start=25, end=31, type="Disease", score=1.0)
     assert _work_item_evidence(item, in_second) == "Second with asthma."
     # Mention past every span: falls back to the full source text.
-    orphan = Mention(text="asthma", start=33, end=39, type="disease", score=1.0)
+    orphan = Mention(text="asthma", start=33, end=39, type="Disease", score=1.0)
     assert _work_item_evidence(item, orphan) == source
     # Legacy tuple items carry no spans: the whole mined text is the evidence.
     assert _work_item_evidence(("SET-A", "DOC-A", " plain text "), in_second) == "plain text"
@@ -1017,10 +1017,10 @@ def test_mention_local_span_maps_overlap_and_returns_none_without_any() -> None:
     """A mapped mention yields ``(sentence, local start, local end, source start)`` offsets;
     a mention overlapping NO span maps to None so qualifier logic can skip it safely."""
     item = ContraWorkItem("SET-A", "DOC-A", "xxxx asthma", "src asthma text", (EvidenceSpan(5, 11, 20, 26, "asthma"),))
-    overlapping = Mention(text="asthma", start=5, end=11, type="disease", score=1.0)
+    overlapping = Mention(text="asthma", start=5, end=11, type="Disease", score=1.0)
     assert _mention_local_span(item, overlapping) == ("asthma", 0, 6, 20)
     # Disjoint mention: the loop finds no overlapping span -> None.
-    disjoint = Mention(text="xxxx", start=0, end=4, type="disease", score=1.0)
+    disjoint = Mention(text="xxxx", start=0, end=4, type="Disease", score=1.0)
     assert _mention_local_span(item, disjoint) is None
 
 
@@ -1029,8 +1029,8 @@ def test_classify_mentions_keeps_unmapped_mentions_out_of_qualifier_grouping() -
     per-sentence patient-clause grouping (there is no sentence to group on)."""
     spans = (EvidenceSpan(0, 7, 30, 37, "asthma."),)
     item = ContraWorkItem("SET-A", "DOC-A", "asthma. diabetes.", "asthma. diabetes.", spans)
-    mapped = Mention(text="asthma", start=0, end=6, type="disease", score=1.0)
-    unmapped = Mention(text="diabetes", start=8, end=16, type="disease", score=1.0)
+    mapped = Mention(text="asthma", start=0, end=6, type="Disease", score=1.0)
+    unmapped = Mention(text="diabetes", start=8, end=16, type="Disease", score=1.0)
     decisions = _classify_mentions(item, [mapped, unmapped])
     # Both keep their section-context acceptance; the unmapped one just skips grouping.
     assert [(d.accepted, d.trigger, d.context_text) for d in decisions] == [
@@ -1117,8 +1117,8 @@ def test_context_qualifier_skipped_when_context_normalizes_blank() -> None:
     sentence = "Contraindicated for treatment of --- in patients with asthma."
     spans = (EvidenceSpan(0, len(sentence), 0, len(sentence), sentence),)
     item = ContraWorkItem("SET-A", "DOC-A", sentence, sentence, spans)
-    context = Mention(text="---", start=33, end=36, type="disease", score=1.0)
-    asthma = Mention(text="asthma", start=54, end=60, type="disease", score=1.0)
+    context = Mention(text="---", start=33, end=36, type="Disease", score=1.0)
+    asthma = Mention(text="asthma", start=54, end=60, type="Disease", score=1.0)
     decisions = _classify_mentions(item, [context, asthma])
     assert [(d.accepted, d.trigger, d.context_text) for d in decisions] == [(True, "contraindicated", ""), (True, "contraindicated", "")]
 
@@ -1152,7 +1152,7 @@ def test_accumulate_skips_blank_evidence_text() -> None:
     """Blank evidence must not enter the evidence union — the sorted-pipe evidence column may
     only contain real sentences, while support/scores still accumulate."""
     aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
-    mention = Mention(text="asthma", start=0, end=6, type="disease", score=0.9)
+    mention = Mention(text="asthma", start=0, end=6, type="Disease", score=0.9)
     _accumulate(aggregated, "SET-A", "DOC-A", "DrugX", "UNII:X", "asthma", mention, evidence_text="   ")
     agg = next(iter(aggregated.values()))
     assert agg["evidence_texts"] == []
@@ -1165,7 +1165,7 @@ def test_accumulate_sanitizes_pipe_delimiters_in_label_prose() -> None:
     DailyMed warnings prose crashed ``shape_contraindication_tables`` when the pipe reached the
     sorted-pipe evidence encoder). Free-form text is sanitized, not rejected."""
     aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
-    mention = Mention(text="asthma", start=0, end=6, type="disease", score=0.9)
+    mention = Mention(text="asthma", start=0, end=6, type="Disease", score=0.9)
     _accumulate(
         aggregated,
         "SET-A",

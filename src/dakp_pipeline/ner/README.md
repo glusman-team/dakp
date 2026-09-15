@@ -36,9 +36,11 @@ Benchmarked on a hand-labeled fixture (34 cases / 42 gold spans, `tests/eval/`):
 
 > These numbers were measured with older checkpoints (`gliner_large-v2.5`, then the
 > `SkyeAv/drug-approvals-gliner-small-v2.1` v1 fine-tune). The production default is now the
-> gliner2-native large span checkpoint `fastino/gliner2-large-v1` (schema-conditioned zero-shot
-> `disease`/`phenotype` labels). It improved the model-only fixture F1 from 0.651 to 0.675 while
-> retaining the composite's 1.000 F1. Re-run
+> gliner2-native large span checkpoint `fastino/gliner2-large-v1`, prompted with the
+> Biolink-category label vocabulary in `MODEL_LABELS` (see below). It improved model-only F1
+> from 0.651 to 0.675 while preserving composite F1 1.000. The gold fixture's `type` values are
+> canonical `Mention.type` strings (`Disease` / `PhenotypicFeature`) and only the **object**
+> channel is scored — qualifier mentions have no gold span by policy. Re-run
 > `tests/eval/benchmark_ner.py --model <checkpoint>` to compare a replacement reproducibly.
 
 * **Offline mode (default):** curated gazetteer + deterministic lexical matcher. Zero heavy deps,
@@ -53,10 +55,10 @@ Benchmarked on a hand-labeled fixture (34 cases / 42 gold spans, `tests/eval/`):
   overlaps, and spans covering several gazetteer terms (a conjunction) go to the gazetteer.
   Model spans whose normalized surface is a population descriptor (e.g. `women of childbearing
   potential`) are dropped, leading hedge tokens (`recent`, `a history of`) are trimmed, and spans
-  a hard window split cuts across a phrase boundary are re-joined. GLiNER is natively
-  **multi-entity** and schema-conditioned: the shipped checkpoint extracts the zero-shot
-  `disease` and `phenotype` labels, so one call requests both labels and preserves the model's
-  returned type. The gazetteer remains
+  a hard window split cuts across a phrase boundary are re-joined — **object channel only** (see
+  below). GLiNER2 is natively **multi-entity** and schema-conditioned: ONE call per window
+  carries the whole `MODEL_LABELS` vocabulary and every returned span is routed by its canonical
+  type. The gazetteer remains
   the type authority whenever a span contests a gazetteer term, and Tablassert resolves the
   ontology concept downstream. GLiNER2 is a
   core, lazy-imported dependency (`gliner2`, loaded lazily via `AutoExtractor`). GLiNER2 silently truncates inputs past `config.max_len` word tokens (4096 on the
@@ -64,6 +66,43 @@ Benchmarked on a hand-labeled fixture (34 cases / 42 gold spans, `tests/eval/`):
   sentence-aware, exact-substring windows of ≤ that budget (`chunk_words` kwarg overrides it) and
   span offsets are remapped back into full-text coordinates — no mention past the truncation
   point is lost.
+
+## Label vocabulary and the two channels
+
+`MODEL_LABELS` is a `{label: description}` mapping handed to gliner2 verbatim as `entity_types`
+(`MODEL_LABEL_NAMES` is the same vocabulary without descriptions). gliner2 renders each
+description into the prompt as `[DESCRIPTION] <label>: <description>`, so the descriptions are
+part of the model input, not documentation: they say *what span to draw* with inline positive
+exemplars, are ≤220 chars, and are deterministic module constants (the mention-cache fingerprint
+folds them). Labels are Biolink category IDs; measured on the shipped checkpoint they fix real
+mistypes (plain `disease`/`phenotype` called "pregnancy" a disease at 0.82).
+
+| channel   | model label                                | `Mention.type`                     | `notes`                       |
+| --------- | ------------------------------------------ | ---------------------------------- | ----------------------------- |
+| object    | `biolink:Disease`                          | `Disease`                          | `exact` / `gliner` / `gliner:extends` |
+| object    | `biolink:PhenotypicFeature`                | `PhenotypicFeature`                | `exact` / `gliner` / `gliner:extends` |
+| qualifier | `biolink:AnatomicalEntity`                 | `AnatomicalEntity`                 | `gliner:qualifier`            |
+| qualifier | `biolink:BiologicalSex`                    | `BiologicalSex`                    | `gliner:qualifier`            |
+| qualifier | `biolink:PopulationOfIndividualOrganisms`  | `PopulationOfIndividualOrganisms`  | `gliner:qualifier`            |
+| qualifier | `biolink:OrganismTaxon`                    | `OrganismTaxon`                    | `gliner:qualifier`            |
+| qualifier | `frequency_qualifier`                      | `frequency_qualifier`              | `gliner:qualifier`            |
+| qualifier | `temporal_context_qualifier`               | `temporal_context_qualifier`       | `gliner:qualifier`            |
+| qualifier | `temporal_interval_qualifier`              | `temporal_interval_qualifier`      | `gliner:qualifier`            |
+
+* **Object channel** (`OBJECT_TYPES`) runs the full merge above and the use-specific acceptance
+  floors.
+* **Qualifier channel** (`QUALIFIER_TYPES`) is strip-aligned spans only, accepted at
+  `QUALIFIER_ACCEPT_THRESHOLD` (0.5), deduped on `(start, end, type)`. No hedge trimming (it
+  would strip the informative head off `history of hypertension`), no gazetteer merge, no
+  population filter (it would delete exactly the surfaces the population/sex labels extract).
+  Cross-label overlap is allowed, so a qualifier coexists with the maximal object span.
+* `disease_context_qualifier` has **no label of its own**: it shares `biolink:Disease` and is
+  derived from the object channel by the contraindication shaper.
+* `MENTION_TYPES = OBJECT_TYPES + QUALIFIER_TYPES` is closed: a label canonicalizing outside it
+  is dropped at the span adapter, so an unmodelled qualifier can never reach a shaper.
+* `extract()` / `extract_batch()` therefore return **mixed channels**. Shapers narrow to the
+  object channel with `dakp_pipeline.assertions.object_mentions`; qualifier mentions are not
+  consumed as objects (attaching them to the objects they qualify is a separate step).
 
 ## Confidence and abstention
 

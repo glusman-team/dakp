@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from dakp_pipeline.ner.dictionary import CONTRAINDICATION_DISEASE_TYPES, TYPE_DISEASE, TYPE_PHENOTYPE, Gazetteer
+from dakp_pipeline.ner.dictionary import MENTION_TYPES, OBJECT_TYPES, QUALIFIER_TYPES, TYPE_DISEASE, TYPE_PHENOTYPE, Gazetteer
 from dakp_pipeline.ner.ner import (
     CONTRAINDICATION_ACCEPT_THRESHOLD,
     DEFAULT_ACCEPT_THRESHOLD,
@@ -20,7 +20,9 @@ from dakp_pipeline.ner.ner import (
     EMBEDDED_GAZETTEER,
     GLINER_GENERATION_FLOOR,
     INDICATION_ACCEPT_THRESHOLD,
+    MODEL_LABEL_NAMES,
     MODEL_LABELS,
+    QUALIFIER_ACCEPT_THRESHOLD,
     STRICT_GAZETTEER_EXTENSION_THRESHOLD,
     DiseaseNER,
     Mention,
@@ -35,12 +37,14 @@ _ONTOLOGY_TSV = _FIXTURE_ROOT / "ontology" / "disease_map.tsv"
 # --- constants + embedded gazetteer --------------------------------------------
 
 
-def test_defaults_and_contraindication_types() -> None:
-    # gliner2-native boundary checkpoint: the old v1 fine-tune is not loadable by gliner2
-    # (config schema + head layout differ); re-fine-tune is a recorded follow-up.
+def test_defaults_and_mention_type_vocabulary() -> None:
+    # The compatible gliner2 large span checkpoint improves the zero-shot fixture while the
+    # gazetteer-first composite retains its score; the benchmark records the comparison.
     assert DEFAULT_MODEL == "fastino/gliner2-large-v1"
-    # The shipped checkpoint extracts separate disease and phenotype labels (zero-shot).
-    assert MODEL_LABELS == ("disease", "phenotype")
+    # The label vocabulary is a label -> description mapping covering BOTH channels in one call;
+    # the names-only view is the same vocabulary in the same (prompt) order.
+    assert isinstance(MODEL_LABELS, dict)
+    assert tuple(MODEL_LABELS) == MODEL_LABEL_NAMES
     # The generation floor is distinct from the precision-first indication profile. The generic
     # aliases retain the recall-first contraindication profile for compatibility.
     assert GLINER_GENERATION_FLOOR == 0.35
@@ -50,8 +54,15 @@ def test_defaults_and_contraindication_types() -> None:
     assert DEFAULT_ACCEPT_THRESHOLD == CONTRAINDICATION_ACCEPT_THRESHOLD
     assert DEFAULT_THRESHOLD <= INDICATION_ACCEPT_THRESHOLD
     assert DEFAULT_THRESHOLD <= CONTRAINDICATION_ACCEPT_THRESHOLD
-    assert CONTRAINDICATION_DISEASE_TYPES == (TYPE_DISEASE, TYPE_PHENOTYPE)
-    # The embedded gazetteer is non-empty and every term is typed disease/phenotype.
+    # Qualifiers are asserted at their own, higher floor (they narrow a true object edge).
+    assert QUALIFIER_ACCEPT_THRESHOLD == 0.5
+    assert GLINER_GENERATION_FLOOR < QUALIFIER_ACCEPT_THRESHOLD
+    # Object types are the exact tablassert.biolink.Categories values; the mention vocabulary is
+    # the two channels concatenated, object channel first.
+    assert OBJECT_TYPES == (TYPE_DISEASE, TYPE_PHENOTYPE) == ("Disease", "PhenotypicFeature")
+    assert len(QUALIFIER_TYPES) == 7
+    assert MENTION_TYPES == OBJECT_TYPES + QUALIFIER_TYPES
+    # The embedded gazetteer is non-empty and every term is an object-channel type.
     assert EMBEDDED_GAZETTEER
     assert set(EMBEDDED_GAZETTEER.values()) == {TYPE_DISEASE, TYPE_PHENOTYPE}
 

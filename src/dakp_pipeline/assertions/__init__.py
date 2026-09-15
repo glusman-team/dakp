@@ -1,16 +1,19 @@
 """Assertion-shaping stage: join extracted tables into evidence-rich assertion TSVs.
 
-Shared helpers (disease-map lookup, provenance constants, row builder) live here so each
-shaper stays a thin, auditable join. Disease mapping is a fast exact-match *dictionary
-baseline*; canonical fullmap/Tablassert resolution is delegated to Tablassert.
+Shared helpers (disease-map lookup, provenance constants, row builder, the mention-channel
+filter) live here so each shaper stays a thin, auditable join. Disease mapping is a fast
+exact-match *dictionary baseline*; canonical fullmap/Tablassert resolution is delegated to
+Tablassert.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from dakp_pipeline.io import schemas
+from dakp_pipeline.ner.dictionary import OBJECT_TYPES
+from dakp_pipeline.ner.lexical import Mention
 
 # Translator provenance constants (Translator provenance conventions).
 INFORES_DAKP = "infores:multiomics-drugapprovals"
@@ -47,7 +50,30 @@ def join_pipe(*parts: str) -> str:
     return "|".join(p for p in parts if p)
 
 
-__all__ = ["AT_MANUAL", "INFORES_DAILYMED", "INFORES_DAKP", "INFORES_FAERS", "KL_ASSERTION", "join_pipe", "match_diseases", "row_for"]
+def object_mentions(mentions: Iterable[Mention]) -> list[Mention]:
+    """The object-channel subset of ``mentions`` — the only ones that may become an assertion object.
+
+    :meth:`~dakp_pipeline.ner.ner.DiseaseNER.extract` returns MIXED channels: alongside
+    ``Disease`` / ``PhenotypicFeature`` objects it emits qualifier mentions (anatomical site, sex,
+    population, taxon, frequency, temporal) that *describe* an object. Asserting a qualifier as an
+    object would emit nonsense edges such as ``contraindicated_in women``, so every shaper narrows
+    its mention iteration through here. Qualifier mentions are dropped, not reshaped: attaching
+    them to the objects they qualify is a separate concern.
+    """
+    return [mention for mention in mentions if mention.type in OBJECT_TYPES]
+
+
+__all__ = [
+    "AT_MANUAL",
+    "INFORES_DAILYMED",
+    "INFORES_DAKP",
+    "INFORES_FAERS",
+    "KL_ASSERTION",
+    "join_pipe",
+    "match_diseases",
+    "object_mentions",
+    "row_for",
+]
 
 # Shared evidence helpers (NDA normalization, SPL-support joining, provenance assembly) live in
 # :mod:`dakp_pipeline.assertions.evidence`; import them from there directly.

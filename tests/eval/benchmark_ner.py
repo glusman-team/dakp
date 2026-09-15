@@ -12,10 +12,13 @@ Approaches benchmarked (all via the ONE ``DiseaseNER`` backend in different mode
                      (gazetteer anchors high-precision spans; GLiNER fills OOV recall).
 
 Scoring is span-level, micro-averaged: a prediction is a true positive only if its
-``(start, end, type)`` exactly matches a gold span. Run with::
+``(start, end, type)`` exactly matches a gold span. Gold ``type`` values are the canonical
+``Mention.type`` strings (``Disease`` / ``PhenotypicFeature``), and only the **object** channel
+is scored: the backend also emits qualifier mentions (population, sex, temporal, ...) that the
+gold policy deliberately annotates as no-span, so they are filtered out before scoring.
+Run with::
 
-    uv run python tests/eval/benchmark_ner.py            # default checkpoint
-    uv run python tests/eval/benchmark_ner.py --model fastino/gliner2-large-v1 --sweep
+    uv run python tests/eval/benchmark_ner.py            # all runnable approaches
     uv run python tests/eval/benchmark_ner.py --json out.json
 
 This script is an evaluation artifact: it is NOT collected by pytest (filename is not
@@ -32,12 +35,14 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from dakp_pipeline.ner.dictionary import OBJECT_TYPES
 from dakp_pipeline.ner.ner import (
     DEFAULT_MODEL,
     EMBEDDED_GAZETTEER,
     GLINER_GENERATION_FLOOR,
     INDICATION_ACCEPT_THRESHOLD,
     STRICT_GAZETTEER_EXTENSION_THRESHOLD,
+    DiseaseNER,
 )
 
 HERE = Path(__file__).resolve().parent
@@ -78,6 +83,17 @@ class Pred:
 Predictor = Callable[[str], list[Pred]]
 
 
+def _object_preds(ner: DiseaseNER, text: str) -> list[Pred]:
+    """Object-channel predictions only — the channel the gold fixture annotates.
+
+    ``DiseaseNER.extract`` returns mixed channels; qualifier mentions (population, sex,
+    temporal, frequency, ...) have no gold counterpart by policy ("Population descriptors ...
+    get no span"), so scoring them would count every correct qualifier as a false positive and
+    make the numbers incomparable with the recorded ``benchmark_results.json`` baseline.
+    """
+    return [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text) if m.type in OBJECT_TYPES]
+
+
 # --- gold loading --------------------------------------------------------------
 
 
@@ -107,7 +123,7 @@ def gazetteer_predictor() -> Predictor:
     from dakp_pipeline.ner.ner import DiseaseNER
 
     ner = DiseaseNER(offline=True, gazetteer=GAZETTEER)
-    return lambda text: [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text)]
+    return lambda text: _object_preds(ner, text)
 
 
 def gliner_predictor(threshold: float = GLINER_GENERATION_FLOOR, accept_threshold: float | None = None, model_id: str = DEFAULT_MODEL) -> Predictor:
@@ -121,7 +137,7 @@ def gliner_predictor(threshold: float = GLINER_GENERATION_FLOOR, accept_threshol
         threshold=threshold,
         accept_threshold=accept_threshold if accept_threshold is not None else threshold,
     )
-    return lambda text: [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text)]
+    return lambda text: _object_preds(ner, text)
 
 
 def composite_predictor(
@@ -138,7 +154,7 @@ def composite_predictor(
         accept_threshold=accept_threshold if accept_threshold is not None else threshold,
         strict_extension_threshold=STRICT_GAZETTEER_EXTENSION_THRESHOLD,
     )
-    return lambda text: [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text)]
+    return lambda text: _object_preds(ner, text)
 
 
 # --- scoring -------------------------------------------------------------------
