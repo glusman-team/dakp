@@ -168,6 +168,8 @@ QUALIFIER_NOTES = "gliner:qualifier"
 #: existing object assertion, so a wrong qualifier silently distorts a true edge, and 0.5 is the
 #: point at which the measured qualifier labels were reliable.
 QUALIFIER_ACCEPT_THRESHOLD = 0.5
+CONTEXT_ATTRIBUTE_THRESHOLD = 0.5
+CONTEXT_ATTRIBUTE_GROUP = "assertion_context"
 #: Lowest model score retained for merge consideration. This is deliberately a generation
 #: floor, not a production operating point: the specificity merge needs to see low-scoring
 #: specific spans before a use-specific acceptance policy decides whether to assert them.
@@ -396,6 +398,14 @@ def _strip_aligned(window: str, start: int, end: int) -> tuple[int, int]:
     return start, end
 
 
+def _context_from_attributes(entry: Mapping[str, Any]) -> tuple[str, float]:
+    raw = entry.get(CONTEXT_ATTRIBUTE_GROUP, [])
+    if not isinstance(raw, list):
+        raw = [raw] if isinstance(raw, Mapping) else []
+    candidates = [(str(item.get("label", "")), float(item.get("confidence", 0.0))) for item in raw if isinstance(item, Mapping) and item.get("label")]
+    return max(candidates, key=lambda item: (item[1], item[0]), default=("", 0.0))
+
+
 def _spans_from_result(result: Mapping[str, Any], window: str) -> list[_ModelSpan]:
     """Flatten one gliner2 result dict into window-relative :class:`_ModelSpan` candidates.
 
@@ -417,7 +427,12 @@ def _spans_from_result(result: Mapping[str, Any], window: str) -> list[_ModelSpa
             start, end = _strip_aligned(window, int(entry["start"]), int(entry["end"]))
             if start >= end:
                 continue
-            spans.append(_ModelSpan(start=start, end=end, type=etype, score=float(entry["confidence"])))
+            context_model, context_score = _context_from_attributes(entry)
+            spans.append(
+                _ModelSpan(
+                    start=start, end=end, type=etype, score=float(entry["confidence"]), context_model=context_model, context_model_score=context_score
+                )
+            )
     return spans
 
 
@@ -446,6 +461,8 @@ class _ModelSpan:
     end: int
     type: str
     score: float
+    context_model: str = ""
+    context_model_score: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -793,6 +810,7 @@ class DiseaseNER:
         self._strict_extension_threshold = strict_extension_threshold
         self._model: Any = None
         self._gpu_lock_fd: int | None = None
+        self._schema: Any = None
 
     @classmethod
     def for_indications(cls, **kwargs: Any) -> DiseaseNER:
@@ -865,14 +883,25 @@ class DiseaseNER:
         windows: list[tuple[int, int, str]] = []
         for text_index, text in active:
             windows.extend((text_index, start, window) for start, window in _windows(text, budget))
-        raw_batches = model.batch_extract_entities(
-            [window for _text_index, _start, window in windows],
-            self._model_labels,
-            batch_size=self._inference_batch_size,
-            threshold=self._threshold,
-            include_confidence=True,
-            include_spans=True,
-        )
+        texts = [window for _text_index, _start, window in windows]
+        if hasattr(model, "batch_extract"):
+            raw_batches = model.batch_extract(
+                texts,
+                self._schema_for_model(model),
+                batch_size=self._inference_batch_size,
+                threshold=self._threshold,
+                include_confidence=True,
+                include_spans=True,
+            )
+        else:
+            raw_batches = model.batch_extract_entities(
+                texts,
+                self._model_labels,
+                batch_size=self._inference_batch_size,
+                threshold=self._threshold,
+                include_confidence=True,
+                include_spans=True,
+            )
         object_spans: dict[int, list[list[_ModelSpan]]] = {index: [] for index, _text in active}
         qualifier_spans: dict[int, list[_ModelSpan]] = {index: [] for index, _text in active}
         for (text_index, window_start, window), raw in zip(windows, raw_batches, strict=True):
@@ -896,6 +925,26 @@ class DiseaseNER:
         return output
 
     # -- production model (lazy) -----------------------------------------------
+    def _schema_for_model(self, model: Any) -> Any:
+        if self._schema is None:
+            from gliner2.inference.schema import AttributeGroup  # type: ignore[import-not-found]
+
+            self._schema = (
+                model.create_schema()
+                .entities(self._model_labels)
+                .entity_attributes(
+                    {
+                        CONTEXT_ATTRIBUTE_GROUP: AttributeGroup(
+                            ["indication", "contraindication", "prevention", "observed_prevention"],
+                            multi_label=True,
+                            threshold=CONTEXT_ATTRIBUTE_THRESHOLD,
+                            qualify_labels=True,
+                        )
+                    }
+                )
+            )
+        return self._schema
+
     def _load_model(self) -> Any:
         if self._model is None:
             stats(logger, "ner_model_load", model_id=self._model_id)
@@ -970,7 +1019,10 @@ class DiseaseNER:
         object_spans_by_window: list[list[_ModelSpan]] = []
         qualifier_spans: list[_ModelSpan] = []
         for window_start, window in windows:
-            raw = model.extract_entities(window, self._model_labels, threshold=self._threshold, include_confidence=True, include_spans=True)
+            if hasattr(model, "extract"):
+                raw = model.extract(window, self._schema_for_model(model), threshold=self._threshold, include_confidence=True, include_spans=True)
+            else:
+                raw = model.extract_entities(window, self._model_labels, threshold=self._threshold, include_confidence=True, include_spans=True)
             objects, qualifiers = self._channel_spans(text, _spans_from_result(raw, window), window_start)
             object_spans_by_window.append(objects)
             qualifier_spans.extend(qualifiers)
@@ -997,9 +1049,27 @@ class DiseaseNER:
         for span in spans:
             start, end = window_start + span.start, window_start + span.end
             if span.type not in OBJECT_TYPES:
-                qualifiers.append(_ModelSpan(start=start, end=end, type=span.type, score=span.score))
+                qualifiers.append(
+                    _ModelSpan(
+                        start=start,
+                        end=end,
+                        type=span.type,
+                        score=span.score,
+                        context_model=span.context_model,
+                        context_model_score=span.context_model_score,
+                    )
+                )
             elif normalize_text(text[start:end]) not in _POPULATION_PHRASES:
-                objects.append(_ModelSpan(start=start, end=end, type=span.type, score=span.score))
+                objects.append(
+                    _ModelSpan(
+                        start=start,
+                        end=end,
+                        type=span.type,
+                        score=span.score,
+                        context_model=span.context_model,
+                        context_model_score=span.context_model_score,
+                    )
+                )
         return objects, qualifiers
 
     def _gazetteer_qualifier_mentions(self, text: str) -> list[Mention]:
@@ -1067,6 +1137,8 @@ class DiseaseNER:
                     score=span.score,
                     normalized=normalize_text(surface),
                     notes=QUALIFIER_NOTES,
+                    context_model=span.context_model,
+                    context_model_score=span.context_model_score,
                 )
             )
         return mentions
@@ -1097,7 +1169,16 @@ class DiseaseNER:
             start, end = bounds
             if normalize_text(text[start:end]) in _POPULATION_PHRASES:
                 continue
-            trimmed.append(_ModelSpan(start=start, end=end, type=span.type, score=span.score))
+            trimmed.append(
+                _ModelSpan(
+                    start=start,
+                    end=end,
+                    type=span.type,
+                    score=span.score,
+                    context_model=span.context_model,
+                    context_model_score=span.context_model_score,
+                )
+            )
         return trimmed
 
     def _emit(self, text: str, gazetteer_mentions: list[Mention], candidates: list[_Candidate]) -> list[Mention]:
@@ -1134,6 +1215,8 @@ class DiseaseNER:
                     score=span.score,
                     normalized=normalize_text(surface),
                     notes="gliner:extends" if supersedes else "gliner",
+                    context_model=span.context_model,
+                    context_model_score=span.context_model_score,
                 )
             )
         kept = [mention for index, mention in enumerate(gazetteer_mentions) if index not in superseded]
@@ -1170,6 +1253,8 @@ def extract_contraindication_diseases(text: str, ner: DiseaseNER | None = None) 
 
 
 __all__ = [
+    "CONTEXT_ATTRIBUTE_GROUP",
+    "CONTEXT_ATTRIBUTE_THRESHOLD",
     "CONTRAINDICATION_ACCEPT_THRESHOLD",
     "DEFAULT_ACCEPT_THRESHOLD",
     "DEFAULT_MODEL",
