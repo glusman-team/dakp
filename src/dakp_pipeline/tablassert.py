@@ -97,9 +97,15 @@ unnameable categories when ``avoid`` is set, and ``--qc`` fails on any edge demo
 edge fields and deterministically aggregates distinct values across collision merges as sorted
 pipe-delimited strings while removing ``--no-original``; nothing else in the emitted config
 changes, only resolved KG content.
+19.0.0 grants DAKP's sparse qualifier stack
+(``anatomical_context_qualifier``, ``sex_qualifier``, ``population_context_qualifier``,
+``frequency_qualifier``, ``temporal_context_qualifier``) to the pinned classes via
+``CLASS_FIELD_OVERRIDES`` (SkyeAv/Tablassert#188) and moves the ``tablassert`` console script
+behind the optional ``[cli]`` extra with logging behind ``[log]``.
 Fullmaps must
-be ``tablassert.fullmap.v5`` redb files — the on-disk format since Tablassert 8.2, unchanged
-in 13.0; older ones (v1-v4) are rejected on read.
+be ``tablassert.fullmap.v6`` redb files — 19.0.0 rebased level-one normalization onto stemmed,
+deduped, byte-sorted tokens, changing the RECORDS key space; older ones (v1-v5) are rejected on
+read.
 
 The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it is
 on ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout override (the
@@ -157,9 +163,10 @@ GRAPH_NAME = "DRUG_APPROVALS_KP"
 #: field, and Tablassert reads the fullmap path FROM this field on a graph build (the
 #: ``build-kg --fullmap`` flag was removed in Tablassert 8.1) — so :func:`generate`
 #: writes the real ``ctx.params["fullmap"]`` here for real runs. DAKP never downloads a fullmap.
-#: Tablassert reads only ``tablassert.fullmap.v5`` redb files (the on-disk format since
-#: Tablassert 8.2) — a fullmap built by 8.1 or older is rejected on read ("fullmap DB is
-#: outdated"); rebuild it with the installed ``tablassert build-fullmap``.
+#: Tablassert reads only ``tablassert.fullmap.v6`` redb files (the on-disk format since
+#: Tablassert 19.0.0) — a v5-or-older fullmap is rejected on read ("fullmap DB is
+#: outdated"); rebuild it with the installed ``tablassert build-fullmap``. v6 is not a relayout
+#: of v5: level-one keys are now stemmed/deduped/byte-sorted, so v5 keys can never be hit.
 FULLMAP_DEFAULT = ".fullmap"
 
 #: Edge identity fields declared as the Graph config's ``uuid_fields`` (Tablassert >= 16.0,
@@ -1536,8 +1543,8 @@ class TablassertRunner:
             msg = (
                 "a fullmap redb path is required for a real Tablassert handoff but none was provided: pass "
                 "`--fullmap <path>` to `dakp up` (DAKP no longer downloads a fullmap; build one with "
-                "`tablassert build-fullmap`). Tablassert reads only `tablassert.fullmap.v5` redb "
-                "files (the format since Tablassert 8.2) — a fullmap built by 8.1 or older must be "
+                "`tablassert build-fullmap`). Tablassert reads only `tablassert.fullmap.v6` redb "
+                "files (the format since Tablassert 19.0.0) — a v5-or-older fullmap must be "
                 "rebuilt"
             )
             raise RuntimeError(msg)
