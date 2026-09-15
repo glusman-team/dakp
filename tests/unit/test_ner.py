@@ -38,7 +38,7 @@ _ONTOLOGY_TSV = _FIXTURE_ROOT / "ontology" / "disease_map.tsv"
 def test_defaults_and_contraindication_types() -> None:
     # gliner2-native boundary checkpoint: the old v1 fine-tune is not loadable by gliner2
     # (config schema + head layout differ); re-fine-tune is a recorded follow-up.
-    assert DEFAULT_MODEL == "fastino/gliner2.5-base-v1"
+    assert DEFAULT_MODEL == "fastino/gliner2-large-v1"
     # The shipped checkpoint extracts separate disease and phenotype labels (zero-shot).
     assert MODEL_LABELS == ("disease", "phenotype")
     # The generation floor is distinct from the precision-first indication profile. The generic
