@@ -106,16 +106,30 @@ EXPECTED_SOURCES = {
     ],
 }
 
-# assertion table -> {qualifier slot: assertion column backing it}. Only tables whose columns carry
-# a qualifier entity get entries (see ``_TABLE_QUALIFIERS`` for the per-table justification). The
-# contraindication context qualifier rides Tablassert 15.1's ``CLASS_FIELD_OVERRIDES`` grant
-# (SkyeAv/Tablassert#120): the association classes ``OBJECT_CATEGORY_OVERRIDE`` pins for
-# ``regulatory_approvals`` do not natively declare ``disease_context_qualifier`` — the grant
-# keeps it on the edge anyway.
+# assertion table -> {qualifier slot: assertion column backing it}. Only tables whose writers
+# actually populate the backing columns get entries (see ``_TABLE_QUALIFIERS`` for the per-table
+# justification). The contraindication context qualifier rides Tablassert 15.1's
+# ``CLASS_FIELD_OVERRIDES`` grant (SkyeAv/Tablassert#120) and the five sparse-qualifier slots ride
+# 19.0's grant (SkyeAv/Tablassert#188): the association classes ``OBJECT_CATEGORY_OVERRIDE`` pins
+# for ``regulatory_approvals`` do not natively declare any of them — the grants keep them on the
+# edge anyway.
 EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
-    "approved_treats_assertions": {},
+    "approved_treats_assertions": {
+        "anatomical_context_qualifier": "anatomical_context_text",
+        "sex_qualifier": "sex_text",
+        "population_context_qualifier": "population_context_text",
+        "frequency_qualifier": "frequency_text",
+        "temporal_context_qualifier": "temporal_context_text",
+    },
     "faers_applied_to_treat_assertions": {},
-    "contraindication_assertions": {"disease_context_qualifier": "disease_context_text"},
+    "contraindication_assertions": {
+        "disease_context_qualifier": "disease_context_text",
+        "anatomical_context_qualifier": "anatomical_context_text",
+        "sex_qualifier": "sex_text",
+        "population_context_qualifier": "population_context_text",
+        "frequency_qualifier": "frequency_text",
+        "temporal_context_qualifier": "temporal_context_text",
+    },
 }
 
 # assertion table -> {annotation name: (assertion column it encodes, multivalued separator)}.
@@ -313,14 +327,15 @@ def test_table_config_qualifiers(table: str) -> None:
         # The encoding letter must address the backing assertion column.
         assert _column_at(table, entry["encoding"]) == backing
         assert entry["encoding"] == tablassert_configs.column_letter(table, backing)
-        if table == "contraindication_assertions":
-            assert entry["nullable"] is True
-            assert entry["prioritize"] == ["Disease"]
-            assert entry["avoid"] == category_avoid_list(["Disease"])
+        # Sparse by construction: a blank or unresolved cell keeps the edge, omitting the qualifier.
+        assert entry["nullable"] is True
+        guard = tablassert_configs._QUALIFIER_GUARD.get(entry["qualifier"])
+        if guard is not None:
+            assert entry["prioritize"] == list(guard)
+            assert entry["avoid"] == category_avoid_list(guard)
         else:
-            assert "nullable" not in entry
-            assert entry["prioritize"] == list(OBJECT_PRIORITIZE)
-            assert entry["avoid"] == category_avoid_list(OBJECT_PRIORITIZE)
+            assert "prioritize" not in entry
+            assert "avoid" not in entry
         # Qualifiers carry no CURIE guard: the avoid complement names every off-allow-list
         # category since Tablassert 18.1.0 (GenomicEntity included).
         assert "exclude_regex" not in entry
@@ -358,19 +373,27 @@ def test_qualifier_slots_are_valid_biolink_qualifiers() -> None:
             assert qualifier != "species_context_qualifier"
 
 
-def test_disease_context_qualifier_survives_the_pinned_association_classes() -> None:
-    # The contraindication table pins EntityToDiseaseAssociation / EntityToPhenotypicFeatureAssociation
-    # (for the ``regulatory_approvals`` grant), and Biolink declares ``disease_context_qualifier`` only on
-    # the chemical-to-disease lineage — the qualifier rides Tablassert 15.1's ``CLASS_FIELD_OVERRIDES``
-    # grant (SkyeAv/Tablassert#120) instead. Pin the grant here so a Tablassert downgrade (<15.1, or a
-    # release that drops the override) fails at TEST time rather than silently pruning the qualifier
-    # off every contraindication edge at build time.
+def test_qualifier_grants_survive_the_pinned_association_classes() -> None:
+    # The pinned classes are EntityToDiseaseAssociation / EntityToPhenotypicFeatureAssociation
+    # (pinned for the ``regulatory_approvals`` grant), and Biolink attaches every DAKP qualifier
+    # slot only to OTHER association classes — ``disease_context_qualifier`` rides Tablassert
+    # 15.1's ``CLASS_FIELD_OVERRIDES`` grant (SkyeAv/Tablassert#120) and the five sparse-qualifier
+    # slots ride 19.0's grant (SkyeAv/Tablassert#188) instead. Pin every grant here so a
+    # Tablassert downgrade fails at TEST time rather than silently pruning the qualifier stack
+    # off every edge at build time (prune_to_class would null each slot into the pruned column).
     from tablassert.biolink import CLASS_FIELD_OVERRIDES
 
+    granted = {
+        "disease_context_qualifier",
+        "anatomical_context_qualifier",
+        "sex_qualifier",
+        "population_context_qualifier",
+        "frequency_qualifier",
+        "temporal_context_qualifier",
+    }
     for pinned in ("EntityToDiseaseAssociation", "EntityToPhenotypicFeatureAssociation"):
-        assert "disease_context_qualifier" in CLASS_FIELD_OVERRIDES.get(pinned, frozenset()), (
-            f"{pinned} lost the disease_context_qualifier grant — the contraindication qualifier requires tablassert>=15.1"
-        )
+        missing = granted - CLASS_FIELD_OVERRIDES.get(pinned, frozenset())
+        assert not missing, f"{pinned} lost grant(s) {sorted(missing)} — the qualifier stack requires tablassert>=19.0.0"
 
 
 @pytest.mark.parametrize("table", TABLES)

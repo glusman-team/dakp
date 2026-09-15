@@ -39,9 +39,10 @@ The configs match the ACTUAL current Tablassert schema (verified against
   (:data:`GESTALT_RECORD_URL_TEMPLATE`), resolved by Tablassert on the final edges;
 * column-encoded ``statement.qualifiers`` where an assertion column carries the qualifier's entity
   (per-table :data:`_TABLE_QUALIFIERS`). A Tablassert qualifier is a node encoding resolved through
-  the fullmap alongside subject/object; the contraindication context qualifier is ``nullable``, so
-  a blank or unresolvable context omits only the qualifier rather than dropping the edge, and it
-  carries its own Disease-only category allow-list (narrower than the object's);
+  the fullmap alongside subject/object; every qualifier is ``nullable``, so a blank or
+  unresolvable cell omits only the qualifier rather than dropping the edge, and each slot carries
+  its own category allow-list when its Biolink range names a class
+  (:data:`_QUALIFIER_GUARD`; the type-ranged frequency/temporal slots carry none);
 * column-encoded evidence ``annotations`` (aggregated evidence columns carry ``split_by: "|"``
   so pipe-joined assertion cells emit as real JSON arrays, not joined scalars).
 
@@ -442,11 +443,13 @@ RIG_TARGET_FUTURE_CONSIDERATIONS: tuple[dict[str, str], ...] = (
     {
         "category": "qualifiers",
         "consideration": (
-            "disease_context_qualifier is emitted on contraindication edges via Tablassert's CLASS_FIELD_OVERRIDES grant "
-            "(SkyeAv/Tablassert#120), which is deliberately ahead of the pinned Biolink model: Biolink declares the slot only on "
-            "ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation, while these edges pin EntityToDisease/EntityToPhenotypicFeature "
-            "for the regulatory_approvals grant. Drop reliance on the grant once upstream Biolink widens disease_context_qualifier "
-            "to the entity-to-disease classes"
+            "DAKP's sparse qualifier stack (anatomical_context_qualifier, sex_qualifier, "
+            "population_context_qualifier, frequency_qualifier, temporal_context_qualifier) and the "
+            "contraindication disease_context_qualifier ride Tablassert's CLASS_FIELD_OVERRIDES grants "
+            "(SkyeAv/Tablassert#120, #188), which are deliberately ahead of the pinned Biolink model: Biolink "
+            "attaches these slots only to other association classes, while these edges pin "
+            "EntityToDisease/EntityToPhenotypicFeature for the regulatory_approvals grant. Drop reliance on the "
+            "grants once upstream Biolink widens the slots to the entity-to-disease classes"
         ),
     },
     {
@@ -905,38 +908,75 @@ OBJECT_PRIORITIZE = ("Disease", "PhenotypicFeature")
 OBJECT_CATEGORY_OVERRIDE: dict[str, str] = {"Disease": "EntityToDiseaseAssociation", "PhenotypicFeature": "EntityToPhenotypicFeatureAssociation"}
 
 
+# Per-slot category guard for qualifier node encodings: the soft ``prioritize`` list plus the
+# hard ``avoid`` complement emitted alongside it. Keys are exactly the class-ranged qualifier
+# slots whose Biolink range names a category the installed Tablassert ``Categories`` enum can
+# express. The two granted slots ABSENT here (``frequency_qualifier``: UO ``frequency value``
+# range; ``temporal_context_qualifier``: ``xsd:string`` ``time type`` range) are type-ranged,
+# not class-ranged — no ``Categories`` member names an honest allow-list for their values — so
+# they emit with NO category guard: the fullmap resolves what it can and ``nullable: true``
+# keeps the edge when nothing resolves.
+_QUALIFIER_GUARD: dict[str, tuple[str, ...]] = {
+    "disease_context_qualifier": ("Disease",),
+    "anatomical_context_qualifier": ("AnatomicalEntity",),
+    "sex_qualifier": ("BiologicalSex",),
+    "population_context_qualifier": ("PopulationOfIndividualOrganisms",),
+}
+
 # Per-table biolink statement qualifiers: (qualifier slot, backing assertion column). Emitted as
-# ``statement.qualifiers`` entries ONLY where a column actually carries the qualifier's entity.
-# Validity is two-layered: the slot must be a member of the installed Tablassert's Biolink
-# ``Qualifiers`` enum and the association class must support it. The second layer is met for the
-# contraindication context qualifier by Tablassert 15.1's ``CLASS_FIELD_OVERRIDES``
-# (SkyeAv/Tablassert#120): Biolink declares ``disease_context_qualifier`` on
-# ``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation`` ONLY, while
-# :data:`OBJECT_CATEGORY_OVERRIDE` pins ``EntityToDiseaseAssociation`` /
-# ``EntityToPhenotypicFeatureAssociation`` — the only classes carrying the
-# ``regulatory_approvals`` grant — so without the qualifier grant a contraindication edge
-# could carry the
-# approvals or the qualifier, never both (``prune_to_class`` would null the qualifier into the
-# pruned column). The grant is deliberately ahead of the pinned Biolink model; drop this note
-# once upstream Biolink widens the slot to the entity-to-disease classes.
+# ``statement.qualifiers`` entries ONLY where the table's writer actually populates the backing
+# column. Every entry is sparse — blank for the vast majority of rows — so every qualifier emits
+# ``nullable: true``: an absent or unresolved cell keeps the edge and omits only the qualifier
+# rather than dropping the row. Validity is two-layered: the slot must be a member of the
+# installed Tablassert's Biolink ``Qualifiers`` enum and survive ``prune_to_class`` on the pinned
+# classes. The second layer is met by Tablassert's ``CLASS_FIELD_OVERRIDES`` grants: 15.1
+# (#120) granted ``disease_context_qualifier`` (Biolink declares it only on the
+# chemical-to-disease lineage), and 19.0 (#188) granted the rest of DAKP's sparse qualifier
+# stack — ``anatomical_context_qualifier``, ``sex_qualifier``, ``population_context_qualifier``,
+# ``frequency_qualifier``, ``temporal_context_qualifier`` — to exactly the classes
+# :data:`OBJECT_CATEGORY_OVERRIDE` pins. Without those grants ``prune_to_class`` would null
+# each qualifier off the edge into the pruned column; with them the qualifier rides the edge on
+# the two pinned classes ahead of the pinned Biolink model.
 _TABLE_QUALIFIERS: dict[str, tuple[tuple[str, str], ...]] = {
-    # ``clinical_approval_status`` ("approved_for_condition") is the Biolink ClinicalApprovalStatusEnum
-    # ASSOCIATION slot, not a qualifier slot — no ``Qualifiers`` member expresses approval status, so
-    # it stays an annotation; FDA application numbers / SPL ids are provenance strings, not entities.
-    "approved_treats_assertions": (),
+    # DailyMed approved-treats rows: ``anatomical_context_text`` / ``sex_text`` /
+    # ``population_context_text`` / ``frequency_text`` / ``temporal_context_text`` are populated
+    # by the sentence-hosted qualifier attachment (``assertions/approved_treats.py`` via
+    # ``contexts.attach_qualifiers_with_scores``) — sparse, blank when a sentence carries no
+    # qualifier span. ``clinical_approval_status`` ("approved_for_condition") stays an
+    # annotation: it is the Biolink ClinicalApprovalStatusEnum ASSOCIATION slot, not a
+    # qualifier slot — no ``Qualifiers`` member expresses approval status — and FDA application
+    # numbers / SPL ids are provenance strings, not entities.
+    "approved_treats_assertions": (
+        ("anatomical_context_qualifier", "anatomical_context_text"),
+        ("sex_qualifier", "sex_text"),
+        ("population_context_qualifier", "population_context_text"),
+        ("frequency_qualifier", "frequency_text"),
+        ("temporal_context_qualifier", "temporal_context_text"),
+    ),
     # The indication (object) is the only disease on a FAERS row, so a ``disease_context_qualifier``
     # encoded from the object column just restates the object — biolink defines it as the condition
     # a relationship "took place" in, which only informs when it DIFFERS from the object. The
     # ``applied_to_treat`` predicate + ``knowledge_level: observation`` already carry the semantics.
     # The adverse event itself (FAERS ``effects``) is aggregated away and not part of the assertion
     # contract; it is an adverse reaction rather than a disease context, so it is not a substitute.
+    # The FAERS writer also populates none of the five sparse qualifier columns yet — a FAERS row
+    # has no sentence to host qualifier attachment — so this table declares NO qualifiers at all;
+    # wire slots here only once a writer actually populates their backing columns.
     "faers_applied_to_treat_assertions": (),
     # ``disease_context_text`` is a distinct disease from the contraindicated object only when the
     # extractor's explicit template classifier populated it; blank cells are valid and the qualifier
     # is emitted ``nullable``, so an unconditional contraindication keeps its edge minus only the
     # qualifier. Disease-only by design: medications belong in a future chemical-entity interaction
-    # assertion, not this slot.
-    "contraindication_assertions": (("disease_context_qualifier", "disease_context_text"),),
+    # assertion, not this slot. The same sentence-hosted attachment (``assertions/
+    # contraindications.py``) populates the five sparse qualifier columns on this table too.
+    "contraindication_assertions": (
+        ("disease_context_qualifier", "disease_context_text"),
+        ("anatomical_context_qualifier", "anatomical_context_text"),
+        ("sex_qualifier", "sex_text"),
+        ("population_context_qualifier", "population_context_text"),
+        ("frequency_qualifier", "frequency_text"),
+        ("temporal_context_qualifier", "temporal_context_text"),
+    ),
 }
 
 _GENERATE_OPERATION = "generate_tablassert_configs"
@@ -1039,10 +1079,13 @@ def table_config(table: str) -> dict[str, Any]:
     the hard allow-list guard computed by :func:`category_avoid_list` from the side's ``prioritize``
     tuple. Since Tablassert 18.1.0 the ``Categories`` enum names every category the fullmap emits
     (biolink mixins like ``GenomicEntity`` are first-class via ``CATEGORY_OVERRIDES``), so the
-    complement needs no CURIE-level stopgap. Qualifier values use their own category guard:
-    contraindication context is constrained
-    to ``Disease`` (not the object's broader Disease/PhenotypicFeature list), and is nullable so
-    absent or unresolved context omits only the qualifier rather than deleting the edge. A table
+    complement needs no CURIE-level stopgap. Qualifier values use their own per-slot category
+    guard (:data:`_QUALIFIER_GUARD`): class-ranged slots are constrained to their range's
+    category (``Disease`` for the contraindication context, ``AnatomicalEntity`` /
+    ``BiologicalSex`` / ``PopulationOfIndividualOrganisms`` for the sparse stack's class-ranged
+    slots), while the type-ranged slots (``frequency_qualifier``, ``temporal_context_qualifier``)
+    carry no guard. Every qualifier is ``nullable`` — sparse columns keep the edge when the cell
+    is blank or unresolved, omitting only the qualifier. A table
     with a :data:`_TABLE_SUBJECT_DENYLIST` entry additionally carries ``source.reindex`` ``ne``
     filters — one per :func:`_casing_variants` rendering of each entry — that drop those
     subject_text rows before entity resolution, and EVERY table carries the same ``ne`` filters for
@@ -1056,17 +1099,21 @@ def table_config(table: str) -> dict[str, Any]:
         if split_by is not None:  # multivalued Biolink slot: split the pipe-joined cell into a JSON array
             entry["split_by"] = split_by
         annotations.append(entry)
-    qualifiers = [
-        {
+    qualifiers: list[dict[str, Any]] = []
+    for qualifier, column in _TABLE_QUALIFIERS[table]:
+        entry: dict[str, Any] = {
             "qualifier": qualifier,
             "method": "column",
             "encoding": column_letter(table, column),
-            "nullable": table == "contraindication_assertions",
-            "prioritize": ["Disease"],
-            "avoid": category_avoid_list(("Disease",)),
+            # Sparse by construction: blank cells keep the edge and omit only the qualifier
+            # (Tablassert >= 15.1 ``nullable`` semantics).
+            "nullable": True,
         }
-        for qualifier, column in _TABLE_QUALIFIERS[table]
-    ]
+        guard = _QUALIFIER_GUARD.get(qualifier)
+        if guard is not None:  # class-ranged slots get the hard category allow-list complement
+            entry["prioritize"] = list(guard)
+            entry["avoid"] = category_avoid_list(guard)
+        qualifiers.append(entry)
     statement: dict[str, Any] = {
         "subject": {
             "method": "column",
