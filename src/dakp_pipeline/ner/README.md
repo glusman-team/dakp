@@ -36,16 +36,16 @@ Benchmarked on a hand-labeled fixture (34 cases / 42 gold spans, `tests/eval/`):
 
 > These numbers were measured with older checkpoints (`gliner_large-v2.5`, then the
 > `SkyeAv/drug-approvals-gliner-small-v2.1` v1 fine-tune). The production default is now the
-> gliner2-native boundary checkpoint `fastino/gliner2.5-base-v1` (schema-conditioned zero-shot
-> `disease`/`phenotype` labels); the v1 fine-tune is not loadable by gliner2 (config schema and
-> head layout differ) and re-fine-tuning it for gliner2 is a recorded follow-up. Re-run
-> `tests/eval/benchmark_ner.py` to re-measure.
+> gliner2-native large span checkpoint `fastino/gliner2-large-v1` (schema-conditioned zero-shot
+> `disease`/`phenotype` labels). It improved the model-only fixture F1 from 0.651 to 0.675 while
+> retaining the composite's 1.000 F1. Re-run
+> `tests/eval/benchmark_ner.py --model <checkpoint>` to compare a replacement reproducibly.
 
 * **Offline mode (default):** curated gazetteer + deterministic lexical matcher. Zero heavy deps,
   fully deterministic. Used by tests + offline runs. Bounded by its fixed vocabulary: it returns
   the generic head for qualified diseases (`hypertension` for `pulmonary hypertension`).
 * **Production mode (`offline=False`):** the same gazetteer anchors high-precision spans and
-  a GLiNER2 boundary checkpoint (`fastino/gliner2.5-base-v1`, loaded via
+  a GLiNER2 large span checkpoint (`fastino/gliner2-large-v1`, loaded via
   `gliner2.AutoExtractor`) fills out-of-gazetteer gaps when invoked on DailyMed
   sections. On overlap the **most specific span wins**: a model span that
   strictly contains a gazetteer span supersedes it (`pulmonary hypertension` over

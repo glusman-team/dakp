@@ -118,6 +118,25 @@ natively multi-entity (one `predict_entities` call scores every label — diseas
 here — and returns any number of spans per label). SciSpacy required two workarounds in this
 environment and still underperformed; it is dropped from the shipped extra.
 
+## GLiNER2 large checkpoint evaluation (2026-09-15)
+
+The requested large-model evaluation compared the default `fastino/gliner2-large-v1` (340M,
+DeBERTa-v3-large span architecture) with the former `fastino/gliner2.5-base-v1` (194M,
+DeBERTa-v3-base boundary architecture) through the production `DiseaseNER` path on the 34-case,
+42-span fixture. Both load through `gliner2.AutoExtractor` and preserve the gazetteer-first
+composite's perfect strict score; the large model improves the isolated zero-shot baseline.
+
+| checkpoint | GLiNER-only P/R/F1 | GLiNER-only TP/FP/FN | composite P/R/F1 |
+| --- | --- | --- | --- |
+| `fastino/gliner2.5-base-v1` | 0.659 / 0.643 / 0.651 | 27 / 14 / 15 | 1.000 / 1.000 / 1.000 |
+| `fastino/gliner2-large-v1` | **0.683 / 0.667 / 0.675** | **28 / 13 / 14** | 1.000 / 1.000 / 1.000 |
+
+The 2.5 family has no English `large` checkpoint (only small/base/multilingual multi); the
+available GLiNER2 large checkpoint is the compatible span model above. `fastino/gliner2-large-v1`
+is therefore the production default. The benchmark accepts `--model <checkpoint>` so a future
+checkpoint or fine-tune can be compared with the same fixture and threshold sweep before replacing
+it.
+
 ## Composite precision improvements (2026-08-10)
 
 Error analysis on the gold fixture + hand-checked snippets found exactly one composite error:

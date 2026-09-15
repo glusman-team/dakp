@@ -12,7 +12,7 @@ Composite design (gazetteer-first, GLiNER-augmented)
   0.955 on the benchmark fixture, zero heavy dependencies, fully deterministic. Used by tests
   and offline runs.
 * **Production mode (``offline=False``):** the same gazetteer anchors high-precision spans and
-  a GLiNER2 boundary checkpoint (``fastino/gliner2.5-base-v1``, loaded via ``gliner2.AutoExtractor``)
+  a GLiNER2 span checkpoint (``fastino/gliner2-large-v1``, loaded via ``gliner2.AutoExtractor``)
   fills out-of-gazetteer gaps when invoked on DailyMed sections. The previous v1 domain fine-tune
   (``SkyeAv/drug-approvals-gliner-small-v2.1``) is NOT loadable by gliner2 (its knowledgator config
   schema and BiLSTM head layout predate the gliner2 architecture split); re-fine-tuning that
@@ -69,7 +69,7 @@ from dakp_pipeline.ner.model_cache import NERDependencyError, default_model_cach
 # BiLSTM head layout predate the gliner2 architecture split — so re-fine-tuning that
 # FAERS/DailyMed corpus for gliner2 is a recorded follow-up. Override for another GLiNER2
 # checkpoint.
-DEFAULT_MODEL = "fastino/gliner2.5-base-v1"
+DEFAULT_MODEL = "fastino/gliner2-large-v1"
 #: Labels requested verbatim in every GLiNER2 inference call (schema-conditioned zero-shot on
 #: the shipped checkpoint) — label matching is exact.
 MODEL_LABELS: tuple[str, ...] = (TYPE_DISEASE, TYPE_PHENOTYPE)
