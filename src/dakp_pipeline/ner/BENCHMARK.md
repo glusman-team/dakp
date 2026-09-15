@@ -23,7 +23,7 @@ part of the span while temporal/evidential hedges are not.
 
 ### Current-model local run
 
-The checked-in default checkpoint (`SkyeAv/drug-approvals-gliner-small-v2.1`) was available in
+The then-default checkpoint (`SkyeAv/drug-approvals-gliner-small-v2.1`) was available in
 this checkout's cache and was benchmarked on CPU. This checkout is not the deployment machine,
 so these are provisional local measurements and should be rerun on deployment hardware/cache.
 The fixture has 34 cases and 42 gold spans.
@@ -62,11 +62,17 @@ Current (2026-08-14, after the specificity merge + abstention below):
 The composite holds perfect precision *and* recall across the widened fixture: the two qualified
 diseases and the hedge-prefixed mention all come out exactly right.
 
-> **Checkpoint change (2026-09-10):** the production default is now the domain fine-tune
+> **Checkpoint change (2026-09-10):** the production default became the domain fine-tune
 > `SkyeAv/drug-approvals-gliner-small-v2.1` (deberta-v3-small, `max_len: 384`, trained on
 > `disease` and `phenotype` labels; model output preserves its type; gazetteer types
 > still win on overlap). All numbers on this page were measured with `gliner_large-v2.5`;
 > re-run `tests/eval/benchmark_ner.py` to re-measure against the fine-tune.
+>
+> **Checkpoint change (gliner2 swap):** the production default is now the gliner2-native
+> boundary checkpoint `fastino/gliner2.5-base-v1` (schema-conditioned zero-shot
+> `disease`/`phenotype` labels, `max_len: 4096`). The v1 fine-tune is not loadable by gliner2
+> (config schema and head layout differ); re-fine-tuning it for gliner2 is a recorded follow-up.
+> Re-run `tests/eval/benchmark_ner.py` to re-measure.
 
 The **gazetteer** row moved down (was 1.000 / 0.923 / 0.960 on 31 cases) and that is expected,
 not a regression. Offline mode was deliberately left unchanged (see "Specificity merge" below),
@@ -111,6 +117,25 @@ to CPU under the cu126 torch build's arch gate and still benchmarks in ~15 s). G
 natively multi-entity (one `predict_entities` call scores every label — disease and phenotype
 here — and returns any number of spans per label). SciSpacy required two workarounds in this
 environment and still underperformed; it is dropped from the shipped extra.
+
+## GLiNER2 large checkpoint evaluation (2026-09-15)
+
+The requested large-model evaluation compared the default `fastino/gliner2-large-v1` (340M,
+DeBERTa-v3-large span architecture) with the former `fastino/gliner2.5-base-v1` (194M,
+DeBERTa-v3-base boundary architecture) through the production `DiseaseNER` path on the 34-case,
+42-span fixture. Both load through `gliner2.AutoExtractor` and preserve the gazetteer-first
+composite's perfect strict score; the large model improves the isolated zero-shot baseline.
+
+| checkpoint | GLiNER-only P/R/F1 | GLiNER-only TP/FP/FN | composite P/R/F1 |
+| --- | --- | --- | --- |
+| `fastino/gliner2.5-base-v1` | 0.659 / 0.643 / 0.651 | 27 / 14 / 15 | 1.000 / 1.000 / 1.000 |
+| `fastino/gliner2-large-v1` | **0.683 / 0.667 / 0.675** | **28 / 13 / 14** | 1.000 / 1.000 / 1.000 |
+
+The 2.5 family has no English `large` checkpoint (only small/base/multilingual multi); the
+available GLiNER2 large checkpoint is the compatible span model above. `fastino/gliner2-large-v1`
+is therefore the production default. The benchmark accepts `--model <checkpoint>` so a future
+checkpoint or fine-tune can be compared with the same fixture and threshold sweep before replacing
+it.
 
 ## Composite precision improvements (2026-08-10)
 

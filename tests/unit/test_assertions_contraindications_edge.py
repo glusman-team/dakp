@@ -760,10 +760,11 @@ def test_custom_keywords_filter_indication_section(tmp_path: Path) -> None:
 
 
 class _TermScanningGLiNERModel:
-    """Fake GLiNER model that returns entities for known disease terms found in text.
+    """Fake gliner2 model that returns entities for known disease terms found in text.
 
     Unlike a fixed-prediction mock, this model scans the input text for known disease terms
-    and returns them as entities. This lets tests verify that the sentence filter prevents
+    and returns them as entities (grouped into gliner2's ``{"entities": {label: [...]}}``
+    result shape). This lets tests verify that the sentence filter prevents
     indication-context diseases from ever reaching the model.
     """
 
@@ -771,9 +772,9 @@ class _TermScanningGLiNERModel:
         self._terms = terms  # lowercase term -> entity type
         self.calls: list[str] = []
 
-    def predict_entities(self, text: str, labels: list[str], threshold: float = 0.5) -> list[dict[str, Any]]:
+    def extract_entities(self, text: str, entity_types: list[str], threshold: float = 0.5, **_kwargs: Any) -> dict[str, Any]:
         self.calls.append(text)
-        preds: list[dict[str, Any]] = []
+        entities: dict[str, list[dict[str, Any]]] = {}
         lower = text.lower()
         for term, etype in sorted(self._terms.items(), key=lambda x: -len(x[0])):  # longest first
             idx = 0
@@ -781,21 +782,28 @@ class _TermScanningGLiNERModel:
                 found = lower.find(term, idx)
                 if found == -1:
                     break
-                preds.append({"text": text[found : found + len(term)], "start": found, "end": found + len(term), "label": etype, "score": 0.8})
+                entities.setdefault(etype, []).append(
+                    {"text": text[found : found + len(term)], "confidence": 0.8, "start": found, "end": found + len(term)}
+                )
                 idx = found + len(term)
-        return preds
+        return {"entities": entities}
+
+    def batch_extract_entities(
+        self, texts: list[str], entity_types: list[str], batch_size: int = 8, threshold: float = 0.5, **_kwargs: Any
+    ) -> list[dict[str, Any]]:
+        return [self.extract_entities(text, entity_types, threshold=threshold) for text in texts]
 
 
 def _install_term_scanning_gliner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, terms: dict[str, str]) -> _TermScanningGLiNERModel:
-    """Install a fake gliner module whose ``predict_entities`` scans text for known disease terms.
+    """Install a fake gliner2 module whose ``extract_entities`` scans text for known disease terms.
 
     Also patches ``ensure_model`` so the production NER backend can load without network access.
     Returns the fake model so tests can inspect ``.calls`` to verify which texts reached GLiNER.
     """
     model = _TermScanningGLiNERModel(terms)
-    module = types.ModuleType("gliner")
-    module.GLiNER = type("GLiNER", (), {"from_pretrained": staticmethod(lambda *a, **kw: model)})  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "gliner", module)
+    module = types.ModuleType("gliner2")
+    module.AutoExtractor = type("AutoExtractor", (), {"from_pretrained": staticmethod(lambda *a, **kw: model)})  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gliner2", module)
 
     import dakp_pipeline.ner.ner as ner_module
     from dakp_pipeline.ner.model_cache import ModelRef

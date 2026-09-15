@@ -1,9 +1,9 @@
 """Unit tests for the single composite NER backend (``dakp_pipeline.ner.ner``).
 
 ALL of these pass without importing the heavy NER deps: the offline gazetteer mode is
-deterministic and dep-free; the production (GLiNER) mode is asserted to be *lazy* (importing
-``ner.ner`` imports no heavy deps) and is exercised with a fake ``gliner`` module + a stubbed
-``ensure_model`` (no network). The missing-dep error path skips when ``gliner`` is present.
+deterministic and dep-free; the production (GLiNER2) mode is asserted to be *lazy* (importing
+``ner.ner`` imports no heavy deps) and is exercised with a fake ``gliner2`` module + a stubbed
+``ensure_model`` (no network) in ``test_ner_edge.py``.
 """
 
 from __future__ import annotations
@@ -36,8 +36,10 @@ _ONTOLOGY_TSV = _FIXTURE_ROOT / "ontology" / "disease_map.tsv"
 
 
 def test_defaults_and_contraindication_types() -> None:
-    assert DEFAULT_MODEL == "SkyeAv/drug-approvals-gliner-small-v2.1"
-    # The shipped fine-tune is trained for separate disease and phenotype labels.
+    # gliner2-native boundary checkpoint: the old v1 fine-tune is not loadable by gliner2
+    # (config schema + head layout differ); re-fine-tune is a recorded follow-up.
+    assert DEFAULT_MODEL == "fastino/gliner2-large-v1"
+    # The shipped checkpoint extracts separate disease and phenotype labels (zero-shot).
     assert MODEL_LABELS == ("disease", "phenotype")
     # The generation floor is distinct from the precision-first indication profile. The generic
     # aliases retain the recall-first contraindication profile for compatibility.
@@ -140,13 +142,13 @@ def test_extract_contraindication_diseases_delegates() -> None:
 
 def test_importing_ner_does_not_import_heavy_deps() -> None:
     assert "dakp_pipeline.ner.ner" in sys.modules
-    for module in ("gliner", "huggingface_hub"):
+    for module in ("gliner2", "huggingface_hub"):
         assert module not in sys.modules, f"importing ner.ner must not import {module}"
 
 
-def test_constructing_production_backend_does_not_import_gliner() -> None:
+def test_constructing_production_backend_does_not_import_gliner2() -> None:
     DiseaseNER(offline=False)
-    assert "gliner" not in sys.modules
+    assert "gliner2" not in sys.modules
 
 
 def test_use_specific_profiles_have_distinct_acceptance_roles() -> None:

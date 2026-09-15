@@ -14,12 +14,13 @@ Approaches benchmarked (all via the ONE ``DiseaseNER`` backend in different mode
 Scoring is span-level, micro-averaged: a prediction is a true positive only if its
 ``(start, end, type)`` exactly matches a gold span. Run with::
 
-    uv run python tests/eval/benchmark_ner.py            # all runnable approaches
+    uv run python tests/eval/benchmark_ner.py            # default checkpoint
+    uv run python tests/eval/benchmark_ner.py --model fastino/gliner2-large-v1 --sweep
     uv run python tests/eval/benchmark_ner.py --json out.json
 
 This script is an evaluation artifact: it is NOT collected by pytest (filename is not
 ``test_*.py``) and is not part of the coverage-gated package. It imports ``ner.ner`` (which
-lazy-loads ``gliner``) and never imports ``gliner`` directly, so it type-checks with or without
+lazy-loads ``gliner2``) and never imports ``gliner2`` directly, so it type-checks with or without
 the NER dependencies installed (the model approaches simply skip when it is absent).
 """
 
@@ -31,7 +32,13 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from dakp_pipeline.ner.ner import EMBEDDED_GAZETTEER, GLINER_GENERATION_FLOOR, INDICATION_ACCEPT_THRESHOLD, STRICT_GAZETTEER_EXTENSION_THRESHOLD
+from dakp_pipeline.ner.ner import (
+    DEFAULT_MODEL,
+    EMBEDDED_GAZETTEER,
+    GLINER_GENERATION_FLOOR,
+    INDICATION_ACCEPT_THRESHOLD,
+    STRICT_GAZETTEER_EXTENSION_THRESHOLD,
+)
 
 HERE = Path(__file__).resolve().parent
 GOLD_PATH = HERE / "ner_gold.json"
@@ -103,23 +110,30 @@ def gazetteer_predictor() -> Predictor:
     return lambda text: [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text)]
 
 
-def gliner_predictor(threshold: float = GLINER_GENERATION_FLOOR, accept_threshold: float | None = None) -> Predictor:
+def gliner_predictor(threshold: float = GLINER_GENERATION_FLOOR, accept_threshold: float | None = None, model_id: str = DEFAULT_MODEL) -> Predictor:
     """Production mode with an EMPTY gazetteer: GLiNER only (isolates the model)."""
     from dakp_pipeline.ner.ner import DiseaseNER
 
     ner = DiseaseNER(
-        offline=False, gazetteer={}, threshold=threshold, accept_threshold=accept_threshold if accept_threshold is not None else threshold
+        offline=False,
+        gazetteer={},
+        model_id=model_id,
+        threshold=threshold,
+        accept_threshold=accept_threshold if accept_threshold is not None else threshold,
     )
     return lambda text: [Pred(m.start, m.end, m.type, m.text) for m in ner.extract(text)]
 
 
-def composite_predictor(threshold: float = GLINER_GENERATION_FLOOR, accept_threshold: float | None = None) -> Predictor:
+def composite_predictor(
+    threshold: float = GLINER_GENERATION_FLOOR, accept_threshold: float | None = None, model_id: str = DEFAULT_MODEL
+) -> Predictor:
     """Production mode with the curated gazetteer and an explicit acceptance profile."""
     from dakp_pipeline.ner.ner import DiseaseNER
 
     ner = DiseaseNER(
         offline=False,
         gazetteer=GAZETTEER,
+        model_id=model_id,
         threshold=threshold,
         accept_threshold=accept_threshold if accept_threshold is not None else threshold,
         strict_extension_threshold=STRICT_GAZETTEER_EXTENSION_THRESHOLD,
@@ -163,12 +177,12 @@ def score(predict: Predictor, cases: Sequence[Case], *, type_aware: bool = True)
 # --- driver --------------------------------------------------------------------
 
 
-def _candidates() -> dict[str, Predictor]:
+def _candidates(model_id: str = DEFAULT_MODEL) -> dict[str, Predictor]:
     """Runnable predictors; a model approach that cannot load is skipped with a note."""
     candidates: dict[str, Predictor] = {"gazetteer": gazetteer_predictor()}
     try:
-        candidates["gliner"] = gliner_predictor()
-        candidates["composite"] = composite_predictor()
+        candidates["gliner"] = gliner_predictor(model_id=model_id)
+        candidates["composite"] = composite_predictor(model_id=model_id)
     except Exception as exc:  # report any model/load failure and continue with the gazetteer
         print(f"[skip] gliner/composite (model unavailable): {exc}")
     return candidates
@@ -185,18 +199,19 @@ def _print_errors(predict: Predictor, cases: Sequence[Case]) -> None:
             print(f"  {case.case_id}: FP={[surface for _, _, _, surface in sorted(fp)]} FN={[surface for _, _, _, surface in sorted(fn)]}")
 
 
-def run(json_out: Path | None = None, *, sweep: Sequence[float] = ()) -> dict[str, dict[str, float]]:
+def run(json_out: Path | None = None, *, sweep: Sequence[float] = (), model_id: str = DEFAULT_MODEL) -> dict[str, dict[str, float]]:
     cases = load_cases()
     total_gold = sum(len(case.gold) for case in cases)
     dailymed = sum(1 for c in cases if c.source == "dailymed")
     faers = sum(1 for c in cases if c.source == "faers")
-    print(f"NER benchmark: {len(cases)} cases, {total_gold} gold mentions ({dailymed} DailyMed, {faers} FAERS)\n")
+    print(f"NER benchmark: {len(cases)} cases, {total_gold} gold mentions ({dailymed} DailyMed, {faers} FAERS)")
+    print(f"Model checkpoint: {model_id}\n")
 
     results: dict[str, dict[str, float]] = {}
     header = f"{'approach':<12} {'P':>7} {'R':>7} {'F1':>7} {'TP':>5} {'FP':>5} {'FN':>5}"
     print(header)
     print("-" * len(header))
-    for name, predict in _candidates().items():
+    for name, predict in _candidates(model_id).items():
         strict = score(predict, cases)
         lenient = score(predict, cases, type_aware=False)
         results[name] = {"precision": strict.precision, "recall": strict.recall, "f1": strict.f1, "lenient_f1": lenient.f1}
@@ -208,8 +223,8 @@ def run(json_out: Path | None = None, *, sweep: Sequence[float] = ()) -> dict[st
         print(f"{'accept':>8} {'approach':<12} {'P':>7} {'R':>7} {'F1':>7} {'TP':>5} {'FP':>5} {'FN':>5}")
         for accept in sweep:
             for name, predictor in (
-                ("gliner", gliner_predictor(accept_threshold=accept)),
-                ("composite", composite_predictor(accept_threshold=accept)),
+                ("gliner", gliner_predictor(accept_threshold=accept, model_id=model_id)),
+                ("composite", composite_predictor(accept_threshold=accept, model_id=model_id)),
             ):
                 strict = score(predictor, cases)
                 print(
@@ -227,13 +242,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark disease/phenotype NER approaches on the gold fixture.")
     parser.add_argument("--json", type=Path, default=None, help="Optional path to write the results JSON.")
     parser.add_argument("--sweep", action="store_true", help="Run the current-model acceptance sweep for GLiNER-only and composite variants.")
-    parser.add_argument("--errors", action="store_true", help="Print FP/FN examples for the default operating points.")
+    parser.add_argument("--errors", action="store_true", help="Print FP/FN examples for the selected checkpoint's default operating points.")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="Hugging Face checkpoint to evaluate (default: %(default)s).")
     args = parser.parse_args()
     sweep = (0.35, 0.50, 0.75, 0.90, 0.95) if args.sweep else ()
-    run(json_out=args.json, sweep=sweep)
+    run(json_out=args.json, sweep=sweep, model_id=args.model)
     if args.errors:
         cases = load_cases()
-        for name, predictor in (("gliner", gliner_predictor()), ("composite", composite_predictor(accept_threshold=INDICATION_ACCEPT_THRESHOLD))):
+        for name, predictor in (
+            ("gliner", gliner_predictor(model_id=args.model)),
+            ("composite", composite_predictor(accept_threshold=INDICATION_ACCEPT_THRESHOLD, model_id=args.model)),
+        ):
             print(f"\n{name} errors:")
             _print_errors(predictor, cases)
 
