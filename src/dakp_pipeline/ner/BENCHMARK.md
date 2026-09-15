@@ -23,7 +23,7 @@ part of the span while temporal/evidential hedges are not.
 
 ### Current-model local run
 
-The checked-in default checkpoint (`SkyeAv/drug-approvals-gliner-small-v2.1`) was available in
+The then-default checkpoint (`SkyeAv/drug-approvals-gliner-small-v2.1`) was available in
 this checkout's cache and was benchmarked on CPU. This checkout is not the deployment machine,
 so these are provisional local measurements and should be rerun on deployment hardware/cache.
 The fixture has 34 cases and 42 gold spans.
@@ -62,11 +62,17 @@ Current (2026-08-14, after the specificity merge + abstention below):
 The composite holds perfect precision *and* recall across the widened fixture: the two qualified
 diseases and the hedge-prefixed mention all come out exactly right.
 
-> **Checkpoint change (2026-09-10):** the production default is now the domain fine-tune
+> **Checkpoint change (2026-09-10):** the production default became the domain fine-tune
 > `SkyeAv/drug-approvals-gliner-small-v2.1` (deberta-v3-small, `max_len: 384`, trained on
 > `disease` and `phenotype` labels; model output preserves its type; gazetteer types
 > still win on overlap). All numbers on this page were measured with `gliner_large-v2.5`;
 > re-run `tests/eval/benchmark_ner.py` to re-measure against the fine-tune.
+>
+> **Checkpoint change (gliner2 swap):** the production default is now the gliner2-native
+> boundary checkpoint `fastino/gliner2.5-base-v1` (schema-conditioned zero-shot
+> `disease`/`phenotype` labels, `max_len: 4096`). The v1 fine-tune is not loadable by gliner2
+> (config schema and head layout differ); re-fine-tuning it for gliner2 is a recorded follow-up.
+> Re-run `tests/eval/benchmark_ner.py` to re-measure.
 
 The **gazetteer** row moved down (was 1.000 / 0.923 / 0.960 on 31 cases) and that is expected,
 not a regression. Offline mode was deliberately left unchanged (see "Specificity merge" below),

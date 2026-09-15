@@ -23,8 +23,8 @@ classifiers = [
 # is a HARD dependency installed by ONE command (`uv sync`, or `make install`) — there are no
 # optional extras. Airflow 3 is the only orchestrator (the DAG drives the pipeline and the Go
 # extractors run as native Airflow Go SDK bundle workers); the biomedical NER backend (the
-# domain-fine-tuned GLiNER checkpoint) and the Tablassert KG build are required for a full
-# production run. `gliner` is
+# GLiNER2 checkpoint) and the Tablassert KG build are required for a full
+# production run. `gliner2` is
 # still imported lazily (no torch at module load) and the mock profile + tests never touch the
 # network or Tablassert, but a single `uv sync` now materializes the whole production runtime.
 # Tablassert is pinned to the `[qc]` variant because the production KG build runs
@@ -90,14 +90,32 @@ dependencies = [
     "apache-airflow>=3,<4",
     "blake3>=1.0.0",
     "cyclopts>=4",
-    "gliner>=0.1.15",
+    # GLiNER2 (import name `gliner2`) is the NER production backend: `AutoExtractor` loads the
+    # boundary checkpoint and extracts schema-conditioned zero-shot entities. Deliberately the
+    # BASE package, NOT `gliner2[local]`: the `[local]` extra hard-pins `transformers<5,>=4.38`
+    # and `torch<3`, and transformers 4.x is unresolvable next to `tablassert[qc]`, whose
+    # sentence-transformers 5.6 requires transformers 5.x. gliner2's base deps are only
+    # pydantic/requests/tqdm/urllib3 — torch + transformers arrive through the explicit cu126
+    # torch pin below and tablassert[qc] instead, so the runtime still has everything the
+    # extractor needs without a version conflict. Imported lazily by
+    # `dakp_pipeline.ner.ner._load_model` (no torch at module load).
+    "gliner2>=2.0,<3",
     "huggingface_hub>=0.24",
     "loguru>=0.7.3",
+    # Required by gliner2's own import chain but NOT declared as a base dependency: `AutoExtractor
+    # .from_pretrained` -> `gliner2.inference.engine` -> `inference.runtime` -> `training.trainer`
+    # does an unconditional top-level `from peft import PeftModel`, so loading any local checkpoint
+    # fails with ModuleNotFoundError unless peft is present (gliner2 2.0.0 declares it only under the
+    # `[local]`/`[train]` extras). Added directly instead of taking `gliner2[local]` because that
+    # extra caps `transformers<5` (see the gliner2 entry above); peft's own constraint is unpinned,
+    # so transformers 5.x + torch 2.8 cu126 stay intact. peft also pulls `accelerate`.
+    "peft>=0.10,<1",
     "pendulum>=3",
     "polars>=1.30.0",
     "pydantic>=2.12.0",
     "tablassert[qc]>=18.1.0,<19",
-    # torch is transitive (gliner, sentence-transformers via tablassert[qc]) but pinned here so
+    # torch is transitive (sentence-transformers via tablassert[qc]; gliner2 needs it too but
+    # only declares it under the `[local]`/`[train]` extras we do not use) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host
     # (wenceslaus: 4x Tesla P100-PCIE-16GB, compute capability 6.0, CUDA 12.8 driver) force it:
     # (1) the default PyPI wheels are built for CUDA 13 (+cu130) and refuse to initialize on a

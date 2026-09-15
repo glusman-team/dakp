@@ -34,17 +34,19 @@ Benchmarked on a hand-labeled fixture (34 cases / 42 gold spans, `tests/eval/`):
 | composite | **1.000** | **1.000** | **1.000** | **settled backend** (gazetteer + GLiNER merge) |
 | scispacy  | 0.571     | 0.457  | 0.508 | dropped: no phenotype label, coarse spans |
 
-> These numbers were measured with the previous default checkpoint (`gliner_large-v2.5`).
-> Since 2026-09-10 the production default is the domain fine-tune
-> `SkyeAv/drug-approvals-gliner-small-v2.1` (trained on `disease` and `phenotype` labels);
-> re-run `tests/eval/benchmark_ner.py` to re-measure.
+> These numbers were measured with older checkpoints (`gliner_large-v2.5`, then the
+> `SkyeAv/drug-approvals-gliner-small-v2.1` v1 fine-tune). The production default is now the
+> gliner2-native boundary checkpoint `fastino/gliner2.5-base-v1` (schema-conditioned zero-shot
+> `disease`/`phenotype` labels); the v1 fine-tune is not loadable by gliner2 (config schema and
+> head layout differ) and re-fine-tuning it for gliner2 is a recorded follow-up. Re-run
+> `tests/eval/benchmark_ner.py` to re-measure.
 
 * **Offline mode (default):** curated gazetteer + deterministic lexical matcher. Zero heavy deps,
   fully deterministic. Used by tests + offline runs. Bounded by its fixed vocabulary: it returns
   the generic head for qualified diseases (`hypertension` for `pulmonary hypertension`).
 * **Production mode (`offline=False`):** the same gazetteer anchors high-precision spans and
-  a domain fine-tuned GLiNER (`SkyeAv/drug-approvals-gliner-small-v2.1`, trained on FAERS and
-  DailyMed indication/contraindication text) fills out-of-gazetteer gaps when invoked on DailyMed
+  a GLiNER2 boundary checkpoint (`fastino/gliner2.5-base-v1`, loaded via
+  `gliner2.AutoExtractor`) fills out-of-gazetteer gaps when invoked on DailyMed
   sections. On overlap the **most specific span wins**: a model span that
   strictly contains a gazetteer span supersedes it (`pulmonary hypertension` over
   `hypertension`), taking the model's boundary and the gazetteer's type. Equal spans, partial
@@ -52,12 +54,13 @@ Benchmarked on a hand-labeled fixture (34 cases / 42 gold spans, `tests/eval/`):
   Model spans whose normalized surface is a population descriptor (e.g. `women of childbearing
   potential`) are dropped, leading hedge tokens (`recent`, `a history of`) are trimmed, and spans
   a hard window split cuts across a phrase boundary are re-joined. GLiNER is natively
-  **multi-entity**, and the shipped fine-tune is trained for the `disease` and `phenotype` labels,
-  so one call requests both labels and preserves the model's returned type. The gazetteer remains
+  **multi-entity** and schema-conditioned: the shipped checkpoint extracts the zero-shot
+  `disease` and `phenotype` labels, so one call requests both labels and preserves the model's
+  returned type. The gazetteer remains
   the type authority whenever a span contests a gazetteer term, and Tablassert resolves the
-  ontology concept downstream. GLiNER is a
-  core, lazy-imported dependency. GLiNER silently truncates inputs past `config.max_len` word tokens (384 on the
-  shipped fine-tune), so long sections (some run to ~3000 words) are predicted in
+  ontology concept downstream. GLiNER2 is a
+  core, lazy-imported dependency (`gliner2`, loaded lazily via `AutoExtractor`). GLiNER2 silently truncates inputs past `config.max_len` word tokens (4096 on the
+  shipped checkpoint), so long sections (some run to ~3000 words) are predicted in
   sentence-aware, exact-substring windows of ≤ that budget (`chunk_words` kwarg overrides it) and
   span offsets are remapped back into full-text coordinates — no mention past the truncation
   point is lost.
@@ -121,14 +124,14 @@ sorted by `(start, end, type, text)`.
 
 ## Core deps & lazy imports
 
-The NER dependencies (`gliner`, `huggingface_hub`) are **core DAKP dependencies** installed by the
+The NER dependencies (`gliner2`, `huggingface_hub`) are **core DAKP dependencies** installed by the
 single `uv sync` — there is no `[ner]` extra. They are still **lazy-imported**: `import
-dakp_pipeline.ner.ner` never imports `gliner` / `huggingface_hub`; those load only on a
+dakp_pipeline.ner.ner` never imports `gliner2` / `huggingface_hub`; those load only on a
 production-mode `DiseaseNER`'s first `extract()`, so module import stays light (no torch at import
 time) and the whole test suite runs offline. If a dep is somehow not importable, it raises
 `NERDependencyError` (an `ImportError`):
 
-> NER production mode requires the 'gliner' package (a core DAKP dependency) but it is not importable. Install all dependencies with: uv sync
+> NER production mode requires the 'gliner2' package (a core DAKP dependency) but it is not importable. Install all dependencies with: uv sync
 
 Reinstall the full runtime to use production mode:
 
