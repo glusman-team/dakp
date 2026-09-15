@@ -69,7 +69,17 @@ from typing import Any
 
 import polars as pl
 
-from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_FAERS, KL_ASSERTION, join_pipe, match_diseases, row_for
+from dakp_pipeline.assertions import (
+    AT_MANUAL,
+    INFORES_DAILYMED,
+    INFORES_DAKP,
+    INFORES_FAERS,
+    KL_ASSERTION,
+    join_pipe,
+    match_diseases,
+    object_mentions,
+    row_for,
+)
 from dakp_pipeline.assertions.evidence import (
     DailyMedEvidence,
     FDAApprovalIndex,
@@ -362,7 +372,7 @@ def _section_mentions_condition(
     normalized_section = normalize_text(positive_text)
     if f" {needle} " in f" {normalized_section} ":
         return True
-    for mention in mentions or []:
+    for mention in object_mentions(mentions or []):
         mention_text = normalize_text(mention.text)
         if mention_text and f" {mention_text} " in f" {normalized_section} " and (mention_text == needle or f" {mention_text} " in f" {needle} "):
             return True
@@ -467,6 +477,8 @@ def _dailymed_candidates(
     (CURIE/name/category resolved via :func:`_object_attrs`, empty when unknown). A mention whose
     normalized text equals a dictionary match on the same document is skipped — offline
     (gazetteer) mentions coincide with dictionary matches, so offline candidates are unchanged.
+    Only object-channel mentions are considered: qualifier mentions describe an object and must
+    never become one (see :func:`~dakp_pipeline.assertions.object_mentions`).
     """
     set_to_ndas: dict[str, set[str]] = {}
     for norm, sets in dailymed.approval_sets.items():
@@ -495,7 +507,7 @@ def _dailymed_candidates(
                         "fallback_subject": "",
                     }
             dictionary_texts = {normalize_text(match["text"]) for match in matches}
-            for mention in (mentions or {}).get((set_id, doc_id), []):
+            for mention in object_mentions((mentions or {}).get((set_id, doc_id), [])):
                 object_text = normalize_text(mention.text)
                 if not object_text or object_text in dictionary_texts:
                     continue

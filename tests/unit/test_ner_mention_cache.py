@@ -30,7 +30,7 @@ _FINGERPRINT = "cd" * 32
 
 
 def _mention(text: str = "asthma") -> Mention:
-    return Mention(text=text, start=0, end=len(text), type="disease", score=0.9, normalized=text, notes="n", section="ind")
+    return Mention(text=text, start=0, end=len(text), type="Disease", score=0.9, normalized=text, notes="n", section="ind")
 
 
 # --- Mention JSON round-trip -------------------------------------------------------
@@ -45,8 +45,8 @@ def test_mention_to_dict_from_dict_round_trip_is_lossless() -> None:
 
 def test_mention_from_dict_defaults_optional_fields() -> None:
     """Cache values written before notes/section existed still load."""
-    restored = Mention.from_dict({"text": "asthma", "start": 0, "end": 6, "type": "disease", "score": 0.5})
-    assert restored == Mention(text="asthma", start=0, end=6, type="disease", score=0.5)
+    restored = Mention.from_dict({"text": "asthma", "start": 0, "end": 6, "type": "Disease", "score": 0.5})
+    assert restored == Mention(text="asthma", start=0, end=6, type="Disease", score=0.5)
 
 
 # --- mention_key ---------------------------------------------------------------------

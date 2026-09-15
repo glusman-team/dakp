@@ -73,6 +73,34 @@ diseases and the hedge-prefixed mention all come out exactly right.
 > `disease`/`phenotype` labels, `max_len: 4096`). The v1 fine-tune is not loadable by gliner2
 > (config schema and head layout differ); re-fine-tuning it for gliner2 is a recorded follow-up.
 > Re-run `tests/eval/benchmark_ner.py` to re-measure.
+>
+> **Schema change (prompt-engineered vocabulary + two channels):** inference no longer asks for
+> the bare words `disease`/`phenotype`. `MODEL_LABELS` is a `{label: description}` mapping of
+> Biolink category IDs (`biolink:Disease`, `biolink:PhenotypicFeature`, four qualifier
+> categories, three field-named qualifiers) handed to gliner2 verbatim, which renders each
+> description into the prompt; gold `type` values were renamed to the canonical `Mention.type`
+> strings (`Disease` / `PhenotypicFeature`) and the harness scores the **object channel only**.
+> **Every table on this page predates that change and has NOT been re-measured** — the numbers
+> below are the historical `disease`/`phenotype` record. What follows is spot-check evidence for
+> the schema itself, measured on the build host (cached checkpoint, CPU fallback; empty
+> gazetteer, so only the model channel speaks):
+>
+> | text | extracted `(surface, type, score)` |
+> | ---- | ---------------------------------- |
+> | `Contraindicated in patients with pulmonary hypertension.` | `('pulmonary hypertension', 'Disease', 1.0)` |
+> | `Contraindicated during pregnancy and in women of childbearing potential.` | `('pregnancy', 'PhenotypicFeature', 1.0)`, `('women', 'BiologicalSex', 1.0)`, `('women of childbearing potential', 'PopulationOfIndividualOrganisms', 1.0)` |
+> | `Not recommended in patients with renal impairment or a history of hypertension.` (generation floor 0.35) | `('renal impairment', 'PhenotypicFeature', 1.0)`, `('hypertension', 'Disease', 0.94)`, `('history of hypertension', 'temporal_context_qualifier', 0.65)` |
+>
+> The baseline this replaces: the same checkpoint prompted with plain `['disease', 'phenotype']`
+> mistyped "pregnancy" as a disease at 0.82 and emitted "childbearing potential" at 0.40.
+> Two description wordings proved load-bearing (both measured): listing `pregnancy` as a
+> `biolink:PhenotypicFeature` exemplar is what recovers it at 1.00 — without it the checkpoint
+> emits no pregnancy span at all — and listing `during` as a `temporal_context_qualifier`
+> exemplar makes it mistype "pregnancy" as `temporal_context_qualifier` 0.64, so `during` is not
+> an exemplar. Note the third row's cross-label overlap (`renal impairment` under both
+> `biolink:PhenotypicFeature` 1.0 and `biolink:Disease` 0.41): de-overlapping is per label, and
+> the object channel's longest-then-highest-score selection keeps the 1.0 one.
+> Re-run `tests/eval/benchmark_ner.py` to re-measure the table against this schema.
 
 The **gazetteer** row moved down (was 1.000 / 0.923 / 0.960 on 31 cases) and that is expected,
 not a regression. Offline mode was deliberately left unchanged (see "Specificity merge" below),
