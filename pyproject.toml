@@ -197,6 +197,16 @@ markers = ["network: tests that require internet access"]
 [tool.coverage.run]
 source = ["src/dakp_pipeline"]
 branch = true
+# Measure `spawn`-started child processes too. The per-GPU NER workers
+# (`assertions/ner_dispatch._mine_shard`) and the worker logging setup they call
+# (`logging_setup.configure_worker_logging`) run ONLY in a child, so without this their tests
+# would pass while the lines read as uncovered. `parallel` gives each process its own data file
+# and `sigterm` flushes on termination; pytest-cov combines them, exactly as it already does for
+# the xdist workers. The `COVERAGE_PROCESS_START` env var (set in `tests/conftest.py`) is what
+# arms the `coverage.process_startup()` hook in the installed `.pth` file.
+parallel = true
+sigterm = true
+concurrency = ["multiprocessing", "thread"]
 
 [tool.coverage.report]
 fail_under = 100

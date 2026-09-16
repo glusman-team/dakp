@@ -1,9 +1,9 @@
 """Logging: ``loguru`` is the primary structured logger, bridged into stdlib ``logging``
 so Airflow's task-instance log captures every record.
 
-Three pieces:
+Four pieces:
 
-* :class:`InterceptHandler` installs on the stdlib root logger (local / test runs only) so
+* :class:`InterceptHandler` installs on the stdlib root logger (local / test / worker runs) so
   third-party libraries that emit through ``logging`` flow into ``loguru`` (single sink of
   truth).
 * :func:`configure_logging` adds an optional file sink under ``<workdir>/logs/`` plus either a
@@ -12,6 +12,11 @@ Three pieces:
   per-task log), so under Airflow we forward loguru records INTO stdlib logging and never touch
   the root handlers: no ``InterceptHandler`` (it would clobber Airflow's handler) and no stderr
   sink (Airflow captures subprocess stderr as ERROR-level ``task.stderr`` lines).
+* :func:`configure_worker_logging` is the SPAWNED-CHILD counterpart: a fresh interpreter starts
+  with loguru's default stderr sink, which Airflow tags as ERROR, so every worker record (and
+  every library warning) surfaced in the task log as a false error. It redirects the child's
+  stderr FILE DESCRIPTOR to a per-worker file, which is the only capture point that also covers
+  libraries owning their own stderr handler (``transformers``, ``torch``) and native output.
 * Narration helpers (:func:`stats`, :func:`step`, :func:`progress`) implement the DAKP
   one-stat-per-line convention so task logs stay readable in the Airflow UI.
 
@@ -22,6 +27,8 @@ never re-ingests them (loop prevention).
 from __future__ import annotations
 
 import logging
+import os
+import re
 import sys
 import time
 from collections.abc import Iterator
@@ -128,6 +135,118 @@ def configure_logging(workdir: Path | None = None, level: str = "INFO", *, for_a
 _AIRFLOW_SINKS: list[int] = []
 
 
+#: Worker log files live here, one file per worker PROCESS (see :func:`_worker_log_path`).
+WORKER_LOG_SUBDIR = Path("logs") / "workers"
+
+#: Level for the worker's own (DAKP) records once its stderr is a private file: keep it verbose.
+_WORKER_SINK_LEVEL = "DEBUG"
+
+#: Level for the worker's records when stderr is still Airflow's (no worker file): real problems
+#: only. An ERROR genuinely belongs in the task log; INFO/DEBUG is the noise this module removes.
+_WORKER_FALLBACK_LEVEL = "ERROR"
+
+#: Root level for bridged stdlib records (``warnings``, libraries without their own handler).
+_WORKER_LIBRARY_LEVEL = logging.WARNING
+
+#: Worker logs older than this are pruned at dispatch time (they are per-process diagnostics,
+#: so nothing rotates them in place).
+WORKER_LOG_MAX_AGE_S = 7 * 24 * 60 * 60
+
+_STDERR_FD = 2
+
+
+def _worker_log_name(name: str) -> str:
+    """Sanitize a worker name into a filesystem-safe stem (``"cuda:0"`` -> ``"cuda-0"``)."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-.") or "worker"
+
+
+def _worker_log_path(workdir: Path | str, name: str) -> Path:
+    """Per-PROCESS worker log path: ``<workdir>/logs/workers/<name>-<pid>.log``.
+
+    The pid is part of the name because a device is NOT a unique worker key: when passes
+    outnumber GPUs, :func:`~dakp_pipeline.assertions.ner_dispatch._group_devices` hands the same
+    device to several concurrent workers. Keying on the pid guarantees no two processes ever
+    write to one file, which is also why nothing rotates these files in place (see
+    :func:`prune_worker_logs`).
+    """
+    log_dir = Path(workdir) / WORKER_LOG_SUBDIR
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / f"{_worker_log_name(name)}-{os.getpid()}.log"
+
+
+def configure_worker_logging(workdir: Path | str | None, name: str) -> None:
+    """Configure logging inside a ``spawn``-started child process (the per-GPU NER workers).
+
+    A spawned child is a fresh interpreter: loguru starts with its DEFAULT sink (``sys.stderr``,
+    level DEBUG) and stdlib ``logging`` has no handler. Airflow captures a task subprocess's
+    stderr as ERROR-level ``task.stderr`` lines, which is why healthy worker records
+    (``ner_model_load``, ``ner_gpu_lock``), the transformers ``model of type`` notice, and
+    gliner2's sdpa-fallback ``RuntimeWarning`` all appeared as ERRORs in the task log.
+
+    The capture point is the stderr FILE DESCRIPTOR, not ``sys.stderr`` or the root logger:
+    ``transformers`` and ``torch`` both set ``propagate = False`` on their library logger and
+    attach their OWN ``StreamHandler(sys.stderr)``, so a root-level :class:`InterceptHandler`
+    never sees those records, and native CUDA / tqdm output never passes through Python at all.
+    ``dup2`` onto fd 2 catches every one of them. Nothing is suppressed; it is REDIRECTED to
+    ``<workdir>/logs/workers/<name>-<pid>.log``, and on top of the redirect:
+
+    * loguru is re-pointed at ``sys.stderr`` (now the file) at :data:`_WORKER_SINK_LEVEL`;
+    * stdlib ``logging`` is bridged into loguru by :class:`InterceptHandler` at
+      :data:`_WORKER_LIBRARY_LEVEL`, so propagating library records are formatted like ours
+      (libraries holding their own stderr handler land in the same file via the redirect);
+    * :mod:`warnings` is routed through ``logging.captureWarnings`` into that same bridge.
+
+    With no usable worker file (``workdir`` None in tests/offline runs, or an unwritable log
+    directory) the child keeps Airflow's stderr but logs at :data:`_WORKER_FALLBACK_LEVEL`
+    only: a failure still surfaces in the task log, the routine narration does not. Logging
+    setup never raises here — an unwritable path must not turn into a failed shard.
+    """
+    logger.remove()  # drop loguru's default sink; re-added below at the level we actually want
+
+    level = _WORKER_FALLBACK_LEVEL
+    if workdir is not None:
+        try:
+            with _worker_log_path(workdir, name).open("ab", buffering=0) as handle:
+                # dup2 duplicates the open file description onto fd 2, so closing `handle`
+                # right after leaves fd 2 pointing at the file for the life of the process.
+                sys.stderr.flush()
+                os.dup2(handle.fileno(), _STDERR_FD)
+        except OSError:
+            pass  # unwritable workdir: keep Airflow's stderr, stay at the fallback level
+        else:
+            level = _WORKER_SINK_LEVEL
+
+    logger.add(sys.stderr, level=level, colorize=False, backtrace=False, diagnose=False, enqueue=False)
+
+    # Bridge stdlib logging (and, through it, `warnings`) into loguru. Safe here — unlike the
+    # Airflow task process, a spawned child owns its own root logger and has no Airflow handler
+    # to clobber. Libraries that set `propagate = False` bypass this and are caught by the fd
+    # redirect instead.
+    logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+    logging.root.setLevel(_WORKER_LIBRARY_LEVEL)
+    logging.captureWarnings(True)
+
+
+def prune_worker_logs(workdir: Path | str, max_age_s: float = WORKER_LOG_MAX_AGE_S) -> int:
+    """Delete worker logs older than ``max_age_s``; return how many were removed.
+
+    Worker logs are per-process files written through a redirected file descriptor, so no sink
+    rotates or retires them. The dispatching parent calls this once before spawning, which
+    bounds the directory without ever touching a file a live worker holds open (those are
+    brand new). Best-effort by design: a missing directory or an unlink race is not an error.
+    """
+    cutoff = time.time() - max_age_s
+    removed = 0
+    for path in sorted((Path(workdir) / WORKER_LOG_SUBDIR).glob("*.log")):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:  # pragma: no cover - unlink/stat race with a concurrent dispatcher
+            continue
+    return removed
+
+
 def bind(**fields: Any) -> Any:
     """Return a loguru logger pre-bound with structured fields for the current task.
 
@@ -209,4 +328,17 @@ def progress(log: Any, event: str, done: int, total: int, *, every: int) -> None
         log.opt(depth=1).info("{}: progress = {}/{}", event, done, total)
 
 
-__all__ = ["FROM_LOGURU_ATTR", "InterceptHandler", "bind", "configure_logging", "logger", "progress", "stats", "step"]
+__all__ = [
+    "FROM_LOGURU_ATTR",
+    "WORKER_LOG_MAX_AGE_S",
+    "WORKER_LOG_SUBDIR",
+    "InterceptHandler",
+    "bind",
+    "configure_logging",
+    "configure_worker_logging",
+    "logger",
+    "progress",
+    "prune_worker_logs",
+    "stats",
+    "step",
+]

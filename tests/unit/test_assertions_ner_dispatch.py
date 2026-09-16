@@ -17,6 +17,7 @@ import pytest
 
 import dakp_pipeline.assertions.ner_dispatch as dispatch
 from dakp_pipeline.assertions.ner_dispatch import _group_devices, default_ner, mine_passes_multi_gpu, mine_with_cache
+from dakp_pipeline.logging_setup import WORKER_LOG_SUBDIR
 from dakp_pipeline.ner import model_cache
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
 
@@ -49,6 +50,107 @@ def test_shard_uses_one_batch_per_gpu_worker(monkeypatch: pytest.MonkeyPatch) ->
     assert {(set_id, doc_id) for set_id, doc_id, _mentions in result} == {("S1", "D1"), ("S2", "D2")}
 
 
+def test_mine_shard_defaults_to_leaving_process_logging_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without ``in_worker`` the process-global logging reconfiguration never runs.
+
+    This default is what protects the Airflow TASK process: ``configure_worker_logging`` calls
+    ``logger.remove()`` and ``basicConfig(force=True)``, which would wipe the task's own sinks.
+    An inferred guard could not do this safely -- ``multiprocessing.parent_process()`` is
+    non-None in the Airflow task process itself under LocalExecutor.
+    """
+    reconfigured: list[tuple[Any, str]] = []
+    monkeypatch.setattr(dispatch, "configure_worker_logging", lambda workdir, name: reconfigured.append((workdir, name)))
+    dispatch._mine_shard([("S1", "D1", "asthma")], _ner("asthma")._config(), "cpu")
+    assert reconfigured == []
+
+
+def test_mine_shard_in_worker_configures_logging_before_loading_the_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``in_worker=True`` configures logging FIRST, before the backend (and its imports) load.
+
+    Ordering is the point: ``DiseaseNER`` construction pulls in transformers/torch, which write
+    to stderr as they initialize. Configuring afterwards would let exactly the noise this fixes
+    escape, so both steps record into one list and the ORDER is asserted.
+    """
+    calls: list[Any] = []
+
+    class WorkerNER:
+        def __init__(self, **kwargs: Any) -> None:
+            calls.append(("construct_ner", kwargs["device"]))
+
+        def extract_batch(self, texts: Sequence[str]) -> list[list[Mention]]:
+            return [[] for _ in texts]
+
+    monkeypatch.setattr(dispatch, "configure_worker_logging", lambda workdir, name: calls.append(("configure_logging", workdir, name)))
+    monkeypatch.setattr(dispatch, "DiseaseNER", WorkerNER)
+    ner = DiseaseNER(gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    dispatch._mine_shard([("S1", "D1", "asthma")], ner._config(), "cuda:2", in_worker=True)
+    assert calls == [("configure_logging", tmp_path, "cuda:2"), ("construct_ner", "cuda:2")]
+
+
+def test_dispatch_announces_the_worker_log_directory_and_prunes_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The parent names the worker-log dir in the task log and prunes stale files before spawning.
+
+    Worker narration lives in files the Airflow task log never shows, so without this line there
+    is no pointer to it, and nothing else ever retires those per-process files.
+    """
+    announced: list[Any] = []
+    monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 3)
+    monkeypatch.setattr(dispatch, "stats", lambda _log, event, **fields: announced.append((event, fields)))
+
+    class FakeFuture:
+        def result(self) -> list[tuple[str, str, list[Mention]]]:
+            return []
+
+    class FakePool:
+        def __enter__(self) -> FakePool:
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def submit(self, _function: Any, _shard: list[Any], _config: dict[str, Any], _device: str, **_kwargs: Any) -> FakeFuture:
+            return FakeFuture()
+
+    monkeypatch.setattr(dispatch, "ProcessPoolExecutor", lambda **_kwargs: FakePool())
+    ner = DiseaseNER(gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    dispatch._mine_multi_gpu([("S1", "D1", "asthma")], ner, ("cuda:0",))
+    assert announced == [("ner_worker_logs", {"path": str(tmp_path / WORKER_LOG_SUBDIR), "pruned": 3})]
+
+
+def test_dispatch_submits_shards_with_the_in_worker_flag_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Every ``pool.submit`` opts the CHILD into the logging redirect (and only the child)."""
+    submitted: list[dict[str, Any]] = []
+
+    class FakeFuture:
+        def result(self) -> list[tuple[str, str, list[Mention]]]:
+            return []
+
+    class FakePool:
+        def __enter__(self) -> FakePool:
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def submit(self, _function: Any, _shard: list[Any], _config: dict[str, Any], _device: str, **kwargs: Any) -> FakeFuture:
+            submitted.append(kwargs)
+            return FakeFuture()
+
+    monkeypatch.setattr(dispatch, "ProcessPoolExecutor", lambda **_kwargs: FakePool())
+    ner = DiseaseNER(gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    dispatch._mine_multi_gpu([("S1", "D1", "asthma"), ("S2", "D2", "diabetes")], ner, ("cuda:0", "cuda:1"))
+    dispatch.mine_passes_multi_gpu([[("S1", "D1", "asthma")], [("S2", "D2", "diabetes")]], ner, ("cuda:0", "cuda:1"))
+    assert submitted == [{"in_worker": True}] * 4
+
+
+def test_announce_worker_logs_without_a_workdir_says_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No workdir: there is no worker-log directory to name or prune (the None branch)."""
+    announced: list[Any] = []
+    monkeypatch.setattr(dispatch, "stats", lambda _log, event, **_fields: announced.append(event))
+    dispatch._announce_worker_logs(None)
+    assert announced == []
+
+
 def test_four_device_sharding_creates_four_distinct_shards(monkeypatch: pytest.MonkeyPatch) -> None:
     """A sufficiently large workload schedules one independent shard per visible device."""
     submitted: list[tuple[list[Any], str]] = []
@@ -64,7 +166,7 @@ def test_four_device_sharding_creates_four_distinct_shards(monkeypatch: pytest.M
         def __exit__(self, *_args: Any) -> None:
             return None
 
-        def submit(self, function: Any, shard: list[Any], _config: dict[str, Any], device: str) -> FakeFuture:
+        def submit(self, _function: Any, shard: list[Any], _config: dict[str, Any], device: str, **_kwargs: Any) -> FakeFuture:
             submitted.append((shard, device))
             return FakeFuture()
 

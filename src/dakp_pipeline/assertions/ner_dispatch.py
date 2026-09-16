@@ -32,7 +32,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from dakp_pipeline.logging_setup import logger, stats
+from dakp_pipeline.logging_setup import WORKER_LOG_SUBDIR, configure_worker_logging, logger, prune_worker_logs, stats
 from dakp_pipeline.ner.mention_cache import MentionCache, mention_key, ner_cache_material
 from dakp_pipeline.ner.ner import DiseaseNER, Mention, _cuda_device_supported
 
@@ -99,6 +99,19 @@ def _item_parts(item: Any) -> tuple[str, str, str]:
     return item[0], item[1], item[2]
 
 
+def _announce_worker_logs(workdir: Any) -> None:
+    """Name the worker-log directory in the TASK log, then prune stale files from it.
+
+    Spawned workers write their narration to their own files
+    (:func:`~dakp_pipeline.logging_setup.configure_worker_logging`), so without this line the
+    Airflow task log would give no hint that those diagnostics exist or where to read them.
+    Pruning runs here, in the single parent, before any worker opens a file.
+    """
+    if workdir is None:
+        return
+    stats(logger, "ner_worker_logs", path=str(Path(workdir) / WORKER_LOG_SUBDIR), pruned=prune_worker_logs(workdir))
+
+
 def _shard_by_text_length(items: Sequence[Any], n: int) -> list[list[Any]]:
     """Distribute work items across ``n`` shards, balanced by text length (LPT scheduling).
 
@@ -114,14 +127,30 @@ def _shard_by_text_length(items: Sequence[Any], n: int) -> list[list[Any]]:
     return shards
 
 
-def _mine_shard(shard: Sequence[Any], ner_config: dict[str, Any], device: str) -> list[tuple[str, str, list[Mention]]]:
+def _mine_shard(shard: Sequence[Any], ner_config: dict[str, Any], device: str, *, in_worker: bool = False) -> list[tuple[str, str, list[Mention]]]:
     """ProcessPoolExecutor worker: load GLiNER on ``device``, mine each text, return mentions.
 
     Reconstructs a :class:`DiseaseNER` from the picklable ``ner_config`` pinned to ``device``,
     then runs extraction over every ``(set_id, doc_id, text)`` item in its shard. The model
     loads lazily on the first extract call, so each worker initializes its own CUDA context
     (safe under the ``spawn`` start method).
+
+    ``in_worker`` is passed ONLY by the two ``pool.submit`` call sites, so the process-global
+    logging reconfiguration below can never fire in the parent. It is an explicit flag rather
+    than a runtime probe because :func:`multiprocessing.parent_process` does not discriminate:
+    it reports the Airflow task process itself as a child (LocalExecutor runs tasks under a
+    ``multiprocessing.Process``, and the supervisor forks the task), so an in-process call
+    would have wiped the TASK's loguru sinks and root handler.
+
+    When set, logging is reconfigured FIRST, before any heavy import can emit: a spawned child
+    inherits no sinks, so loguru's default ``sys.stderr`` sink, ``transformers`` / ``torch``
+    (which own their stderr handlers), and :mod:`warnings` would all reach Airflow as
+    ERROR-level ``task.stderr`` noise for perfectly healthy records.
+    :func:`~dakp_pipeline.logging_setup.configure_worker_logging` redirects the child's stderr
+    fd to ``<workdir>/logs/workers/<device>-<pid>.log``.
     """
+    if in_worker:
+        configure_worker_logging(ner_config.get("workdir"), device)
     ner = DiseaseNER(device=device, **ner_config)
     items = [_item_parts(item) for item in shard]
     mentions = ner.extract_batch([text for _set_id, _doc_id, text in items])
@@ -139,10 +168,11 @@ def _mine_multi_gpu(work_items: Sequence[Any], ner: DiseaseNER, devices: Sequenc
     n_workers = min(len(devices), len(work_items))
     shards = _shard_by_text_length(work_items, n_workers)
     ner_config = ner._config()
+    _announce_worker_logs(ner_config.get("workdir"))
     ctx = mp.get_context("spawn")
     results: dict[tuple[str, str], list[Mention]] = {}
     with _spawn_safe_main(), ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
-        futures = [pool.submit(_mine_shard, shard, ner_config, devices[i]) for i, shard in enumerate(shards)]
+        futures = [pool.submit(_mine_shard, shard, ner_config, devices[i], in_worker=True) for i, shard in enumerate(shards)]
         for future in futures:
             for set_id, doc_id, mentions in future.result():
                 results[(set_id, doc_id)] = mentions
@@ -179,6 +209,7 @@ def mine_passes_multi_gpu(passes: Sequence[Sequence[Any]], ner: DiseaseNER, devi
 
     groups = _group_devices(list(devices), len(nonempty))
     ner_config = ner._config()
+    _announce_worker_logs(ner_config.get("workdir"))
     ctx = mp.get_context("spawn")
     n_workers = sum(min(len(group), len(items)) for items, group in zip(nonempty, groups, strict=True))
 
@@ -187,7 +218,7 @@ def mine_passes_multi_gpu(passes: Sequence[Sequence[Any]], ner: DiseaseNER, devi
         futures = []
         for items, group in zip(nonempty, groups, strict=True):
             shards = _shard_by_text_length(items, min(len(group), len(items)))
-            futures.extend(pool.submit(_mine_shard, shard, ner_config, group[index]) for index, shard in enumerate(shards))
+            futures.extend(pool.submit(_mine_shard, shard, ner_config, group[index], in_worker=True) for index, shard in enumerate(shards))
         for future in futures:
             for set_id, doc_id, mentions in future.result():
                 results[(set_id, doc_id)] = mentions

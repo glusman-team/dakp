@@ -5,11 +5,32 @@ monkeypatch ``urllib.request.urlopen`` — notably ``tests/integration/test_prod
 which exercises the REAL fetcher download branches through that seam — stay deterministic and
 network-free even though the bundled aria2c binary is installed. The aria2c code paths are
 covered directly by ``tests/unit/test_downloader.py``, which opts back in per test.
+
+Also arms coverage measurement inside ``spawn``-started child processes (see
+:func:`_enable_subprocess_coverage`).
 """
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
+
+
+def _enable_subprocess_coverage() -> None:
+    """Point ``COVERAGE_PROCESS_START`` at this repo's config so child processes are measured.
+
+    The per-GPU NER workers run under the ``spawn`` start method, so a child is a brand-new
+    interpreter that inherits no coverage tracer. The installed ``coverage`` ``.pth`` file calls
+    ``coverage.process_startup()`` at interpreter start, but ONLY when this variable is set, and
+    it must be set before any child is spawned (it is inherited through the environment).
+    Pairs with ``parallel``/``concurrency`` in ``[tool.coverage.run]``.
+    """
+    os.environ.setdefault("COVERAGE_PROCESS_START", str(Path(__file__).resolve().parents[1] / "pyproject.toml"))
+
+
+_enable_subprocess_coverage()
 
 
 @pytest.fixture(autouse=True)

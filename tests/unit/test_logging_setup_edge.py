@@ -2,22 +2,48 @@
 
 Covers the stdlib->loguru bridge (:class:`InterceptHandler.emit`, including the custom-level
 ``ValueError`` fallback and the caller-frame walk), the loguru->``airflow.task`` forwarder
-(:func:`_stdlib_record_sink`) reached via ``configure_logging(for_airflow=True)``, and the
-``workdir is None`` branch of :func:`configure_logging`. Each test restores a clean logging
-configuration afterwards so global loguru/stdlib state never leaks into other tests.
+(:func:`_stdlib_record_sink`) reached via ``configure_logging(for_airflow=True)``, the
+``workdir is None`` branch of :func:`configure_logging`, and the spawned-worker configuration
+(:func:`configure_worker_logging`, which redirects the child's stderr fd so Airflow stops
+reading healthy child records as ERRORs). Each test restores a clean logging configuration
+afterwards so global loguru/stdlib state never leaks into other tests.
+
+The worker tests run the real thing in a real ``spawn``-started child (:func:`_run_in_child`):
+the fix is a file-descriptor redirect, and a child is the only place where fd 2, a fresh
+loguru, and libraries that own their own stderr handler all behave as they do in production.
+Asserting against an in-process fake would pin nothing.
 """
 
 from __future__ import annotations
 
 import logging
+import multiprocessing as mp
+import os
 import re
+import sys
+import time
+import warnings
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from loguru import logger
 
-from dakp_pipeline.logging_setup import FROM_LOGURU_ATTR, InterceptHandler, _stdlib_record_sink, bind, configure_logging, progress, stats, step
+from dakp_pipeline.logging_setup import (
+    FROM_LOGURU_ATTR,
+    WORKER_LOG_SUBDIR,
+    InterceptHandler,
+    _stdlib_record_sink,
+    _worker_log_name,
+    bind,
+    configure_logging,
+    configure_worker_logging,
+    progress,
+    prune_worker_logs,
+    stats,
+    step,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +51,7 @@ def _restore_logging() -> object:
     """Reset loguru sinks + stdlib root handlers before and after each test."""
     configure_logging()
     yield
+    logging.captureWarnings(False)  # configure_worker_logging turns this on globally
     configure_logging()
 
 
@@ -165,6 +192,167 @@ def test_configure_logging_is_idempotent_and_bind_returns_bound_logger(tmp_path:
     log = bind(task_id="edge", shard_id="x")
     log.info("bound fields")
     assert "bound fields" in (tmp_path / "logs" / "dakp.log").read_text(encoding="utf-8")
+
+
+# --- spawned-worker logging -------------------------------------------------------
+
+
+def _run_in_child(target: Callable[..., None], *args: object) -> str:
+    """Run ``target`` in a real ``spawn`` child with its stderr captured; return that stderr.
+
+    The parent's fd 2 is redirected to a pipe for the duration, because the production symptom
+    IS the child's stderr reaching the parent (where Airflow tags it ERROR): asserting the pipe
+    is empty is what proves the redirect works. The child is spawned, not forked, so it starts
+    with a fresh interpreter exactly as ``ProcessPoolExecutor`` workers do.
+    """
+    read_fd, write_fd = os.pipe()
+    saved = os.dup(2)
+    try:
+        os.dup2(write_fd, 2)
+        process = mp.get_context("spawn").Process(target=target, args=args)
+        process.start()
+        process.join(timeout=120)
+        assert process.exitcode == 0, f"worker child failed with exitcode {process.exitcode}"
+    finally:
+        os.dup2(saved, 2)
+        os.close(saved)
+        os.close(write_fd)
+    captured = os.read(read_fd, 1 << 20).decode("utf-8", "replace")
+    os.close(read_fd)
+    return captured
+
+
+def _worker_body(workdir: str, device: str) -> None:
+    """Child entry point: configure worker logging, then emit on every channel that misbehaved."""
+    configure_worker_logging(workdir, device)
+    # Imported AFTER configuration, as in production: both libraries attach their OWN
+    # StreamHandler(sys.stderr) and set propagate=False, so only the fd redirect catches them.
+    import torch
+    import transformers
+
+    # The imports themselves are the point (each installs its own stderr handler), not the values.
+    assert torch is not None
+    assert transformers is not None
+    logger.info("ner_model_load: model_id = fastino/gliner2-large-v1")
+    logger.debug("ner_gpu_lock: waited = false")
+    logging.getLogger("transformers.modeling_utils").warning("You are using a model of type `extractor`")
+    logging.getLogger("torch.cuda").warning("torch-owned handler line")
+    warnings.warn("Encoder rejected attn_implementation='sdpa'", RuntimeWarning, stacklevel=1)
+    print("native-library chatter", file=sys.stderr)  # stands in for native CUDA / tqdm output
+
+
+def test_worker_logging_redirects_every_stderr_channel_into_the_worker_file(tmp_path: Path) -> None:
+    """The regression test: nothing a healthy worker emits reaches the parent's stderr.
+
+    Airflow tags a task subprocess's stderr as ERROR-level ``task.stderr``, so every line that
+    escapes here is a false ERROR in the task log. All four channels (loguru, a library holding
+    its own stderr handler, :mod:`warnings`, and raw fd-2 writes) must land in the worker file.
+    """
+    leaked = _run_in_child(_worker_body, str(tmp_path), "cuda:0")
+
+    worker_logs = list((tmp_path / WORKER_LOG_SUBDIR).glob("cuda-0-*.log"))
+    assert len(worker_logs) == 1, f"expected exactly one worker log, got {worker_logs}"
+    contents = worker_logs[0].read_text(encoding="utf-8")
+    for expected in (
+        "ner_model_load: model_id = fastino/gliner2-large-v1",
+        "ner_gpu_lock: waited = false",
+        "You are using a model of type `extractor`",
+        "torch-owned handler line",
+        "Encoder rejected attn_implementation='sdpa'",
+        "native-library chatter",
+    ):
+        assert expected in contents, f"{expected!r} missing from the worker log"
+    assert leaked == "", f"worker output leaked to the parent's stderr: {leaked!r}"
+
+
+def _degraded_worker_body(workdir: str | None) -> None:
+    """Child entry point for the no-usable-file paths: narration is dropped, errors survive."""
+    configure_worker_logging(workdir, "cuda:0")  # must not raise even when unwritable
+    logger.info("routine narration that must stay out of the task log")
+    logger.error("a real worker failure")
+
+
+def test_worker_logging_without_workdir_keeps_errors_and_drops_narration(tmp_path: Path) -> None:
+    """``workdir`` None: stderr stays Airflow's, so only ERROR-and-up is allowed through."""
+    captured = _run_in_child(_degraded_worker_body, None)
+
+    assert "a real worker failure" in captured
+    assert "routine narration" not in captured
+    assert not (tmp_path / WORKER_LOG_SUBDIR).exists()
+
+
+def test_worker_logging_survives_an_unwritable_log_directory(tmp_path: Path) -> None:
+    """An unwritable workdir degrades to the ERROR-only fallback instead of failing the shard."""
+    readonly = tmp_path / "readonly"
+    readonly.mkdir()
+    readonly.chmod(0o500)
+    try:
+        captured = _run_in_child(_degraded_worker_body, str(readonly))
+    finally:
+        readonly.chmod(0o700)  # restore so tmp_path cleanup can remove it
+
+    assert "a real worker failure" in captured
+    assert "routine narration" not in captured
+
+
+def _chatty_worker_body(workdir: str, tag: str) -> None:
+    """Child entry point: many lines on ONE device, so interleaving would be visible."""
+    configure_worker_logging(workdir, "cuda:0")
+    for index in range(50):
+        logger.info("{}: line = {}", tag, index)
+
+
+def test_worker_logs_are_per_process_so_two_workers_never_share_a_file(tmp_path: Path) -> None:
+    """Two concurrent workers on the SAME device get separate, complete files.
+
+    ``_group_devices`` hands one device to several workers when passes outnumber GPUs (verified:
+    ``_group_devices(["cuda:0"], 3)`` repeats ``cuda:0``), so the pid, not the device, is what
+    makes a worker log unique. Sharing one file would interleave the two streams and make
+    loguru's rotation unsafe across processes.
+    """
+    context = mp.get_context("spawn")
+    processes = [context.Process(target=_chatty_worker_body, args=(str(tmp_path), tag)) for tag in ("WORKER-A", "WORKER-B")]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=120)
+        assert process.exitcode == 0
+
+    logs = sorted((tmp_path / WORKER_LOG_SUBDIR).glob("cuda-0-*.log"))
+    assert len(logs) == 2, f"expected one file per process, got {[p.name for p in logs]}"
+    # Each file holds exactly one worker's complete, uninterleaved stream.
+    tags_per_file = [{line.split(": line = ")[0].rsplit(" - ", 1)[-1] for line in path.read_text(encoding="utf-8").splitlines()} for path in logs]
+    assert sorted(tags_per_file, key=sorted) == [{"WORKER-A"}, {"WORKER-B"}]
+    assert [len(path.read_text(encoding="utf-8").splitlines()) for path in logs] == [50, 50]
+
+
+def test_prune_worker_logs_removes_only_stale_files(tmp_path: Path) -> None:
+    """Pruning retires aged worker logs and leaves fresh ones (and non-logs) alone."""
+    log_dir = tmp_path / WORKER_LOG_SUBDIR
+    log_dir.mkdir(parents=True)
+    stale = log_dir / "cuda-0-111.log"
+    fresh = log_dir / "cuda-1-222.log"
+    other = log_dir / "notes.txt"
+    for path in (stale, fresh, other):
+        path.write_text("x", encoding="utf-8")
+    old = time.time() - (30 * 24 * 60 * 60)
+    os.utime(stale, (old, old))
+
+    assert prune_worker_logs(tmp_path) == 1
+    assert not stale.exists()
+    assert fresh.exists()
+    assert other.exists()
+
+
+def test_prune_worker_logs_on_a_missing_directory_is_a_noop(tmp_path: Path) -> None:
+    """A first run (no worker-log directory yet) prunes nothing rather than raising."""
+    assert prune_worker_logs(tmp_path) == 0
+
+
+@pytest.mark.parametrize(("name", "expected"), [("cuda:0", "cuda-0"), ("cpu", "cpu"), ("//", "worker"), (".", "worker")])
+def test_worker_log_name_sanitizes_device_strings(name: str, expected: str) -> None:
+    """Device strings become filesystem-safe stems; a fully stripped name falls back to 'worker'."""
+    assert _worker_log_name(name) == expected
 
 
 # --- one-stat-per-line narration helpers ------------------------------------------
