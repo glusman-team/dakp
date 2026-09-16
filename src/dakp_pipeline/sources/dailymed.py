@@ -13,7 +13,11 @@ default **7**) is reused with **zero network I/O** for its ZIP — the cached re
 re-expanded into its SPL members exactly like the HTTP-304 path. The gate keys off the
 ``retrieved_at`` recorded in the release ZIP's manifest (no extra requests); a release is at
 most one window stale. ``force`` (run param) bypasses the gate; ``dailymed_max_age_days <= 0``
-disables it (always re-check via conditional GET). Each
+disables it (always re-check via conditional GET). A release listed in the index but 404 on
+the server (NLM publishes the listing before/without every S3 object) first falls back to its
+stale cached copy, else is skipped; skipped releases are bounded by the declared-corpus
+coverage floor (:data:`_MISSING_FILE_TOLERANCE`), so a broken tail shard degrades gracefully
+while a missing multi-GB part fails loudly. Each
 release ZIP's SPL XML members are extracted and ingested individually (the SPL extractor reads
 ``.xml``/``.xml.gz``, not ZIPs), mirroring the legacy ``getFullRelease.pl`` "extract XMLs into
 ``xmls/<bin>/...xml.gz``" step. ``release_limit`` (run param) bounds how many releases a bounded
@@ -65,6 +69,15 @@ _RELEASE_ZIP_HREF = re.compile(r'href="(?P<url>https?://[^"]+\.zip)"', re.IGNORE
 _DOWNLOAD_TIMEOUT = 60.0
 #: Max concurrent release downloads/cache checks within one DailyMed acquisition.
 _DOWNLOAD_CONCURRENCY = 4
+#: Tolerated share of the index-declared SPL corpus that may vanish (404 releases) before the
+#: acquisition fails loudly. NLM's index can advertise a ZIP S3 no longer holds (observed: the
+#: September 2026 cut listed a 35-file ``human_otc_part12`` tail shard the bucket never got),
+#: so a sliver of declared files is skippable while a missing multi-GB part (~5% of the corpus)
+#: still fails instead of silently building a hollow corpus.
+_MISSING_FILE_TOLERANCE = 0.01
+#: Fallback floor when the index declares no per-release file counts (layout drift): at most
+#: this many 404 releases are tolerated when coverage cannot be measured.
+_MAX_MISSING_RELEASES = 2
 _CHUNK = 1 << 20  # 1 MiB streaming window.
 #: Narration prefix for every log line this fetcher emits (one stat per line).
 _EVENT = "acquire_dailymed"
@@ -100,6 +113,7 @@ def _download_full_release(ctx: TaskContext) -> list[ArtifactRef]:
 
         index_html = _fetch_index(ctx, staging, store)
         release_urls = _apply_release_limit(_parse_release_zips(index_html), ctx)
+        declared_counts = _parse_declared_file_counts(index_html)
         stats(logger, _EVENT, releases_discovered=len(release_urls))
         if not release_urls:
             msg = "no DailyMed full-release ZIPs found in index (the listing page layout may have changed)"
@@ -110,9 +124,60 @@ def _download_full_release(ctx: TaskContext) -> list[ArtifactRef]:
         with ThreadPoolExecutor(max_workers=min(_DOWNLOAD_CONCURRENCY, len(release_urls))) as pool:
             futures = [pool.submit(_download_one, url, staging, store, max_age_days=max_age_days, force=force) for url in release_urls]
             # Collect in index order even when releases finish out of order.
-            refs = [ref for future in futures for ref in future.result()]
+            outcomes = [future.result() for future in futures]
+        refs = [ref for out_refs, _missing in outcomes for ref in out_refs]
+        missing_urls = [url for url, (_out_refs, missing) in zip(release_urls, outcomes, strict=True) if missing]
+        _enforce_release_coverage(missing_urls, declared_counts)
         stats(logger, _EVENT, spl_artifacts_acquired=len(refs))
         return refs
+
+
+def _enforce_release_coverage(missing_urls: list[str], declared_counts: dict[str, int]) -> None:
+    """Fail loudly when 404-skipped releases hollow out more than a sliver of the corpus.
+
+    Tolerance is measured against the per-release file counts the index itself declares
+    (:func:`_parse_declared_file_counts`): a broken tail shard (a handful of files) degrades
+    gracefully, while a missing multi-GB part — or wholesale bucket breakage — fails the
+    acquisition. When the missing releases carry no declared counts (layout drift), the floor
+    falls back to an absolute release count because coverage cannot be measured.
+    """
+    if not missing_urls:
+        return
+    missing_names = [url.rsplit("/", 1)[-1] for url in missing_urls]
+    undeclared = [url for url in missing_urls if url not in declared_counts]
+    declared_total = sum(declared_counts.values())
+    if declared_total > 0 and not undeclared:
+        declared_missing = sum(declared_counts[url] for url in missing_urls)
+        coverage_loss = declared_missing / declared_total
+        stats(
+            logger,
+            _EVENT,
+            releases_missing=len(missing_urls),
+            missing_files_declared=declared_missing,
+            declared_files_total=declared_total,
+            coverage_loss=round(coverage_loss, 6),
+        )
+        if coverage_loss > _MISSING_FILE_TOLERANCE:
+            msg = (
+                f"DailyMed releases listed in the index but 404 on the server exceed the coverage floor: "
+                f"{', '.join(missing_names)} = {declared_missing}/{declared_total} declared files "
+                f"({coverage_loss:.1%} > {_MISSING_FILE_TOLERANCE:.1%}); refusing to build a hollow corpus"
+            )
+            raise RuntimeError(msg)
+        return
+    stats(logger, _EVENT, releases_missing=len(missing_urls), undeclared_missing=len(undeclared), declared_releases=len(declared_counts))
+    if len(missing_urls) > _MAX_MISSING_RELEASES:
+        drift = (
+            "the index declares no per-release file counts"
+            if not declared_counts
+            else f"{len(undeclared)} of the missing releases carry no declared file counts (index layout drift?)"
+        )
+        msg = (
+            f"DailyMed releases listed in the index but 404 on the server exceed the fallback floor: "
+            f"{', '.join(missing_names)} ({len(missing_urls)} > {_MAX_MISSING_RELEASES}); {drift}, "
+            f"so coverage cannot be measured"
+        )
+        raise RuntimeError(msg)
 
 
 def write_refs_manifest(ctx: TaskContext, refs: list[ArtifactRef]) -> ArtifactRef:
@@ -171,11 +236,10 @@ def _parse_release_zips(index_html: str) -> list[str]:
     Only links appearing after the ``Full Releases`` heading are kept, mirroring the
     legacy Perl parser's section scan.
     """
-    head = index_html.find(_FULL_RELEASES_HEADING)
-    section = index_html[head:] if head != -1 else index_html
-    seen: set[str] = set()
+    matches, _section = _release_zip_matches(index_html)
     urls: list[str] = []
-    for match in _RELEASE_ZIP_HREF.finditer(section):
+    seen: set[str] = set()
+    for match in matches:
         url = match.group("url")
         if url not in seen:
             seen.add(url)
@@ -183,8 +247,43 @@ def _parse_release_zips(index_html: str) -> list[str]:
     return urls
 
 
-def _download_one(url: str, staging: Path, store: ArtifactStore, *, max_age_days: float | None = None, force: bool = False) -> list[ArtifactRef]:
-    """Download one release ZIP and ingest its SPL XML members.
+def _release_zip_matches(index_html: str) -> tuple[list[re.Match[str]], str]:
+    """The release-ZIP href matches (in order) plus the section they were found in."""
+    head = index_html.find(_FULL_RELEASES_HEADING)
+    section = index_html[head:] if head != -1 else index_html
+    return list(_RELEASE_ZIP_HREF.finditer(section)), section
+
+
+#: ``Number of files`` bullet the index publishes per release ZIP (its declared file count).
+_DECLARED_FILES = re.compile(r"Number of files:?\s*</strong>\s*([\d,]+)", re.IGNORECASE)
+
+
+def _parse_declared_file_counts(index_html: str) -> dict[str, int]:
+    """Per-release SPL file counts the index declares next to each release link.
+
+    The index page publishes a small manifest per release ZIP (file count, size, MD5). The
+    counts give acquisition a coverage denominator, so a skipped release can be judged by the
+    share of the corpus it represents instead of guessed at (:func:`_enforce_release_coverage`).
+    Best-effort: a release without an adjacent count is simply absent from the mapping.
+    """
+    matches, section = _release_zip_matches(index_html)
+    counts: dict[str, int] = {}
+    for i, match in enumerate(matches):
+        chunk_end = matches[i + 1].start() if i + 1 < len(matches) else len(section)
+        declared = _DECLARED_FILES.search(section, match.end(), chunk_end)
+        if declared is not None:
+            counts[match.group("url")] = int(declared.group(1).replace(",", ""))
+    return counts
+
+
+def _download_one(
+    url: str, staging: Path, store: ArtifactStore, *, max_age_days: float | None = None, force: bool = False
+) -> tuple[list[ArtifactRef], bool]:
+    """Download one release ZIP and ingest its SPL XML members; ``(refs, missing)``.
+
+    ``missing=True`` marks a release that is listed in the index but 404 on the server (NLM's
+    index can advertise a ZIP S3 no longer holds); the caller weighs skipped releases against
+    the declared-corpus coverage floor (:func:`_enforce_release_coverage`).
 
     Freshness gate first: unless ``force`` (or ``max_age_days`` is ``None``), a release whose
     stored copy is younger than ``max_age_days`` skips the network entirely — the cached ZIP is
@@ -196,7 +295,8 @@ def _download_one(url: str, staging: Path, store: ArtifactStore, *, max_age_days
     ingested individually — those ``.xml``/``.xml.gz`` refs are what the SPL extractor
     consumes. On HTTP 304 the cached release ZIP is re-expanded into its SPL members (no
     re-download), so a re-run yields the same SPL refs the extractor needs; returns ``[]`` only
-    if a 304 occurs with no cached copy resolvable.
+    if a 304 occurs with no cached copy resolvable. On 404, a stale cached copy (however old)
+    is reused instead of nothing before the release is given up on.
     """
     name = url.rsplit("/", 1)[-1]
     alias = f"dailymed/{name}"
@@ -215,7 +315,7 @@ def _download_one(url: str, staging: Path, store: ArtifactStore, *, max_age_days
                 if refs is not None:
                     stats(logger, release_event, fresh_skip=True, cache_hit=True, age_days=round(age, 2), max_age_days=max_age_days)
                     stats(logger, release_event, spl_documents_ingested=len(refs), elapsed_s=round(time.monotonic() - gate_started, 3))
-                    return refs
+                    return refs, False
                 stats(logger, release_event, fresh_skip=True, cache_members_missing=True)
                 refs = _expand_release_zip(
                     cached.uri,
@@ -227,17 +327,58 @@ def _download_one(url: str, staging: Path, store: ArtifactStore, *, max_age_days
                     release_artifact_id=cached.blake3,
                 )
                 stats(logger, release_event, spl_documents_ingested=len(refs), elapsed_s=round(time.monotonic() - gate_started, 3))
-                return refs
+                return refs, False
     source = _prior_source(store, alias=alias)
     started = time.monotonic()
-    etag, last_modified = _conditional_download(url, dest, source)
+    try:
+        etag, last_modified = _conditional_download(url, dest, source)
+    except urllib.error.HTTPError as exc:
+        if exc.code != http.HTTPStatus.NOT_FOUND:
+            raise
+        exc.close()
+        stats(logger, release_event, release_missing=True, http_status=exc.code)
+        # Best effort before skipping: a stale cached copy (however old) beats a hole in the
+        # corpus, mirroring what an expired gate or a 304 would have served.
+        cached = store.cached_ref(alias)
+        if cached is not None and cached.uri.exists():
+            stale_age = _release_age_days(store, alias)
+            refs = store.cached_refs(alias, cached.blake3)
+            if refs is None:
+                refs = _expand_release_zip(
+                    cached.uri,
+                    out_dir,
+                    store,
+                    SourceBlock(url=url, retrieved_at=_now_iso()),
+                    release_name=name,
+                    release_alias=alias,
+                    release_artifact_id=cached.blake3,
+                )
+            stats(
+                logger,
+                release_event,
+                stale_fallback=True,
+                stale_age_days=None if stale_age is None else round(stale_age, 2),
+                spl_documents_ingested=len(refs),
+                elapsed_s=round(time.monotonic() - gate_started, 3),
+            )
+            if stale_age is not None and max_age_days is not None and stale_age > max_age_days:
+                logger.warning(
+                    "{}: release {} is 404 upstream; serving the cached copy from {:.1f} days ago (freshness window {:.1f} days)",
+                    _EVENT,
+                    name,
+                    stale_age,
+                    max_age_days,
+                )
+            return refs, False
+        logger.warning("{}: release {} is listed in the index but 404 on the server; skipped (coverage floor applies)", _EVENT, name)
+        return [], True
     if not dest.exists():
         # 304 Not Modified: the cached release ZIP is still current — re-expand it into its SPL XML
         # members (no re-download). The SPL extractor consumes the .xml/.xml.gz refs, not the ZIP.
         stats(logger, release_event, cache_fresh=True)
         cached = store.cached_ref(alias)
         if cached is None:
-            return []
+            return [], False
         refs = store.cached_refs(alias, cached.blake3)
         if refs is None:
             refs = _expand_release_zip(
@@ -250,7 +391,7 @@ def _download_one(url: str, staging: Path, store: ArtifactStore, *, max_age_days
                 release_artifact_id=cached.blake3,
             )
         stats(logger, release_event, spl_documents_ingested=len(refs), elapsed_s=round(time.monotonic() - started, 3))
-        return refs
+        return refs, False
     stats(logger, release_event, bytes=dest.stat().st_size, elapsed_s=round(time.monotonic() - started, 3))
     src_block = SourceBlock(url=url, etag=etag, last_modified=last_modified, retrieved_at=_now_iso())
     ref, cache_hit = store.ingest(dest, alias=alias, source=src_block)
@@ -258,7 +399,7 @@ def _download_one(url: str, staging: Path, store: ArtifactStore, *, max_age_days
     refs = _expand_release_zip(dest, out_dir, store, src_block, release_name=name, release_alias=alias, release_artifact_id=ref.blake3)
     dest.unlink(missing_ok=True)  # staged zip no longer needed once its XMLs are content-addressed
     stats(logger, release_event, spl_documents_ingested=len(refs), elapsed_s=round(time.monotonic() - started, 3))
-    return refs
+    return refs, False
 
 
 def _apply_release_limit(urls: list[str], ctx: TaskContext) -> list[str]:

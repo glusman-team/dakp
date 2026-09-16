@@ -504,7 +504,7 @@ def test_dailymed_release_304_without_cache_returns_empty(tmp_path: Path) -> Non
     orig = dm._conditional_download
     dm._conditional_download = fake_conditional  # type: ignore[method-assign]
     try:
-        assert dm._download_one("https://x/never.zip", staging, store) == []
+        assert dm._download_one("https://x/never.zip", staging, store) == ([], False)
     finally:
         dm._conditional_download = orig  # type: ignore[method-assign]
 
@@ -643,7 +643,7 @@ def test_dailymed_fresh_gate_falls_through_when_cache_vanishes(tmp_path: Path, m
         return None, None
 
     monkeypatch.setattr(dailymed, "_conditional_download", fake_conditional)
-    assert dailymed._download_one("https://x/never.zip", staging, store, max_age_days=7.0) == []
+    assert dailymed._download_one("https://x/never.zip", staging, store, max_age_days=7.0) == ([], False)
 
 
 def test_dailymed_release_age_days_edges(tmp_path: Path) -> None:
