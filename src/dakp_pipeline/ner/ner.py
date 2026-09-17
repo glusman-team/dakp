@@ -1041,24 +1041,7 @@ class DiseaseNER:
         for text_index, text in active:
             windows.extend((text_index, start, window) for start, window in _windows(text, budget))
         texts = [window for _text_index, _start, window in windows]
-        if hasattr(model, "batch_extract"):
-            raw_batches = model.batch_extract(
-                texts,
-                self._schema_for_model(model),
-                batch_size=self._inference_batch_size,
-                threshold=self._threshold,
-                include_confidence=True,
-                include_spans=True,
-            )
-        else:
-            raw_batches = model.batch_extract_entities(
-                texts,
-                self._model_labels,
-                batch_size=self._inference_batch_size,
-                threshold=self._threshold,
-                include_confidence=True,
-                include_spans=True,
-            )
+        raw_batches = self._infer_windows(model, texts)
         object_spans: dict[int, list[list[_ModelSpan]]] = {index: [] for index, _text in active}
         qualifier_spans: dict[int, list[_ModelSpan]] = {index: [] for index, _text in active}
         for (text_index, window_start, window), raw in zip(windows, raw_batches, strict=True):
@@ -1082,6 +1065,51 @@ class DiseaseNER:
         return output
 
     # -- production model (lazy) -----------------------------------------------
+    def _raw_batch_extract(self, model: Any, texts: list[str]) -> list[Any]:
+        """One batched GLiNER2 inference call over ``texts`` (whole vocabulary, both channels)."""
+        if hasattr(model, "batch_extract"):
+            return model.batch_extract(
+                texts,
+                self._schema_for_model(model),
+                batch_size=self._inference_batch_size,
+                threshold=self._threshold,
+                include_confidence=True,
+                include_spans=True,
+            )
+        return model.batch_extract_entities(
+            texts, self._model_labels, batch_size=self._inference_batch_size, threshold=self._threshold, include_confidence=True, include_spans=True
+        )
+
+    def _infer_windows(self, model: Any, texts: list[str]) -> list[Any]:
+        """Batched GLiNER2 inference over ``texts`` with per-window isolation on failure.
+
+        One pathological window (weird SPL markup, hostile unicode) can raise inside the
+        GLiNER2 forward pass — observed as ``IndexError: string index out of range`` — and
+        failing the whole batched call discards an ENTIRE multi-hour mining shard whose
+        ``ProcessPoolExecutor`` worker logs no traceback of its own. So the first batch failure
+        falls back to one-window-per-call inference: healthy windows keep their batched results,
+        and a window that still raises is logged with a text preview + traceback and yields the
+        canonical empty result (no spans) instead of poisoning the shard.
+        """
+        try:
+            return self._raw_batch_extract(model, texts)
+        except Exception:
+            # Per-window calls re-import/reuse the SAME loaded model — no reload cost; the loss
+            # is batching efficiency for this shard only.
+            logger.exception("ner_batch_infer: batched inference failed ({} windows); isolating poisoned windows", len(texts))
+        raw: list[Any] = []
+        poisoned = 0
+        for text in texts:
+            try:
+                raw.append(self._raw_batch_extract(model, [text])[0])
+            except Exception:
+                poisoned += 1
+                logger.exception("ner_batch_infer: poisoned window dropped (preview={!r})", text[:200])
+                raw.append({"entities": {}})
+        if poisoned:
+            logger.error("ner_batch_infer: poisoned_windows = {} of {}", poisoned, len(texts))
+        return raw
+
     def _schema_for_model(self, model: Any) -> Any:
         if self._schema is None:
             from gliner2.inference.schema import AttributeGroup  # type: ignore[import-not-found]

@@ -52,6 +52,23 @@ class _FakeExtractorModel:
         return {"entities": {}}
 
 
+class _FlakyBatchModel:
+    """GLiNER2 stand-in whose batched call raises on windows containing ``POISON``.
+
+    Mirrors the observed production failure: one pathological window kills the whole batched
+    inference with ``IndexError: string index out of range``.
+    """
+
+    calls: ClassVar[list[list[str]]] = []
+
+    @staticmethod
+    def batch_extract_entities(texts: list[str], _labels: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        _FlakyBatchModel.calls.append(list(texts))
+        if any("POISON" in text for text in texts):
+            raise IndexError("string index out of range")
+        return [{"entities": {}} for _ in texts]
+
+
 class _FakeAutoExtractor:
     loaded_map_location: ClassVar[list[str]] = []
 
@@ -373,6 +390,38 @@ def test_acquire_gpu_lock_timeout_still_raises_when_no_orphan_holds(monkeypatch:
             _try_lock(tmp_path / "cuda-0.lock")
     finally:
         os.close(holder_fd)
+
+
+# --- extract_batch: poisoned-window isolation -----------------------------------
+
+
+def test_extract_batch_isolates_poisoned_windows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """One poisoned window must not fail the shard: fallback isolates it to an empty result.
+
+    Regression guard for the run-8 IndexError: a batched gliner2 call raising mid-shard used to
+    propagate out of ``extract_batch`` and fail a multi-hour mining task.
+    """
+    _install_fake_gliner2(monkeypatch, tmp_path)
+    backend = DiseaseNER(offline=False, device="cpu", workdir=tmp_path)
+    model = _FlakyBatchModel()
+    _FlakyBatchModel.calls = []
+    monkeypatch.setattr(backend, "_load_model", lambda: model)
+    out = backend.extract_batch(["asthma in adults", "POISON \x00 garbage", "chronic hives"])
+    assert len(out) == 3
+    assert out[1] == []  # poisoned window: loud log + no spans, never an exception
+    assert len(_FlakyBatchModel.calls) > 1  # batch failed, then per-window fallback ran
+    assert any("POISON" in text for text in _FlakyBatchModel.calls[0])  # the poison really was in the batch
+
+
+def test_extract_batch_healthy_shard_stays_on_one_batched_call(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_fake_gliner2(monkeypatch, tmp_path)
+    backend = DiseaseNER(offline=False, device="cpu", workdir=tmp_path)
+    model = _FlakyBatchModel()
+    _FlakyBatchModel.calls = []
+    monkeypatch.setattr(backend, "_load_model", lambda: model)
+    out = backend.extract_batch(["asthma in adults", "chronic hives"])
+    assert len(out) == 2
+    assert len(_FlakyBatchModel.calls) == 1  # healthy shard: exactly the one batched call, no fallback
 
 
 # --- _gpu_lock_timeout_seconds resolution --------------------------------------
