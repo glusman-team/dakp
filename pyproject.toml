@@ -188,10 +188,14 @@ packages = ["src/dakp_pipeline"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # `-n auto` runs the suite in parallel across all cores via pytest-xdist (pytest-cov combines the
-# per-worker coverage data, so the 100% branch gate below still holds). `--cov` is baked in so the
-# fail_under gate runs on every invocation. Heavy imports (Airflow) are deferred to fixtures so
-# per-worker collection stays cheap (see tests/unit/conftest.py).
-addopts = "-q -n auto --cov"
+# per-worker coverage data, so the 100% branch gate below still holds). `--cov=dakp_pipeline` is
+# baked in so the fail_under gate runs on every invocation. The package name is EXPLICIT: bare
+# `--cov` takes an optional path VALUE, so under pytest-cov >= 7 it silently swallowed the first
+# positional argument of a targeted run (`pytest tests/unit/test_x.py` -> the path became the
+# coverage source and testpaths kicked in, running the whole 1145-test suite instead of one
+# file). Heavy imports (Airflow) are deferred to fixtures so per-worker collection stays cheap
+# (see tests/unit/conftest.py).
+addopts = "-q -n auto --cov=dakp_pipeline"
 markers = ["network: tests that require internet access"]
 
 [tool.coverage.run]

@@ -20,6 +20,7 @@ import logging
 import multiprocessing as mp
 import os
 import re
+import select
 import sys
 import time
 import warnings
@@ -204,6 +205,14 @@ def _run_in_child(target: Callable[..., None], *args: object) -> str:
     IS the child's stderr reaching the parent (where Airflow tags it ERROR): asserting the pipe
     is empty is what proves the redirect works. The child is spawned, not forked, so it starts
     with a fresh interpreter exactly as ``ProcessPoolExecutor`` workers do.
+
+    The capture never waits for pipe EOF. On the FIRST ``spawn`` use in an interpreter,
+    ``Process.start()`` also spawns the multiprocessing ``resource_tracker``, which inherits
+    fd 2 (the pipe's write end) and stays alive for the whole process — so EOF may never
+    arrive and a plain ``os.read`` deadlocks (observed as a permanently hung test run when
+    this file executed first in its pytest process). The child is already joined (and its
+    exit code asserted) before reading, so every byte it will ever write is already in the
+    kernel pipe buffer; one bounded ``select`` + drain collects exactly that.
     """
     read_fd, write_fd = os.pipe()
     saved = os.dup(2)
@@ -217,9 +226,14 @@ def _run_in_child(target: Callable[..., None], *args: object) -> str:
         os.dup2(saved, 2)
         os.close(saved)
         os.close(write_fd)
-    captured = os.read(read_fd, 1 << 20).decode("utf-8", "replace")
+    captured = b""
+    while select.select([read_fd], [], [], 1.0)[0]:
+        chunk = os.read(read_fd, 65536)
+        if not chunk:
+            break
+        captured += chunk
     os.close(read_fd)
-    return captured
+    return captured.decode("utf-8", "replace")
 
 
 def _worker_body(workdir: str, device: str) -> None:
@@ -305,8 +319,8 @@ def _chatty_worker_body(workdir: str, tag: str) -> None:
 def test_worker_logs_are_per_process_so_two_workers_never_share_a_file(tmp_path: Path) -> None:
     """Two concurrent workers on the SAME device get separate, complete files.
 
-    ``_group_devices`` hands one device to several workers when passes outnumber GPUs (verified:
-    ``_group_devices(["cuda:0"], 3)`` repeats ``cuda:0``), so the pid, not the device, is what
+    A device is not a unique worker key (sequential shape tasks and repeated dispatches reuse
+    each device with a fresh process), so the pid, not the device, is what
     makes a worker log unique. Sharing one file would interleave the two streams and make
     loguru's rotation unsafe across processes.
     """
