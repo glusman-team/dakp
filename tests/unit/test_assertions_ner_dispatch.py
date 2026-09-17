@@ -1,8 +1,7 @@
 """Unit tests for the shared NER dispatch plumbing (assertions/ner_dispatch.py).
 
-Covers the generalized multi-pass GPU dispatch (mine_passes_multi_gpu / _group_devices)
-beyond what the contraindication shaper's historical two-pass tests exercise, plus the
-persistent mention-cache seam (mine_with_cache). All tests run offline with gazetteer-only
+Covers the per-GPU dispatch primitives (``_mine_shard`` worker, ``_mine_multi_gpu`` LPT
+orchestrator, device resolution) plus the persistent mention-cache seam (``mine_with_cache``). All tests run offline with gazetteer-only
 DiseaseNERs on "cpu" devices (the spawn pool is real); cache tests use a fake in-memory
 cache and a production-mode backend whose ``extract`` is monkeypatched — GLiNER never loads.
 """
@@ -16,7 +15,7 @@ from typing import Any
 import pytest
 
 import dakp_pipeline.assertions.ner_dispatch as dispatch
-from dakp_pipeline.assertions.ner_dispatch import _group_devices, default_ner, mine_passes_multi_gpu, mine_with_cache
+from dakp_pipeline.assertions.ner_dispatch import default_ner, mine_with_cache
 from dakp_pipeline.logging_setup import WORKER_LOG_SUBDIR
 from dakp_pipeline.ner import model_cache
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
@@ -26,7 +25,7 @@ def _ner(*terms: str) -> DiseaseNER:
     return DiseaseNER(gazetteer=dict.fromkeys(terms, "disease"))
 
 
-# --- mine_passes_multi_gpu ------------------------------------------------------
+# --- _mine_shard worker ---------------------------------------------------------
 
 
 def test_shard_uses_one_batch_per_gpu_worker(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,8 +138,7 @@ def test_dispatch_submits_shards_with_the_in_worker_flag_set(monkeypatch: pytest
     monkeypatch.setattr(dispatch, "ProcessPoolExecutor", lambda **_kwargs: FakePool())
     ner = DiseaseNER(gazetteer={"asthma": "disease"}, workdir=tmp_path)
     dispatch._mine_multi_gpu([("S1", "D1", "asthma"), ("S2", "D2", "diabetes")], ner, ("cuda:0", "cuda:1"))
-    dispatch.mine_passes_multi_gpu([[("S1", "D1", "asthma")], [("S2", "D2", "diabetes")]], ner, ("cuda:0", "cuda:1"))
-    assert submitted == [{"in_worker": True}] * 4
+    assert submitted == [{"in_worker": True}] * 2
 
 
 def test_announce_worker_logs_without_a_workdir_says_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -177,49 +175,6 @@ def test_four_device_sharding_creates_four_distinct_shards(monkeypatch: pytest.M
     assert [device for _shard, device in submitted] == ["cuda:0", "cuda:1", "cuda:2", "cuda:3"]
     assert sorted(item[1] for shard, _device in submitted for item in shard) == [f"D{i}" for i in range(8)]
     assert all(shard for shard, _device in submitted)
-
-
-def test_mine_passes_multi_gpu_all_passes_empty() -> None:
-    """No work in any pass: empty result map, no pool dispatched."""
-    assert mine_passes_multi_gpu([[], []], _ner("asthma"), ("cpu", "cpu")) == {}
-
-
-def test_mine_passes_multi_gpu_single_nonempty_pass_uses_multi_gpu() -> None:
-    """One nonempty pass: all devices go to it (the _mine_multi_gpu fallback)."""
-    results = mine_passes_multi_gpu([[], [("SET-B", "DOC-B", "diabetes")]], _ner("diabetes"), ("cpu", "cpu"))
-    assert [m.text for m in results[("SET-B", "DOC-B")]] == ["diabetes"]
-
-
-def test_mine_passes_multi_gpu_splits_devices_across_three_passes() -> None:
-    """Three passes share the device list contiguously; every pass's mentions are collected."""
-    passes = [[("SET-A", "DOC-A", "asthma")], [("SET-B", "DOC-B", "diabetes")], [("SET-C", "DOC-C", "epilepsy")]]
-    results = mine_passes_multi_gpu(passes, _ner("asthma", "diabetes", "epilepsy"), ("cpu", "cpu", "cpu"))
-    assert set(results.keys()) == {("SET-A", "DOC-A"), ("SET-B", "DOC-B"), ("SET-C", "DOC-C")}
-    assert [m.text for m in results[("SET-C", "DOC-C")]] == ["epilepsy"]
-
-
-def test_mine_passes_multi_gpu_one_device_two_passes_shares_it() -> None:
-    """Fewer devices than passes: the empty group falls back to the first device."""
-    passes = [[("SET-A", "DOC-A", "asthma")], [("SET-B", "DOC-B", "diabetes")]]
-    results = mine_passes_multi_gpu(passes, _ner("asthma", "diabetes"), ("cpu",))
-    assert [m.text for m in results[("SET-A", "DOC-A")]] == ["asthma"]
-    assert [m.text for m in results[("SET-B", "DOC-B")]] == ["diabetes"]
-
-
-# --- _group_devices --------------------------------------------------------------
-
-
-def test_group_devices_even_split() -> None:
-    assert _group_devices(["cuda:0", "cuda:1", "cuda:2", "cuda:3"], 2) == [["cuda:0", "cuda:1"], ["cuda:2", "cuda:3"]]
-
-
-def test_group_devices_remainder_goes_to_earlier_groups() -> None:
-    assert _group_devices(["cuda:0", "cuda:1", "cuda:2", "cuda:3"], 3) == [["cuda:0", "cuda:1"], ["cuda:2"], ["cuda:3"]]
-
-
-def test_group_devices_never_empty() -> None:
-    """k > len(devices): groups that would be empty defensively take the first device."""
-    assert _group_devices(["cuda:0"], 3) == [["cuda:0"], ["cuda:0"], ["cuda:0"]]
 
 
 # --- default_ner -----------------------------------------------------------------

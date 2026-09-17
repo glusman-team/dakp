@@ -8,9 +8,11 @@ Every shaper that mines DailyMed text with the composite NER backend
   runs; production shapers receive an injected ``params["ner"]`` instead.
 * **device resolution** — :func:`_resolve_devices` discovers every visible CUDA ordinal and
   filters it to torch-supported devices (None when unusable → sequential CPU mining).
-* **multi-GPU dispatch** — :func:`_mine_multi_gpu` / :func:`mine_passes_multi_gpu` shard
-  work items across one spawned worker per GPU (LPT-balanced by text length), with
-  byte-identical output regardless of dispatch mode.
+* **multi-GPU dispatch** — :func:`_mine_multi_gpu` shards work items across one spawned worker
+  per GPU (LPT-balanced by text length), with byte-identical output regardless of dispatch mode.
+  The shaper's three mining passes share ONE backend profile, so their work items are
+  dispatched as a single globally-balanced pool; a per-pass device split would pin the
+  dominant warnings pass to one GPU while the other GPUs idle.
 * **persistent caching** — :func:`mine_with_cache` fronts a shaper's mining path with the
   Pebble-backed mention cache (:mod:`~dakp_pipeline.ner.mention_cache`), so repeated DAG
   runs re-mine only previously-unseen texts.
@@ -135,7 +137,7 @@ def _mine_shard(shard: Sequence[Any], ner_config: dict[str, Any], device: str, *
     loads lazily on the first extract call, so each worker initializes its own CUDA context
     (safe under the ``spawn`` start method).
 
-    ``in_worker`` is passed ONLY by the two ``pool.submit`` call sites, so the process-global
+    ``in_worker`` is passed ONLY by the ``pool.submit`` call site, so the process-global
     logging reconfiguration below can never fire in the parent. It is an explicit flag rather
     than a runtime probe because :func:`multiprocessing.parent_process` does not discriminate:
     it reports the Airflow task process itself as a child (LocalExecutor runs tasks under a
@@ -177,64 +179,6 @@ def _mine_multi_gpu(work_items: Sequence[Any], ner: DiseaseNER, devices: Sequenc
             for set_id, doc_id, mentions in future.result():
                 results[(set_id, doc_id)] = mentions
     return results
-
-
-def _group_devices(devices: Sequence[str], k: int) -> list[list[str]]:
-    """Split ``devices`` into ``k`` contiguous, near-even groups (defensively never empty)."""
-    base, extra = divmod(len(devices), k)
-    groups: list[list[str]] = []
-    start = 0
-    for index in range(k):
-        size = base + (1 if index < extra else 0)
-        groups.append(list(devices[start : start + size]) or list(devices[:1]))
-        start += size
-    return groups
-
-
-def mine_passes_multi_gpu(passes: Sequence[Sequence[Any]], ner: DiseaseNER, devices: Sequence[str]) -> dict[tuple[str, str], list[Mention]]:
-    """Dispatch several extraction passes concurrently, splitting GPUs between them.
-
-    Generalizes the contraindication two-pass split to any number of passes: empty passes are
-    dropped, the device list is divided into contiguous near-even groups (one per remaining
-    pass, LPT-sharded by text length), and all passes are dispatched as futures in a single
-    :class:`~concurrent.futures.ProcessPoolExecutor` so they run in parallel. With zero or one
-    nonempty pass all GPUs fall back to :func:`_mine_multi_gpu`. Results merge into one
-    ``{(set_id, doc_id): [mentions]}`` map; output is byte-identical regardless of dispatch.
-    """
-    nonempty = [list(items) for items in passes if items]
-    if not nonempty:
-        return {}
-    if len(nonempty) == 1:
-        return _mine_multi_gpu(nonempty[0], ner, devices)
-
-    groups = _group_devices(list(devices), len(nonempty))
-    ner_config = ner._config()
-    _announce_worker_logs(ner_config.get("workdir"))
-    ctx = mp.get_context("spawn")
-    n_workers = sum(min(len(group), len(items)) for items, group in zip(nonempty, groups, strict=True))
-
-    results: dict[tuple[str, str], list[Mention]] = {}
-    with _spawn_safe_main(), ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
-        futures = []
-        for items, group in zip(nonempty, groups, strict=True):
-            shards = _shard_by_text_length(items, min(len(group), len(items)))
-            futures.extend(pool.submit(_mine_shard, shard, ner_config, group[index], in_worker=True) for index, shard in enumerate(shards))
-        for future in futures:
-            for set_id, doc_id, mentions in future.result():
-                results[(set_id, doc_id)] = mentions
-    return results
-
-
-def _mine_two_passes_multi_gpu(
-    work_items_p1: Sequence[Any], work_items_p2: Sequence[Any], ner: DiseaseNER, devices: Sequence[str]
-) -> dict[tuple[str, str], list[Mention]]:
-    """Dispatch two extraction passes concurrently, splitting GPUs between them.
-
-    Thin wrapper over :func:`mine_passes_multi_gpu` — the contraindication shaper's
-    (contraindication sections, filtered indication sections) mining shape. With either pass
-    empty, all GPUs fall back to the other pass via :func:`_mine_multi_gpu`.
-    """
-    return mine_passes_multi_gpu([work_items_p1, work_items_p2], ner, devices)
 
 
 #: A shaper's existing mining path (multi-GPU dispatch or sequential loop) over the given
@@ -322,4 +266,4 @@ def _spawn_safe_main() -> Iterator[None]:
         main.__spec__ = None
 
 
-__all__ = ["BUILD_HOST_GPUS", "MineFn", "default_ner", "mine_passes_multi_gpu", "mine_with_cache"]
+__all__ = ["BUILD_HOST_GPUS", "MineFn", "default_ner", "mine_with_cache"]

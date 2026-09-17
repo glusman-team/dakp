@@ -163,9 +163,9 @@ def _worker_log_name(name: str) -> str:
 def _worker_log_path(workdir: Path | str, name: str) -> Path:
     """Per-PROCESS worker log path: ``<workdir>/logs/workers/<name>-<pid>.log``.
 
-    The pid is part of the name because a device is NOT a unique worker key: when passes
-    outnumber GPUs, :func:`~dakp_pipeline.assertions.ner_dispatch._group_devices` hands the same
-    device to several concurrent workers. Keying on the pid guarantees no two processes ever
+    The pid is part of the name because a device is NOT a unique worker key: sequential shape
+    tasks and repeated dispatches reuse each device with a fresh process. Keying on the pid
+    guarantees no two processes ever
     write to one file, which is also why nothing rotates these files in place (see
     :func:`prune_worker_logs`).
     """

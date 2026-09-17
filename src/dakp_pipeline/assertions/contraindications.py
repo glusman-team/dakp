@@ -86,10 +86,9 @@ from dakp_pipeline.assertions.evidence import (
     spl_evidence_pipe,
     write_assertion_table,
 )
-from dakp_pipeline.assertions.ner_dispatch import BUILD_HOST_GPUS, _resolve_devices, default_ner, mine_passes_multi_gpu, mine_with_cache
+from dakp_pipeline.assertions.ner_dispatch import BUILD_HOST_GPUS, _resolve_devices, default_ner, mine_with_cache
 from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu as _mine_multi_gpu
 from dakp_pipeline.assertions.ner_dispatch import _mine_shard as _mine_shard
-from dakp_pipeline.assertions.ner_dispatch import _mine_two_passes_multi_gpu as _mine_two_passes_multi_gpu
 from dakp_pipeline.assertions.ner_dispatch import _shard_by_text_length as _shard_by_text_length
 from dakp_pipeline.assertions.ner_dispatch import _spawn_safe_main as _spawn_safe_main
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
@@ -476,8 +475,10 @@ def build_contraindication_rows(
 
     Mentions from all passes are paired with the set's single active ingredient and aggregated by
     ``(subject_text, object_text, disease_context_text)``. When ``devices`` is provided
-    (production multi-GPU), the passes are dispatched across the GPUs concurrently
-    (:func:`~dakp_pipeline.assertions.ner_dispatch.mine_passes_multi_gpu`). When ``cache`` (a
+    (production multi-GPU), work items from ALL passes are dispatched as one LPT-balanced pool
+    across the GPUs (:func:`~dakp_pipeline.assertions.ner_dispatch._mine_multi_gpu`) — every pass
+    shares this backend profile, and a per-pass device split would pin the dominant warnings
+    pass to a single GPU while the other GPUs idle. When ``cache`` (a
     persistent mention cache) is given, previously mined section texts are served from it via
     :func:`~dakp_pipeline.assertions.ner_dispatch.mine_with_cache` — it only changes WHERE
     mentions come from, never their content. Output is byte-identical regardless of dispatch
@@ -549,22 +550,13 @@ def build_contraindication_rows(
         sections_to_mine=len(all_work_items),
     )
 
-    # Extract mentions: multi-pass multi-GPU when devices given + production NER + >1 item;
-    # else sequential (with periodic progress narration — GLiNER mining is the slow step).
-    # mine_with_cache fronts the whole block: hits never reach the miners, only misses are
-    # dispatched (each pass is filtered to its own misses, preserving the pass split).
-    p1_items, p2_items, p3_items = set(work_items_p1), set(work_items_p2), set(work_items_p3)
-
+    # Extract mentions: multi-GPU when devices given + production NER + >1 item; else sequential
+    # (with periodic progress narration — GLiNER mining is the slow step). mine_with_cache fronts
+    # the whole block: hits never reach the miners, only misses are dispatched. All passes share
+    # ONE backend profile, so their misses go to the GPUs as a single LPT-balanced pool — the
+    # largest pass (full warnings text) otherwise dominated wall time alone on one GPU.
     def mine(items: Sequence[Any]) -> dict[tuple[str, str], list[Mention]]:
         if devices and len(items) > 1 and not ner._offline:
-            miss_p1 = [item for item in items if item in p1_items]
-            miss_p2 = [item for item in items if item in p2_items]
-            miss_p3 = [item for item in items if item in p3_items]
-            if miss_p3:
-                return mine_passes_multi_gpu([miss_p1, miss_p2, miss_p3], ner, devices)
-            if miss_p2 and len(devices) >= 2:
-                return _mine_two_passes_multi_gpu(miss_p1, miss_p2, ner, devices)
-            # No Pass 2/3 work, or too few devices to split — all GPUs on combined work.
             return _mine_multi_gpu(list(items), ner, devices)
         mined_seq: dict[tuple[str, str], list[Mention]] = {}
         for done, item in enumerate(items, start=1):

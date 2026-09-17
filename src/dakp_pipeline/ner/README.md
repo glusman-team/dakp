@@ -21,7 +21,7 @@ resolves the CURIEs.
   baseline and passes raw FAERS drug names through for downstream intervention mapping; it does
   not invoke NER.
 - `assertions/ner_dispatch.py` — the shared plumbing for these consumers: `default_ner`, GPU
-  device resolution, and multi-pass multi-GPU dispatch (`mine_passes_multi_gpu`).
+  device resolution, and LPT-balanced multi-GPU dispatch (`_mine_multi_gpu`).
 
 ## The settled composite (see `BENCHMARK.md`)
 

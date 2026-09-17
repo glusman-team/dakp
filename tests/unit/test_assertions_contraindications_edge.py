@@ -13,8 +13,8 @@ are needed.
 **Pass 2 tests** cover: the sentence keyword filter (``_split_sentences`` / ``_contraindication_sentences``);
 embedded contraindication provenance from indication sections (``SETID#34067-9``); false-positive
 prevention (indication-only diseases are NOT mined); no-regression on contraindication-only sets;
-a fake monkeypatched GLiNER mock for the production path; and ``_mine_two_passes_multi_gpu``
-2+2 parallel dispatch.
+a fake monkeypatched GLiNER mock for the production path; and the flattened multi-GPU dispatch
+(``_mine_multi_gpu`` receiving work items from every pass).
 """
 
 from __future__ import annotations
@@ -45,7 +45,6 @@ from dakp_pipeline.assertions.contraindications import (
     _mention_local_span,
     _mine_multi_gpu,
     _mine_shard,
-    _mine_two_passes_multi_gpu,
     _resolve_devices,
     _resolve_keywords,
     _sentence_spans,
@@ -907,39 +906,15 @@ def test_production_ner_mines_contraindication_from_indication(monkeypatch: pyte
     assert "hypertension" not in all_glimer_input.lower()  # sentence filter prevented it
 
 
-# --- _mine_two_passes_multi_gpu: 2+2 parallel dispatch -------------------------
+# --- multi-GPU dispatch: passes flatten into one pool ---------------------------
 
 
-def test_mine_two_passes_multi_gpu_splits_devices_and_collects() -> None:
-    """_mine_two_passes_multi_gpu shards both passes across half the GPUs each and collects results."""
-    ner = DiseaseNER(gazetteer={"asthma": "disease", "diabetes": "disease"})
-    work_p1 = [("SET-A", "DOC-A", "asthma")]
-    work_p2 = [("SET-B", "DOC-B", "diabetes")]
-    results = _mine_two_passes_multi_gpu(work_p1, work_p2, ner, ("cpu", "cpu"))
+def test_build_rows_dispatches_flattened_passes_for_production_ner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Production NER + devices + Pass 1 and Pass 2 work: _mine_multi_gpu gets BOTH passes' items.
 
-    assert set(results.keys()) == {("SET-A", "DOC-A"), ("SET-B", "DOC-B")}
-    assert [m.text for m in results[("SET-A", "DOC-A")]] == ["asthma"]
-    assert [m.text for m in results[("SET-B", "DOC-B")]] == ["diabetes"]
-
-
-def test_mine_two_passes_no_pass2_falls_back_to_single() -> None:
-    """When Pass 2 has no work items, _mine_two_passes_multi_gpu delegates to _mine_multi_gpu."""
-    ner = DiseaseNER(gazetteer={"asthma": "disease"})
-    work_p1 = [("SET-A", "DOC-A", "asthma")]
-    results = _mine_two_passes_multi_gpu(work_p1, [], ner, ("cpu", "cpu"))
-    assert [m.text for m in results[("SET-A", "DOC-A")]] == ["asthma"]
-
-
-def test_mine_two_passes_no_pass1_falls_back_to_single() -> None:
-    """When Pass 1 has no work items, all GPUs go to Pass 2."""
-    ner = DiseaseNER(gazetteer={"diabetes": "disease"})
-    work_p2 = [("SET-B", "DOC-B", "diabetes")]
-    results = _mine_two_passes_multi_gpu([], work_p2, ner, ("cpu", "cpu"))
-    assert [m.text for m in results[("SET-B", "DOC-B")]] == ["diabetes"]
-
-
-def test_build_rows_dispatches_two_passes_for_production_ner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Production NER + devices + both passes have work: build_contraindication_rows calls _mine_two_passes_multi_gpu."""
+    Every pass shares the shaper's backend profile, so a per-pass device split would pin the
+    dominant warnings pass to a single GPU while the others idle; the dispatch must flatten.
+    """
     sections = _mixed_sections(
         tmp_path,
         [
@@ -952,17 +927,17 @@ def test_build_rows_dispatches_two_passes_for_production_ner(monkeypatch: pytest
 
     called: list[dict[str, Any]] = []
 
-    def fake_two_pass(w1, w2, ner_arg, devs):
-        called.append({"p1": len(w1), "p2": len(w2), "devices": tuple(devs)})
+    def fake_multi_gpu(work_items, ner_arg, devs):
+        called.append({"items": len(work_items), "devices": tuple(devs)})
         offline = DiseaseNER(gazetteer=ner_arg._gazetteer)
-        return {(s, d): offline.extract(t) for s, d, t in w1 + w2}
+        return {(s, d): offline.extract(t) for s, d, t in work_items}
 
     import dakp_pipeline.assertions.contraindications as contra_mod
 
-    monkeypatch.setattr(contra_mod, "_mine_two_passes_multi_gpu", fake_two_pass)
+    monkeypatch.setattr(contra_mod, "_mine_multi_gpu", fake_multi_gpu)
 
     rows = build_contraindication_rows([sections, ingredients], ner, devices=("cuda:0", "cuda:1", "cuda:2", "cuda:3"))
-    assert called == [{"p1": 1, "p2": 1, "devices": ("cuda:0", "cuda:1", "cuda:2", "cuda:3")}]
+    assert called == [{"items": 2, "devices": ("cuda:0", "cuda:1", "cuda:2", "cuda:3")}]
     assert {r["subject_text"] for r in rows} == {"DrugX", "DrugY"}
 
 

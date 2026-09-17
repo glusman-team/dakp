@@ -4,7 +4,7 @@ Covers: evidence indexing of the boxed-warning (LOINC ``34066-1``) and warnings/
 (``43685-7``, ``34071-1``, ``42232-9``) sections; hard-trigger-only acceptance for
 warning-section mentions (soft caution language and explicit negation rejected); the
 singleton-ingredient discipline applied to Pass 3 sets; and production multi-GPU dispatch
-routing through ``mine_passes_multi_gpu`` when a third pass has work. Inputs are tiny parquet
+flattening all three passes into one pool when a third pass has work. Inputs are tiny parquet
 tables built in tmp so no heavy NER deps are needed.
 """
 
@@ -158,8 +158,8 @@ def test_pass3_set_without_ingredients_skipped(tmp_path: Path) -> None:
 # --- production dispatch -------------------------------------------------------
 
 
-def test_build_rows_dispatches_passes_multi_gpu_when_pass3_present(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Production NER + devices + work in all three passes: mine_passes_multi_gpu is called."""
+def test_build_rows_dispatches_flattened_when_pass3_present(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Production NER + devices + work in all three passes: every pass's items reach _mine_multi_gpu."""
     sections = _sections(
         tmp_path,
         [
@@ -175,15 +175,15 @@ def test_build_rows_dispatches_passes_multi_gpu_when_pass3_present(monkeypatch: 
 
     called: list[dict[str, Any]] = []
 
-    def fake_passes(passes, ner_arg, devs):
-        called.append({"passes": [len(p) for p in passes], "devices": tuple(devs)})
+    def fake_multi_gpu(work_items, ner_arg, devs):
+        called.append({"items": len(work_items), "devices": tuple(devs)})
         offline = DiseaseNER(gazetteer=ner_arg._gazetteer)
-        return {(s, d): offline.extract(t) for p in passes for s, d, t in p}
+        return {(s, d): offline.extract(t) for s, d, t in work_items}
 
     import dakp_pipeline.assertions.contraindications as contra_mod
 
-    monkeypatch.setattr(contra_mod, "mine_passes_multi_gpu", fake_passes)
+    monkeypatch.setattr(contra_mod, "_mine_multi_gpu", fake_multi_gpu)
 
     rows = build_contraindication_rows([sections, ingredients], ner, devices=("cuda:0", "cuda:1", "cuda:2", "cuda:3"))
-    assert called == [{"passes": [1, 1, 1], "devices": ("cuda:0", "cuda:1", "cuda:2", "cuda:3")}]
+    assert called == [{"items": 3, "devices": ("cuda:0", "cuda:1", "cuda:2", "cuda:3")}]
     assert {r["subject_text"] for r in rows} == {"DrugX", "DrugY", "DrugZ"}
