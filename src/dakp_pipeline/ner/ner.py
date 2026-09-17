@@ -54,10 +54,12 @@ Output is sorted deterministically by ``(start, end, type, text)``.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import itertools
 import os
 import re
+import signal
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -731,28 +733,91 @@ def _gpu_lock_timeout_seconds(timeout: float | None) -> float:
     return _DEFAULT_GPU_LOCK_TIMEOUT_SECONDS
 
 
-def _lock_holder_pids(path: Path) -> list[int]:
+def _lock_competitor_pids(path: Path, *, include_waiters: bool = False) -> list[int]:
     """PIDs holding an flock on ``path``, parsed from ``/proc/locks``; ``[]`` off-Linux or unreadable.
 
     ``/proc/locks`` lines carry ``<major>:<minor>:<inode>`` (hex device ids) matching
     ``os.stat(path)``'s device and inode; the PID is the field before it. Same-UID holders are
     always visible, which is exactly the pipeline case (workers run as the Airflow user).
+    With ``include_waiters`` the PIDs blocked in a kernel wait for the same flock (lines whose
+    entry starts with ``->``) are returned too — a leaked waiter wins the lock the instant the
+    holder dies and wedges the GPU just as hard as a leaked holder.
     """
     try:
         st = path.stat()
         want_dev = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}"
-        holders: list[int] = []
+        pids: list[int] = []
         with open("/proc/locks") as locks:
             for line in locks:
                 fields = line.split()
+                if len(fields) > 1 and fields[1] == "->":  # blocked waiter: drop the marker
+                    if not include_waiters:
+                        continue
+                    fields = fields[:1] + fields[2:]
                 if len(fields) < 6 or fields[1] != "FLOCK":
                     continue
                 dev, _, inode = fields[5].rpartition(":")
                 if dev == want_dev and inode == str(st.st_ino):
-                    holders.append(int(fields[4]))
-        return holders
+                    pids.append(int(fields[4]))
+        return pids
     except (OSError, ValueError, IndexError):
         return []
+
+
+def _lock_holder_pids(path: Path) -> list[int]:
+    """PIDs holding an flock on ``path`` (waiters excluded); ``[]`` off-Linux or unreadable."""
+    return _lock_competitor_pids(path)
+
+
+def _is_orphaned_spawn_worker(pid: int) -> bool:
+    """``True`` when ``pid`` is an orphaned (ppid 1, same UID) multiprocessing-spawn worker.
+
+    This is the exact signature of a GPU worker leaked by a crashed/killed task: its pool parent
+    is gone (reparented to PID 1) and it was started by ``multiprocessing.spawn`` (cmdline contains
+    ``multiprocessing.spawn`` + ``spawn_main``). Anything else — a live sibling task, another
+    user's process, a CLI run with a real parent — is NEVER a reap candidate. Off-Linux or on any
+    ``/proc`` read failure the answer is conservatively ``False``.
+    """
+    if pid <= 1 or pid == os.getpid():
+        return False
+    try:
+        if os.stat(f"/proc/{pid}").st_uid != os.getuid():
+            return False
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            ppid = int(fh.read().split()[3])  # field 4 (1-indexed): parent PID
+        if ppid != 1:
+            return False
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            cmdline = fh.read().decode("utf-8", errors="replace")
+        return "multiprocessing.spawn" in cmdline and "spawn_main" in cmdline
+    except (OSError, ValueError, IndexError):
+        return False
+
+
+def _reap_orphaned_lock_competitors(path: Path, grace: float = 10.0) -> list[int]:
+    """SIGKILL orphaned spawn workers holding or waiting on ``path``'s flock; return killed PIDs.
+
+    Recovery for the (observed twice) leak chain: a task dies with its GPU workers parked on the
+    device flock; the workers reparent to PID 1 and keep the flock (and the model + GPU memory)
+    forever, deadlocking every later run. Only candidates passing :func:`_is_orphaned_spawn_worker`
+    are killed — same UID, ppid 1, spawn-fork cmdline — and the caller re-checks the flock
+    afterwards. Waits up to ``grace`` seconds for each kill to land so the kernel has released
+    the flocks (and started tearing down CUDA contexts) before the caller retries.
+    """
+    candidates = [pid for pid in _lock_competitor_pids(path, include_waiters=True) if _is_orphaned_spawn_worker(pid)]
+    for pid in candidates:
+        logger.warning("ner_gpu_lock: reaping orphaned worker pid = {} ({})", pid, path)
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)  # already gone — a race is fine, the goal is the released flock
+    deadline = time.monotonic() + grace
+    for pid in candidates:
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break  # reaped: flock + GPU context released by the kernel
+            time.sleep(0.05)
+    return candidates
 
 
 def _acquire_gpu_lock(device: str, lock_dir: Path, timeout: float | None = None) -> int:
@@ -769,8 +834,11 @@ def _acquire_gpu_lock(device: str, lock_dir: Path, timeout: float | None = None)
     The wait is BOUNDED: a crashed task that leaked its workers leaves the flock held by
     orphans forever, and an unbounded wait deadlocked retries silently (observed 20+ h with
     zero GPU compute). Past the ceiling (``timeout``, else ``DAKP_GPU_LOCK_TIMEOUT_SECONDS``,
-    else one hour; ``0`` restores the unbounded wait) this raises :class:`GpuLockTimeoutError`
-    naming the holder PIDs from ``/proc/locks`` so the operator can kill exactly them.
+    else one hour; ``0`` restores the unbounded wait) this first reaps orphaned spawn workers
+    holding or waiting on the flock (:func:`_reap_orphaned_lock_competitors` — the leaked-worker
+    failure mode, verified against ``/proc`` before any kill) and retries once; only if the lock
+    is STILL contended does it raise :class:`GpuLockTimeoutError` naming the remaining holder
+    PIDs from ``/proc/locks``.
     """
     lock_dir.mkdir(parents=True, exist_ok=True)
     path = lock_dir / f"cuda-{_cuda_index(device)}.lock"
@@ -793,11 +861,24 @@ def _acquire_gpu_lock(device: str, lock_dir: Path, timeout: float | None = None)
                         break
                     except BlockingIOError:
                         if time.monotonic() >= deadline:
+                            # Ceiling hit: the failure mode to check for is a leaked worker from a
+                            # crashed task (orphaned spawn fork still holding/waiting on the
+                            # flock). Reap exactly those, then retry once before giving up.
+                            reaped = _reap_orphaned_lock_competitors(path)
+                            if reaped:
+                                try:
+                                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                    stats(
+                                        logger, "ner_gpu_lock", level="DEBUG", device=device, path=str(path), waited=True, reaped_orphans=len(reaped)
+                                    )
+                                    break
+                                except BlockingIOError:
+                                    pass  # someone else (not an orphan) grabbed it — report and fail
                             holders = _lock_holder_pids(path)
                             holder_desc = ",".join(str(pid) for pid in holders) if holders else "unknown (holder not visible in /proc/locks)"
                             raise GpuLockTimeoutError(
                                 f"cuda lock still held after {ceiling:.0f}s: device={device} path={path} holder_pids={holder_desc}. "
-                                f"A previous task likely crashed and leaked its NER workers; verify the holders are orphans (ppid 1) and kill them."
+                                f"Orphaned NER workers were reaped automatically (killed: {reaped or 'none'}); a live process is holding the lock."
                             ) from None
     except BaseException:
         os.close(fd)

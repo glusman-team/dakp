@@ -12,6 +12,8 @@ from __future__ import annotations
 import fcntl
 import io
 import os
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -31,7 +33,10 @@ from dakp_pipeline.ner.ner import (
     _cuda_index,
     _gpu_lock_dir,
     _gpu_lock_timeout_seconds,
+    _is_orphaned_spawn_worker,
+    _lock_competitor_pids,
     _lock_holder_pids,
+    _reap_orphaned_lock_competitors,
 )
 
 
@@ -182,6 +187,190 @@ def test_gpu_lock_timeout_comes_from_the_env(monkeypatch: pytest.MonkeyPatch, tm
         monkeypatch.setenv(_GPU_LOCK_TIMEOUT_ENV, "0.2")
         with pytest.raises(GpuLockTimeoutError):
             _acquire_gpu_lock("cuda:0", tmp_path)  # no explicit timeout: env wins over the default
+    finally:
+        os.close(holder_fd)
+
+
+# --- _lock_competitor_pids: holders AND kernel-blocked waiters ------------------
+
+
+def test_lock_competitor_pids_includes_kernel_waiters(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``include_waiters=True`` also returns PIDs parked in a kernel wait (the ``->`` lines).
+
+    Leaked waiters matter as much as leaked holders: the moment the holder dies, a blocked
+    orphan waiter wins the lock and wedges the GPU just the same.
+    """
+    path = tmp_path / "cuda-0.lock"
+    path.touch()
+    st = path.stat()
+    dev = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}"
+    fake_locks = "\n".join(
+        [
+            f"11: FLOCK  ADVISORY  WRITE 3113038 {dev}:{st.st_ino} 0 EOF",  # holder
+            f"11: -> FLOCK  ADVISORY  WRITE 3533957 {dev}:{st.st_ino} 0 EOF",  # waiter, same lock
+            f"12: -> FLOCK  ADVISORY  WRITE 999 {dev}:{st.st_ino + 1} 0 EOF",  # waiter, other lock
+            f"13: FLOCK  ADVISORY  WRITE 555 {dev}:{st.st_ino} 0 EOF",  # second holder
+        ]
+    )
+    monkeypatch.setattr("builtins.open", lambda *_a, **_k: io.StringIO(fake_locks))
+    assert _lock_holder_pids(path) == [3113038, 555]
+    assert _lock_competitor_pids(path, include_waiters=True) == [3113038, 3533957, 555]
+
+
+# --- _is_orphaned_spawn_worker: the reap safety filter ---------------------------
+
+
+def _fake_proc_entries(entries: dict[str, bytes]) -> Any:
+    """``builtins.open`` replacement serving ``entries`` and delegating everything else."""
+    real_open = open
+
+    def _open(file: Any, *args: Any, **kwargs: Any) -> Any:
+        key = os.fspath(file)
+        if key in entries:
+            return io.BytesIO(entries[key])
+        return real_open(file, *args, **kwargs)
+
+    return _open
+
+
+def _fake_proc_stat(entries: dict[str, int]) -> Any:
+    """``os.stat`` replacement answering ``st_uid`` for ``/proc/<pid>`` paths in ``entries``."""
+    real_stat = os.stat
+    uid = os.getuid()
+
+    def _stat(path: Any, *args: Any, **kwargs: Any) -> Any:
+        key = os.fspath(path)
+        if key.startswith("/proc/") and key.count("/") == 2 and key.split("/")[2].isdigit():
+            return types.SimpleNamespace(st_uid=entries.get(key, uid + 1))  # unknown pids: foreign uid
+        return real_stat(path, *args, **kwargs)
+
+    return _stat
+
+
+def test_is_orphaned_spawn_worker_matches_the_leak_signature(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ppid 1 + same UID + spawn-fork cmdline = reap candidate; every other shape is refused."""
+    live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        proc = f"/proc/{live.pid}"
+        orphan_stat = f"{live.pid} (python3) S 1 {proc} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"
+        child_stat = orphan_stat.replace(" S 1 ", f" S {os.getpid()} ", 1)
+        entries = {
+            f"{proc}/stat": orphan_stat.encode(),
+            f"{proc}/cmdline": b"/venv/bin/python3\x00-c\x00from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=3, pipe_handle=4) --multiprocessing-fork\x00",
+        }
+        monkeypatch.setattr("builtins.open", _fake_proc_entries(entries))
+        monkeypatch.setattr(ner_module.os, "stat", _fake_proc_stat({proc: os.getuid()}))
+        assert _is_orphaned_spawn_worker(live.pid) is True  # the exact leaked-worker signature
+
+        monkeypatch.setattr("builtins.open", _fake_proc_entries({**entries, f"{proc}/stat": child_stat.encode()}))
+        assert _is_orphaned_spawn_worker(live.pid) is False  # live parent (this test process): never reap
+
+        monkeypatch.setattr("builtins.open", _fake_proc_entries({**entries, f"{proc}/cmdline": b"/venv/bin/python3\x00-m\x00some.cli\x00serve\x00"}))
+        assert _is_orphaned_spawn_worker(live.pid) is False  # not a spawn fork: never reap
+
+        monkeypatch.setattr(ner_module.os, "stat", _fake_proc_stat({proc: os.getuid() + 1}))
+        monkeypatch.setattr("builtins.open", _fake_proc_entries(entries))
+        assert _is_orphaned_spawn_worker(live.pid) is False  # foreign UID: never reap
+    finally:
+        live.kill()
+        live.wait()
+
+
+def test_is_orphaned_spawn_worker_refuses_self_pid1_and_ghosts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv(_GPU_LOCK_TIMEOUT_ENV, raising=False)
+    assert _is_orphaned_spawn_worker(os.getpid()) is False  # never kill ourselves
+    assert _is_orphaned_spawn_worker(1) is False  # never kill init
+    assert _is_orphaned_spawn_worker(0) is False
+    assert _is_orphaned_spawn_worker(999999999) is False  # no such /proc entry: conservatively no
+
+
+# --- _reap_orphaned_lock_competitors: kill exactly the orphaned competitors ------
+
+
+def test_reap_kills_only_orphaned_competitors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Only candidates passing the orphan filter are SIGKILLed; the live sibling is untouched."""
+    killed: list[tuple[int, int]] = []
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        killed.append((pid, sig))
+        if sig == 0:
+            raise OSError()  # liveness probe: the SIGKILL already landed, process is gone
+
+    monkeypatch.setattr(ner_module, "_lock_competitor_pids", lambda _p, **_k: [111, 222, 333])
+    monkeypatch.setattr(ner_module, "_is_orphaned_spawn_worker", lambda pid: pid in {111, 333})
+    monkeypatch.setattr(ner_module.os, "kill", _fake_kill)
+    assert _reap_orphaned_lock_competitors(tmp_path / "cuda-0.lock", grace=0.2) == [111, 333]
+    assert [pid for pid, sig in killed if sig == signal.SIGKILL] == [111, 333]
+
+
+def test_reap_survives_already_dead_candidates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A candidate that exits between detection and kill is a no-op, not a crash."""
+
+    def _gone(pid: int, sig: int) -> None:
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(ner_module, "_lock_competitor_pids", lambda _p, **_k: [4242])
+    monkeypatch.setattr(ner_module, "_is_orphaned_spawn_worker", lambda _pid: True)
+    monkeypatch.setattr(ner_module.os, "kill", _gone)
+    assert _reap_orphaned_lock_competitors(tmp_path / "cuda-0.lock", grace=0.1) == [4242]
+
+
+# --- _acquire_gpu_lock: timeout self-heal end to end -----------------------------
+
+
+def test_acquire_gpu_lock_timeout_reaps_orphaned_holder_and_succeeds(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A leaked orphan holding the lock is SIGKILLed at the ceiling and the acquire proceeds.
+
+    The holder is a real external process holding a real kernel flock; only the orphan-filter
+    verdict is stubbed (a live test child has a live parent, ppid != 1).
+    """
+    lock_path = tmp_path / "cuda-0.lock"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import fcntl, os, sys, time\n"
+            f"fd = os.open({str(lock_path)!r}, os.O_CREAT | os.O_RDWR, 0o644)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "print('locked', flush=True)\n"
+            "time.sleep(60)\n",
+        ],
+        stdout=subprocess.PIPE,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == b"locked"
+        deadline = time.monotonic() + 5
+        while holder.pid not in _lock_holder_pids(lock_path):
+            if time.monotonic() > deadline:
+                pytest.fail("holder never showed up in /proc/locks")
+            time.sleep(0.05)
+
+        monkeypatch.setattr(ner_module, "_is_orphaned_spawn_worker", lambda pid: pid == holder.pid)
+        started = time.monotonic()
+        fd = _acquire_gpu_lock("cuda:0", tmp_path, timeout=0.3)  # would raise without the reap
+        try:
+            assert time.monotonic() - started >= 0.3  # waited out the ceiling first
+            assert holder.poll() is not None  # the leaked holder was SIGKILLed
+            assert holder.pid not in _lock_holder_pids(lock_path)
+        finally:
+            os.close(fd)
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_acquire_gpu_lock_timeout_still_raises_when_no_orphan_holds(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A LIVE (non-orphan) holder is never killed: the timeout still raises, naming the holder."""
+    holder_fd = _acquire_gpu_lock("cuda:0", tmp_path)
+    reaper: list[int] = []
+    monkeypatch.setattr(ner_module, "_reap_orphaned_lock_competitors", lambda _p, **_k: reaper)
+    try:
+        with pytest.raises(GpuLockTimeoutError, match=str(os.getpid())):
+            _acquire_gpu_lock("cuda:0", tmp_path, timeout=0.2)
+        assert reaper == []  # self is filtered out before any kill
+        with pytest.raises(BlockingIOError):  # and the live holder's lock is untouched
+            _try_lock(tmp_path / "cuda-0.lock")
     finally:
         os.close(holder_fd)
 
