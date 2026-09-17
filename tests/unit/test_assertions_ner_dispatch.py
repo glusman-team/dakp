@@ -80,10 +80,74 @@ def test_mine_shard_in_worker_configures_logging_before_loading_the_model(monkey
             return [[] for _ in texts]
 
     monkeypatch.setattr(dispatch, "configure_worker_logging", lambda workdir, name: calls.append(("configure_logging", workdir, name)))
+    monkeypatch.setattr(dispatch, "_set_parent_death_signal", lambda: calls.append("pdeathsig"))
     monkeypatch.setattr(dispatch, "DiseaseNER", WorkerNER)
     ner = DiseaseNER(gazetteer={"asthma": "disease"}, workdir=tmp_path)
     dispatch._mine_shard([("S1", "D1", "asthma")], ner._config(), "cuda:2", in_worker=True)
-    assert calls == [("configure_logging", tmp_path, "cuda:2"), ("construct_ner", "cuda:2")]
+    assert calls == [("configure_logging", tmp_path, "cuda:2"), "pdeathsig", ("construct_ner", "cuda:2")]
+
+
+# --- _set_parent_death_signal ---------------------------------------------------
+
+
+def test_pdeathsig_is_a_noop_off_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dispatch.sys, "platform", "darwin")
+    boom = lambda *_args: (_ for _ in ()).throw(AssertionError("CDLL must not load off-Linux"))
+    monkeypatch.setattr(dispatch.ctypes, "CDLL", boom)
+    dispatch._set_parent_death_signal()  # returns without touching ctypes
+
+
+def _fake_libc(prctl_rc: int = 0) -> Any:
+    calls: list[tuple[Any, ...]] = []
+
+    class FakeLibc:
+        @staticmethod
+        def prctl(*args: Any) -> int:
+            calls.append(args)
+            return prctl_rc
+
+    return FakeLibc(), calls
+
+
+def test_pdeathsig_arms_sigkill_on_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dispatch.sys, "platform", "linux")
+    libc, calls = _fake_libc(prctl_rc=0)
+    monkeypatch.setattr(dispatch.ctypes, "CDLL", lambda *_a, **_k: libc)
+    monkeypatch.setattr(dispatch.os, "getppid", lambda: 4321)
+    dispatch._set_parent_death_signal()
+    assert calls == [(1, dispatch.signal.SIGKILL, 0, 0, 0)]  # PR_SET_PDEATHSIG = 1
+
+
+def test_pdeathsig_warns_and_returns_when_prctl_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dispatch.sys, "platform", "linux")
+    libc, _calls = _fake_libc(prctl_rc=-1)
+    monkeypatch.setattr(dispatch.ctypes, "CDLL", lambda *_a, **_k: libc)
+    exited: list[int] = []
+    monkeypatch.setattr(dispatch.os, "_exit", lambda code: exited.append(code))
+    dispatch._set_parent_death_signal()  # no exit: the worker still functions without reaping
+    assert exited == []
+
+
+def test_pdeathsig_warns_and_returns_when_prctl_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dispatch.sys, "platform", "linux")
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise OSError("no libc here")
+
+    monkeypatch.setattr(dispatch.ctypes, "CDLL", _boom)
+    dispatch._set_parent_death_signal()
+
+
+def test_pdeathsig_exits_when_parent_already_dead(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The set-after-death race: parent died BEFORE prctl armed, so the kernel delivers nothing."""
+    monkeypatch.setattr(dispatch.sys, "platform", "linux")
+    libc, _calls = _fake_libc(prctl_rc=0)
+    monkeypatch.setattr(dispatch.ctypes, "CDLL", lambda *_a, **_k: libc)
+    monkeypatch.setattr(dispatch.os, "getppid", lambda: 1)
+    exited: list[int] = []
+    monkeypatch.setattr(dispatch.os, "_exit", lambda code: exited.append(code))
+    dispatch._set_parent_death_signal()
+    assert exited == [1]
 
 
 def test_dispatch_announces_the_worker_log_directory_and_prunes_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

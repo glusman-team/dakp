@@ -25,8 +25,11 @@ re-exports the underscore names for its historical test surface.
 
 from __future__ import annotations
 
+import ctypes
 import importlib.machinery
 import multiprocessing as mp
+import os
+import signal
 import sys
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ProcessPoolExecutor
@@ -129,6 +132,33 @@ def _shard_by_text_length(items: Sequence[Any], n: int) -> list[list[Any]]:
     return shards
 
 
+def _set_parent_death_signal() -> None:
+    """Linux-only: ask the kernel for ``SIGKILL`` the moment the worker's parent process dies.
+
+    Spawned mining workers hold a GPU model plus the device flock for their whole life. When
+    the Airflow task process dies (kill, crash, OOM) nothing reaps them: they stay resident,
+    keep the flock, and every retried task then deadlocks behind the orphaned lock holders
+    (observed 20+ h with zero GPU compute). ``PR_SET_PDEATHSIG`` closes that leak. Off-Linux
+    or without ``prctl`` this is a no-op (the flock timeout in
+    :func:`~dakp_pipeline.ner.ner._acquire_gpu_lock` is the remaining safety net). The
+    ``getppid`` re-check closes the set-after-death race: if the parent already died before
+    the call, the kernel delivers nothing, so an orphaned-at-spawn worker exits itself.
+    """
+    if sys.platform != "linux":
+        return
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG = 1
+            logger.warning("ner_worker_pdeathsig: prctl failed, errno = {}", ctypes.get_errno())
+            return
+    except (AttributeError, OSError):
+        logger.warning("ner_worker_pdeathsig: prctl unavailable; orphan reaping disabled for this worker")
+        return
+    if os.getppid() == 1:  # parent already dead before the signal was armed
+        logger.error("ner_worker_pdeathsig: parent already dead at spawn; exiting to release GPU + flock")
+        os._exit(1)
+
+
 def _mine_shard(shard: Sequence[Any], ner_config: dict[str, Any], device: str, *, in_worker: bool = False) -> list[tuple[str, str, list[Mention]]]:
     """ProcessPoolExecutor worker: load GLiNER on ``device``, mine each text, return mentions.
 
@@ -153,6 +183,7 @@ def _mine_shard(shard: Sequence[Any], ner_config: dict[str, Any], device: str, *
     """
     if in_worker:
         configure_worker_logging(ner_config.get("workdir"), device)
+        _set_parent_death_signal()
     ner = DiseaseNER(device=device, **ner_config)
     items = [_item_parts(item) for item in shard]
     mentions = ner.extract_batch([text for _set_id, _doc_id, text in items])

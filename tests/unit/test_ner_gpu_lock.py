@@ -10,6 +10,7 @@ CPU/offline paths never do.
 from __future__ import annotations
 
 import fcntl
+import io
 import os
 import sys
 import threading
@@ -22,7 +23,16 @@ import pytest
 
 from dakp_pipeline.ner import ner as ner_module
 from dakp_pipeline.ner.model_cache import ModelRef
-from dakp_pipeline.ner.ner import DiseaseNER, _acquire_gpu_lock, _cuda_index, _gpu_lock_dir
+from dakp_pipeline.ner.ner import (
+    _GPU_LOCK_TIMEOUT_ENV,
+    DiseaseNER,
+    GpuLockTimeoutError,
+    _acquire_gpu_lock,
+    _cuda_index,
+    _gpu_lock_dir,
+    _gpu_lock_timeout_seconds,
+    _lock_holder_pids,
+)
 
 
 def _try_lock(path: Path) -> int:
@@ -123,6 +133,110 @@ def test_acquire_gpu_lock_closes_fd_when_flock_fails(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(ner_module.fcntl, "flock", _boom)
     with pytest.raises(OSError, match="kernel said no"):
         _acquire_gpu_lock("cuda:0", tmp_path)
+
+
+# --- _acquire_gpu_lock: bounded wait + holder identification -------------------
+
+
+def test_gpu_lock_timeout_raises_naming_the_holder_pid(tmp_path: Path) -> None:
+    """A permanently held lock raises after the ceiling, and the message names the holder PID.
+
+    The holder here is THIS process (flock conflicts across separately-opened fds even within
+    one process), so the holder PID is known exactly: ``os.getpid()``.
+    """
+    holder_fd = _acquire_gpu_lock("cuda:0", tmp_path)
+    try:
+        started = time.monotonic()
+        with pytest.raises(GpuLockTimeoutError, match=str(os.getpid())):
+            _acquire_gpu_lock("cuda:0", tmp_path, timeout=0.3)
+        assert time.monotonic() - started >= 0.3
+    finally:
+        os.close(holder_fd)
+
+
+def test_gpu_lock_timeout_reports_unknown_holder_when_proc_locks_hides_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    holder_fd = _acquire_gpu_lock("cuda:0", tmp_path)
+    try:
+        monkeypatch.setattr(ner_module, "_lock_holder_pids", lambda _path: [])
+        with pytest.raises(GpuLockTimeoutError, match="unknown"):
+            _acquire_gpu_lock("cuda:0", tmp_path, timeout=0.2)
+    finally:
+        os.close(holder_fd)
+
+
+def test_gpu_lock_timeout_zero_restores_the_unbounded_wait(tmp_path: Path) -> None:
+    holder_fd = _acquire_gpu_lock("cuda:0", tmp_path)
+
+    def _release_later() -> None:
+        time.sleep(0.2)
+        os.close(holder_fd)
+
+    threading.Thread(target=_release_later).start()
+    waiter_fd = _acquire_gpu_lock("cuda:0", tmp_path, timeout=0)  # no ceiling: waits for release
+    os.close(waiter_fd)
+
+
+def test_gpu_lock_timeout_comes_from_the_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    holder_fd = _acquire_gpu_lock("cuda:0", tmp_path)
+    try:
+        monkeypatch.setenv(_GPU_LOCK_TIMEOUT_ENV, "0.2")
+        with pytest.raises(GpuLockTimeoutError):
+            _acquire_gpu_lock("cuda:0", tmp_path)  # no explicit timeout: env wins over the default
+    finally:
+        os.close(holder_fd)
+
+
+# --- _gpu_lock_timeout_seconds resolution --------------------------------------
+
+
+def test_gpu_lock_timeout_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(_GPU_LOCK_TIMEOUT_ENV, raising=False)
+    assert _gpu_lock_timeout_seconds(5.0) == 5.0  # explicit timeout wins outright
+    assert _gpu_lock_timeout_seconds(None) == 3600.0  # unset env falls back to the default
+    monkeypatch.setenv(_GPU_LOCK_TIMEOUT_ENV, "12.5")
+    assert _gpu_lock_timeout_seconds(None) == 12.5
+    monkeypatch.setenv(_GPU_LOCK_TIMEOUT_ENV, "not-a-number")
+    assert _gpu_lock_timeout_seconds(None) == 3600.0  # unparseable env warns and falls back
+
+
+# --- _lock_holder_pids ----------------------------------------------------------
+
+
+def test_lock_holder_pids_finds_the_holder(tmp_path: Path) -> None:
+    path = tmp_path / "cuda-0.lock"
+    holder_fd = _try_lock(path)
+    try:
+        assert os.getpid() in _lock_holder_pids(path)
+    finally:
+        os.close(holder_fd)
+
+
+def test_lock_holder_pids_empty_when_unlocked(tmp_path: Path) -> None:
+    path = tmp_path / "cuda-0.lock"
+    path.touch()
+    assert _lock_holder_pids(path) == []
+
+
+def test_lock_holder_pids_empty_when_the_lock_file_is_gone(tmp_path: Path) -> None:
+    assert _lock_holder_pids(tmp_path / "never-created.lock") == []
+
+
+def test_lock_holder_pids_skips_non_flock_and_mismatched_lines(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``/proc/locks`` parsing ignores non-FLOCK locks, short lines, and other files' locks."""
+    path = tmp_path / "cuda-0.lock"
+    path.touch()
+    st = path.stat()
+    dev = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}"
+    fake_locks = "\n".join(
+        [
+            f"1: POSIX  ADVISORY  WRITE 111 {dev}:{st.st_ino} 0 EOF",  # not FLOCK: skipped
+            "garbage",  # short line: skipped
+            f"2: FLOCK  ADVISORY  WRITE 222 {dev}:{st.st_ino + 1} 0 EOF",  # other inode: skipped
+            f"3: FLOCK  ADVISORY  WRITE 333 {dev}:{st.st_ino} 0 EOF",  # THE holder
+        ]
+    )
+    monkeypatch.setattr("builtins.open", lambda *_a, **_k: io.StringIO(fake_locks))
+    assert _lock_holder_pids(path) == [333]
 
 
 # --- _load_model: CUDA locks, CPU and offline never do -------------------------

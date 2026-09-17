@@ -702,8 +702,61 @@ def _gpu_lock_dir(cache_dir: Path | str | None = None, workdir: Path | str | Non
     return cache.parent / "gpu-locks"
 
 
-def _acquire_gpu_lock(device: str, lock_dir: Path) -> int:
-    """Acquire the BLOCKING exclusive flock for a CUDA device; return the open fd.
+#: Env var overriding the GPU-lock wait ceiling in seconds (``0`` = wait forever).
+_GPU_LOCK_TIMEOUT_ENV = "DAKP_GPU_LOCK_TIMEOUT_SECONDS"
+#: Default GPU-lock wait ceiling in seconds. Mining runs legitimately serialize on a GPU, so the
+#: ceiling stays generous; it exists to fail LOUDLY on orphaned lock holders (a crashed task's
+#: leaked workers keep the flock and the model resident) instead of deadlocking for days.
+_DEFAULT_GPU_LOCK_TIMEOUT_SECONDS = 3600.0
+#: Poll cadence for the timed lock wait (short enough that tests sub-second waits stay honest).
+_GPU_LOCK_POLL_SECONDS = 0.1
+
+
+class GpuLockTimeoutError(RuntimeError):
+    """Raised when a CUDA-device flock stays held past the configured wait ceiling."""
+
+
+def _gpu_lock_timeout_seconds(timeout: float | None) -> float:
+    """Resolve the lock-wait ceiling: explicit ``timeout``, else the env override, else the default."""
+    if timeout is not None:
+        return timeout
+    raw = os.environ.get(_GPU_LOCK_TIMEOUT_ENV, "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning(
+                "ner_gpu_lock: ignoring unparseable {} = {!r}; using default {}", _GPU_LOCK_TIMEOUT_ENV, raw, _DEFAULT_GPU_LOCK_TIMEOUT_SECONDS
+            )
+    return _DEFAULT_GPU_LOCK_TIMEOUT_SECONDS
+
+
+def _lock_holder_pids(path: Path) -> list[int]:
+    """PIDs holding an flock on ``path``, parsed from ``/proc/locks``; ``[]`` off-Linux or unreadable.
+
+    ``/proc/locks`` lines carry ``<major>:<minor>:<inode>`` (hex device ids) matching
+    ``os.stat(path)``'s device and inode; the PID is the field before it. Same-UID holders are
+    always visible, which is exactly the pipeline case (workers run as the Airflow user).
+    """
+    try:
+        st = path.stat()
+        want_dev = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}"
+        holders: list[int] = []
+        with open("/proc/locks") as locks:
+            for line in locks:
+                fields = line.split()
+                if len(fields) < 6 or fields[1] != "FLOCK":
+                    continue
+                dev, _, inode = fields[5].rpartition(":")
+                if dev == want_dev and inode == str(st.st_ino):
+                    holders.append(int(fields[4]))
+        return holders
+    except (OSError, ValueError, IndexError):
+        return []
+
+
+def _acquire_gpu_lock(device: str, lock_dir: Path, timeout: float | None = None) -> int:
+    """Acquire the exclusive flock for a CUDA device, waiting at most the configured ceiling; return the open fd.
 
     One GLiNER model per GPU is a hard cap (two models OOM a 16 GB P100), and the Airflow
     ``ner_mining`` pool is only a scheduler hint — a second DAG run, a manual task trigger,
@@ -712,9 +765,16 @@ def _acquire_gpu_lock(device: str, lock_dir: Path) -> int:
     keeps the returned fd open for the life of the loaded model; there is no explicit
     release path — closing the fd (or process exit, which is the whole lifecycle of the
     spawned per-GPU mining workers) releases the lock.
+
+    The wait is BOUNDED: a crashed task that leaked its workers leaves the flock held by
+    orphans forever, and an unbounded wait deadlocked retries silently (observed 20+ h with
+    zero GPU compute). Past the ceiling (``timeout``, else ``DAKP_GPU_LOCK_TIMEOUT_SECONDS``,
+    else one hour; ``0`` restores the unbounded wait) this raises :class:`GpuLockTimeoutError`
+    naming the holder PIDs from ``/proc/locks`` so the operator can kill exactly them.
     """
     lock_dir.mkdir(parents=True, exist_ok=True)
     path = lock_dir / f"cuda-{_cuda_index(device)}.lock"
+    ceiling = _gpu_lock_timeout_seconds(timeout)
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
     try:
         try:
@@ -722,7 +782,23 @@ def _acquire_gpu_lock(device: str, lock_dir: Path) -> int:
             stats(logger, "ner_gpu_lock", level="DEBUG", device=device, path=str(path), waited=False)
         except BlockingIOError:
             stats(logger, "ner_gpu_lock", device=device, path=str(path), waited=True)
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            if ceiling <= 0:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            else:
+                deadline = time.monotonic() + ceiling
+                while True:
+                    time.sleep(_GPU_LOCK_POLL_SECONDS)
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            holders = _lock_holder_pids(path)
+                            holder_desc = ",".join(str(pid) for pid in holders) if holders else "unknown (holder not visible in /proc/locks)"
+                            raise GpuLockTimeoutError(
+                                f"cuda lock still held after {ceiling:.0f}s: device={device} path={path} holder_pids={holder_desc}. "
+                                f"A previous task likely crashed and leaked its NER workers; verify the holders are orphans (ppid 1) and kill them."
+                            ) from None
     except BaseException:
         os.close(fd)
         raise
