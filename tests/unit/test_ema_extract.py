@@ -64,6 +64,23 @@ def test_parse_keeps_semicolon_cells_and_phase2_indication_text() -> None:
     assert by_name["Tecvayli"]["inn"] == "teclistamab"
 
 
+def test_parse_collapses_interior_nbsp_in_cell_values() -> None:
+    """Interior NO-BREAK SPACE (U+00A0) is folded to a plain space, not merely trimmed.
+
+    The live export embeds U+00A0 INSIDE cells — the real fixture row is
+    ``hepatitis\xa0A virus (inactivated)``. Trimming cannot reach an interior byte, so left alone
+    it rides through the shaper into the assertion TSV as subject text and silently fails to map
+    in Tablassert (no upstream error, just a missing edge). Pinning the collapse across EVERY
+    projected column keeps the failure loud if the normalization is dropped.
+    """
+    frame = parse_ema_registry(_EMA_FIXTURE)
+    for record in frame.iter_rows(named=True):
+        for column, value in record.items():
+            assert "\xa0" not in str(value), f"NBSP survived in {column}: {value!r}"
+    twinrix = next(rec for rec in frame.iter_rows(named=True) if rec["medicine_name"] == "Twinrix Adult")
+    assert twinrix["active_substance"] == "hepatitis A virus (inactivated);hepatitis B surface antigen"
+
+
 def test_extract_writes_and_registers_interim_parquet(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path / "work")
     refs = EMARegistryExtractor().extract([_fixture_ref()], ctx)

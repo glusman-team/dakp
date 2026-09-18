@@ -102,8 +102,15 @@ def parse_ema_registry(path: Path) -> pl.DataFrame:
     """Parse the EMA medicines xlsx at ``path`` into the normalized interim frame (pure).
 
     Locates the real header row below the banner lines, keeps only Authorised + Human rows, and
-    projects the normalized contract columns (all UTF-8 strings, trimmed, sorted by
+    projects the normalized contract columns (all UTF-8 strings, whitespace-collapsed, sorted by
     ``(ema_product_number, medicine_name)`` for deterministic output).
+
+    Whitespace collapse is not cosmetic: the live export embeds NO-BREAK SPACE (U+00A0) INSIDE
+    cells (observed in ``hepatitis\xa0A virus (inactivated)``), which trimming alone cannot
+    reach. Left in, that byte rides into the assertion TSV as subject text and silently fails
+    to map in Tablassert. ``\\s+`` in the polars regex engine is Unicode-aware, so one pass
+    folds NBSP, tabs, and newlines into single spaces, mirroring the SPL parser's
+    ``_collapse_ws``.
     """
     raw = pl.read_excel(path, has_header=False)
     header_row = _locate_header_row(raw)
@@ -121,7 +128,12 @@ def parse_ema_registry(path: Path) -> pl.DataFrame:
             (pl.col("Category").cast(pl.Utf8).str.strip_chars() == _CATEGORY_KEPT)
             & (pl.col("Medicine status").cast(pl.Utf8).str.strip_chars() == _STATUS_KEPT)
         )
-        .select([pl.col(source).cast(pl.Utf8).fill_null("").str.strip_chars().alias(target) for source, target in _COLUMN_MAP.items()])
+        .select(
+            [
+                pl.col(source).cast(pl.Utf8).fill_null("").str.replace_all(r"\s+", " ").str.strip_chars().alias(target)
+                for source, target in _COLUMN_MAP.items()
+            ]
+        )
         .select(EMA_REGISTRY_COLUMNS)
         .sort("ema_product_number", "medicine_name")
     )

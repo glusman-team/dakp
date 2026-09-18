@@ -151,6 +151,7 @@ from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.sources import dailymed as dailymed_source
 from dakp_pipeline.sources import drugsfda as drugsfda_source
+from dakp_pipeline.sources import ema as ema_source
 from dakp_pipeline.sources import faers as faers_source
 
 # --- Translator provenance constants (match dakp_pipeline.assertions + ../DINGO) ----
@@ -204,7 +205,22 @@ FULLMAP_DEFAULT = ".fullmap"
 #: Declaring ``uuid_fields`` also moves the UUID namespace onto the graph's infores unless
 #: ``uuid_domain`` overrides it — :func:`graph_config` pins :data:`UUID_DOMAIN` explicitly so
 #: an infores rename can never re-mint every edge id.
-UUID_FIELDS = ["subject", "predicate", "object", "disease_context_qualifier"]
+UUID_FIELDS = [
+    "subject",
+    "predicate",
+    "object",
+    "disease_context_qualifier",
+    # Every qualifier slot a table can encode participates in edge identity: presence/absence
+    # and value of each qualifier keep qualifier-distinct rows as DISTINCT edges instead of
+    # folding under uuid_on_collision merge (an EPAR row qualified "adult patients" must not
+    # merge into the unqualified MeSH-area edge for the same pair). ``species_qualifier`` is
+    # deliberately absent: no table encodes it yet (TSV column exists, no writer populates it).
+    "anatomical_context_qualifier",
+    "sex_qualifier",
+    "population_context_qualifier",
+    "frequency_qualifier",
+    "temporal_context_qualifier",
+]
 
 #: Explicit ``uuid_domain`` for the derived edge ids (Tablassert >= 16.0): without it the
 #: namespace derives from ``rig.source_info.infores_id``, coupling every edge id to a
@@ -216,21 +232,22 @@ UUID_DOMAIN = INFORES_DAKP
 #: ``source.url`` is the section's RIG/audit record ONLY: edges get their provenance from the
 #: explicit ``override.sources`` template (:data:`_TABLE_SOURCES`), which carries the static
 #: AEMS URL (:data:`FAERS_SOURCE_RECORD_URL`) on the FAERS supporting entry as a dataset-level
-#: exception. Approved-treats and contraindication
-#: rows are extracted from DailyMed SPL releases (the DailyMed full-release index); FAERS
-#: observed-use rows from the FAERS quarterly ASCII extracts (the FDA quarterly-data listing).
-_TABLE_SOURCE_URLS: dict[str, str] = {
-    "approved_treats_assertions": dailymed_source.FULL_RELEASE_INDEX_URL,
-    "faers_applied_to_treat_assertions": faers_source.FDA_FAERS_INDEX_URL,
-    "contraindication_assertions": dailymed_source.FULL_RELEASE_INDEX_URL,
+#: exception. Each value is a TUPLE because a table can aggregate several upstream datasets:
+#: approved-treats rows come from DailyMed SPL releases (the DailyMed full-release index) AND the
+#: EMA medicines registry (the fixed-name xlsx bulk export); contraindication rows from DailyMed;
+#: FAERS observed-use rows from the FAERS quarterly ASCII extracts (the FDA quarterly-data listing).
+_TABLE_SOURCE_URLS: dict[str, tuple[str, ...]] = {
+    "approved_treats_assertions": (dailymed_source.FULL_RELEASE_INDEX_URL, ema_source.EMA_MEDICINES_URL),
+    "faers_applied_to_treat_assertions": (faers_source.FDA_FAERS_INDEX_URL,),
+    "contraindication_assertions": (dailymed_source.FULL_RELEASE_INDEX_URL,),
 }
 GRAPH_DESCRIPTION = (
-    "Drug Approvals Knowledge Provider: FDA-approved treatment relationships, "
+    "Drug Approvals Knowledge Provider: FDA/EMA-approved treatment relationships, "
     "FAERS-observed applied-to-treat uses, and contraindications text-mined from "
-    "DailyMed, modeled from DailyMed, Drugs@FDA, and FAERS. "
+    "DailyMed, modeled from DailyMed, Drugs@FDA, FAERS, and the EMA medicines registry. "
     "Every edge carries the evidence identifiers backing it; approved-treats edges also carry "
-    "clinical approval status and FDA application numbers, FAERS-observed use edges add case "
-    "counts, and contraindication edges carry application numbers where available."
+    "clinical approval status and FDA application numbers or EMA product numbers, FAERS-observed "
+    "use edges add case counts, and contraindication edges carry application numbers where available."
 )
 
 # --- RIG (Resource Ingest Guide) graph-config section -------------------------------
@@ -280,8 +297,9 @@ RIG_CITATIONS = (
 RIG_DATA_VERSIONING_AND_RELEASES = (
     f"DAKP versions follow the Python package version (pyproject.toml, currently {__version__}); "
     "every build embeds it in the graph config via graph_config(version=...). Re-ingests track "
-    "the upstream cadence: FAERS quarterly ASCII extracts and DailyMed SPL releases. DailyMed "
-    "and Drugs@FDA re-downloads are freshness-gated to a 7-day cache window; FAERS downloads "
+    "the upstream cadence: FAERS quarterly ASCII extracts, DailyMed SPL releases, and the "
+    "nightly-regenerated EMA medicines export. DailyMed, Drugs@FDA, and EMA re-downloads are "
+    "freshness-gated to a 7-day cache window; FAERS downloads "
     "are content-addressed and cache-first, with no age gate."
 )
 #: RIG ``supporting_data_source_info``: the upstream data sources a DAKP graph derives its
@@ -338,6 +356,30 @@ RIG_SUPPORTING_DATA_SOURCES: tuple[dict[str, Any], ...] = (
             }
         ],
     },
+    {
+        "infores_id": "infores:ema",
+        "name": "European Medicines Agency (EMA) medicines registry",
+        "description": (
+            "The EMA publishes a bulk export of every centrally reviewed medicine in the European Union. "
+            "DAKP uses the Authorised, Human rows to derive approved drug-indication relationships from "
+            "their MeSH therapeutic areas (infores:ema) and from their free-text EPAR therapeutic "
+            "indications (infores:epar)."
+        ),
+        "terms_of_use_info": {
+            "terms_of_use_url": "https://www.ema.europa.eu/en/about-us/about-website/legal-notice",
+            "terms_of_use_description": (
+                "EMA content may be reused for non-commercial and commercial purposes provided the source is "
+                "acknowledged; the agency's legal notice applies."
+            ),
+        },
+        "relevant_files": [
+            {
+                "file_name": "EMA medicines report (xlsx)",
+                "location": ema_source.EMA_MEDICINES_URL,
+                "description": "Bulk export of centrally reviewed medicines; MeSH therapeutic areas and EPAR indication text",
+            }
+        ],
+    },
 )
 #: RIG ``ingest_info.included_content``: the upstream record types DAKP pulls into the graph.
 #: ``fields_used`` names exactly what the assertion tables consume from SPL — the four mined
@@ -359,6 +401,16 @@ RIG_INCLUDED_CONTENT: tuple[dict[str, str], ...] = (
         ),
     },
     {"file_name": "FAERS quarterly ASCII zips", "included_records": "drug/indication case pairs; case counts"},
+    {
+        "file_name": "EMA medicines report (xlsx)",
+        "included_records": (
+            "Authorised, Human centrally-authorised medicines only (every other Medicine status and all "
+            "veterinary rows are dropped at extract time); EMA product numbers are carried as provenance"
+        ),
+        "fields_used": (
+            "Active substance / INN, Therapeutic area (MeSH), Therapeutic indication free text, EMA product number, Medicine URL (EPAR page)"
+        ),
+    },
 )
 #: RIG ``ingest_info.filtered_content``: what DAKP deliberately drops from the upstream feeds,
 #: and why. Both entries restate the pipeline's actual scope gates: approved-treats assertions
@@ -495,7 +547,9 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
     source (``rig-validation-failed``), so a single-table graph (tests, partial builds) must
     not list the other tables' upstreams.
     """
-    included_urls = {_TABLE_SOURCE_URLS[table] for table in _TABLE_ORDER if any(Path(t).name == f"{_TABLE_SPECS[table][0]}.yaml" for t in tables)}
+    included_urls = {
+        url for table in _TABLE_ORDER if any(Path(t).name == f"{_TABLE_SPECS[table][0]}.yaml" for t in tables) for url in _TABLE_SOURCE_URLS[table]
+    }
     relevant_files = [
         {
             "file_name": "DailyMed full-release SPL zips",
@@ -506,6 +560,11 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
             "file_name": "FAERS quarterly ASCII zips",
             "location": faers_source.FDA_FAERS_INDEX_URL,
             "description": "FDA Adverse Event Reporting System quarterly extracts; drug/indication case pairs.",
+        },
+        {
+            "file_name": "EMA medicines report (xlsx)",
+            "location": ema_source.EMA_MEDICINES_URL,
+            "description": "EMA centrally-authorised medicines bulk export; MeSH therapeutic areas and EPAR indication text.",
         },
         # No Drugs@FDA entry: no assertion table declares it as a section source (it is joined
         # in upstream, at assertion-build time), so the RIG audit would reject it.
@@ -527,13 +586,15 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
                 "terms_of_use_url": "https://www.nlm.nih.gov/terms.html",
                 "terms_of_use_description": (
                     "DAKP is derived from DailyMed (NLM), Drugs@FDA, and FAERS (FDA): US government "
-                    "public-domain data; the NLM and FDA terms of use apply."
+                    "public-domain data; the NLM and FDA terms of use apply. EMA content is reused under "
+                    "the European Medicines Agency's public reuse policy with source acknowledgement."
                 ),
             },
             "data_access_locations": [
                 f"DailyMed SPL releases - {dailymed_source.FULL_RELEASE_INDEX_URL}",
                 f"FAERS quarterly ASCII extracts - {faers_source.FDA_FAERS_INDEX_URL}",
                 f"Drugs@FDA data files - {drugsfda_source.DRUGSFDA_DATA_FILES_URL}",
+                f"EMA medicines report - {ema_source.EMA_MEDICINES_URL}",
             ],
             "data_provision_mechanisms": ["file_download"],
             "data_formats": ["kgx"],
@@ -546,12 +607,13 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
             # through, and the upstream DAKP RIG declares the same category.
             "ingest_categories": ["translator_knowledge_creator"],
             "utility": (
-                "Provides FDA-approved drug-disease treatment relationships, FAERS-observed "
+                "Provides FDA- and EMA-approved drug-disease treatment relationships, FAERS-observed "
                 "applied-to-treat uses, and SPL-mined contraindications for Translator querying."
             ),
             "scope": (
                 "Approved-treats edges (DailyMed SPL indications joined to Drugs@FDA applications and "
-                "FAERS cases), FAERS observed-use edges, and contraindication edges text-mined from "
+                "FAERS cases, plus EMA centrally-authorised medicines' MeSH therapeutic areas and mined "
+                "EPAR indication text), FAERS observed-use edges, and contraindication edges text-mined from "
                 "DailyMed SPL sections; all other content of the upstream feeds is out of scope."
             ),
             "relevant_files": [entry for entry in relevant_files if entry["location"] in included_urls],
@@ -759,9 +821,15 @@ FAERS_SOURCE_RECORD_URL = "https://www.fda.gov/safety/fda-adverse-event-monitori
 # no per-edge record URL. Requires Tablassert >= 14.0 (SkyeAv/Tablassert#116).
 _TABLE_SOURCES: dict[str, tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...]] = {
     "approved_treats_assertions": (
-        (INFORES_DAKP, "primary_knowledge_source", ("infores:dailymed", "infores:faers"), ()),
+        (INFORES_DAKP, "primary_knowledge_source", ("infores:dailymed", "infores:faers", "infores:ema", "infores:epar"), ()),
         ("infores:faers", "supporting_data_source", (), ()),
         ("infores:dailymed", "supporting_data_source", (), ()),
+        # EMA/EPAR carry NO ``source_record_urls``: like DailyMed, the honest dataset URLs live on
+        # the section ``source.url`` + the RIG, and per-medicine EPAR URLs stay in the assertion
+        # TSV's ``supporting_spl_documents`` debug column (the override template is stamped
+        # verbatim on EVERY edge, so a per-row URL would be untruthful here).
+        ("infores:ema", "supporting_data_source", (), ()),
+        ("infores:epar", "supporting_data_source", (), ()),
     ),
     "faers_applied_to_treat_assertions": (
         (INFORES_DAKP, "primary_knowledge_source", ("infores:dailymed", "infores:faers"), ()),
@@ -1133,7 +1201,7 @@ def table_config(table: str) -> dict[str, Any]:
     }
     if qualifiers:  # no backing column => no ``qualifiers`` key (Tablassert treats absent and empty alike; keep configs minimal)
         statement["qualifiers"] = qualifiers
-    source: dict[str, Any] = {"kind": "text", "local": f"tabular/{table}.tsv", "url": [_TABLE_SOURCE_URLS[table]], "delimiter": "\t"}
+    source: dict[str, Any] = {"kind": "text", "local": f"tabular/{table}.tsv", "url": list(_TABLE_SOURCE_URLS[table]), "delimiter": "\t"}
     reindex: list[dict[str, Any]] = []
     subject_denylist = _TABLE_SUBJECT_DENYLIST.get(table)
     if subject_denylist:

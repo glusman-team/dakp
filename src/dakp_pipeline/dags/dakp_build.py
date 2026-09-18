@@ -2,10 +2,12 @@
 
 This is the **only** orchestrator (the former pure-Python pipeline runner is retired). The heavy
 parsing/extraction runs as **native Airflow Go SDK
-bundle workers** (``go/cmd/dakp-bundle``): the three ``extract_*`` tasks are ``@task.stub(queue=
-"golang")`` declarations whose Go implementations the ExecutableCoordinator forks per task instance.
-Every other stage (acquisition, assertion shaping, Tablassert handoff, legacy TSV export, release
-publishing, MEDliNER export) is a real Python TaskFlow task reusing the existing stage modules.
+bundle workers** (``go/cmd/dakp-bundle``): the DailyMed/FAERS/Drugs@FDA ``extract_*`` tasks are
+``@task.stub(queue="golang")`` declarations whose Go implementations the ExecutableCoordinator
+forks per task instance; the EMA ``extract_ema`` task is a plain Python ``@task`` (polars parses
+the small xlsx in-process). Every other stage (acquisition, assertion shaping, Tablassert handoff,
+legacy TSV export, release publishing, MEDliNER export) is a real Python TaskFlow task reusing the
+existing stage modules.
 
 Tasks pass ``list[ArtifactRef]`` manifests over XCom (serialized to JSON dicts via
 :mod:`dakp_pipeline.io.xcom` so the native Go workers read/write the same manifests); heavy bytes
@@ -54,7 +56,8 @@ _DAG_DOC_MD = """
 The DAG is organized into six visual TaskGroups while preserving the historical task IDs:
 
 1. **acquire** — network/model acquisition, bounded by `dakp_download`.
-2. **extract** — native Go SDK stubs on the `golang` queue, bounded by `dakp_extract`.
+2. **extract** — native Go SDK stubs on the `golang` queue (DailyMed/FAERS/Drugs@FDA) plus the
+   plain-Python EMA xlsx parse, bounded by `dakp_extract`.
 3. **shape** — Python assertion-table shaping over artifact manifests; the two DailyMed GLiNER-mining
    tasks serialize on the 1-slot `ner_mining` pool so concurrent shape tasks can't
    oversubscribe the GPUs (the per-device flock in `ner/ner.py` is the hard guarantee). FAERS
@@ -88,16 +91,18 @@ class AcquireOutputs:
     dailymed: Any
     faers: Any
     drugsfda: Any
+    ema: Any
     ner_models: Any
 
 
 @dataclass(frozen=True)
 class ExtractOutputs:
-    """Task handles produced by the native extraction stage."""
+    """Task handles produced by the extraction stage (Go stubs + the Python EMA parse)."""
 
     dailymed: Any
     faers: Any
     drugsfda: Any
+    ema: Any
 
 
 @dataclass(frozen=True)
@@ -185,6 +190,16 @@ def _build_acquire_stage() -> AcquireOutputs:
                 stats(logger, "task acquire_drugsfda", output_refs=len(refs))
                 return _refs_to_xcom(refs)
 
+        @task(pool=DOWNLOAD_POOL, doc_md="Download/cache the EMA centrally-authorised medicines xlsx; returns `ArtifactRef` manifests only.")
+        def acquire_ema() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+            from dakp_pipeline import acquire
+
+            ctx = _ctx()
+            with step(logger, "task acquire_ema"):
+                refs = acquire.acquire_ema(ctx)
+                stats(logger, "task acquire_ema", output_refs=len(refs))
+                return _refs_to_xcom(refs)
+
         @task(pool=DOWNLOAD_POOL, doc_md="Ensure the production GLiNER checkpoint is cached before contraindication mining.")
         def acquire_ner_models() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline import acquire
@@ -195,11 +210,13 @@ def _build_acquire_stage() -> AcquireOutputs:
                 stats(logger, "task acquire_ner_models", output_refs=len(refs))
                 return _refs_to_xcom(refs)
 
-        return AcquireOutputs(dailymed=acquire_dailymed(), faers=acquire_faers(), drugsfda=acquire_drugsfda(), ner_models=acquire_ner_models())
+        return AcquireOutputs(
+            dailymed=acquire_dailymed(), faers=acquire_faers(), drugsfda=acquire_drugsfda(), ema=acquire_ema(), ner_models=acquire_ner_models()
+        )
 
 
 def _build_extract_stage(raw: AcquireOutputs) -> ExtractOutputs:
-    """Create the native Go extraction TaskGroup and return its task handles."""
+    """Create the extraction TaskGroup (native Go stubs + the Python EMA parse) and return its task handles."""
     with TaskGroup(group_id="extract", prefix_group_id=False, tooltip="Native Go extraction", doc_md=_EXTRACT_DOC_MD):
         # No Python body: the ExecutableCoordinator forks the Go bundle, which reads the upstream
         # acquire_* ArtifactRefs from XCom, parses with internal/{dailymed,faers,drugsfda}, writes
@@ -213,16 +230,30 @@ def _build_extract_stage(raw: AcquireOutputs) -> ExtractOutputs:
         @task.stub(queue=GO_QUEUE, pool=EXTRACT_POOL, doc_md=_EXTRACT_DOC_MD)
         def extract_drugsfda(raw_refs: Any) -> list[dict[str, Any]]: ...
 
-        return ExtractOutputs(dailymed=extract_dailymed(raw.dailymed), faers=extract_faers(raw.faers), drugsfda=extract_drugsfda(raw.drugsfda))
+        # The EMA registry parse is small (a ~1 MB xlsx), so it stays a plain Python task
+        # running beside the Go stubs in the same extract pool (1 slot).
+        @task(pool=EXTRACT_POOL, doc_md="Parse the EMA medicines xlsx into the interim `ema_registry.parquet` (polars).")
+        def extract_ema(raw_refs: Any) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+            from dakp_pipeline.extract import ema_registry
+
+            ctx = _ctx()
+            with step(logger, "task extract_ema"):
+                refs = ema_registry.extract(_refs_from_xcom(raw_refs), ctx)
+                stats(logger, "task extract_ema", output_refs=len(refs))
+                return _refs_to_xcom(refs)
+
+        return ExtractOutputs(
+            dailymed=extract_dailymed(raw.dailymed), faers=extract_faers(raw.faers), drugsfda=extract_drugsfda(raw.drugsfda), ema=extract_ema(raw.ema)
+        )
 
 
 def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOutputs:
     """Create the assertion-shaping TaskGroup and return assertion task handles."""
     with TaskGroup(group_id="shape", prefix_group_id=False, tooltip="Shape assertion tables", doc_md=_SHAPE_DOC_MD):
 
-        @task(pool=NER_MINING_POOL, doc_md="Shape FDA-approved treatment assertions from DailyMed, Drugs@FDA, and FAERS refs.")
+        @task(pool=NER_MINING_POOL, doc_md="Shape FDA/EMA-approved treatment assertions from DailyMed, Drugs@FDA, FAERS, and the EMA registry refs.")
         def shape_treatment_tables(
-            dm_ext: Any, drugsfda_ext: Any, faers_ext: Any, ner_models_ref: Any
+            dm_ext: Any, drugsfda_ext: Any, faers_ext: Any, ema_ext: Any, ner_models_ref: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             # ``ner_models_ref`` is an ordering dependency: the production NER lazily loads the
             # GLiNER weights cached by acquire_ner_models, so corroboration mining runs after
@@ -236,18 +267,20 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
             ctx = _ctx()
             with step(logger, "task shape_treatment_tables"):
                 dailymed_refs, drugsfda_refs, faers_refs = _refs_from_xcom(dm_ext), _refs_from_xcom(drugsfda_ext), _refs_from_xcom(faers_ext)
+                ema_refs = _refs_from_xcom(ema_ext)
                 stats(
                     logger,
                     "task shape_treatment_tables",
                     dailymed_refs=len(dailymed_refs),
                     drugsfda_refs=len(drugsfda_refs),
                     faers_refs=len(faers_refs),
+                    ema_refs=len(ema_refs),
                 )
                 # Indications are precision-first: false-positive treatment edges are more
                 # harmful than missed weak corroboration.
                 ner = DiseaseNER.for_indications(offline=False, workdir=ctx.workdir)
                 ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
-                in_refs = [*dailymed_refs, *drugsfda_refs, *faers_refs]
+                in_refs = [*dailymed_refs, *drugsfda_refs, *faers_refs, *ema_refs]
                 # Already-done skip: identical inputs + config fingerprint => return the
                 # previously registered outputs without re-running the shaper.
                 cached = cached_shape_outputs("shape_approved_treats", in_refs, ctx)
@@ -335,7 +368,7 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
 
         # The observed-uses task consumes the produced approved-treats table (approval-status
         # cross-reference), so it runs after shape_treatment_tables.
-        approved = shape_treatment_tables(extracts.dailymed, extracts.drugsfda, extracts.faers, ner_models)
+        approved = shape_treatment_tables(extracts.dailymed, extracts.drugsfda, extracts.faers, extracts.ema, ner_models)
         return AssertionOutputs(
             approved=approved,
             uses=shape_faers_use_tables(extracts.faers, extracts.dailymed, extracts.drugsfda, approved),

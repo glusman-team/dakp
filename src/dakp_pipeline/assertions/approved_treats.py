@@ -36,6 +36,23 @@ stop-list. When no FAERS case table is present the candidates fall back to Daily
 indication sections whose text names a dictionary condition or an NER disease/phenotype
 mention (rule 4 holds there by construction). Both paths apply the *same* four-part filter above.
 
+EMA interim registry rows (``ema_registry.parquet``, when present among the inputs) union into
+the same table in two per-source shapes — rows are never merged across sources:
+
+* **MeSH-area rows** (``infores:ema``) — one row per ``(active substance, MeSH therapeutic-area
+  term)`` pair from each Authorised/Human medicine (substance falls back to the INN when the
+  export's "Active substance" cell is empty). Registry rows carry no sentence, so the context
+  is the fixed ``indication`` and the sparse qualifier columns stay blank.
+* **EPAR indication rows** (``infores:epar``) — the export's free-text ``therapeutic_indication``
+  mined with the composite DiseaseNER in the SAME work pool as SPL indication sections
+  (cache keys are text-only, so identical texts dedupe automatically): one row per
+  ``(active substance, disease/phenotype mention)`` pair, sentence by sentence, with
+  qualifier attachment (:func:`~dakp_pipeline.assertions.contexts.attach_qualifiers_with_scores`),
+  prevention-cue context derivation, and the same SPL-negation sentence filter as rule 4.
+
+Both EMA shapes carry the EMA product number in ``FDA_regulatory_approvals`` and the EPAR
+``medicine_url`` in ``supporting_spl_documents``; the union re-sorts deterministically.
+
 The NER backend
 ---------------
 The shaper uses an injected ``params["ner"]`` :class:`~dakp_pipeline.ner.ner.DiseaseNER` when
@@ -74,6 +91,8 @@ from dakp_pipeline.assertions import (
     AT_MANUAL,
     INFORES_DAILYMED,
     INFORES_DAKP,
+    INFORES_EMA,
+    INFORES_EPAR,
     INFORES_FAERS,
     KL_ASSERTION,
     join_pipe,
@@ -92,6 +111,7 @@ from dakp_pipeline.assertions.evidence import (
     faers_quarter_urls,
     faers_record_url,
     find_faers_cases,
+    find_table,
     load_or_build_dailymed_evidence,
     sorted_pipe,
     spl_evidence_pipe,
@@ -114,6 +134,14 @@ _FAERS_CASE_COLUMNS = ("nda", "nda_raw", "indication", "ingredient", "drugname",
 
 #: One INFO progress line per this many mined indication sections (GLiNER is the slow step).
 _MINING_PROGRESS_EVERY = 500
+
+#: Interim parquet filename the EMA registry extractor emits (read when present among the inputs).
+_EMA_REGISTRY_FILENAME = "ema_registry.parquet"
+
+#: Work-item key prefix distinguishing EMA registry rows from DailyMed SPL sets in the shared
+#: mention-mining pool (``ema:<product-number-or-url>`` can never collide with a set id).
+_EMA_KEY_PREFIX = "ema:"
+
 
 #: Sentence-level cues for SPL indication-section boilerplate that DISCLAIMS efficacy or
 #: indication rather than asserting it — e.g. the baclofen label's "The efficacy of baclofen in
@@ -277,6 +305,7 @@ class ApprovedTreatsShaper:
             approvals = build_fda_approval_index(inputs)
             faers_cases = find_faers_cases(inputs, columns=_FAERS_CASE_COLUMNS)
             quarter_urls = faers_quarter_urls(inputs)
+            ema_registry = find_table(inputs, _EMA_REGISTRY_FILENAME)
             with MentionCache(ctx.workdir) as cache:
                 rows = build_approved_treats_rows(
                     faers_cases,
@@ -288,13 +317,18 @@ class ApprovedTreatsShaper:
                     devices=devices,
                     cache=cache,
                     faers_quarter_urls=quarter_urls,
+                    ema_registry=ema_registry,
                 )
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_approved_treats")
 
 
 def _mine_indication_mentions(
-    dailymed: DailyMedEvidence, ner: DiseaseNER, devices: Sequence[str] | None, cache: MentionCache | None = None
-) -> dict[tuple[str, str], list[Mention]]:
+    dailymed: DailyMedEvidence,
+    ner: DiseaseNER,
+    devices: Sequence[str] | None,
+    cache: MentionCache | None = None,
+    ema_registry: pl.DataFrame | None = None,
+) -> tuple[dict[tuple[str, str], list[Mention]], dict[tuple[str, str], list[Mention]]]:
     """Mine every indication section ONCE, returning ``{(set_id, doc_key): [mentions]}``.
 
     Sections are mined per document section — keyed by :func:`_doc_key`, because one SPL document
@@ -306,25 +340,36 @@ def _mine_indication_mentions(
     texts are served from the persistent mention cache
     (:func:`~dakp_pipeline.assertions.ner_dispatch.mine_with_cache`). Output is identical
     regardless of dispatch mode or cache state.
+
+    EMA registry rows (``ema_registry``) join the SAME work pool: each row's free-text
+    ``therapeutic_indication`` becomes one work item keyed ``(ema:<product-number-or-url>,
+    "indication", text)``, so the shaper's passes dispatch as a single globally LPT-balanced
+    pool (:mod:`~dakp_pipeline.assertions.ner_dispatch`) and identical texts dedupe through
+    the cache automatically. The returned tuple splits the mined map back into SPL keys and
+    EMA keys.
     """
     work_items = [
         (set_id, _doc_key(doc_id, occurrence), text)
         for set_id in sorted(dailymed.indication_docs)
         for occurrence, (doc_id, text) in enumerate(dailymed.indication_docs[set_id])
     ]
-    if not work_items:
-        return {}
+    ema_items = _ema_indication_items(ema_registry) if ema_registry is not None else []
+    if not work_items and not ema_items:
+        return {}, {}
 
     def mine(items: Sequence[Any]) -> dict[tuple[str, str], list[Mention]]:
         if devices and len(items) > 1 and not ner._offline:
             return _mine_multi_gpu(items, ner, devices)
         mined: dict[tuple[str, str], list[Mention]] = {}
-        for done, (set_id, doc_id, text) in enumerate(items, start=1):
-            mined[(set_id, doc_id)] = ner.extract(text)
+        for done, (key_id, doc_id, text) in enumerate(items, start=1):
+            mined[(key_id, doc_id)] = ner.extract(text)
             progress(logger, "shape_approved_treats", done, len(items), every=_MINING_PROGRESS_EVERY)
         return mined
 
-    return mine_with_cache(work_items, ner, mine, cache)
+    mined = mine_with_cache([*work_items, *ema_items], ner, mine, cache)
+    spl_mentions = {key: mentions for key, mentions in mined.items() if not key[0].startswith(_EMA_KEY_PREFIX)}
+    ema_mentions = {key: mentions for key, mentions in mined.items() if key[0].startswith(_EMA_KEY_PREFIX)}
+    return spl_mentions, ema_mentions
 
 
 def build_approved_treats_rows(
@@ -338,6 +383,7 @@ def build_approved_treats_rows(
     devices: Sequence[str] | None = None,
     cache: MentionCache | None = None,
     faers_quarter_urls: Mapping[str, str] | None = None,
+    ema_registry: pl.DataFrame | None = None,
 ) -> list[dict[str, str]]:
     """Aggregate approved-treats assertion rows (pure; deterministic ordering).
 
@@ -348,13 +394,18 @@ def build_approved_treats_rows(
 
     ``approvals`` expands each application number to its FDA display form (``BLA125514``);
     without it the DailyMed label's own prefixed id is used unchanged.
+
+    EMA registry rows (``ema_registry``) union in per-source rows: MeSH-area rows always
+    (``infores:ema``), EPAR indication-mined rows when a ``ner`` backend is present
+    (``infores:epar``). FDA rows are untouched by the EMA path — per-source rows are never
+    merged across sources (the union re-sorts deterministically).
     """
     approvals = approvals if approvals is not None else FDAApprovalIndex()
-    mentions = _mine_indication_mentions(dailymed, ner, devices, cache) if ner is not None else None
+    spl_mentions, ema_mentions = _mine_indication_mentions(dailymed, ner, devices, cache, ema_registry) if ner is not None else ({}, {})
     candidates = (
         _faers_candidates(faers_cases, disease_map, faers_quarter_urls)
         if faers_cases is not None
-        else _dailymed_candidates(dailymed, disease_map, mentions)
+        else _dailymed_candidates(dailymed, disease_map, spl_mentions)
     )
 
     aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -373,11 +424,11 @@ def build_approved_treats_rows(
         if not sets:  # (2)+(3) DailyMed approval AND SPL indication-section support
             dropped_no_spl_support += 1
             continue
-        support_sets = _condition_corroborated_sets(dailymed, sets, cand, disease_map, mentions)
+        support_sets = _condition_corroborated_sets(dailymed, sets, cand, disease_map, spl_mentions)
         if not support_sets:  # (4) the condition must actually appear on a supporting label
             dropped_no_label_term_support += 1
             continue
-        observations = _indication_observations(dailymed, support_sets, cand, disease_map, mentions)
+        observations = _indication_observations(dailymed, support_sets, cand, disease_map, spl_mentions)
         if not observations:
             dropped_no_label_term_support += 1
             continue
@@ -439,7 +490,10 @@ def build_approved_treats_rows(
         dropped_no_subject=dropped_no_subject,
         assertions=len(aggregated),
     )
-    return [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]
+    fda_rows = [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]
+    ema_rows = build_ema_treats_rows(ema_registry, disease_map) if ema_registry is not None else []
+    epar_rows = build_epar_treats_rows(ema_registry, ema_mentions, disease_map) if ema_registry is not None else []
+    return sorted(fda_rows + ema_rows + epar_rows, key=_row_sort_key)
 
 
 def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
@@ -556,6 +610,196 @@ def _object_attrs(text: str, disease_map: Mapping[str, Mapping[str, str]]) -> tu
         match = matches[0]
         return match["curie"], match["name"], match["category"]
     return "", text, "Disease"
+
+
+def _split_semicolons(cell: str) -> list[str]:
+    """Split a semicolon-joined EMA cell into its stripped, non-empty values."""
+    return [part.strip() for part in cell.split(";") if part.strip()]
+
+
+def _epar_substances(rec: Mapping[str, Any]) -> list[str]:
+    """EMA subject fan-out: the ``active_substance`` cell split on ``;``, INN fallback when empty."""
+    substance_cell = str(rec.get("active_substance") or "").strip() or str(rec.get("inn") or "").strip()
+    return _split_semicolons(substance_cell)
+
+
+def _ema_row_key(rec: Mapping[str, Any], index: int) -> str:
+    """Unique mining key for one registry row: product number, else EPAR URL, else row index."""
+    for field in ("ema_product_number", "medicine_url"):
+        value = str(rec.get(field) or "").strip()
+        if value:
+            return f"{_EMA_KEY_PREFIX}{value}"
+    return f"{_EMA_KEY_PREFIX}row-{index}"
+
+
+def _ema_indication_items(ema_registry: pl.DataFrame) -> list[tuple[str, str, str]]:
+    """One ``(ema:<id>, "indication", text)`` work item per registry row carrying indication text."""
+    items: list[tuple[str, str, str]] = []
+    for index, rec in enumerate(ema_registry.iter_rows(named=True)):
+        text = str(rec.get("therapeutic_indication") or "").strip()
+        if not text or not _epar_substances(rec):
+            continue
+        items.append((_ema_row_key(rec, index), "indication", text))
+    return items
+
+
+def _row_sort_key(row: Mapping[str, str]) -> tuple[str, str, str, str]:
+    """Total order over the FDA+EMA union (per-source rows keep their own provenance)."""
+    return (row["subject_text"], row["object_text"], row["upstream_resource_ids"], row["assertion_context"])
+
+
+def build_ema_treats_rows(ema_registry: pl.DataFrame, disease_map: Mapping[str, Mapping[str, str]]) -> list[dict[str, str]]:
+    """EMA approved-treats rows: one per ``(active substance, MeSH therapeutic-area term)`` pair.
+
+    Every row of the interim registry table is an Authorised, Human centrally-approved medicine
+    (the extractor filtered everything else out). The subject fan-out splits the semicolon-joined
+    ``active_substance`` cell (falling back to ``inn`` when empty); the object fan-out splits
+    ``therapeutic_area_mesh``. ``FDA_regulatory_approvals`` aggregates the EMA product numbers
+    and ``supporting_spl_documents`` the EPAR medicine URLs — deduplicated, sorted, pipe-joined.
+    Registry rows carry no sentence, so ``assertion_context`` is the fixed ``indication`` and the
+    sparse qualifier columns stay blank (nullable qualifiers keep the edge).
+    """
+    aggregated: dict[tuple[str, str], dict[str, Any]] = {}
+    for rec in ema_registry.iter_rows(named=True):
+        for substance in _epar_substances(rec):
+            for mesh_term in _split_semicolons(str(rec.get("therapeutic_area_mesh") or "")):
+                key = (substance, mesh_term)
+                agg = aggregated.setdefault(key, {"approval_ids": [], "docs": []})
+                agg["approval_ids"].append(str(rec.get("ema_product_number") or "").strip())
+                agg["docs"].append(str(rec.get("medicine_url") or "").strip())
+
+    stats(logger, "shape_approved_treats", ema_medicines=ema_registry.height, ema_assertions=len(aggregated))
+    rows: list[dict[str, str]] = []
+    for (substance, mesh_term), agg in sorted(aggregated.items()):
+        curie, name, category = _object_attrs(mesh_term, disease_map)
+        rows.append(
+            row_for(
+                _TABLE,
+                subject_text=substance,
+                subject_curie="",
+                subject_name=substance,
+                subject_category="ChemicalEntity",
+                predicate=_PREDICATE,
+                object_text=mesh_term,
+                object_curie=curie,
+                object_name=name,
+                object_category=category,
+                assertion_context="indication",
+                FDA_regulatory_approvals=sorted_pipe(agg["approval_ids"]),
+                supporting_spl_documents=sorted_pipe(agg["docs"]),
+                clinical_approval_status=_STATUS,
+                knowledge_level=KL_ASSERTION,
+                agent_type=AT_MANUAL,
+                primary_knowledge_source=INFORES_DAKP,
+                upstream_resource_ids=INFORES_EMA,
+            )
+        )
+    return rows
+
+
+def build_epar_treats_rows(
+    ema_registry: pl.DataFrame, mined: Mapping[tuple[str, str], list[Mention]], disease_map: Mapping[str, Mapping[str, str]]
+) -> list[dict[str, str]]:
+    """EPAR approved-treats rows: one per ``(active substance, mined indication mention)`` pair.
+
+    The export's free-text ``therapeutic_indication`` is mined once per registry row (shared
+    pool with SPL indication sections); rows are then built sentence by sentence: object hosts
+    are the ``object_mentions`` subset of the sentence-localized mentions, qualifier spans are
+    attached with the same :func:`~dakp_pipeline.assertions.contexts.attach_qualifiers_with_scores`
+    floor/host rules as FDA rows, and the context is derived from the sentence's prevention cues
+    (``assertion_context("ema", ...)``). Sentences carrying the SPL-negation boilerplate
+    ("not indicated", "not recommended", ...) are skipped — mirroring the FDA rule-4 spirit.
+
+    Aggregation keys on ``(subject, object, context)`` so indication and prevention
+    observations for the same pair never inherit each other's qualifiers. ``infores:epar``
+    provenance; the EMA product number rides ``FDA_regulatory_approvals`` and the EPAR
+    ``medicine_url`` stays in ``supporting_spl_documents``.
+    """
+    aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
+    mentions_mined = 0
+    for index, rec in enumerate(ema_registry.iter_rows(named=True)):
+        text = str(rec.get("therapeutic_indication") or "").strip()
+        subjects = _epar_substances(rec)
+        if not text or not subjects:
+            continue
+        product_number = str(rec.get("ema_product_number") or "").strip()
+        medicine_url = str(rec.get("medicine_url") or "").strip()
+        row_mentions = list(mined.get((_ema_row_key(rec, index), "indication"), []))
+        for start, _end, sentence in _sentence_spans(text):
+            if _NEGATION_CUES.search(sentence):
+                continue  # the EPAR text disclaims this sentence's conditions
+            sentence_mentions = [m for m in row_mentions if m.start < start + len(sentence) and start < m.end]
+            local_mentions = [
+                replace(m, start=m.start - start, end=m.end - start, text=sentence[m.start - start : m.end - start]) for m in sentence_mentions
+            ]
+            hosts = object_mentions(local_mentions)
+            if not hosts:
+                continue
+            qualifiers = [m for m in local_mentions if m not in hosts]
+            sentence_of = lambda _mention, value=sentence: value
+            attached, qualifier_scores = attach_qualifiers_with_scores(hosts, qualifiers, sentence_of)
+            context = assertion_context("ema", "therapeutic_indication", sentence)
+            for host_index, host in enumerate(hosts):
+                object_text = normalize_text(host.text)
+                if not object_text:
+                    continue
+                mentions_mined += 1
+                for substance in subjects:
+                    key = (substance, object_text, context)
+                    agg = aggregated.setdefault(
+                        key,
+                        {
+                            "approval_ids": [],
+                            "docs": [],
+                            "qualifiers": {},
+                            "qualifier_scores": {},
+                            "assertion_context_model": "",
+                            "assertion_context_model_score": 0.0,
+                        },
+                    )
+                    agg["approval_ids"].append(product_number)
+                    agg["docs"].append(medicine_url)
+                    model_score = float(host.context_model_score or 0.0)
+                    if model_score > float(agg["assertion_context_model_score"]):
+                        agg["assertion_context_model"] = host.context_model or ""
+                        agg["assertion_context_model_score"] = model_score
+                    for field, value in attached.get(host_index, {}).items():
+                        score = qualifier_scores.get((host_index, field), (0.0, value))
+                        previous = agg["qualifier_scores"].get(field)
+                        if previous is None or score > previous:
+                            agg["qualifier_scores"][field] = score
+                            agg["qualifiers"][field] = value
+
+    stats(logger, "shape_approved_treats", epar_medicines=ema_registry.height, epar_mentions=mentions_mined, epar_assertions=len(aggregated))
+    rows: list[dict[str, str]] = []
+    for (substance, object_text, context), agg in sorted(aggregated.items()):
+        curie, name, category = _object_attrs(object_text, disease_map)
+        rows.append(
+            row_for(
+                _TABLE,
+                subject_text=substance,
+                subject_curie="",
+                subject_name=substance,
+                subject_category="ChemicalEntity",
+                predicate=_PREDICATE,
+                object_text=object_text,
+                object_curie=curie,
+                object_name=name,
+                object_category=category,
+                assertion_context=context,
+                FDA_regulatory_approvals=sorted_pipe(agg["approval_ids"]),
+                supporting_spl_documents=sorted_pipe(agg["docs"]),
+                assertion_context_model=agg["assertion_context_model"],
+                assertion_context_model_score=agg["assertion_context_model_score"],
+                **agg["qualifiers"],
+                clinical_approval_status=_STATUS,
+                knowledge_level=KL_ASSERTION,
+                agent_type=AT_MANUAL,
+                primary_knowledge_source=INFORES_DAKP,
+                upstream_resource_ids=INFORES_EPAR,
+            )
+        )
+    return rows
 
 
 def _faers_candidates(
@@ -684,4 +928,4 @@ def _dailymed_candidates(
 
 transform = ApprovedTreatsShaper().transform
 
-__all__ = ["ApprovedTreatsShaper", "build_approved_treats_rows", "transform"]
+__all__ = ["ApprovedTreatsShaper", "build_approved_treats_rows", "build_ema_treats_rows", "build_epar_treats_rows", "transform"]

@@ -79,11 +79,15 @@ EXPECTED_SOURCES = {
         {
             "resource_id": INFORES_DAKP,
             "resource_role": "primary_knowledge_source",
-            "upstream_resource_ids": ["infores:dailymed", "infores:faers"],
+            "upstream_resource_ids": ["infores:dailymed", "infores:faers", "infores:ema", "infores:epar"],
             "source_record_urls": [GESTALT_URL_TEMPLATE],
         },
         {"resource_id": "infores:faers", "resource_role": "supporting_data_source"},
         {"resource_id": "infores:dailymed", "resource_role": "supporting_data_source"},
+        # EMA/EPAR supporting entries carry NO source_record_urls (like DailyMed): the dataset URL
+        # lives on the section source.url + the RIG, and per-medicine EPAR URLs stay in the TSV.
+        {"resource_id": "infores:ema", "resource_role": "supporting_data_source"},
+        {"resource_id": "infores:epar", "resource_role": "supporting_data_source"},
     ],
     "faers_applied_to_treat_assertions": [
         {
@@ -180,10 +184,13 @@ EXPECTED_ANNOTATIONS = {
 # assertion table -> the REAL upstream dataset URL recorded as ``source.url`` (never a placeholder;
 # RIG/audit record only — edge provenance comes from the explicit ``override.sources`` template,
 # which carries no dataset-level URLs).
+EMA_MEDICINES_XLSX_URL = "https://www.ema.europa.eu/en/documents/report/medicines-output-medicines-report_en.xlsx"
+# Each table's ``source.url`` list: approved-treats aggregates TWO upstream datasets (the DailyMed
+# full-release index and the EMA medicines xlsx), the others exactly one.
 EXPECTED_SOURCE_URLS = {
-    "approved_treats_assertions": "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm",
-    "faers_applied_to_treat_assertions": "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html",
-    "contraindication_assertions": "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm",
+    "approved_treats_assertions": ["https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm", EMA_MEDICINES_XLSX_URL],
+    "faers_applied_to_treat_assertions": ["https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"],
+    "contraindication_assertions": ["https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"],
 }
 
 
@@ -279,7 +286,7 @@ def test_table_config_structure(table: str) -> None:
     assert source["local"] == f"tabular/{table}.tsv"
     assert source["delimiter"] == "\t"
     # The real upstream dataset URL (a list since Tablassert 8.2.1) — never the example.invalid placeholder.
-    assert source["url"] == [EXPECTED_SOURCE_URLS[table]]
+    assert source["url"] == EXPECTED_SOURCE_URLS[table]
     assert all("example.invalid" not in url for url in source["url"])
 
     # column-encoded subject/object with drug / disease prioritization + hard allow-list guards.
@@ -872,7 +879,17 @@ def test_graph_config_structure() -> None:
     # qualifier (only some contraindication edges carry one) is safe to declare graph-wide.
     assert graph["uuid_fields"] == tablassert_configs.UUID_FIELDS
     # The identity contract itself, pinned literally so a silent edit of the constant fails here.
-    assert graph["uuid_fields"] == ["subject", "predicate", "object", "disease_context_qualifier"]
+    assert graph["uuid_fields"] == [
+        "subject",
+        "predicate",
+        "object",
+        "disease_context_qualifier",
+        "anatomical_context_qualifier",
+        "sex_qualifier",
+        "population_context_qualifier",
+        "frequency_qualifier",
+        "temporal_context_qualifier",
+    ]
     # The id namespace is pinned explicitly so a future infores rename can never re-mint every
     # edge id, and collisions merge instead of aborting.
     assert graph["uuid_domain"] == tablassert_configs.UUID_DOMAIN == INFORES_DAKP
@@ -888,7 +905,7 @@ def test_graph_config_structure() -> None:
     # Supporting data sources: exactly the two edge-backed upstreams (no infores:medi — this
     # rebuild text-mines contraindications from DailyMed SPL; no Drugs@FDA — it backs no edge).
     supporting = rig["supporting_data_source_info"]
-    assert [entry["infores_id"] for entry in supporting] == ["infores:dailymed", "infores:faers"]
+    assert [entry["infores_id"] for entry in supporting] == ["infores:dailymed", "infores:faers", "infores:ema"]
     # Each entry's file location is the URL constant the acquisition layer actually downloads.
     assert supporting[0]["relevant_files"][0]["location"] == tablassert_configs.dailymed_source.FULL_RELEASE_INDEX_URL
     assert supporting[1]["relevant_files"][0]["location"] == tablassert_configs.faers_source.FDA_FAERS_INDEX_URL
@@ -932,7 +949,7 @@ def test_rig_section_validates_directly_against_tablassert_rig_config() -> None:
     # Supporting upstreams validate as real RIGSupportingDataSourceInfo entries (infores CURIE +
     # relevant-file URL checks included) and stay exactly the two edge-backed sources.
     assert rig.supporting_data_source_info is not None
-    assert [entry.infores_id for entry in rig.supporting_data_source_info] == ["infores:dailymed", "infores:faers"]
+    assert [entry.infores_id for entry in rig.supporting_data_source_info] == ["infores:dailymed", "infores:faers", "infores:ema"]
     assert source.name == "Drug Approvals Knowledge Provider (DAKP)"
     assert source.citations is not None
     assert any("https://pmc.ncbi.nlm.nih.gov/articles/PMC11601480/" in citation for citation in source.citations)
@@ -988,7 +1005,7 @@ def test_rig_supporting_data_source_info_lists_only_edge_backed_upstreams() -> N
     from tablassert.models import Graph
 
     ids = [entry["infores_id"] for entry in tablassert_configs.graph_config()["rig"]["supporting_data_source_info"]]
-    assert ids == ["infores:dailymed", "infores:faers"]
+    assert ids == ["infores:dailymed", "infores:faers", "infores:ema"]
     assert "infores:medi" not in ids  # legacy-pipeline source; no MEDI module backs it in this rebuild
 
     graph = Graph.model_validate(yaml.safe_load(tablassert_configs.graph_yaml()))
@@ -1019,7 +1036,7 @@ def test_rig_ingest_info_enrichment() -> None:
     assert all(not entry["file_name"].startswith("drug_approvals_kg") for entry in ingest["relevant_files"])
     # Included content keeps the DailyMed entry (all FOUR mined section kinds) plus the FAERS entry.
     included = ingest["included_content"]
-    assert [entry["file_name"] for entry in included] == ["DailyMed SPL sections", "FAERS quarterly ASCII zips"]
+    assert [entry["file_name"] for entry in included] == ["DailyMed SPL sections", "FAERS quarterly ASCII zips", "EMA medicines report (xlsx)"]
     assert included[0]["included_records"] == (
         "indications_and_usage (LOINC 34067-9), contraindications (LOINC 34070-3), boxed warnings (LOINC 34066-1), and "
         "warnings/precautions (LOINC 43685-7, legacy 34071-1/42232-9) sections; FDA application numbers are carried "
@@ -1055,7 +1072,11 @@ def test_rig_ingest_info_enrichment() -> None:
     info = RIGConfig.model_validate(tablassert_configs.graph_config()["rig"]).ingest_info
     assert info.ingest_categories == ["translator_knowledge_creator"]
     assert info.included_content is not None
-    assert [entry.file_name for entry in info.included_content] == ["DailyMed SPL sections", "FAERS quarterly ASCII zips"]
+    assert [entry.file_name for entry in info.included_content] == [
+        "DailyMed SPL sections",
+        "FAERS quarterly ASCII zips",
+        "EMA medicines report (xlsx)",
+    ]
     assert info.filtered_content is not None
     assert [entry.file_name for entry in info.filtered_content] == ["DailyMed SPL indication sections", "DailyMed SPL sections"]
     assert info.future_considerations is not None

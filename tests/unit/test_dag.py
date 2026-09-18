@@ -1,8 +1,9 @@
 """DAG wiring tests for the Airflow-native ``dakp_pipeline`` DAG (Airflow 3 is a hard dependency).
 
 The DAG always imports and constructs (no optional-extra guard). These tests assert the module
-constants, the 15-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
-three ``extract_*`` tasks are native Go SDK stubs routed to the ``golang`` queue, that
+constants, the 17-task graph, the visual TaskGroups (with unprefixed/stable task IDs), that the
+DailyMed/FAERS/Drugs@FDA ``extract_*`` tasks are native Go SDK stubs routed to the ``golang``
+queue (the EMA parse is a plain Python task beside them), that
 acquisition/extraction resource pools let those tasks run concurrently, that the two DailyMed GLiNER-mining shape tasks serialize on the 1-slot ``ner_mining`` pool,
 that FAERS observed-use shaping bypasses NER, and that the MEDliNER
 export task branches off the DailyMed + FAERS extracts as a default-pool leaf.
@@ -17,10 +18,12 @@ _EXPECTED_TASK_IDS = {
     "acquire_dailymed",
     "acquire_faers",
     "acquire_drugsfda",
+    "acquire_ema",
     "acquire_ner_models",
     "extract_dailymed",
     "extract_faers",
     "extract_drugsfda",
+    "extract_ema",
     "shape_treatment_tables",
     "shape_faers_use_tables",
     "shape_contraindication_tables",
@@ -32,10 +35,10 @@ _EXPECTED_TASK_IDS = {
 }
 
 _GO_STUB_IDS = {"extract_dailymed", "extract_faers", "extract_drugsfda"}
-_ACQUIRE_IDS = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ner_models"}
+_ACQUIRE_IDS = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ema", "acquire_ner_models"}
 _EXPECTED_GROUP_MEMBERS = {
     "acquire": _ACQUIRE_IDS,
-    "extract": _GO_STUB_IDS,
+    "extract": _GO_STUB_IDS | {"extract_ema"},
     "shape": {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"},
     "tablassert": {"generate_tablassert_configs", "run_tablassert"},
     "export": {"export_legacy_tsv", "publish_release_artifacts"},
@@ -80,6 +83,19 @@ def test_extract_tasks_are_go_stubs_on_golang_queue(dakp_build) -> None:
         assert type(task).__name__ == "_StubOperator"
 
 
+def test_extract_ema_is_a_python_task_in_the_extract_pool(dakp_build) -> None:
+    """The EMA xlsx is small enough to parse in-process: a plain Python task, not a Go stub.
+
+    It shares the 4-slot extract pool at the default 1 slot, so it runs beside the heavy Go
+    extracts instead of serializing behind them.
+    """
+    task = dakp_build.dag_obj.get_task("extract_ema")
+    assert task.queue != dakp_build.GO_QUEUE
+    assert task.pool == dakp_build.EXTRACT_POOL
+    assert task.pool_slots == 1
+    assert type(task).__name__ != "_StubOperator"
+
+
 def test_acquisition_tasks_use_download_pool(dakp_build) -> None:
     dag = dakp_build.dag_obj
     for task_id in _ACQUIRE_IDS:
@@ -107,16 +123,18 @@ def test_dag_task_graph(dakp_build) -> None:
     def downstream(task_id: str) -> set[str]:
         return set(dag.get_task(task_id).downstream_task_ids)
 
-    # Acquisition feeds its own extractor (download -> native Go extract).
+    # Acquisition feeds its own extractor (download -> native Go extract; the EMA parse is a
+    # plain Python task fed by acquire_ema).
     assert upstream("extract_dailymed") == {"acquire_dailymed"}
     assert upstream("extract_faers") == {"acquire_faers"}
     assert upstream("extract_drugsfda") == {"acquire_drugsfda"}
+    assert upstream("extract_ema") == {"acquire_ema"}
 
-    # Shapers join the extracts (treatment: dm+drugsfda+faers + NER models; uses: faers+dm+drugsfda
+    # Shapers join the extracts (treatment: dm+drugsfda+faers+ema + NER models; uses: faers+dm+drugsfda
     # + the produced approved-treats table + NER models; contraindication: dm+drugsfda + NER
     # models). Every shaper takes Drugs@FDA: it is the FDA application register that expands the
     # prefix-stripped application numbers into their FDA form for FDA_regulatory_approvals.
-    assert upstream("shape_treatment_tables") == {"extract_dailymed", "extract_drugsfda", "extract_faers", "acquire_ner_models"}
+    assert upstream("shape_treatment_tables") == {"extract_dailymed", "extract_drugsfda", "extract_faers", "extract_ema", "acquire_ner_models"}
     assert upstream("shape_faers_use_tables") == {"extract_faers", "extract_dailymed", "extract_drugsfda", "shape_treatment_tables"}
     assert upstream("shape_contraindication_tables") == {"extract_dailymed", "extract_drugsfda", "acquire_ner_models"}
 

@@ -62,12 +62,21 @@ Verified against the live export (2026-08-13, ~900 KB, ~2 700 rows x 39 columns)
   extracts are Go stubs). `extract_ema` output is an additional input to
   `shape_treatment_tables`.
 - `src/dakp_pipeline/tablassert.py` — approved-treats provenance override gains
-  `infores:ema`; `source.url` lists both the DailyMed index and the EMA xlsx URL.
+  `infores:ema` + `infores:epar` (supporting entries carry NO `source_record_urls`; the dataset
+  URL lives on `source.url` and in the RIG, per-medicine EPAR URLs stay in the TSV);
+  `source.url` lists both the DailyMed index and the EMA xlsx URL; the RIG gains the EMA
+  supporting-source entry, its included-content/data-access/versioning text, and `UUID_FIELDS`
+  widens to every qualifier slot so a qualified EPAR edge never merges into the unqualified
+  MeSH-area edge for the same pair under `uuid_on_collision: merge`.
   `tables/approved_treats.yaml` + `tables/graph.yaml` regenerated from the generator.
-- `src/dakp_pipeline/translator.py` — treats family invariant accepts the EMA upstream chain.
+- `src/dakp_pipeline/translator.py` — treats family accepts the EMA upstream chain through
+  `alternative_upstream` on BOTH the row-level `FamilyInvariant` and the KGX-level `EdgeFamily`
+  (`EdgeFamily.emitted_upstream` names the union the Tablassert override actually stamps).
 - Tests + fixture: `tests/fixtures/pipeline/ema/medicines-output-medicines-report_en.xlsx`
   (trimmed real export, banner rows included), `tests/unit/test_ema_source.py`,
-  `tests/unit/test_ema_extract.py`, `tests/unit/test_assertions_approved_treats_ema.py`.
+  `tests/unit/test_ema_extract.py`, `tests/unit/test_assertions_approved_treats_ema.py`,
+  plus the KGX fixture pair (`tests/fixtures/kgx/edges.jsonl` carries a second, EPAR-derived
+  treats edge with a `population_context_qualifier` and an `EMEA/H/C` product number).
 
 ## Phase 2 (done)
 
@@ -78,6 +87,12 @@ approved-treats table:
 - one row per `(active substance, mined disease/phenotype mention)` — same `;`-split + INN
   fallback subject fan-out as Phase 1; the object is the normalized mention text, so mined rows
   key separately from the MeSH-area rows;
+- **qualifiers are populated**, not left blank: the indication text is sentence-split, mentions
+  are localized per sentence, and non-host mentions become qualifier candidates through the same
+  `attach_qualifiers_with_scores` scorer DailyMed contraindications use. Sentence-locality is the
+  point — two indications in one EPAR never inherit each other's qualifiers. This is why
+  `UUID_FIELDS` had to widen: an EPAR row qualified "adult patients" is a DISTINCT edge from the
+  unqualified MeSH-area row for the same pair;
 - provenance: `upstream_resource_ids = "infores:epar"` (new `INFORES_EPAR` constant);
   `approval_ids` = EMA product number, `supporting_spl_documents` = EPAR medicine URL;
   `clinical_approval_status = approved_for_condition`; KL/AT/DAKP constants as Phase 1;

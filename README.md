@@ -5,11 +5,11 @@
 [![Stars](https://img.shields.io/github/stars/glusman-team/dakp.svg)](https://github.com/glusman-team/dakp/stargazers)
 
 **Drug Approvals Knowledge Provider**: one reproducible pipeline that turns DailyMed,
-Drugs@FDA, and FAERS into Translator assertion tables, ready for
+Drugs@FDA, FAERS, and the EMA medicines registry into Translator assertion tables, ready for
 [Tablassert](https://pypi.org/project/tablassert/) KGX modeling.
 
-DAKP downloads the real FDA sources, extracts treatment and contraindication assertions, mines
-disease mentions with NER, and aggregates everything into three TSV assertion tables. It then
+DAKP downloads the real FDA and EMA sources, extracts treatment and contraindication assertions,
+mines disease mentions with NER, and aggregates everything into three TSV assertion tables. It then
 generates Tablassert configs and hands canonical resolution and KGX compilation to the installed
 `tablassert` CLI.
 
@@ -53,15 +53,18 @@ BLAKE3-keyed mentions under `tmp/cache/ner/`), e.g. to force re-mining without l
 
 ## Pipeline stages
 
-- **acquire**: real, idempotent downloaders for DailyMed, Drugs@FDA, and FAERS. Artifacts are
-  content-addressed and freshness-gated (7-day cache window), so re-runs skip tens of GB.
-- **extract**: heavy parsers run as native Go workers ([`go/`](./go)).
+- **acquire**: real, idempotent downloaders for DailyMed, Drugs@FDA, FAERS, and the EMA
+  medicines report. Artifacts are content-addressed and freshness-gated (7-day cache window),
+  so re-runs skip tens of GB.
+- **extract**: heavy parsers run as native Go workers ([`go/`](./go)); the EMA medicines xlsx is
+  parsed in Python (`fastexcel`) down to the Authorised, Human centrally-authorised rows.
 - **NER**: a composite DiseaseNER (curated gazetteer + GLiNER2 recall) mines
-  disease/phenotype mentions from DailyMed sections; it emits mentions only, never ontology
-  CURIEs. FAERS observed-use shaping bypasses NER and leaves FAERS drug names as text-first
-  intervention subjects for Tablassert mapping.
-- **aggregate**: joins the extracts and NER mentions into the DailyMed-backed tables and
-  aggregates FAERS observed-use rows without NER.
+  disease/phenotype mentions from DailyMed sections and EMA EPAR therapeutic-indication text; it
+  emits mentions only, never ontology CURIEs. FAERS observed-use shaping bypasses NER and leaves
+  FAERS drug names as text-first intervention subjects for Tablassert mapping.
+- **aggregate**: joins the extracts and NER mentions into the DailyMed-backed tables, unions the
+  EMA-derived approved-treats rows (registry MeSH therapeutic areas plus mined EPAR indications),
+  and aggregates FAERS observed-use rows without NER.
 - **Tablassert handoff**: generates a graph config plus one table config per assertion table,
   then delegates to `tablassert build-kg` and validates the emitted KGX against the DAKP
   Translator contract — bare-`biolink:Association` edges, off-allow-list node categories, or
@@ -73,11 +76,11 @@ BLAKE3-keyed mentions under `tmp/cache/ner/`), e.g. to force re-mining without l
 
 ## Output tables
 
-| Assertion table | Predicate | Subject → Object |
-| --------------- | --------- | ---------------- |
-| approved-treats | `biolink:treats` | drug → disease/phenotype |
-| observed-use | `biolink:applied_to_treat` | drug → disease/phenotype |
-| contraindication | `biolink:contraindicated_in` | drug → disease/phenotype |
+| Assertion table | Predicate | Subject → Object | Upstream |
+| --------------- | --------- | ---------------- | -------- |
+| approved-treats | `biolink:treats` | drug → disease/phenotype | DailyMed + Drugs@FDA + FAERS; EMA registry (`infores:ema`) and mined EPAR indications (`infores:epar`) |
+| observed-use | `biolink:applied_to_treat` | drug → disease/phenotype | FAERS |
+| contraindication | `biolink:contraindicated_in` | drug → disease/phenotype | DailyMed |
 
 ## Resource Ingest Guide
 
