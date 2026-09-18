@@ -159,6 +159,26 @@ def test_default_ner_none_fixture_uses_embedded() -> None:
 # --- set without an active ingredient is skipped --------------------------------
 
 
+def test_two_sections_of_one_document_keep_their_own_mentions(tmp_path: Path) -> None:
+    """One SPL document contributing two sections must not share a single mining-map entry.
+
+    Regression guard for run 12: ``(set_id, doc_id)`` is the SPL DOCUMENT pair, so both sections
+    resolved to one entry and the short section received the long one's mentions — offsets far past
+    its own end, which ``attach_qualifiers_with_scores`` rejects by contract (``ValueError: mention
+    offsets must be sentence-relative and within sentence bounds``) two seconds after a 2h51m mine.
+    """
+    short_text = "Contraindicated: hypertension."
+    long_text = "Do not use in patients with asthma. " * 12  # mentions deep past the short section's end
+    sections = _sections(tmp_path, [("SET-A", "DOC-A", short_text), ("SET-A", "DOC-A", long_text)])
+    ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugA", "UNII:A")])
+    ner = DiseaseNER(gazetteer={"asthma": "disease", "hypertension": "disease"})
+
+    rows = build_contraindication_rows([sections, ingredients], ner)
+    # Each section contributes its own object: no cross-contamination, no raise.
+    assert {row["object_text"] for row in rows} == {"asthma", "hypertension"}
+    assert all(row["subject_text"] == "DrugA" for row in rows)
+
+
 def test_contraindication_set_without_active_ingredient_is_skipped(tmp_path: Path) -> None:
     sections = _sections(tmp_path, [("SET-X", "SET-X#d", "asthma"), ("SET-Y", "SET-Y#d", "asthma")])
     ingredients = _ingredients(tmp_path, [("active", "SET-Y", "DrugY", "UNII:Y")])  # SET-X has none

@@ -470,6 +470,24 @@ def _spans_from_result(result: Mapping[str, Any], window: str) -> list[_ModelSpa
     return spans
 
 
+def _release_cuda_cache() -> None:
+    """Best-effort ``torch.cuda.empty_cache()`` after a device OOM.
+
+    A failed allocation leaves its reserved blocks behind and a multi-hour shard fragments them,
+    so the next call OOMs at ANY batch size even though the model needs far less than the card
+    holds: run 12's cuda:1 worker sat at 16.0 GiB of a 15.9 GiB card, halved its batch four times,
+    then OOMed on each of 2048 single-window retries and dropped every one of them. Releasing the
+    cache hands those blocks back before the smaller retry. Never raises — no torch, no CUDA
+    device, or an allocator that refuses are all no-ops here.
+    """
+    try:
+        import torch  # lazy: no torch at module load
+
+        torch.cuda.empty_cache()
+    except Exception:
+        pass  # a cleanup helper must never fail a shard: no torch, no device, or a refusing allocator
+
+
 def _is_memory_error(exc: BaseException) -> bool:
     """True for a device OOM — a BATCH-SIZE problem, not a poisoned-window problem.
 
@@ -1195,9 +1213,10 @@ class DiseaseNER:
         Two distinct failure modes, told apart by :func:`_is_memory_error`:
 
         * a device OOM is a property of the BATCH (16 padded 384-token windows through
-          deberta-v3-large with the eager attention fallback exceeds a 16 GB P100), so the same
-          windows are retried at half the batch size — splitting the list would not reduce the
-          peak memory of any internal batch;
+          deberta-v3-large with the eager attention fallback exceeds a 16 GB P100) and of the
+          fragmented reserves the failed allocation leaves behind, so the cache is released and
+          the SAME windows are retried at half the batch size — splitting the list would reduce
+          neither;
         * anything else is presumed one pathological window (weird SPL markup, hostile unicode),
           so the LIST is bisected until the offender stands alone.
 
@@ -1209,9 +1228,11 @@ class DiseaseNER:
             return self._raw_batch_extract(model, texts, batch_size)
         except Exception as exc:
             kind = type(exc).__name__
-            if _is_memory_error(exc) and batch_size > 1:
-                logger.warning("ner_batch_infer: {} on {} windows at batch_size = {}; retrying at half the batch", kind, len(texts), batch_size)
-                return self._infer_chunk(model, texts, max(1, batch_size // 2))
+            if _is_memory_error(exc):
+                _release_cuda_cache()
+                if batch_size > 1:
+                    logger.warning("ner_batch_infer: {} on {} windows at batch_size = {}; retrying at half the batch", kind, len(texts), batch_size)
+                    return self._infer_chunk(model, texts, max(1, batch_size // 2))
             if len(texts) > 1:
                 middle = len(texts) // 2
                 logger.warning("ner_batch_infer: {} on {} windows; bisecting to isolate the failure", kind, len(texts))

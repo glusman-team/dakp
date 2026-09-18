@@ -17,7 +17,7 @@ import pytest
 from loguru import logger
 
 import dakp_pipeline.assertions.ner_dispatch as dispatch
-from dakp_pipeline.assertions.ner_dispatch import default_ner, mine_with_cache
+from dakp_pipeline.assertions.ner_dispatch import default_ner, mine_by_position, mine_with_cache
 from dakp_pipeline.logging_setup import WORKER_LOG_SUBDIR
 from dakp_pipeline.ner import model_cache
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
@@ -303,6 +303,45 @@ def test_four_device_sharding_creates_four_distinct_shards(monkeypatch: pytest.M
     assert [device for _shard, device in submitted] == ["cuda:0", "cuda:1", "cuda:2", "cuda:3"]
     assert sorted(item[1] for shard, _device in submitted for item in shard) == [f"D{i}" for i in range(8)]
     assert all(shard for shard, _device in submitted)
+
+
+# --- mine_by_position: (set_id, doc_id) is not a unique work-item key --------------
+
+
+def test_mine_by_position_gives_duplicate_documents_their_own_mentions() -> None:
+    """Two sections of ONE SPL document must not share a mining-map entry.
+
+    Regression guard for run 12: ``doc_id`` is the document id, so the pair collided, one item
+    received the other's mentions, and those offsets — relative to a different text — failed
+    ``attach_qualifiers_with_scores``' sentence-bounds contract two seconds after a 2h51m mine.
+    """
+    items = [("SET-A", "DOC-A", "asthma"), ("SET-A", "DOC-A", "diabetes"), ("SET-B", "DOC-B", "asthma")]
+    ner = _ner("asthma", "diabetes")
+
+    def mine(batch: Sequence[Any]) -> dict[tuple[str, str], list[Mention]]:
+        # Receives the ordinal-suffixed proxies; keys its results by whatever it is handed.
+        return {(set_id, doc_id): ner.extract(text) for set_id, doc_id, text in batch}
+
+    mined = mine_by_position(items, ner, mine, None)
+    assert [[mention.text for mention in row] for row in mined] == [["asthma"], ["diabetes"], ["asthma"]]
+
+
+def test_mine_by_position_deduplicates_identical_texts_through_the_cache_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Identical texts are still mined once: the rekeying leaves the cache/dedup seam intact."""
+    items = [("SET-A", "DOC-A", "asthma"), ("SET-A", "DOC-A", "asthma"), ("SET-A", "DOC-B", "diabetes")]
+    ner = _ner("asthma", "diabetes")
+    monkeypatch.setattr(dispatch, "ner_cache_material", lambda _backend: ("model", "b3deadbeef", "fingerprint"))
+    mined_texts: list[str] = []
+
+    def mine(batch: Sequence[Any]) -> dict[tuple[str, str], list[Mention]]:
+        mined_texts.extend(text for _set_id, _doc_id, text in batch)
+        return {(set_id, doc_id): ner.extract(text) for set_id, doc_id, text in batch}
+
+    cache = _FakeCache()
+    out = mine_by_position(items, ner, mine, cache)  # type: ignore[arg-type]
+    assert sorted(mined_texts) == ["asthma", "diabetes"]  # one representative per distinct text
+    assert [[mention.text for mention in row] for row in out] == [["asthma"], ["asthma"], ["diabetes"]]
+    assert (cache.get_calls, cache.put_calls) == (1, 1)
 
 
 # --- default_ner -----------------------------------------------------------------

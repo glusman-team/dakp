@@ -19,6 +19,7 @@ import threading
 import time
 import types
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
@@ -39,6 +40,7 @@ from dakp_pipeline.ner.ner import (
     _lock_competitor_pids,
     _lock_holder_pids,
     _reap_orphaned_lock_competitors,
+    _release_cuda_cache,
 )
 
 
@@ -104,6 +106,16 @@ class _OomAboveBatchModel:
         if batch_size > _OomAboveBatchModel.max_batch:
             raise RuntimeError("CUDA out of memory. Tried to allocate 2.26 GiB.")
         return [{"entities": {"biolink:Disease": [{"text": text, "confidence": 0.99, "start": 0, "end": len(text)}]}} for text in texts]
+
+
+class _OomOnOneWindowModel:
+    """GLiNER2 stand-in that OOMs on one specific window at ANY batch size."""
+
+    @staticmethod
+    def batch_extract_entities(texts: list[str], _labels: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        if any("HUGE" in text for text in texts):
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.26 GiB.")
+        return [{"entities": {}} for _ in texts]
 
 
 class _RecordingBatchModel:
@@ -545,6 +557,46 @@ def test_infer_windows_submits_in_bounded_chunks(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(ner_module, "_INFERENCE_CHUNK_WINDOWS", 2)
     assert len(backend.extract_batch(["asthma", "chronic hives", "diabetes"])) == 3
     assert _RecordingBatchModel.sizes == [2, 1]
+
+
+def test_release_cuda_cache_empties_the_allocator_and_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An OOM's fragmented reserves are handed back before the smaller retry; failures are swallowed.
+
+    Run 12's cuda:1 worker sat at 16.0 GiB of a 15.9 GiB card and then OOMed on EVERY remaining
+    window, silently dropping 2048 of them — reclaiming the cache is what breaks that spiral.
+    """
+    calls: list[str] = []
+    module = types.ModuleType("torch")
+    module.cuda = SimpleNamespace(empty_cache=lambda: calls.append("empty_cache"))  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", module)
+    _release_cuda_cache()
+    assert calls == ["empty_cache"]
+
+    def _boom() -> None:
+        raise RuntimeError("no CUDA-capable device is detected")
+
+    module.cuda = SimpleNamespace(empty_cache=_boom)  # type: ignore[attr-defined]
+    _release_cuda_cache()  # a cleanup helper must never fail a shard
+
+
+def test_a_window_that_ooms_alone_is_dropped_after_bisecting(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """An OOM at batch_size 1 is not a batch problem any more: bisect, then drop only the offender.
+
+    Halving cannot help once the batch is a single window, so the list is split to find it and
+    that one window is dropped with its exception type and preview — the shard survives.
+    """
+    _install_fake_gliner2(monkeypatch, tmp_path)
+    backend = DiseaseNER(offline=False, device="cpu", workdir=tmp_path)
+    monkeypatch.setattr(backend, "_load_model", lambda: _OomOnOneWindowModel)
+    lines: list[str] = []
+    sink_id = logger.add(lambda message: lines.append(message.record["message"]), level="DEBUG")
+    try:
+        out = backend.extract_batch(["asthma", "HUGE window", "chronic hives"])
+    finally:
+        logger.remove(sink_id)
+    assert len(out) == 3  # the healthy texts keep their results
+    assert any("bisecting to isolate the failure" in line for line in lines)
+    assert any("window dropped (RuntimeError" in line and "HUGE window" in line for line in lines)
 
 
 def test_is_memory_error_matches_torchs_oom_by_name_and_message() -> None:

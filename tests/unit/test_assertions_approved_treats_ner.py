@@ -20,6 +20,7 @@ from dakp_pipeline.assertions import approved_treats
 from dakp_pipeline.assertions.approved_treats import (
     ApprovedTreatsShaper,
     _candidate_mention,
+    _doc_key,
     _indication_observations,
     _mine_indication_mentions,
     _sentence_local,
@@ -166,6 +167,40 @@ def test_indication_observations_clips_a_straddling_mention_instead_of_raising()
     # sentence's qualifier is not attached to a host that is not there.
     assert [observation["context"] for observation in observations] == ["indication"]
     assert observations[0]["qualifiers"] == {}
+
+
+def test_duplicate_indication_documents_are_mined_under_their_own_key() -> None:
+    """Two indication sections of ONE SPL document get two mining-map entries, not one.
+
+    ``doc_id`` is the SPL DOCUMENT id, so ``(set_id, doc_id)`` collides for a document carrying
+    several sections (20,467 real pairs do). One shared entry hands a section mentions mined from
+    a DIFFERENT text — offsets into the wrong string, which is how run 12's contraindication
+    shaper died. The first section keeps the historical bare key; later ones are ordinal-suffixed.
+    """
+    assert _doc_key("DOC-A", 0) == "DOC-A"
+    assert _doc_key("DOC-A", 1) == "DOC-A#2"
+    evidence = DailyMedEvidence(indication_docs={"SET-A": [("DOC-A", "indicated for asthma"), ("DOC-A", "indicated for diabetes")]})
+    mined = _mine_indication_mentions(evidence, DiseaseNER(gazetteer={"asthma": "disease", "diabetes": "disease"}), None)
+    assert set(mined) == {("SET-A", "DOC-A"), ("SET-A", "DOC-A#2")}
+    assert [mention.text for mention in mined[("SET-A", "DOC-A")]] == ["asthma"]
+    assert [mention.text for mention in mined[("SET-A", "DOC-A#2")]] == ["diabetes"]
+
+
+def test_indication_observations_reads_each_duplicate_document_section_separately() -> None:
+    """The reading side resolves the same ordinal keys, so a qualifier stays with its own section."""
+    first = "Examplestatin is indicated for asthma."
+    second = "Examplestatin is indicated for asthma in women."
+    evidence = DailyMedEvidence(indication_docs={"SET-A": [("DOC-A", first), ("DOC-A", second)]})
+    mentions = {
+        ("SET-A", "DOC-A"): [],  # the first section carries no qualifier
+        ("SET-A", "DOC-A#2"): [
+            Mention("asthma", second.index("asthma"), second.index("asthma") + 6, "Disease", 1.0),
+            Mention("women", second.index("women"), second.index("women") + 5, "BiologicalSex", 0.9),
+        ],
+    }
+    observations = _indication_observations(evidence, ["SET-A"], {"object_text": "asthma", "object_category": "Disease"}, {}, mentions)
+    assert [observation["qualifiers"] for observation in observations] == [{}, {"sex_text": "women"}]
+    assert [observation["doc_id"] for observation in observations] == ["DOC-A", "DOC-A"]  # rows keep the real doc_id
 
 
 def test_patient_template_merges_qualifier_from_nonzero_host() -> None:

@@ -164,6 +164,19 @@ def _sentence_local(mention: Mention, sentence_start: int, sentence_end: int, se
     return replace(mention, start=start, end=end, text=sentence[start:end])
 
 
+def _doc_key(doc_id: str, occurrence: int) -> str:
+    """Key the Nth indication section one SPL document contributes (``occurrence`` counts from 0).
+
+    ``doc_id`` is the SPL DOCUMENT id, so a document carrying two indication sections yields two
+    work items with the same ``(set_id, doc_id)`` pair — and the mining map is keyed by that pair,
+    so the two sections would exchange mentions mined from each other's text (offsets into the
+    wrong string; 20,467 real pairs do exactly this). The first section keeps the bare doc_id (the
+    historical key) and later ones get an ordinal suffix. This is a ROUTING key only: emitted rows
+    and observation records keep the real ``doc_id``, and the mention-cache key is text-derived.
+    """
+    return doc_id if occurrence == 0 else f"{doc_id}#{occurrence + 1}"
+
+
 def _candidate_mention(sentence: str, candidate: Mapping[str, str], offset: int) -> Mention | None:
     """Create a lexical host only when the candidate is explicitly present in this sentence."""
     needle = normalize_text(candidate["object_text"])
@@ -199,8 +212,8 @@ def _indication_observations(
     """Preserve the sentence, context, host, and model corroboration for each support document."""
     observations: list[dict[str, Any]] = []
     for set_id in sets:
-        for doc_id, text in dailymed.indication_docs.get(set_id, []):
-            doc_mentions = list((mentions or {}).get((set_id, doc_id), []))
+        for occurrence, (doc_id, text) in enumerate(dailymed.indication_docs.get(set_id, [])):
+            doc_mentions = list((mentions or {}).get((set_id, _doc_key(doc_id, occurrence)), []))
             if not _section_mentions_condition(text, candidate, disease_map, doc_mentions):
                 continue
             for start, _end, sentence in _sentence_spans(text):
@@ -282,17 +295,23 @@ class ApprovedTreatsShaper:
 def _mine_indication_mentions(
     dailymed: DailyMedEvidence, ner: DiseaseNER, devices: Sequence[str] | None, cache: MentionCache | None = None
 ) -> dict[tuple[str, str], list[Mention]]:
-    """Mine every indication section ONCE, returning ``{(set_id, doc_id): [mentions]}``.
+    """Mine every indication section ONCE, returning ``{(set_id, doc_key): [mentions]}``.
 
-    Sections are mined per ``(set_id, doc_id)`` and shared by both candidate paths (FAERS
-    corroboration + DailyMed fallback) — never re-mined per candidate. Production runs dispatch
-    across GPUs (:func:`~dakp_pipeline.assertions.ner_dispatch._mine_multi_gpu`); the offline
-    gazetteer backend runs sequentially with periodic progress narration. When ``cache`` is
-    given, previously mined texts are served from the persistent mention cache
+    Sections are mined per document section — keyed by :func:`_doc_key`, because one SPL document
+    can contribute several indication sections and ``(set_id, doc_id)`` alone would collide — and
+    shared by both candidate paths (FAERS corroboration + DailyMed fallback), never re-mined per
+    candidate. Production runs dispatch across GPUs
+    (:func:`~dakp_pipeline.assertions.ner_dispatch._mine_multi_gpu`); the offline gazetteer backend
+    runs sequentially with periodic progress narration. When ``cache`` is given, previously mined
+    texts are served from the persistent mention cache
     (:func:`~dakp_pipeline.assertions.ner_dispatch.mine_with_cache`). Output is identical
     regardless of dispatch mode or cache state.
     """
-    work_items = [(set_id, doc_id, text) for set_id in sorted(dailymed.indication_docs) for doc_id, text in dailymed.indication_docs[set_id]]
+    work_items = [
+        (set_id, _doc_key(doc_id, occurrence), text)
+        for set_id in sorted(dailymed.indication_docs)
+        for occurrence, (doc_id, text) in enumerate(dailymed.indication_docs[set_id])
+    ]
     if not work_items:
         return {}
 
@@ -466,8 +485,8 @@ def _condition_corroborated_sets(
         set_id
         for set_id in sets
         if any(
-            _section_mentions_condition(text, cand, disease_map, (mentions or {}).get((set_id, doc_id)))
-            for doc_id, text in dailymed.indication_docs[set_id]
+            _section_mentions_condition(text, cand, disease_map, (mentions or {}).get((set_id, _doc_key(doc_id, occurrence))))
+            for occurrence, (doc_id, text) in enumerate(dailymed.indication_docs[set_id])
         )
     ]
 
@@ -626,7 +645,7 @@ def _dailymed_candidates(
         ndas = sorted(set_to_ndas.get(set_id, ()))
         if not ndas:
             continue
-        for doc_id, text in dailymed.indication_docs[set_id]:
+        for occurrence, (doc_id, text) in enumerate(dailymed.indication_docs[set_id]):
             matches = match_diseases(text, disease_map)
             for match in matches:
                 for norm in ndas:
@@ -643,7 +662,7 @@ def _dailymed_candidates(
                         "fallback_subject": "",
                     }
             dictionary_texts = {normalize_text(match["text"]) for match in matches}
-            for mention in object_mentions((mentions or {}).get((set_id, doc_id), [])):
+            for mention in object_mentions((mentions or {}).get((set_id, _doc_key(doc_id, occurrence)), [])):
                 object_text = normalize_text(mention.text)
                 if not object_text or object_text in dictionary_texts:
                     continue

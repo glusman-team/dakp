@@ -86,7 +86,7 @@ from dakp_pipeline.assertions.evidence import (
     spl_evidence_pipe,
     write_assertion_table,
 )
-from dakp_pipeline.assertions.ner_dispatch import BUILD_HOST_GPUS, _resolve_devices, default_ner, mine_with_cache
+from dakp_pipeline.assertions.ner_dispatch import BUILD_HOST_GPUS, _resolve_devices, default_ner, mine_by_position
 from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu as _mine_multi_gpu
 from dakp_pipeline.assertions.ner_dispatch import _mine_shard as _mine_shard
 from dakp_pipeline.assertions.ner_dispatch import _shard_by_text_length as _shard_by_text_length
@@ -564,9 +564,11 @@ def build_contraindication_rows(
     )
 
     # Extract mentions: multi-GPU when devices given + production NER + >1 item; else sequential
-    # (with periodic progress narration — GLiNER mining is the slow step). mine_with_cache fronts
-    # the whole block: hits never reach the miners, only misses are dispatched. All passes share
-    # ONE backend profile, so their misses go to the GPUs as a single LPT-balanced pool — the
+    # (with periodic progress narration — GLiNER mining is the slow step). mine_by_position fronts
+    # the whole block with the persistent mention cache: hits never reach the miners, only misses
+    # are dispatched, and results come back ALIGNED WITH all_work_items (see its docstring — one
+    # SPL document contributes several sections, so (set_id, doc_id) cannot key them). All passes
+    # share ONE backend profile, so their misses go to the GPUs as a single LPT-balanced pool — the
     # largest pass (full warnings text) otherwise dominated wall time alone on one GPU.
     def mine(items: Sequence[Any]) -> dict[tuple[str, str], list[Mention]]:
         if devices and len(items) > 1 and not ner._offline:
@@ -578,17 +580,17 @@ def build_contraindication_rows(
             progress(logger, "shape_contraindications", done, len(items), every=_MINING_PROGRESS_EVERY)
         return mined_seq
 
-    mined = mine_with_cache(all_work_items, ner, mine, cache)
+    mined = mine_by_position(all_work_items, ner, mine, cache)
 
     # Aggregate mentions into assertion rows keyed by (subject, object, disease context).
     # Work items are singleton-only, so each set contributes exactly one subject ingredient;
     # the local source sentence is retained on the aggregate for the evidence column.
     aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
     mentions_mined = 0
-    for item in all_work_items:
+    for index, item in enumerate(all_work_items):
         set_id, doc_id, _text = _work_item_parts(item)
         ingredients = evidence.active_ingredients_by_set.get(set_id, [])
-        all_mentions = mined.get((set_id, doc_id), [])
+        all_mentions = mined[index]
         mentions = object_mentions(all_mentions)
         decisions = _classify_mentions(item, mentions)
         qualifier_fields: dict[int, dict[str, str]] = {}

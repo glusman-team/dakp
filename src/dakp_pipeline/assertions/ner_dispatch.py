@@ -184,6 +184,11 @@ def _mine_shard(shard: Sequence[Any], ner_config: dict[str, Any], device: str, *
     if in_worker:
         configure_worker_logging(ner_config.get("workdir"), device)
         _set_parent_death_signal()
+        # Fragmentation guard, set BEFORE torch initializes CUDA (it is read once, at init): a
+        # multi-hour shard on a 16 GB P100 crept to the memory ceiling and then OOMed on every
+        # remaining window. Expandable segments is PyTorch's own remedy for a large
+        # reserved-but-unallocated pool. ``setdefault`` so an explicit operator setting wins.
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     ner = DiseaseNER(device=device, **ner_config)
     items = [_item_parts(item) for item in shard]
     try:
@@ -287,6 +292,29 @@ def mine_with_cache(work_items: Sequence[Any], ner: DiseaseNER, mine: MineFn, ca
     return out
 
 
+def mine_by_position(work_items: Sequence[Any], ner: DiseaseNER, mine: MineFn, cache: MentionCache | None) -> list[list[Mention]]:
+    """ ":func:`mine_with_cache` over ``work_items``, returning one mention list PER INPUT ITEM.
+
+    ``(set_id, doc_id)`` is NOT a unique work-item key, and treating it as one silently swaps
+    mentions between sections: ``doc_id`` is the SPL *document* id, so one document contributes
+    every section it carries — a boxed warning plus its warnings section, two ``34070-3``
+    sections, an indication and a contraindication section. Real DailyMed has 20,467 such
+    duplicate pairs (11,593 inside the contraindication passes alone), and a mining map keyed by
+    the pair keeps only one of them, so the other item receives mentions whose offsets index a
+    DIFFERENT text. That is what ended run 12 two seconds after its 2h51m mining:
+    ``ValueError: mention offsets must be sentence-relative and within sentence bounds``.
+
+    So items are mined under an ordinal-suffixed doc_id (unique per item) and the results are
+    flattened back into input order. The suffix never leaves this function — callers keep their
+    real doc_ids in emitted rows, and the mention-cache key is derived from the TEXT, so caching
+    and deduplication are unaffected.
+    """
+    parts = [_item_parts(item) for item in work_items]
+    keyed = [(set_id, f"{doc_id}#{index}", text) for index, (set_id, doc_id, text) in enumerate(parts)]
+    mined = mine_with_cache(keyed, ner, mine, cache)
+    return [mined[(set_id, f"{doc_id}#{index}")] for index, (set_id, doc_id, _text) in enumerate(parts)]
+
+
 #: Module spawned workers re-import instead of the parent's ``__main__`` script (see
 #: :func:`_spawn_safe_main`). Must import with zero side effects. A plain MODULE, not the
 #: package itself — ``runpy.run_module`` cannot directly execute a package without a
@@ -318,4 +346,4 @@ def _spawn_safe_main() -> Iterator[None]:
         main.__spec__ = None
 
 
-__all__ = ["BUILD_HOST_GPUS", "MineFn", "default_ner", "mine_with_cache"]
+__all__ = ["BUILD_HOST_GPUS", "MineFn", "default_ner", "mine_by_position", "mine_with_cache"]
