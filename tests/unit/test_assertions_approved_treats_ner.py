@@ -22,6 +22,7 @@ from dakp_pipeline.assertions.approved_treats import (
     _candidate_mention,
     _indication_observations,
     _mine_indication_mentions,
+    _sentence_local,
     build_approved_treats_rows,
 )
 from dakp_pipeline.assertions.evidence import DailyMedEvidence
@@ -125,6 +126,46 @@ def test_candidate_fallback_preserves_original_offsets_and_qualifier_attachment(
         {("SET-A", "DOC-A"): [Mention("women", qualifier_start, qualifier_start + 5, "BiologicalSex", 0.9)]},
     )
     assert observations[0]["qualifiers"] == {"sex_text": "women"}
+
+
+def test_sentence_local_clips_a_mention_that_straddles_the_sentence() -> None:
+    """A span crossing a sentence boundary is clipped to the part inside, surface included.
+
+    GLiNER predicts over token windows that tile the whole section, so a mined span can straddle
+    two sentences; ``attach_qualifiers_with_scores`` requires sentence-relative offsets INSIDE the
+    sentence and raises on anything else.
+    """
+    sentence = "indicated for asthma."
+    straddling = Mention("asthma. Use", sentence.index("asthma"), sentence.index("asthma") + 11, "Disease", 1.0)
+    local = _sentence_local(straddling, 0, len(sentence), sentence)
+    assert (local.start, local.end, local.text) == (14, len(sentence), "asthma.")
+    assert local.text == sentence[local.start : local.end]  # the mention contract still holds
+    # A span starting before the sentence clips its head the same way.
+    leading = Mention("for asthma", -3, 17, "Disease", 1.0)
+    assert _sentence_local(leading, 4, len(sentence), sentence[4:]).start == 0
+
+
+def test_indication_observations_clips_a_straddling_mention_instead_of_raising() -> None:
+    """Regression guard for run 10: a boundary-straddling mention failed the task AFTER mining.
+
+    ``shape_treatment_tables`` mined 59,441 sections (38 min, cached) and then died on
+    ``ValueError: mention offsets must be sentence-relative and within sentence bounds`` because
+    the overlap filter kept a straddling span and the rebasing shifted it to ``end > len(sentence)``.
+    """
+    text = "Examplestatin is indicated for asthma. Use with caution in women."
+    straddling = Mention("asthma. Use", text.index("asthma"), text.index("Use") + 3, "Disease", 1.0)
+    qualifier = Mention("women", text.index("women"), text.index("women") + 5, "BiologicalSex", 0.9)
+    observations = _indication_observations(
+        DailyMedEvidence(indication_docs={"SET-A": [("SET-A#34067-9", text)]}),
+        ["SET-A"],
+        {"object_text": "asthma", "object_category": "Disease"},
+        {},
+        {("SET-A", "SET-A#34067-9"): [straddling, qualifier]},
+    )
+    # Only the first sentence names the candidate; its host is the clipped span, and the second
+    # sentence's qualifier is not attached to a host that is not there.
+    assert [observation["context"] for observation in observations] == ["indication"]
+    assert observations[0]["qualifiers"] == {}
 
 
 def test_patient_template_merges_qualifier_from_nonzero_host() -> None:

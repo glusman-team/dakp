@@ -274,6 +274,19 @@ def _work_item_evidence(item: ContraWorkItem | tuple[str, str, str], mention: Me
     return item.source_text.strip()
 
 
+def _offset_space(item: ContraWorkItem | tuple[str, str, str]) -> str:
+    """The text a mined mention's offsets are relative to when no sentence mapping covers it.
+
+    Used as the ``sentence_of`` value for :func:`~dakp_pipeline.assertions.contexts.attach_qualifiers_with_scores`,
+    whose contract check rejects offsets outside the sentence it is handed. The mined text is the
+    only string those offsets index, so it is what they must be validated against:
+    :func:`_work_item_evidence` strips (shifting every offset) and falls back to the whole source
+    section (a different coordinate space for a filtered Pass-2 item), either of which raises
+    ``ValueError`` and fails the task after its mining has already run.
+    """
+    return item[2]
+
+
 def _mention_local_span(item: ContraWorkItem, mention: Mention) -> tuple[str, int, int, int] | None:
     """Map a mined mention back to ``(source sentence, local start, local end, source start)``."""
     for span in item.evidence_spans:
@@ -585,7 +598,7 @@ def build_contraindication_rows(
         for index, mention in enumerate(mentions):
             mapped = _mention_local_span(item, mention) if isinstance(item, ContraWorkItem) else None
             if mapped is None:
-                localized_objects.append((index, mention, _work_item_evidence(item, mention)))
+                localized_objects.append((index, mention, _offset_space(item)))
             else:
                 sentence, start, end, _source_start = mapped
                 localized_objects.append((index, replace(mention, start=start, end=end, text=sentence[start:end]), sentence))
@@ -594,7 +607,7 @@ def build_contraindication_rows(
                 continue
             mapped = _mention_local_span(item, mention) if isinstance(item, ContraWorkItem) else None
             if mapped is None:
-                localized_qualifiers.append((mention, _work_item_evidence(item, mention)))
+                localized_qualifiers.append((mention, _offset_space(item)))
             else:
                 sentence, start, end, _source_start = mapped
                 localized_qualifiers.append((replace(mention, start=start, end=end, text=sentence[start:end]), sentence))

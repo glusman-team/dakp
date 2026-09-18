@@ -146,6 +146,24 @@ def _sentence_spans(text: str) -> list[tuple[int, int, str]]:
     return spans
 
 
+def _sentence_local(mention: Mention, sentence_start: int, sentence_end: int, sentence: str) -> Mention:
+    """Rebase ``mention`` into sentence-relative offsets, CLIPPING it to the sentence.
+
+    A mined span can straddle a sentence boundary: GLiNER predicts over token windows that tile
+    the whole section, and :func:`~dakp_pipeline.ner.ner._merge_straddling_spans` deliberately
+    re-unions a phrase a hard window split cut. Overlap alone therefore does not make a span
+    sentence-local, and a bare offset shift yields a negative ``start`` or an ``end`` past the
+    sentence — offsets :func:`~dakp_pipeline.assertions.contexts.attach_qualifiers_with_scores`
+    rejects by contract (``ValueError``), which failed run 10's ``shape_treatment_tables`` AFTER
+    its 38 minutes of mining had completed and cached. Clipping keeps the part of the span inside
+    this sentence, the same policy :func:`dakp_pipeline.assertions.contraindications._mention_local_span`
+    applies, and re-slicing the surface keeps ``mention.text == sentence[start:end]`` true.
+    """
+    start = max(mention.start, sentence_start) - sentence_start
+    end = min(mention.end, sentence_end) - sentence_start
+    return replace(mention, start=start, end=end, text=sentence[start:end])
+
+
 def _candidate_mention(sentence: str, candidate: Mapping[str, str], offset: int) -> Mention | None:
     """Create a lexical host only when the candidate is explicitly present in this sentence."""
     needle = normalize_text(candidate["object_text"])
@@ -188,10 +206,9 @@ def _indication_observations(
             for start, _end, sentence in _sentence_spans(text):
                 if not _section_mentions_condition(sentence, candidate, disease_map, doc_mentions):
                     continue
-                sentence_mentions = [m for m in doc_mentions if m.start < start + len(sentence) and start < m.end]
-                local_mentions = [
-                    replace(m, start=m.start - start, end=m.end - start, text=sentence[m.start - start : m.end - start]) for m in sentence_mentions
-                ]
+                sentence_end = start + len(sentence)
+                sentence_mentions = [m for m in doc_mentions if m.start < sentence_end and start < m.end]
+                local_mentions = [_sentence_local(m, start, sentence_end, sentence) for m in sentence_mentions]
                 objects = object_mentions(local_mentions)
                 host = [m for m in objects if _model_matches_candidate(m, candidate["object_text"])]
                 if not host:

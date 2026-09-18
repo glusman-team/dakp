@@ -45,6 +45,7 @@ from dakp_pipeline.assertions.contraindications import (
     _mention_local_span,
     _mine_multi_gpu,
     _mine_shard,
+    _offset_space,
     _resolve_devices,
     _resolve_keywords,
     _sentence_spans,
@@ -1044,6 +1045,30 @@ def test_work_item_evidence_resolves_spans_and_falls_back() -> None:
     assert _work_item_evidence(item, orphan) == source
     # Legacy tuple items carry no spans: the whole mined text is the evidence.
     assert _work_item_evidence(("SET-A", "DOC-A", " plain text "), in_second) == "plain text"
+
+
+def test_offset_space_keeps_unmapped_mention_offsets_in_bounds() -> None:
+    """An unmapped mention is validated against the text its offsets actually index.
+
+    ``attach_qualifiers_with_scores`` raises when a span falls outside the sentence it is paired
+    with, so the ``mapped is None`` fallback must not pair raw mined offsets with
+    ``_work_item_evidence``: that string is stripped (shifting every offset) and, for a
+    ContraWorkItem, falls back to the whole SOURCE section (a different coordinate space). Same
+    contract violation that failed run 10's ``shape_treatment_tables`` after its mining.
+    """
+    mined = "First clean. Second with asthma."
+    gapped = ContraWorkItem("SET-A", "DOC-A", mined, "First clean. Unrelated source prose.", (EvidenceSpan(0, 12, 0, 12, "First clean."),))
+    unmapped = Mention(text="asthma", start=mined.index("asthma"), end=mined.index("asthma") + 6, type="Disease", score=1.0)
+    assert _mention_local_span(gapped, unmapped) is None  # no evidence span covers it
+    assert _offset_space(gapped) == mined
+    assert 0 <= unmapped.start <= unmapped.end <= len(_offset_space(gapped))
+
+    legacy_text = "  avoid in asthma  "
+    legacy = ("SET-A", "DOC-A", legacy_text)
+    legacy_mention = Mention(text="asthma", start=legacy_text.index("asthma"), end=legacy_text.index("asthma") + 6, type="Disease", score=1.0)
+    assert _offset_space(legacy) == legacy_text
+    assert 0 <= legacy_mention.start <= legacy_mention.end <= len(_offset_space(legacy))
+    assert legacy_mention.end > len(_work_item_evidence(legacy, legacy_mention))  # the stripped pairing overran
 
 
 def test_mention_local_span_maps_overlap_and_returns_none_without_any() -> None:
