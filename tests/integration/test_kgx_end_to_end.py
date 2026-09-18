@@ -179,9 +179,15 @@ def test_three_edge_families_present(kgx_build: KgxBuild) -> None:
 # (:data:`~dakp_pipeline.tablassert.FAERS_SOURCE_RECORD_URL`).
 EXPECTED_SOURCES_BY_PREDICATE: dict[str, list[tuple[str, str, list[str] | None]]] = {
     _TREATS: [
-        (INFORES_DAKP, "primary_knowledge_source", ["infores:dailymed", "infores:faers"]),
+        # The approved-treats table unions FDA (DailyMed/FAERS) and EMA (registry MeSH areas +
+        # mined EPAR indications) rows, so its TABLE-level template names all four upstreams on
+        # every treats edge; per-row attribution lives in `regulatory_approvals` (NDA vs EMA
+        # product number), not in `sources`.
+        (INFORES_DAKP, "primary_knowledge_source", ["infores:dailymed", "infores:faers", "infores:ema", "infores:epar"]),
         ("infores:faers", "supporting_data_source", None),
         ("infores:dailymed", "supporting_data_source", None),
+        ("infores:ema", "supporting_data_source", None),
+        ("infores:epar", "supporting_data_source", None),
     ],
     _APPLIED: [
         (INFORES_DAKP, "primary_knowledge_source", ["infores:dailymed", "infores:faers"]),

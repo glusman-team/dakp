@@ -18,6 +18,8 @@ from dakp_pipeline.ner.lexical import Mention
 # Translator provenance constants (Translator provenance conventions).
 INFORES_DAKP = "infores:multiomics-drugapprovals"
 INFORES_DAILYMED = "infores:dailymed"
+INFORES_EMA = "infores:ema"
+INFORES_EPAR = "infores:epar"
 INFORES_FAERS = "infores:faers"
 
 KL_ASSERTION = "knowledge_assertion"
@@ -67,6 +69,8 @@ __all__ = [
     "AT_MANUAL",
     "INFORES_DAILYMED",
     "INFORES_DAKP",
+    "INFORES_EMA",
+    "INFORES_EPAR",
     "INFORES_FAERS",
     "KL_ASSERTION",
     "join_pipe",

@@ -49,7 +49,7 @@ def _edge(**overrides: Any) -> dict[str, Any]:
         "knowledge_level": "knowledge_assertion",
         "agent_type": "manual_validation_of_automated_agent",
         "primary_knowledge_source": _DAKP,
-        "sources": [{"resource_id": _DAKP, "upstream_resource_ids": ["infores:dailymed", "infores:faers"]}],
+        "sources": [{"resource_id": _DAKP, "upstream_resource_ids": ["infores:dailymed", "infores:faers", "infores:ema"]}],
     }
     edge.update(overrides)
     return edge
@@ -129,7 +129,7 @@ def test_edge_subject_not_in_nodes() -> None:
 
 def test_provenance_from_sources_without_primary() -> None:
     edge = _edge()
-    del edge["primary_knowledge_source"]  # sources still carry DAKP + dailymed + faers
+    del edge["primary_knowledge_source"]  # sources still carry DAKP + dailymed + faers + ema
     report = validate_kgx([_chem(), _dis()], [edge])
     assert report.ok is True  # _edge_infores skips the empty primary, reads the sources list
 

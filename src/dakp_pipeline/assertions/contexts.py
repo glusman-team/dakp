@@ -28,6 +28,7 @@ PREVENTION_CUE = re.compile(
 
 _DAILYMED_CONTRA = frozenset({"34070-3", "34066-1", "43685-7", "34071-1", "42232-9", "contraindications", "boxed_warning", "warnings", "warning"})
 _DAILYMED_INDICATION = frozenset({"34067-9", "indications", "indications_and_usage", "indication"})
+_EMA_INDICATION = frozenset({"therapeutic_indication", "indication"})
 
 
 def _has_cue(sentence: str) -> bool:
@@ -37,22 +38,26 @@ def _has_cue(sentence: str) -> bool:
 def assertion_context(source: str, section_kind: str, sentence: str) -> str:
     """Derive the authoritative context from source section and sentence cues.
 
-    ``source`` is ``dailymed`` or ``faers``. DailyMed indication sections distinguish treatment
-    from prevention; dedicated contraindication/warning sections always remain contraindications.
-    FAERS indications distinguish observed prevention from an observed indication. Model opinions
-    are intentionally not accepted by this function.
+    ``source`` is ``dailymed``, ``faers``, or ``ema``. DailyMed indication sections distinguish
+    treatment from prevention; dedicated contraindication/warning sections always remain
+    contraindications. FAERS indications distinguish observed prevention from an observed
+    indication. EMA registry indications reuse the indication semantics (prevention cue ->
+    ``prevention``, else ``indication``). Model opinions are intentionally not accepted by this
+    function.
     """
     source_key = source.strip().lower()
     section_key = section_kind.strip().lower()
-    if source_key not in {"dailymed", "faers"}:
+    if source_key not in {"dailymed", "faers", "ema"}:
         raise ValueError(f"unknown assertion source: {source!r}")
     if source_key == "dailymed":
         if section_key in _DAILYMED_CONTRA:
             return "contraindication"
         if section_key in _DAILYMED_INDICATION:
             return "prevention" if _has_cue(sentence) else "indication"
-    elif section_key in {"indication", "indications", "faers_indication"}:
+    elif source_key == "faers" and section_key in {"indication", "indications", "faers_indication"}:
         return "observed_prevention" if _has_cue(sentence) else "indication"
+    elif source_key == "ema" and section_key in _EMA_INDICATION:
+        return "prevention" if _has_cue(sentence) else "indication"
     raise ValueError(f"unknown assertion section_kind: {section_kind!r}")
 
 
@@ -64,13 +69,13 @@ def context_predicate(context: str, source: str) -> str:
     pinned Biolink-model 4.4.4 and are therefore not emitted or tested here.
     """
     source_key = source.strip().lower()
-    if source_key not in {"dailymed", "faers"}:
+    if source_key not in {"dailymed", "faers", "ema"}:
         raise ValueError(f"unknown assertion source: {source!r}")
     if context not in ASSERTION_CONTEXTS:
         raise ValueError(f"unknown assertion context: {context!r}")
     if context == "contraindication":
         return "biolink:contraindicated_in"
-    return "biolink:treats" if source_key == "dailymed" else "biolink:applied_to_treat"
+    return "biolink:treats" if source_key in {"dailymed", "ema"} else "biolink:applied_to_treat"
 
 
 def _log_withheld(reason: str, qualifier: Mention, host_count: int = 0) -> None:

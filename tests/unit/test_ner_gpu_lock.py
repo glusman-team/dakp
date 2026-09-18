@@ -491,6 +491,27 @@ def test_extract_batch_isolates_poisoned_windows(monkeypatch: pytest.MonkeyPatch
     assert any("POISON" in text for text in _FlakyBatchModel.calls[0])  # the poison really was in the batch
 
 
+def test_infer_windows_skips_poisoned_summary_log_when_every_fallback_window_recovers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A batch failure alone does not emit the poisoned-window summary; only dropped windows do."""
+    _install_fake_gliner2(monkeypatch, tmp_path)
+    backend = DiseaseNER(offline=False, device="cpu", workdir=tmp_path)
+    calls = 0
+
+    def flaky_once(_model: object, texts: list[str], _batch_size: int) -> list[dict[str, object]]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise IndexError("batch-only failure")
+        return [{"entities": {}} for _ in texts]
+
+    monkeypatch.setattr(backend, "_raw_batch_extract", flaky_once)
+    error_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(ner_module.logger, "error", lambda *args, **_kwargs: error_calls.append(args))
+    assert backend._infer_windows(object(), ["first", "second"]) == [{"entities": {}}, {"entities": {}}]
+    assert calls == 3  # one failed batch + one successful fallback call per window
+    assert error_calls == []  # no window was dropped, hence no poisoned summary
+
+
 def test_extract_batch_healthy_shard_stays_on_one_batched_call(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _install_fake_gliner2(monkeypatch, tmp_path)
     backend = DiseaseNER(offline=False, device="cpu", workdir=tmp_path)

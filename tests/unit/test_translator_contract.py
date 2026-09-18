@@ -11,6 +11,8 @@ from __future__ import annotations
 import gzip
 from pathlib import Path
 
+import pytest
+
 from dakp_pipeline import translator as contract
 from dakp_pipeline.translator import (
     DUPLICATE_NODE_ID,
@@ -63,6 +65,31 @@ def test_valid_fixture_exercises_all_three_edge_families() -> None:
     assert validate_kgx(_load("nodes.jsonl"), edges).ok is True
 
 
+def test_fixture_treats_edges_carry_the_full_ema_union_upstream_chain() -> None:
+    """Every fixture treats edge carries the table-level union Tablassert stamps, not a per-row subset.
+
+    ``override.sources`` is a TABLE-level template: once the approved-treats table unions FDA and
+    EMA rows, every treats edge it emits carries all four upstream infores plus all four supporting
+    entries, regardless of which side produced the row. Per-row attribution lives in the evidence
+    columns (``regulatory_approvals`` carrying an NDA vs an ``EMEA/H/C`` product number), not in
+    ``sources`` — so the fixture must show the union, or it stops mirroring real build output.
+    """
+    treats = [edge for edge in _load("edges.jsonl") if edge["predicate"] == "biolink:treats"]
+    assert len(treats) == 2
+    for edge in treats:
+        sources: list[dict[str, object]] = edge["sources"]  # type: ignore[assignment]
+        primary = sources[0]
+        assert primary["resource_id"] == "infores:multiomics-drugapprovals"
+        assert set(primary["upstream_resource_ids"]) == {"infores:dailymed", "infores:faers", "infores:ema", "infores:epar"}  # type: ignore[arg-type]
+        assert {entry["resource_id"] for entry in sources[1:]} == {"infores:dailymed", "infores:faers", "infores:ema", "infores:epar"}
+        assert all(entry["resource_role"] == "supporting_data_source" for entry in sources[1:])
+    # The EMA-side row is distinguished by its evidence: an EMA product number and the
+    # population qualifier mined off the EPAR indication sentence.
+    epar_edge = next(edge for edge in treats if edge["id"] == "uuid-treats-0002")
+    assert epar_edge["regulatory_approvals"] == "EMEA/H/C/000123"
+    assert epar_edge["population_context_qualifier"] == "adult patients"
+
+
 def test_single_inline_valid_edge_passes() -> None:
     nodes = [{"id": "CHEBI:1", "name": "drug", "category": ["biolink:Drug"]}, {"id": "MONDO:1", "name": "disease", "category": ["biolink:Disease"]}]
     edges = [
@@ -75,10 +102,72 @@ def test_single_inline_valid_edge_passes() -> None:
             "knowledge_level": "knowledge_assertion",
             "agent_type": "manual_validation_of_automated_agent",
             "primary_knowledge_source": "infores:multiomics-drugapprovals",
-            "sources": [{"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:dailymed", "infores:faers"]}],
+            "sources": [
+                {"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:dailymed", "infores:faers", "infores:ema"]}
+            ],
         }
     ]
     assert validate_kgx(nodes, edges).ok is True
+
+
+def test_treats_edge_with_ema_only_upstream_passes() -> None:
+    """An EMA-derived treats edge carries the ``infores:ema`` chain instead of the FDA one."""
+    nodes = [{"id": "CHEBI:1", "name": "drug", "category": ["biolink:Drug"]}, {"id": "MONDO:1", "name": "disease", "category": ["biolink:Disease"]}]
+    edges = [
+        {
+            "id": "e1",
+            "subject": "CHEBI:1",
+            "predicate": "biolink:treats",
+            "object": "MONDO:1",
+            "category": ["biolink:EntityToDiseaseAssociation"],
+            "knowledge_level": "knowledge_assertion",
+            "agent_type": "manual_validation_of_automated_agent",
+            "primary_knowledge_source": "infores:multiomics-drugapprovals",
+            "sources": [{"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:ema"]}],
+        }
+    ]
+    assert validate_kgx(nodes, edges).ok is True
+
+
+def test_treats_edge_with_epar_only_upstream_passes() -> None:
+    """An EPAR indication-mined treats edge carries the ``infores:epar`` chain."""
+    nodes = [{"id": "CHEBI:1", "name": "drug", "category": ["biolink:Drug"]}, {"id": "MONDO:1", "name": "disease", "category": ["biolink:Disease"]}]
+    edges = [
+        {
+            "id": "e1",
+            "subject": "CHEBI:1",
+            "predicate": "biolink:treats",
+            "object": "MONDO:1",
+            "category": ["biolink:EntityToDiseaseAssociation"],
+            "knowledge_level": "knowledge_assertion",
+            "agent_type": "manual_validation_of_automated_agent",
+            "primary_knowledge_source": "infores:multiomics-drugapprovals",
+            "sources": [{"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:epar"]}],
+        }
+    ]
+    assert validate_kgx(nodes, edges).ok is True
+
+
+@pytest.mark.parametrize("alternative", ["infores:ema", "infores:epar"])
+def test_treats_alternative_upstream_without_dakp_provenance_fails(alternative: str) -> None:
+    """EMA/EPAR alternatives replace FDA upstreams only; they never replace DAKP provenance."""
+    nodes = [{"id": "CHEBI:1", "name": "drug", "category": ["biolink:Drug"]}, {"id": "MONDO:1", "name": "disease", "category": ["biolink:Disease"]}]
+    edges = [
+        {
+            "id": "e1",
+            "subject": "CHEBI:1",
+            "predicate": "biolink:treats",
+            "object": "MONDO:1",
+            "category": ["biolink:EntityToDiseaseAssociation"],
+            "knowledge_level": "knowledge_assertion",
+            "agent_type": "manual_validation_of_automated_agent",
+            # A source list exists, but neither the flat primary slot nor its resource id names DAKP.
+            "sources": [{"resource_id": alternative, "upstream_resource_ids": [alternative]}],
+        }
+    ]
+    report = validate_kgx(nodes, edges)
+    assert MISSING_PROVENANCE in _codes(report)
+    assert "infores:multiomics-drugapprovals" in _by_entity(report, "e1")[0].message
 
 
 def test_validation_is_deterministic() -> None:

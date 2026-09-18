@@ -180,10 +180,11 @@ def test_duplicate_indication_documents_are_mined_under_their_own_key() -> None:
     assert _doc_key("DOC-A", 0) == "DOC-A"
     assert _doc_key("DOC-A", 1) == "DOC-A#2"
     evidence = DailyMedEvidence(indication_docs={"SET-A": [("DOC-A", "indicated for asthma"), ("DOC-A", "indicated for diabetes")]})
-    mined = _mine_indication_mentions(evidence, DiseaseNER(gazetteer={"asthma": "disease", "diabetes": "disease"}), None)
+    mined, _ema_mined = _mine_indication_mentions(evidence, DiseaseNER(gazetteer={"asthma": "disease", "diabetes": "disease"}), None)
     assert set(mined) == {("SET-A", "DOC-A"), ("SET-A", "DOC-A#2")}
     assert [mention.text for mention in mined[("SET-A", "DOC-A")]] == ["asthma"]
     assert [mention.text for mention in mined[("SET-A", "DOC-A#2")]] == ["diabetes"]
+    assert _ema_mined == {}
 
 
 def test_indication_observations_reads_each_duplicate_document_section_separately() -> None:
@@ -388,13 +389,14 @@ def test_dailymed_fallback_blank_mention_is_skipped() -> None:
 
 
 def test_mine_indication_mentions_empty_docs_mine_nothing() -> None:
-    assert _mine_indication_mentions(DailyMedEvidence(), DiseaseNER(gazetteer={"asthma": "disease"}), None) == {}
+    assert _mine_indication_mentions(DailyMedEvidence(), DiseaseNER(gazetteer={"asthma": "disease"}), None) == ({}, {})
 
 
 def test_mine_indication_mentions_sequential_offline() -> None:
     ev = DailyMedEvidence(indication_docs={"SET-A": [("SET-A#34067-9", "indicated for asthma")]})
-    mined = _mine_indication_mentions(ev, DiseaseNER(gazetteer={"asthma": "disease"}), None)
-    assert [m.text for m in mined[("SET-A", "SET-A#34067-9")]] == ["asthma"]
+    spl_mentions, ema_mentions = _mine_indication_mentions(ev, DiseaseNER(gazetteer={"asthma": "disease"}), None)
+    assert [m.text for m in spl_mentions[("SET-A", "SET-A#34067-9")]] == ["asthma"]
+    assert ema_mentions == {}
 
 
 def test_production_ner_dispatches_multi_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
