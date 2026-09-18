@@ -17,7 +17,7 @@ import pytest
 from loguru import logger
 
 import dakp_pipeline.assertions.ner_dispatch as dispatch
-from dakp_pipeline.assertions.ner_dispatch import default_ner, mine_by_position, mine_with_cache
+from dakp_pipeline.assertions.ner_dispatch import _mentions_fit, default_ner, mine_by_position, mine_with_cache
 from dakp_pipeline.logging_setup import WORKER_LOG_SUBDIR
 from dakp_pipeline.ner import model_cache
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
@@ -405,6 +405,58 @@ def _sequential_mine(ner: DiseaseNER):
         return {(item[0], item[1]): ner.extract(item[2]) for item in items}
 
     return mine
+
+
+def test_mentions_fit_rejects_an_entry_mined_from_another_text() -> None:
+    """The mention contract is the cheap proof that a cached entry belongs to THIS text."""
+    text = "contraindicated in asthma"
+    start = text.index("asthma")
+    assert _mentions_fit(text, [Mention("asthma", start, start + 6, "Disease", 1.0)])
+    assert _mentions_fit(text, [])  # an empty entry is a valid "no mentions" result, not a miss
+    assert not _mentions_fit(text, [Mention("asthma", 589, 605, "Disease", 1.0)])  # run 13: past the end
+    assert not _mentions_fit(text, [Mention("asthma", 0, 6, "Disease", 1.0)])  # in bounds, wrong surface
+    assert not _mentions_fit(text, [Mention("asthma", -1, start + 6, "Disease", 1.0)])  # negative start
+
+
+def test_mine_with_cache_reminds_when_a_cached_entry_does_not_fit_the_text(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A stale entry is a MISS: the text is re-mined and the entry overwritten.
+
+    Regression guard for run 13 — a cached entry mined from a whitespace variant of the section
+    served offsets past the end of the requesting text (589..605 into 568 chars), which the
+    shaper's sentence-bounds contract turned into a failed task after 2h51m of mining.
+    """
+    ner = _production_ner(tmp_path)
+    calls = _counting_extract(ner, monkeypatch)
+    cache = _FakeCache()
+    items = [("S1", "D1", "asthma")]
+    first = mine_with_cache(items, ner, _sequential_mine(ner), cache)  # type: ignore[arg-type]
+    assert calls == ["asthma"]
+
+    key = next(iter(cache.store))
+    stale = [Mention("asthma", 589, 605, "Disease", 1.0).to_dict()]
+    cache.store[key] = stale
+    calls.clear()
+    second = mine_with_cache(items, ner, _sequential_mine(ner), cache)  # type: ignore[arg-type]
+    assert calls == ["asthma"]  # re-mined instead of served
+    assert second == first  # and the correct mentions are back
+    assert cache.store[key] != stale  # the stale entry was overwritten
+
+
+def test_mine_with_cache_separates_texts_that_share_a_folded_cache_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Whitespace variants share one cache key but need their own offsets, so each is mined.
+
+    Keying folds whitespace while offsets index the raw text; deduplicating representatives by key
+    would hand one variant the other's mentions.
+    """
+    ner = _production_ner(tmp_path)
+    calls = _counting_extract(ner, monkeypatch)
+    cache = _FakeCache()
+    items = [("S1", "D1", "asthma  in adults"), ("S2", "D2", "asthma in adults")]
+    out = mine_with_cache(items, ner, _sequential_mine(ner), cache)  # type: ignore[arg-type]
+    assert sorted(calls) == ["asthma  in adults", "asthma in adults"]
+    assert [mention.text for mention in out[("S1", "D1")]] == ["asthma  in adults"]
+    assert [mention.text for mention in out[("S2", "D2")]] == ["asthma in adults"]
+    assert len(cache.store) == 1  # one folded key: last write wins, _mentions_fit re-checks it
 
 
 def test_mine_with_cache_none_cache_passes_through() -> None:

@@ -243,17 +243,35 @@ def _mine_multi_gpu(work_items: Sequence[Any], ner: DiseaseNER, devices: Sequenc
 MineFn = Callable[[Sequence[Any]], dict[tuple[str, str], list[Mention]]]
 
 
+def _mentions_fit(text: str, mentions: Sequence[Mention]) -> bool:
+    """True when every cached mention satisfies the mention contract against ``text``.
+
+    ``mention.text == text[mention.start:mention.end]`` is the invariant every DAKP backend emits,
+    so it is also the cheapest proof that a cached entry was mined from THIS text. It is needed
+    because a cache key hashes the whitespace-FOLDED text while the offsets index the RAW text: an
+    entry mined from a whitespace variant of a section — an older DailyMed release, a
+    ``raw_text``-instead-of-``clean_text`` fallback — carries offsets into a different string.
+    Run 13 served exactly that (mentions at 589..605 for a 568-char contraindication section) and
+    the shaper died on ``ValueError: mention offsets must be sentence-relative and within sentence
+    bounds``, two seconds after a 2h51m mine. A mismatch is treated as a MISS, so the text is
+    re-mined and the stale entry overwritten.
+    """
+    return all(0 <= mention.start <= mention.end <= len(text) and text[mention.start : mention.end] == mention.text for mention in mentions)
+
+
 def mine_with_cache(work_items: Sequence[Any], ner: DiseaseNER, mine: MineFn, cache: MentionCache | None) -> dict[tuple[str, str], list[Mention]]:
     """Run ``mine`` over ``work_items``, serving repeats from the persistent mention cache.
 
     Central caching seam for the DailyMed NER shapers. Text-level flow: every item's cache key
     (:func:`~dakp_pipeline.ner.mention_cache.mention_key` over model id + model content b3 +
-    config fingerprint + normalized text) is batch-fetched up front; only MISSES reach
-    ``mine`` (one representative item per distinct missing key, so duplicate texts are mined
-    once), and freshly mined results are batch-put back before the hit+miss merge. The
-    returned ``{(set_id, doc_id): [mentions]}`` map is byte-identical to a no-cache run —
-    hits round-trip :meth:`Mention.to_dict`/:meth:`Mention.from_dict` losslessly and the
-    server stores the value bytes verbatim.
+    config fingerprint + normalized text) is batch-fetched up front; a hit is used only when its
+    offsets index the requesting item's own text (:func:`_mentions_fit`), everything else reaches
+    ``mine`` — one representative per distinct TEXT, so duplicate texts are mined once while two
+    texts that merely share a folded cache key are mined separately. Freshly mined results are
+    batch-put back before the hit+miss merge. The returned ``{(set_id, doc_id): [mentions]}`` map
+    is byte-identical to a no-cache run — hits round-trip
+    :meth:`Mention.to_dict`/:meth:`Mention.from_dict` losslessly and the server stores the value
+    bytes verbatim.
 
     Cache access happens ONLY in this parent process: spawned GPU workers
     (:func:`_mine_shard`) receive no cache handle, which keeps the Pebble store
@@ -269,31 +287,42 @@ def mine_with_cache(work_items: Sequence[Any], ner: DiseaseNER, mine: MineFn, ca
         return mine(work_items)
     model_id, model_b3, fingerprint = material
 
-    key_by_item = {_item_parts(item)[:2]: mention_key(model_id, model_b3, fingerprint, _item_parts(item)[2]) for item in work_items}
+    parts = [_item_parts(item) for item in work_items]
+    key_by_item = {(set_id, doc_id): mention_key(model_id, model_b3, fingerprint, text) for set_id, doc_id, text in parts}
     hits = cache.get_many(sorted(set(key_by_item.values())))
 
-    representatives: dict[str, Any] = {}  # missing key -> one item carrying that text
-    for item in work_items:
-        key = key_by_item[_item_parts(item)[:2]]
-        if key not in hits and key not in representatives:
-            representatives[key] = item
+    usable: dict[tuple[str, str], list[Mention]] = {}
+    for set_id, doc_id, text in parts:
+        cached = hits.get(key_by_item[(set_id, doc_id)])
+        if cached is not None and _mentions_fit(text, cached):
+            usable[(set_id, doc_id)] = cached
+
+    representatives: dict[str, Any] = {}  # exact text -> one item carrying it
+    for item, (set_id, doc_id, _text) in zip(work_items, parts, strict=True):
+        if (set_id, doc_id) not in usable:
+            representatives.setdefault(_text, item)
     mined: dict[str, list[Mention]] = {}
     if representatives:
         results = mine(list(representatives.values()))
-        mined = {key: results.get(_item_parts(item)[:2], []) for key, item in representatives.items()}
-        cache.put_many(mined)
-    stats(logger, "ner_mention_cache", items=len(work_items), hits=len(work_items) - len(representatives), mined=len(representatives))
+        mined = {_item_parts(item)[2]: results.get(_item_parts(item)[:2], []) for item in representatives.values()}
+        cache.put_many({key_by_item[_item_parts(item)[:2]]: mined[_item_parts(item)[2]] for item in representatives.values()})
+    stats(
+        logger,
+        "ner_mention_cache",
+        items=len(work_items),
+        hits=len(usable),
+        mined=len(representatives),
+        stale=len(hits) - len({key_by_item[pair] for pair in usable}),
+    )
 
     out: dict[tuple[str, str], list[Mention]] = {}
-    for item in work_items:
-        set_id, doc_id, _text = _item_parts(item)
-        key = key_by_item[(set_id, doc_id)]
-        out[(set_id, doc_id)] = hits[key] if key in hits else mined.get(key, [])
+    for set_id, doc_id, text in parts:
+        out[(set_id, doc_id)] = usable[(set_id, doc_id)] if (set_id, doc_id) in usable else mined.get(text, [])
     return out
 
 
 def mine_by_position(work_items: Sequence[Any], ner: DiseaseNER, mine: MineFn, cache: MentionCache | None) -> list[list[Mention]]:
-    """ ":func:`mine_with_cache` over ``work_items``, returning one mention list PER INPUT ITEM.
+    """:func:`mine_with_cache` over ``work_items``, returning one mention list PER INPUT ITEM.
 
     ``(set_id, doc_id)`` is NOT a unique work-item key, and treating it as one silently swaps
     mentions between sections: ``doc_id`` is the SPL *document* id, so one document contributes
