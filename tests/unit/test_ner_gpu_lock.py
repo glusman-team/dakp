@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
+from loguru import logger
 
 from dakp_pipeline.ner import ner as ner_module
 from dakp_pipeline.ner.model_cache import ModelRef
@@ -67,6 +68,23 @@ class _FlakyBatchModel:
         if any("POISON" in text for text in texts):
             raise IndexError("string index out of range")
         return [{"entities": {}} for _ in texts]
+
+
+class _BatchOnlyFailureModel:
+    """GLiNER2 stand-in whose BATCHED call fails while every per-window call succeeds.
+
+    The transient-batch-failure case (OOM, driver hiccup): the isolation fallback must recover
+    every window and record no poison.
+    """
+
+    calls: ClassVar[list[list[str]]] = []
+
+    @staticmethod
+    def batch_extract_entities(texts: list[str], _labels: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        _BatchOnlyFailureModel.calls.append(list(texts))
+        if len(texts) > 1:
+            raise RuntimeError("CUDA out of memory inside the batched forward pass")
+        return [{"entities": {"biolink:Disease": [{"text": texts[0], "confidence": 0.99, "start": 0, "end": len(texts[0])}]}}]
 
 
 class _FakeAutoExtractor:
@@ -392,6 +410,24 @@ def test_acquire_gpu_lock_timeout_still_raises_when_no_orphan_holds(monkeypatch:
         os.close(holder_fd)
 
 
+def test_acquire_gpu_lock_timeout_raises_when_the_reap_does_not_free_the_lock(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Reaping is best-effort: a holder that survives it still fails the acquire, naming itself.
+
+    Covers the retry-after-reap race — the reaper reported kills, yet the flock is still taken
+    (a live process kept or grabbed it), so the non-blocking retry raises ``BlockingIOError`` and
+    the ceiling error reports the remaining holder instead of looping or silently proceeding.
+    """
+    holder_fd = _acquire_gpu_lock("cuda:0", tmp_path)
+    monkeypatch.setattr(ner_module, "_reap_orphaned_lock_competitors", lambda _path, **_kwargs: [4242])  # "reaped" an orphan
+    try:
+        with pytest.raises(GpuLockTimeoutError, match=str(os.getpid())):
+            _acquire_gpu_lock("cuda:0", tmp_path, timeout=0.2)
+        with pytest.raises(BlockingIOError):  # the surviving holder's lock is untouched
+            _try_lock(tmp_path / "cuda-0.lock")
+    finally:
+        os.close(holder_fd)
+
+
 # --- extract_batch: poisoned-window isolation -----------------------------------
 
 
@@ -422,6 +458,31 @@ def test_extract_batch_healthy_shard_stays_on_one_batched_call(monkeypatch: pyte
     out = backend.extract_batch(["asthma in adults", "chronic hives"])
     assert len(out) == 2
     assert len(_FlakyBatchModel.calls) == 1  # healthy shard: exactly the one batched call, no fallback
+
+
+def test_infer_windows_fallback_reports_no_poison_when_every_window_recovers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A transient BATCH failure keeps every window's spans and is not recorded as poison.
+
+    The fallback exists for two different failures: one bad window, or one bad batch. Only the
+    first may claim poisoned windows — misreporting the second would send an operator hunting
+    for pathological text that does not exist.
+    """
+    _install_fake_gliner2(monkeypatch, tmp_path)
+    backend = DiseaseNER(offline=False, device="cpu", workdir=tmp_path)
+    model = _BatchOnlyFailureModel()
+    _BatchOnlyFailureModel.calls = []
+    monkeypatch.setattr(backend, "_load_model", lambda: model)
+    lines: list[str] = []
+    sink_id = logger.add(lambda message: lines.append(message.record["message"]), level="DEBUG")
+    try:
+        out = backend.extract_batch(["asthma", "chronic hives"])
+    finally:
+        logger.remove(sink_id)
+    assert [[mention.text for mention in row] for row in out] == [["asthma"], ["chronic hives"]]  # nothing lost
+    assert len(_BatchOnlyFailureModel.calls) == 3  # one failed batch + one call per window
+    assert any("ner_batch_infer: batched inference failed" in line for line in lines)
+    assert not any("poisoned window dropped" in line for line in lines)
+    assert not any("ner_extract_batch: degraded" in line for line in lines)
 
 
 # --- _gpu_lock_timeout_seconds resolution --------------------------------------

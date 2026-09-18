@@ -8,11 +8,13 @@ cache and a production-mode backend whose ``extract`` is monkeypatched — GLiNE
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import pytest
+from loguru import logger
 
 import dakp_pipeline.assertions.ner_dispatch as dispatch
 from dakp_pipeline.assertions.ner_dispatch import default_ner, mine_with_cache
@@ -23,6 +25,17 @@ from dakp_pipeline.ner.ner import DiseaseNER, Mention
 
 def _ner(*terms: str) -> DiseaseNER:
     return DiseaseNER(gazetteer=dict.fromkeys(terms, "disease"))
+
+
+@contextmanager
+def _captured_logs() -> Iterator[list[str]]:
+    """Collect rendered loguru lines emitted inside the block (sink removed on exit)."""
+    lines: list[str] = []
+    sink_id = logger.add(lambda message: lines.append(message.record["message"]), level="DEBUG")
+    try:
+        yield lines
+    finally:
+        logger.remove(sink_id)
 
 
 # --- _mine_shard worker ---------------------------------------------------------
@@ -88,6 +101,57 @@ def test_mine_shard_in_worker_configures_logging_before_loading_the_model(monkey
 
 
 # --- _set_parent_death_signal ---------------------------------------------------
+
+
+def test_mine_shard_logs_the_traceback_before_propagating(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A shard failure leaves its traceback in the WORKER log, not only a pickled exception.
+
+    The parent sees nothing but ``future.result()`` re-raising, so without this the worker file
+    simply stops mid-shard: DAG runs 8 and 9 both died on ``IndexError: string index out of
+    range`` with no traceback anywhere on disk to name the frame.
+    """
+
+    class BoomNER:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def extract_batch(self, _texts: Sequence[str]) -> list[list[Mention]]:
+            raise IndexError("string index out of range")
+
+    monkeypatch.setattr(dispatch, "DiseaseNER", BoomNER)
+    with _captured_logs() as lines, pytest.raises(IndexError):
+        dispatch._mine_shard([("S1", "D1", "asthma"), ("S2", "D2", "hives")], _ner("asthma")._config(), "cuda:1")
+    assert any("ner_shard_failed: device = cuda:1 items = 2" in line for line in lines)
+
+
+def test_mine_multi_gpu_names_the_device_whose_shard_failed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The task log attributes a shard failure to its device and points at the worker-log dir."""
+
+    class FakeFuture:
+        def __init__(self, device: str) -> None:
+            self._device = device
+
+        def result(self) -> list[tuple[str, str, list[Mention]]]:
+            if self._device == "cuda:1":
+                raise IndexError("string index out of range")
+            return []
+
+    class FakePool:
+        def __enter__(self) -> FakePool:
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def submit(self, _function: Any, _shard: list[Any], _config: dict[str, Any], device: str, **_kwargs: Any) -> FakeFuture:
+            return FakeFuture(device)
+
+    monkeypatch.setattr(dispatch, "ProcessPoolExecutor", lambda **_kwargs: FakePool())
+    ner = DiseaseNER(gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    with _captured_logs() as lines, pytest.raises(IndexError):
+        dispatch._mine_multi_gpu([("S1", "D1", "asthma"), ("S2", "D2", "diabetes")], ner, ("cuda:0", "cuda:1"))
+    assert any("ner_dispatch_failed: device = cuda:1 items = 1" in line for line in lines)
+    assert any(str(tmp_path / WORKER_LOG_SUBDIR) in line for line in lines)
 
 
 def test_pdeathsig_is_a_noop_off_linux(monkeypatch: pytest.MonkeyPatch) -> None:

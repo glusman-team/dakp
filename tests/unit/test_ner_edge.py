@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import sys
 import types
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
+from loguru import logger
 
 from dakp_pipeline.ner import ner as ner_module
 from dakp_pipeline.ner.dictionary import OBJECT_TYPES, Gazetteer
@@ -42,6 +44,17 @@ from dakp_pipeline.ner.ner import (
 )
 
 # --- helpers -------------------------------------------------------------------
+
+
+@contextmanager
+def _captured_logs() -> Iterator[list[str]]:
+    """Collect rendered loguru lines emitted inside the block (sink removed on exit)."""
+    lines: list[str] = []
+    sink_id = logger.add(lambda message: lines.append(message.record["message"]), level="DEBUG")
+    try:
+        yield lines
+    finally:
+        logger.remove(sink_id)
 
 
 def test_install_message_names_module_and_command() -> None:
@@ -285,6 +298,36 @@ def test_strip_aligned_trims_both_edges_in_place() -> None:
     assert _strip_aligned("     ", 0, 5) == (5, 5)  # fully-whitespace span collapses empty
 
 
+def test_strip_aligned_clamps_offsets_that_overrun_the_window() -> None:
+    """Offsets outside the window are clamped, never indexed.
+
+    gliner2's collator appends a synthetic ``"."`` to any input lacking terminal punctuation and
+    builds its char maps from that MUTATED string, so a span ending on the appended period arrives
+    as ``end == len(window) + 1``. Indexing the window with it raised
+    ``IndexError: string index out of range`` inside a GPU worker — the failure that discarded two
+    multi-hour DAG mining shards (runs 8 and 9) with no traceback on disk.
+    """
+    assert _strip_aligned("asthma", 0, 7) == (0, 6)  # the collator's phantom period
+    assert _strip_aligned("asthma", -2, 3) == (0, 3)
+    assert _strip_aligned("asthma", 9, 12) == (6, 6)  # wholly past the end collapses empty
+    assert _strip_aligned("asthma", 4, 2) == (4, 4)  # inverted span collapses empty
+
+
+def test_spans_from_result_clamps_an_overrunning_span_and_reports_it() -> None:
+    """An over-running span keeps its true surface (the phantom char is not source text) and the
+    misalignment is logged once per window; a span wholly past the end is dropped, never emitted
+    as a zero-width mention."""
+    window = "chronic obstructive pulmonary disease"
+    overrun = {"entities": {"biolink:Disease": [{"text": window + ".", "confidence": 0.9, "start": 0, "end": len(window) + 1}]}}
+    with _captured_logs() as lines:
+        spans = _spans_from_result(overrun, window)
+    assert [(span.start, span.end, span.type) for span in spans] == [(0, len(window), "Disease")]
+    assert any("ner_span_offsets: clamped = 1" in line for line in lines)
+
+    past_the_end = {"entities": {"biolink:Disease": [{"text": "x", "confidence": 0.9, "start": len(window) + 2, "end": len(window) + 5}]}}
+    assert _spans_from_result(past_the_end, window) == []
+
+
 def test_production_merge_gazetteer_wins_and_gliner_adds_recall(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The whole adapter contract in one call: category-ID result keys, an out-of-vocabulary label
     dropped, an object span losing to the gazetteer, an out-of-gazetteer object span adding recall,
@@ -367,6 +410,64 @@ def test_extract_batch_handles_empty_text_and_model_filters(monkeypatch: pytest.
     backend = DiseaseNER(offline=False, gazetteer={})
     assert backend.extract_batch([" "]) == [[]]
     assert [mention.text for row in backend.extract_batch(["women", ""]) for mention in row] == ["women"]
+
+
+class _OverrunModel:
+    """GLiNER2 stand-in reproducing the collator's synthetic-period offset overrun.
+
+    Every span is reported as ending one char past the window that was actually sent, which is
+    what the real collator does for a window whose last token is the ``"."`` it appended.
+    """
+
+    @staticmethod
+    def batch_extract_entities(texts: list[str], _labels: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        return [
+            {"entities": {"biolink:Disease": [{"text": text[14:] + ".", "confidence": 0.99, "start": 14, "end": len(text) + 1}]}} for text in texts
+        ]
+
+
+def test_extract_batch_survives_a_span_that_overruns_the_window(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Regression guard for the run-8/run-9 shard killer: an over-running offset clamps instead of
+    raising, and the surviving mention still satisfies ``text == source[start:end]``."""
+    text = "indicated for chronic obstructive pulmonary disease"  # no terminal punctuation
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=_OverrunModel())
+    backend = DiseaseNER(offline=False, gazetteer={}, device="cpu", workdir=tmp_path)
+    mentions = backend.extract_batch([text])[0]
+    assert [(mention.text, mention.type) for mention in mentions] == [("chronic obstructive pulmonary disease", "Disease")]
+    assert text[mentions[0].start : mentions[0].end] == mentions[0].text
+
+
+def test_extract_batch_isolates_an_unreadable_window_result(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A malformed model result costs ONE window its spans, not the shard its 40 minutes of GPU
+    work: the texts keep their deterministic lexical mentions and the degradation is logged."""
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=_FakeExtractorModel([]))
+    backend = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, device="cpu", workdir=tmp_path)
+
+    def _boom(_result: Any, _window: str) -> Any:
+        raise TypeError("entry has no start offset")
+
+    monkeypatch.setattr(ner_module, "_spans_from_result", _boom)
+    with _captured_logs() as lines:
+        out = backend.extract_batch(["asthma in adults", "chronic hives"])
+    assert [[mention.text for mention in row] for row in out] == [["asthma"], []]
+    assert any("ner_window_spans: unreadable model result" in line for line in lines)
+    assert any("ner_extract_batch: degraded_texts = 0 of 2 degraded_windows = 2 of 2" in line for line in lines)
+
+
+def test_extract_batch_isolates_a_text_whose_post_processing_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A failure in the per-text merge degrades only that text to its lexical mentions."""
+    _install_fake_gliner2(monkeypatch, tmp_path, [], model=_FakeExtractorModel([]))
+    backend = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, device="cpu", workdir=tmp_path)
+
+    def _boom(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("merge blew up")
+
+    monkeypatch.setattr(ner_module, "_merge_straddling_spans", _boom)
+    with _captured_logs() as lines:
+        out = backend.extract_batch(["asthma in adults"])
+    assert [mention.text for mention in out[0]] == ["asthma"]
+    assert any("ner_extract_text: post-processing failed" in line for line in lines)
+    assert any("ner_extract_batch: degraded_texts = 1 of 1" in line for line in lines)
 
 
 def test_model_labels_override_is_requested_verbatim(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

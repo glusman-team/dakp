@@ -186,7 +186,15 @@ def _mine_shard(shard: Sequence[Any], ner_config: dict[str, Any], device: str, *
         _set_parent_death_signal()
     ner = DiseaseNER(device=device, **ner_config)
     items = [_item_parts(item) for item in shard]
-    mentions = ner.extract_batch([text for _set_id, _doc_id, text in items])
+    try:
+        mentions = ner.extract_batch([text for _set_id, _doc_id, text in items])
+    except Exception:
+        # The parent only ever receives the pickled exception (``future.result()``), and a spawned
+        # child's stderr is this file, so without this line the worker log simply STOPS mid-shard:
+        # runs 8 and 9 both died on ``IndexError: string index out of range`` with no traceback
+        # anywhere on disk. Name the device and the shard size, keep the traceback, re-raise.
+        logger.exception("ner_shard_failed: device = {} items = {}", device, len(items))
+        raise
     return [(set_id, doc_id, result) for (set_id, doc_id, _text), result in zip(items, mentions, strict=True)]
 
 
@@ -206,8 +214,21 @@ def _mine_multi_gpu(work_items: Sequence[Any], ner: DiseaseNER, devices: Sequenc
     results: dict[tuple[str, str], list[Mention]] = {}
     with _spawn_safe_main(), ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
         futures = [pool.submit(_mine_shard, shard, ner_config, devices[i], in_worker=True) for i, shard in enumerate(shards)]
-        for future in futures:
-            for set_id, doc_id, mentions in future.result():
+        for index, future in enumerate(futures):
+            try:
+                shard_results = future.result()
+            except Exception as exc:
+                # Attribute the failure in the TASK log: the traceback itself is in the worker's
+                # own file, and without the device name there is no way to know which one to read.
+                logger.error(
+                    "ner_dispatch_failed: device = {} items = {} error = {!r} worker_logs = {}",
+                    devices[index],
+                    len(shards[index]),
+                    exc,
+                    str(Path(ner_config.get("workdir") or "") / WORKER_LOG_SUBDIR),
+                )
+                raise
+            for set_id, doc_id, mentions in shard_results:
                 results[(set_id, doc_id)] = mentions
     return results
 

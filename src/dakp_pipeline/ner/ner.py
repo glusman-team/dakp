@@ -386,13 +386,28 @@ def _install_message(module: str) -> str:
 
 
 def _strip_aligned(window: str, start: int, end: int) -> tuple[int, int]:
-    """Advance ``start`` / pull back ``end`` over whitespace so the span surface is trimmed.
+    """Clamp ``start``/``end`` into ``window``, then walk them inward over whitespace.
 
     gliner2 returns each span's surface ``.strip()``ed but the char offsets untrimmed
     (``runtime._find_spans`` records the raw token-span bounds), so ``window[start:end]`` can
     carry whitespace padding. This restores the half-open invariant
     ``window[start:end] == span["text"]`` that the merge and the mention contract rely on.
+
+    The clamp is not cosmetic: gliner2's collator MUTATES every input that does not already end
+    with terminal punctuation — ``processor._collate_batch`` appends a synthetic ``"."`` and
+    builds the char offset maps from that longer string, so the appended period is a real word
+    token whose ``end_map`` entry is ``len(window) + 1``. ``runtime._find_spans`` bounds its
+    spans by TOKEN index only, so any span whose last token is that synthetic period arrives one
+    char past the end of the window DAKP actually handed over. Indexing the window with it raised
+    ``IndexError: string index out of range`` inside a GPU worker, which logs no traceback of its
+    own, and the exception travelled out through ``future.result()`` to discard an entire
+    multi-hour mining shard (DAG runs 8 and 9 both died this way, 37 min into the shape stage).
+    Clamped to the window, the very same span keeps its true surface: the phantom char is the
+    collator's period, which is not part of the source text anyway.
     """
+    limit = len(window)
+    start = max(0, min(start, limit))
+    end = max(start, min(end, limit))
     while start < end and window[start].isspace():
         start += 1
     while end > start and window[end - 1].isspace():
@@ -416,17 +431,24 @@ def _spans_from_result(result: Mapping[str, Any], window: str) -> list[_ModelSpa
     offsets. Labels whose canonical type is outside
     :data:`~dakp_pipeline.ner.dictionary.MENTION_TYPES` are dropped here, so a checkpoint
     emitting a qualifier DAKP does not model (a severity qualifier, say) or an unrelated category
-    (``CHEMICAL``) can never reach a channel, and offsets are strip-aligned
-    (:func:`_strip_aligned`) against the window they were predicted on. Both channels are
-    returned; callers route them with :meth:`DiseaseNER._channel_spans`.
+    (``CHEMICAL``) can never reach a channel, and offsets are clamped into the window and
+    strip-aligned (:func:`_strip_aligned`) against the window they were predicted on — gliner2's
+    collator appends a synthetic ``"."`` to inputs without terminal punctuation, so its offsets
+    can point one char past the window DAKP sent, and each affected window is reported once
+    (``ner_span_offsets``). Both channels are returned; callers route them with
+    :meth:`DiseaseNER._channel_spans`.
     """
     spans: list[_ModelSpan] = []
+    clamped = 0
     for label, entries in result.get("entities", {}).items():
         etype = canonical_type(str(label))
         if etype not in MENTION_TYPES:
             continue
         for entry in entries:
-            start, end = _strip_aligned(window, int(entry["start"]), int(entry["end"]))
+            raw_start, raw_end = int(entry["start"]), int(entry["end"])
+            if raw_start < 0 or raw_end > len(window):
+                clamped += 1  # collator-mutated offsets; see _strip_aligned
+            start, end = _strip_aligned(window, raw_start, raw_end)
             if start >= end:
                 continue
             context_model, context_score = _context_from_attributes(entry)
@@ -435,6 +457,9 @@ def _spans_from_result(result: Mapping[str, Any], window: str) -> list[_ModelSpa
                     start=start, end=end, type=etype, score=float(entry["confidence"]), context_model=context_model, context_model_score=context_score
                 )
             )
+    if clamped:
+        # One line per affected window (not per span): a shard holds tens of thousands of them.
+        logger.warning("ner_span_offsets: clamped = {} window_len = {} preview = {!r}", clamped, len(window), window[:120])
     return spans
 
 
@@ -1026,6 +1051,15 @@ class DiseaseNER:
         are submitted together to GLiNER2's batched ``batch_extract_entities`` API. This is the
         hot path used by per-device workers; offline extraction remains a cheap deterministic
         loop. Results are mixed-channel, exactly like :meth:`extract`.
+
+        Failure is contained to the smallest unit that can fail, because this runs tens of
+        minutes per shard inside a spawned worker whose exception reaches the parent as a bare
+        pickled object: a batch that raises falls back to per-window inference
+        (:meth:`_infer_windows`), an unreadable per-window result costs that window its model
+        spans, and a text whose post-processing raises keeps its deterministic lexical mentions.
+        Every degradation is logged with a text preview and tallied in one
+        ``ner_extract_batch`` ERROR line — degraded results are what the mention cache stores for
+        those texts, so the count is what tells an operator whether a re-mine is warranted.
         """
         values = list(texts)
         if self._offline:
@@ -1042,27 +1076,75 @@ class DiseaseNER:
             windows.extend((text_index, start, window) for start, window in _windows(text, budget))
         texts = [window for _text_index, _start, window in windows]
         raw_batches = self._infer_windows(model, texts)
+        degraded_windows = 0
         object_spans: dict[int, list[list[_ModelSpan]]] = {index: [] for index, _text in active}
         qualifier_spans: dict[int, list[_ModelSpan]] = {index: [] for index, _text in active}
         for (text_index, window_start, window), raw in zip(windows, raw_batches, strict=True):
-            objects, qualifiers = self._channel_spans(values[text_index], _spans_from_result(raw, window), window_start)
+            try:
+                window_spans = _spans_from_result(raw, window)
+            except Exception:
+                # One malformed result dict must not cost the shard its other windows (see the
+                # per-text guard below); the text keeps its lexical mentions and says so.
+                degraded_windows += 1
+                logger.exception(
+                    "ner_window_spans: unreadable model result; window kept no spans (text = {} preview = {!r})", text_index, window[:200]
+                )
+                window_spans = []
+            objects, qualifiers = self._channel_spans(values[text_index], window_spans, window_start)
             object_spans[text_index].append(objects)
             qualifier_spans[text_index].extend(qualifiers)
         output: list[list[Mention]] = []
+        degraded = 0
         for index, text in enumerate(values):
             if not text or not text.strip():
                 output.append([])
                 continue
             text_windows = [(start, window) for text_index, start, window in windows if text_index == index]
-            text_spans = object_spans[index]
-            _merge_straddling_spans(text_windows, text_spans)
-            trimmed = self._trimmed_spans(text, [span for spans in text_spans for span in spans])
-            gazetteer_spans = [(mention.start, mention.end) for mention in gazetteer[index]]
-            candidates = _select_candidates(_candidates_vs_gazetteer(trimmed, gazetteer_spans))
-            candidates = self._strict_gazetteer_candidates(candidates)
-            emitted = self._emit(text, gazetteer[index], candidates) + self._qualifier_mentions(text, qualifier_spans[index])
-            output.append(sorted(self._merge_qualifier_mentions(lexical_qualifiers[index], emitted), key=_sort_key))
+            try:
+                output.append(
+                    self._mentions_for_text(
+                        text, text_windows, object_spans[index], qualifier_spans[index], gazetteer[index], lexical_qualifiers[index]
+                    )
+                )
+            except Exception:
+                # Per-text isolation. A shard is tens of minutes of GPU inference and the parent
+                # only ever sees the pickled exception, so one pathological text used to discard
+                # ALL of it (and the whole DAG run with it). The affected text falls back to its
+                # deterministic lexical mentions — logged loudly, because that degraded result is
+                # what the mention cache will store for this text until it is re-mined.
+                degraded += 1
+                logger.exception("ner_extract_text: post-processing failed; kept lexical mentions only (preview={!r})", text[:200])
+                output.append(sorted(self._merge_qualifier_mentions(lexical_qualifiers[index], list(gazetteer[index])), key=_sort_key))
+        if degraded or degraded_windows:
+            logger.error(
+                "ner_extract_batch: degraded_texts = {} of {} degraded_windows = {} of {}", degraded, len(values), degraded_windows, len(windows)
+            )
         return output
+
+    def _mentions_for_text(
+        self,
+        text: str,
+        text_windows: list[tuple[int, str]],
+        object_spans: list[list[_ModelSpan]],
+        qualifier_spans: list[_ModelSpan],
+        gazetteer_mentions: list[Mention],
+        lexical_qualifiers: list[Mention],
+    ) -> list[Mention]:
+        """Merge ONE text's per-window spans into its final sorted mixed-channel mention list.
+
+        The per-text half of :meth:`extract_batch`, split out so that half can be isolated: the
+        straddling-span merge, hedge trimming, gazetteer contest, acceptance floor and qualifier
+        channel all run here, over spans already remapped to full-text coordinates.
+        ``object_spans`` is one span list per window and is mutated in place by
+        :func:`_merge_straddling_spans`.
+        """
+        _merge_straddling_spans(text_windows, object_spans)
+        trimmed = self._trimmed_spans(text, [span for spans in object_spans for span in spans])
+        gazetteer_spans = [(mention.start, mention.end) for mention in gazetteer_mentions]
+        candidates = _select_candidates(_candidates_vs_gazetteer(trimmed, gazetteer_spans))
+        candidates = self._strict_gazetteer_candidates(candidates)
+        emitted = self._emit(text, gazetteer_mentions, candidates) + self._qualifier_mentions(text, qualifier_spans)
+        return sorted(self._merge_qualifier_mentions(lexical_qualifiers, emitted), key=_sort_key)
 
     # -- production model (lazy) -----------------------------------------------
     def _raw_batch_extract(self, model: Any, texts: list[str]) -> list[Any]:
