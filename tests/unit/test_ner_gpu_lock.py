@@ -34,6 +34,7 @@ from dakp_pipeline.ner.ner import (
     _cuda_index,
     _gpu_lock_dir,
     _gpu_lock_timeout_seconds,
+    _is_memory_error,
     _is_orphaned_spawn_worker,
     _lock_competitor_pids,
     _lock_holder_pids,
@@ -73,8 +74,8 @@ class _FlakyBatchModel:
 class _BatchOnlyFailureModel:
     """GLiNER2 stand-in whose BATCHED call fails while every per-window call succeeds.
 
-    The transient-batch-failure case (OOM, driver hiccup): the isolation fallback must recover
-    every window and record no poison.
+    The transient, non-memory batch failure: the isolation retry must recover every window by
+    bisecting the list, and must not report a dropped window.
     """
 
     calls: ClassVar[list[list[str]]] = []
@@ -83,8 +84,37 @@ class _BatchOnlyFailureModel:
     def batch_extract_entities(texts: list[str], _labels: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         _BatchOnlyFailureModel.calls.append(list(texts))
         if len(texts) > 1:
-            raise RuntimeError("CUDA out of memory inside the batched forward pass")
+            raise RuntimeError("encoder rejected the padded batch")
         return [{"entities": {"biolink:Disease": [{"text": texts[0], "confidence": 0.99, "start": 0, "end": len(texts[0])}]}}]
+
+
+class _OomAboveBatchModel:
+    """GLiNER2 stand-in that OOMs whenever the requested batch is larger than ``max_batch``.
+
+    Mirrors the production failure: a 16 GB P100 running deberta-v3-large with the eager-attention
+    fallback exhausts memory at ``batch_size=16`` over 384-token windows.
+    """
+
+    batches: ClassVar[list[int]] = []
+    max_batch: ClassVar[int] = 4
+
+    @staticmethod
+    def batch_extract_entities(texts: list[str], _labels: Any, batch_size: int = 8, **_kwargs: Any) -> list[dict[str, Any]]:
+        _OomAboveBatchModel.batches.append(batch_size)
+        if batch_size > _OomAboveBatchModel.max_batch:
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.26 GiB.")
+        return [{"entities": {"biolink:Disease": [{"text": text, "confidence": 0.99, "start": 0, "end": len(text)}]}} for text in texts]
+
+
+class _RecordingBatchModel:
+    """GLiNER2 stand-in that records how many windows each submitted call carried."""
+
+    sizes: ClassVar[list[int]] = []
+
+    @staticmethod
+    def batch_extract_entities(texts: list[str], _labels: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        _RecordingBatchModel.sizes.append(len(texts))
+        return [{"entities": {}} for _ in texts]
 
 
 class _FakeAutoExtractor:
@@ -460,12 +490,11 @@ def test_extract_batch_healthy_shard_stays_on_one_batched_call(monkeypatch: pyte
     assert len(_FlakyBatchModel.calls) == 1  # healthy shard: exactly the one batched call, no fallback
 
 
-def test_infer_windows_fallback_reports_no_poison_when_every_window_recovers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A transient BATCH failure keeps every window's spans and is not recorded as poison.
+def test_infer_windows_bisects_a_non_memory_batch_failure_and_drops_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A batch failure that is NOT an OOM bisects the window list and keeps every window's spans.
 
-    The fallback exists for two different failures: one bad window, or one bad batch. Only the
-    first may claim poisoned windows — misreporting the second would send an operator hunting
-    for pathological text that does not exist.
+    Only a window that still fails alone may be reported as dropped — misreporting a batch-level
+    failure would send an operator hunting for pathological text that does not exist.
     """
     _install_fake_gliner2(monkeypatch, tmp_path)
     backend = DiseaseNER(offline=False, device="cpu", workdir=tmp_path)
@@ -479,10 +508,54 @@ def test_infer_windows_fallback_reports_no_poison_when_every_window_recovers(mon
     finally:
         logger.remove(sink_id)
     assert [[mention.text for mention in row] for row in out] == [["asthma"], ["chronic hives"]]  # nothing lost
-    assert len(_BatchOnlyFailureModel.calls) == 3  # one failed batch + one call per window
-    assert any("ner_batch_infer: batched inference failed" in line for line in lines)
-    assert not any("poisoned window dropped" in line for line in lines)
-    assert not any("ner_extract_batch: degraded" in line for line in lines)
+    assert len(_BatchOnlyFailureModel.calls) == 3  # one failed batch + one call per half
+    assert any("bisecting to isolate the failure" in line for line in lines)
+    assert not any("window dropped" in line for line in lines)
+
+
+def test_infer_windows_halves_the_batch_on_a_cuda_oom(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """An OOM is a BATCH-SIZE problem: the same windows are retried at half the batch.
+
+    Run 11's cuda:1 worker OOMed 2h11m into a single 50,449-window call; the fallback then
+    replayed every window in its own call (~9 h of serial inference for one shard). Halving the
+    batch keeps the windows batched and the shard on schedule.
+    """
+    _install_fake_gliner2(monkeypatch, tmp_path)
+    backend = DiseaseNER(offline=False, device="cpu", workdir=tmp_path)  # batch_size defaults to 16
+    _OomAboveBatchModel.batches = []
+    monkeypatch.setattr(backend, "_load_model", lambda: _OomAboveBatchModel)
+    lines: list[str] = []
+    sink_id = logger.add(lambda message: lines.append(message.record["message"]), level="DEBUG")
+    try:
+        out = backend.extract_batch(["asthma", "chronic hives"])
+    finally:
+        logger.remove(sink_id)
+    assert len(out) == 2
+    assert _OomAboveBatchModel.batches == [16, 8, 4]  # halved until it fit; never a per-window replay
+    assert any("retrying at half the batch" in line for line in lines)
+    assert not any("window dropped" in line for line in lines)
+
+
+def test_infer_windows_submits_in_bounded_chunks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A shard's windows go in chunks, so one failed call cannot cost the whole shard's work."""
+    _install_fake_gliner2(monkeypatch, tmp_path)
+    backend = DiseaseNER(offline=False, device="cpu", workdir=tmp_path)
+    _RecordingBatchModel.sizes = []
+    monkeypatch.setattr(backend, "_load_model", lambda: _RecordingBatchModel)
+    monkeypatch.setattr(ner_module, "_INFERENCE_CHUNK_WINDOWS", 2)
+    assert len(backend.extract_batch(["asthma", "chronic hives", "diabetes"])) == 3
+    assert _RecordingBatchModel.sizes == [2, 1]
+
+
+def test_is_memory_error_matches_torchs_oom_by_name_and_message() -> None:
+    """Both OOM spellings are recognized without importing torch (a lazy dependency)."""
+
+    class OutOfMemoryError(RuntimeError):
+        """Stand-in for ``torch.OutOfMemoryError`` — matched on the CLASS NAME."""
+
+    assert _is_memory_error(OutOfMemoryError("device ran out"))
+    assert _is_memory_error(RuntimeError("CUDA out of memory. Tried to allocate 2.26 GiB."))
+    assert not _is_memory_error(IndexError("string index out of range"))
 
 
 # --- _gpu_lock_timeout_seconds resolution --------------------------------------

@@ -217,6 +217,13 @@ _SENTENCE_PIECE = re.compile(r"[^.!?;]+[.!?;]*\s*")
 #: shipped checkpoint sets ``max_len: 4096``.
 _DEFAULT_WORD_BUDGET = 384
 
+#: Windows submitted per batched gliner2 call. ONE failed call discards all of its own work, so
+#: the submission is chunked: run 11's cuda:1 worker hit ``torch.OutOfMemoryError`` 2h11m into a
+#: single 50,449-window call and lost every one of those windows. 2048 windows is a few minutes of
+#: P100 inference — the most a poisoned window or an OOM can now cost, and the retry below re-runs
+#: only the failing piece.
+_INFERENCE_CHUNK_WINDOWS = 2048
+
 # Curated high-precision disease/phenotype gazetteer — the offline mode's embedded vocabulary
 # (the same terms benchmarked in ner/BENCHMARK.md). Not exhaustive by design: production mode
 # adds GLiNER recall for out-of-gazetteer mentions. term -> canonical type.
@@ -461,6 +468,17 @@ def _spans_from_result(result: Mapping[str, Any], window: str) -> list[_ModelSpa
         # One line per affected window (not per span): a shard holds tens of thousands of them.
         logger.warning("ner_span_offsets: clamped = {} window_len = {} preview = {!r}", clamped, len(window), window[:120])
     return spans
+
+
+def _is_memory_error(exc: BaseException) -> bool:
+    """True for a device OOM — a BATCH-SIZE problem, not a poisoned-window problem.
+
+    Matched on class name and message so ``torch`` stays a lazy import:
+    ``torch.OutOfMemoryError`` ("CUDA out of memory. Tried to allocate 2.26 GiB") is what run 11's
+    cuda:1 worker raised on a 16 GB P100 at ``batch_size=16``. Halving the batch is the cure for
+    that; splitting the window list is not, and vice versa for a genuinely poisoned window.
+    """
+    return type(exc).__name__ == "OutOfMemoryError" or "out of memory" in str(exc).lower()
 
 
 def _sort_key(mention: Mention) -> tuple[int, int, str, str]:
@@ -1147,50 +1165,59 @@ class DiseaseNER:
         return sorted(self._merge_qualifier_mentions(lexical_qualifiers, emitted), key=_sort_key)
 
     # -- production model (lazy) -----------------------------------------------
-    def _raw_batch_extract(self, model: Any, texts: list[str]) -> list[Any]:
+    def _raw_batch_extract(self, model: Any, texts: list[str], batch_size: int) -> list[Any]:
         """One batched GLiNER2 inference call over ``texts`` (whole vocabulary, both channels)."""
         if hasattr(model, "batch_extract"):
             return model.batch_extract(
-                texts,
-                self._schema_for_model(model),
-                batch_size=self._inference_batch_size,
-                threshold=self._threshold,
-                include_confidence=True,
-                include_spans=True,
+                texts, self._schema_for_model(model), batch_size=batch_size, threshold=self._threshold, include_confidence=True, include_spans=True
             )
         return model.batch_extract_entities(
-            texts, self._model_labels, batch_size=self._inference_batch_size, threshold=self._threshold, include_confidence=True, include_spans=True
+            texts, self._model_labels, batch_size=batch_size, threshold=self._threshold, include_confidence=True, include_spans=True
         )
 
     def _infer_windows(self, model: Any, texts: list[str]) -> list[Any]:
-        """Batched GLiNER2 inference over ``texts`` with per-window isolation on failure.
+        """Batched GLiNER2 inference over ``texts``, submitted in bounded chunks.
 
-        One pathological window (weird SPL markup, hostile unicode) can raise inside the
-        GLiNER2 forward pass — observed as ``IndexError: string index out of range`` — and
-        failing the whole batched call discards an ENTIRE multi-hour mining shard whose
-        ``ProcessPoolExecutor`` worker logs no traceback of its own. So the first batch failure
-        falls back to one-window-per-call inference: healthy windows keep their batched results,
-        and a window that still raises is logged with a text preview + traceback and yields the
-        canonical empty result (no spans) instead of poisoning the shard.
+        A shard is tens of thousands of windows and minutes-to-hours of P100 inference, and one
+        raised exception used to discard ALL of it: the batched call is all-or-nothing, and the
+        ``ProcessPoolExecutor`` parent sees only a pickled exception. Chunking
+        (:data:`_INFERENCE_CHUNK_WINDOWS`) bounds the loss, and :meth:`_infer_chunk` retries the
+        failing piece instead of failing the shard.
+        """
+        raw: list[Any] = []
+        for start in range(0, len(texts), _INFERENCE_CHUNK_WINDOWS):
+            raw.extend(self._infer_chunk(model, texts[start : start + _INFERENCE_CHUNK_WINDOWS], self._inference_batch_size))
+        return raw
+
+    def _infer_chunk(self, model: Any, texts: list[str], batch_size: int) -> list[Any]:
+        """Infer ``texts``, retrying a failure at half the batch size or half the window list.
+
+        Two distinct failure modes, told apart by :func:`_is_memory_error`:
+
+        * a device OOM is a property of the BATCH (16 padded 384-token windows through
+          deberta-v3-large with the eager attention fallback exceeds a 16 GB P100), so the same
+          windows are retried at half the batch size — splitting the list would not reduce the
+          peak memory of any internal batch;
+        * anything else is presumed one pathological window (weird SPL markup, hostile unicode),
+          so the LIST is bisected until the offender stands alone.
+
+        A single window that still raises is logged with its exception type, a preview and the
+        traceback, and yields the canonical empty result (no spans) rather than poisoning the
+        shard. Every retry reuses the SAME loaded model — no reload cost.
         """
         try:
-            return self._raw_batch_extract(model, texts)
-        except Exception:
-            # Per-window calls re-import/reuse the SAME loaded model — no reload cost; the loss
-            # is batching efficiency for this shard only.
-            logger.exception("ner_batch_infer: batched inference failed ({} windows); isolating poisoned windows", len(texts))
-        raw: list[Any] = []
-        poisoned = 0
-        for text in texts:
-            try:
-                raw.append(self._raw_batch_extract(model, [text])[0])
-            except Exception:
-                poisoned += 1
-                logger.exception("ner_batch_infer: poisoned window dropped (preview={!r})", text[:200])
-                raw.append({"entities": {}})
-        if poisoned:
-            logger.error("ner_batch_infer: poisoned_windows = {} of {}", poisoned, len(texts))
-        return raw
+            return self._raw_batch_extract(model, texts, batch_size)
+        except Exception as exc:
+            kind = type(exc).__name__
+            if _is_memory_error(exc) and batch_size > 1:
+                logger.warning("ner_batch_infer: {} on {} windows at batch_size = {}; retrying at half the batch", kind, len(texts), batch_size)
+                return self._infer_chunk(model, texts, max(1, batch_size // 2))
+            if len(texts) > 1:
+                middle = len(texts) // 2
+                logger.warning("ner_batch_infer: {} on {} windows; bisecting to isolate the failure", kind, len(texts))
+                return [*self._infer_chunk(model, texts[:middle], batch_size), *self._infer_chunk(model, texts[middle:], batch_size)]
+            logger.exception("ner_batch_infer: window dropped ({}; preview={!r})", kind, texts[0][:200])
+            return [{"entities": {}}]
 
     def _schema_for_model(self, model: Any) -> Any:
         if self._schema is None:
