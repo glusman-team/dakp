@@ -63,6 +63,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /stats", s.handleStats)
 	s.mux.HandleFunc("POST /batch_get", s.handleBatchGet)
 	s.mux.HandleFunc("POST /batch_put", s.handleBatchPut)
+	s.mux.HandleFunc("POST /batch_delete", s.handleBatchDelete)
 }
 
 // countKeys scans keys once at open to seed the approximate entry counter. Pebble
@@ -100,6 +101,14 @@ type batchGetResponse struct {
 
 type batchPutRequest struct {
 	Items map[string]json.RawMessage `json:"items"`
+}
+
+type batchDeleteRequest struct {
+	Keys []string `json:"keys"`
+}
+
+type batchDeleteResponse struct {
+	Deleted int64 `json:"deleted"`
 }
 
 // --- handlers -----------------------------------------------------------------
@@ -170,6 +179,30 @@ func (s *Server) handleBatchPut(w http.ResponseWriter, r *http.Request) {
 	_ = batch.Close()
 	s.entries.Add(int64(len(req.Items)))
 	writeJSON(w, http.StatusOK, healthResponse{OK: true})
+}
+
+func (s *Server) handleBatchDelete(w http.ResponseWriter, r *http.Request) {
+	var req batchDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, fmt.Errorf("batch_delete: decode: %w", err))
+		return
+	}
+	var deleted int64
+	batch := s.db.NewBatch()
+	for _, key := range req.Keys {
+		_ = batch.Delete([]byte(key), nil)
+		deleted++
+	}
+	// Sync commit: a confirmed delete survives a power loss, so a purged entry can
+	// never be resurrected by replay.
+	if err := batch.Commit(pebble.Sync); err != nil {
+		_ = batch.Close()
+		writeError(w, fmt.Errorf("batch_delete: commit: %w", err))
+		return
+	}
+	_ = batch.Close()
+	s.entries.Add(-deleted)
+	writeJSON(w, http.StatusOK, batchDeleteResponse{Deleted: deleted})
 }
 
 // --- server.json discovery file -------------------------------------------------
