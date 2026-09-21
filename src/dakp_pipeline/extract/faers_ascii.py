@@ -57,6 +57,7 @@ from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import OperationBlock, TableBlock
 from dakp_pipeline.logging_setup import logger, stats
 from dakp_pipeline.paths import Workdir
+from dakp_pipeline.textnorm import defaersify
 
 _DELIMITER = "$"
 _FAMILIES = ("DEMO", "DRUG", "INDI", "REAC", "RPSR", "DELETE")
@@ -489,10 +490,12 @@ def _build_quarter_cases(families: dict[str, pl.DataFrame], quarter: str, delete
         pl.col("reporter_country").fill_null("").alias("reporter_country"),
         pl.col("role_cod").fill_null("").alias("role_cod"),
         pl.col("drug_seq").fill_null("").alias("drug_seq"),
-        pl.col("prod_ai").fill_null("").alias("ingredient"),
-        pl.col("drugname").fill_null("").alias("drugname"),
+        # FAERS ASCII mangles non-ASCII separators (en-dash, hyphen) to '?'; restore them
+        # so lexical QC matching sees 'PFIZER-BIONTECH COVID-19 VACCINE', not 'PFIZER?BIONTECH'.
+        defaersify(pl.col("prod_ai").fill_null("")).alias("ingredient"),
+        defaersify(pl.col("drugname").fill_null("")).alias("drugname"),
         pl.col("nda_num").fill_null("").alias("nda_raw"),
-        pl.col("indi_pt").fill_null("").alias("indication"),
+        defaersify(pl.col("indi_pt").fill_null("")).alias("indication"),
         pl.col("effects").fill_null("").alias("effects"),
         # nda normalized: digits only, leading zeroes stripped (joins Drugs@FDA ApplNo).
         pl.col("nda_num").fill_null("").str.replace_all(r"\D", "").str.strip_chars_start("0").alias("nda"),

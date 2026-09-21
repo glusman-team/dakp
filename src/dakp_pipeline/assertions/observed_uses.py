@@ -69,6 +69,7 @@ from dakp_pipeline.assertions.evidence import (
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
+from dakp_pipeline.textnorm import defaersify
 
 _TABLE = "faers_applied_to_treat_assertions"
 _PREDICATE = "biolink:applied_to_treat"
@@ -203,8 +204,8 @@ def build_observed_use_rows(
     cases = (
         faers_cases.lazy()
         .select(
-            _text_column("drugname").str.strip_chars().alias("drugname"),
-            _text_column("indication").str.strip_chars().alias("indication"),
+            defaersify(_text_column("drugname").str.strip_chars()).alias("drugname"),
+            defaersify(_text_column("indication").str.strip_chars()).alias("indication"),
             primaryid.alias("primaryid"),
             _text_column("nda").alias("nda"),
             _text_column("nda_raw").alias("nda_raw"),

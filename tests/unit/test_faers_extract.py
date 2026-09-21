@@ -323,3 +323,23 @@ def test_intraquarter_duplicate_indi_rows_deduped(tmp_path: Path) -> None:
 
 def _ref(path: Path) -> ArtifactRef:
     return ArtifactRef(uri=path, blake3=hash_file(path), media_type=infer_media_type(path))
+
+
+# --- FAERS '?' mangling restoration ---------------------------------------------
+
+
+def test_defaersifies_mangled_nonascii_placeholders(tmp_path: Path) -> None:
+    d = tmp_path / "faers"
+    d.mkdir()
+    (d / "DEMO24Q3.txt").write_text("PRIMARYID$CASEID$OCCP_COD$REPORTER_COUNTRY$\n1001$5001$MD$US$\n")
+    (d / "DRUG24Q3.txt").write_text(
+        "PRIMARYID$DRUG_SEQ$DRUGNAME$ROLE_COD$NDA_NUM$PROD_AI$\n1001$1$PFIZER?BIONTECH COVID?19 VACCINE$PS$020777$Famtozinameran$\n"
+    )
+    (d / "INDI24Q3.txt").write_text("PRIMARYID$INDI_DRUG_SEQ$INDI_PT$\n1001$1$exposure?during?pregnancy$\n")
+    refs = [ArtifactRef(uri=p, blake3=hash_file(p), media_type=infer_media_type(p)) for p in sorted(d.glob("*.txt"))]
+    faers_ascii.extract(refs, TaskContext(workdir=tmp_path, fixture_root=_FIXTURE_ROOT, params={"quarter_limit": None}))
+    cases = pl.read_parquet(tmp_path / "interim" / "faers" / "cases.parquet")
+    row = cases.row(0, named=True)
+    assert row["drugname"] == "PFIZER-BIONTECH COVID-19 VACCINE"
+    assert row["ingredient"] == "Famtozinameran"
+    assert row["indication"] == "exposure-during-pregnancy"
