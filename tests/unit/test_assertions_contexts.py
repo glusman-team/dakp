@@ -10,6 +10,7 @@ from dakp_pipeline.assertions.contexts import (
     assertion_context,
     attach_qualifiers,
     context_predicate,
+    patient_clause_contexts,
 )
 from dakp_pipeline.ner.lexical import Mention
 from dakp_pipeline.ner.ner import _spans_from_result
@@ -196,3 +197,11 @@ def test_attachment_template_and_rejection_branches(monkeypatch: pytest.MonkeyPa
     assert attach_qualifiers(hosts, [mention("women", 0, 5, "BiologicalSex")], lambda _m: sentence) == {}
     assert _candidate_mention("No matching condition.", {"object_text": "", "object_category": "Disease"}, 0) is None
     assert _candidate_mention("No matching condition.", {"object_text": "migraine", "object_category": "Disease"}, 0) is None
+
+
+def test_patient_clause_contexts_skips_mentions_without_a_sentence() -> None:
+    """A ``None`` sentence cannot join per-sentence grouping, so the mention is skipped."""
+    clause = patient_clause_contexts([mention("asthma", 0, 6, "Disease")], lambda _m: None)
+    assert clause.contexts == {}
+    assert clause.context_only == {}
+    assert clause.ambiguous == {}

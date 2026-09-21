@@ -661,7 +661,7 @@ def _entity_groups(mentions: Sequence[Mention]) -> list[Entity]:
         bucket = mentions_by_label.setdefault(label, [])
         if mention.text not in bucket:
             bucket.append(mention.text)
-    return [Entity(label=label, mentions=values) for label, values in mentions_by_label.items() if values]
+    return [Entity(label=label, mentions=values, description=None) for label, values in mentions_by_label.items() if values]
 
 def _qualifier_relations(objects: Sequence[Mention], qualifiers: Sequence[Mention], sentence_of: Callable[[Mention], str | None]) -> list[Relation]:
     """Qualifier mentions -> relations (head = qualified object, tail = qualifier mention).
@@ -765,7 +765,16 @@ def build_example(row: Mapping[str, str], mentions: Sequence[Mention]) -> Traini
     return TrainingExample(
         text=str(row.get("text") or ""),
         entities=_entity_groups(mentions),
-        classifications=[Classification(task=_CLASSIFICATION_TASK, labels=list(_CONTEXT_LABELS), true_label=[context])],
+        classifications=[
+            Classification(
+                task=_CLASSIFICATION_TASK,
+                labels=list(_CONTEXT_LABELS),
+                true_label=[context],
+                multi_label=False,
+                prompt=None,
+                label_descriptions=None,
+            )
+        ],
         relations=relations,
     )
 

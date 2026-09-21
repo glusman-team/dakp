@@ -197,6 +197,7 @@ MEDICATION_CONTEXT = re.compile(
     re.IGNORECASE,
 )
 
+
 @dataclass(frozen=True)
 class PatientClause:
     """Result of the explicit patient-clause scan over one group of object mentions.
@@ -214,10 +215,9 @@ class PatientClause:
     context_only: dict[int, tuple[str, str]]
     ambiguous: dict[int, str]
 
+
 def patient_clause_contexts(
-    objects: Sequence[Mention],
-    sentence_of: Callable[[Mention], str | None],
-    group_of: Callable[[Mention], object] | None = None,
+    objects: Sequence[Mention], sentence_of: Callable[[Mention], str | None], group_of: Callable[[Mention], object] | None = None
 ) -> PatientClause:
     """Assign explicit disease context to objects via the patient-clause template.
 
@@ -279,6 +279,7 @@ def patient_clause_contexts(
         context_only[context_index] = ("context_only", sentence)
         contexts[object_index] = context_text
     return PatientClause(contexts=contexts, context_only=context_only, ambiguous=ambiguous)
+
 
 __all__ = [
     "ASSERTION_CONTEXTS",

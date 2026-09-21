@@ -191,6 +191,9 @@ def test_fixture_run_exports_a_valid_ner_bundle(monkeypatch, tmp_path: Path) -> 
     from fastavro import reader
 
     with (bundle / EXAMPLES_AVRO_FILENAME).open("rb") as handle:
-        records = list(reader(handle))
+        records = []
+        for record in reader(handle):
+            assert record is not None  # fastavro types reader rows as Optional
+            records.append(record)
     assert len(records) == len(rows)
     assert [record["text"] for record in records] == [row["input"] for row in rows]
