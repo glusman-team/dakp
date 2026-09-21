@@ -142,12 +142,7 @@ def test_fixture_run_exports_a_valid_ner_bundle(monkeypatch, tmp_path: Path) -> 
     result = run_stages(fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "work")
 
     # The export registered exactly the four bundle files.
-    assert [ref.uri.name for ref in result.ner_export_refs] == [
-        MANIFEST_FILENAME,
-        EXAMPLES_AVRO_FILENAME,
-        EXAMPLES_NDJSON_FILENAME,
-        GOLD_FILENAME,
-    ]
+    assert [ref.uri.name for ref in result.ner_export_refs] == [MANIFEST_FILENAME, EXAMPLES_AVRO_FILENAME, EXAMPLES_NDJSON_FILENAME, GOLD_FILENAME]
     bundle = result.ner_export_refs[0].uri.parent
     assert bundle == Workdir(tmp_path / "work").store / OUT_DIRNAME
     assert sorted(path.name for path in bundle.iterdir()) == sorted(
@@ -167,19 +162,14 @@ def test_fixture_run_exports_a_valid_ner_bundle(monkeypatch, tmp_path: Path) -> 
     rows = [json.loads(line) for line in lines]
     assert {"input", "output"} == set(rows[0].keys())
     assert {"contraindication", "indication"} == {
-        task
-        for row in rows
-        for classification in row["output"].get("classifications", [])
-        for task in classification["true_label"]
+        task for row in rows for classification in row["output"].get("classifications", []) for task in classification["true_label"]
     }
     assert manifest["task_counts"] == {
         "contraindication": sum(
-            any(classification["true_label"] == ["contraindication"] for classification in row["output"].get("classifications", []))
-            for row in rows
+            any(classification["true_label"] == ["contraindication"] for classification in row["output"].get("classifications", [])) for row in rows
         ),
         "indication": sum(
-            any(classification["true_label"] == ["indication"] for classification in row["output"].get("classifications", []))
-            for row in rows
+            any(classification["true_label"] == ["indication"] for classification in row["output"].get("classifications", [])) for row in rows
         ),
     }
     assert manifest["family_counts"] == {family: manifest["family_counts"][family] for family in ("dailymed", "ema", "faers")}

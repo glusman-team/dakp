@@ -19,6 +19,7 @@ from dakp_pipeline.ner_export import TrainingExample
 
 _SNAPSHOT = Path(__file__).resolve().parents[1] / "eval" / "ner_training_schema.json"
 
+
 def test_avro_schema_matches_relmedner_snapshot() -> None:
     """The exported ``examples.avro`` must be record-compatible with RelMedNER.
 
@@ -28,6 +29,7 @@ def test_avro_schema_matches_relmedner_snapshot() -> None:
     change; never hand-edit it.
     """
     assert TrainingExample.avro_schema_to_python() == json.loads(_SNAPSHOT.read_text(encoding="utf-8"))
+
 
 def test_to_output_is_the_gliner2_projection() -> None:
     example = TrainingExample(text="placeholder")

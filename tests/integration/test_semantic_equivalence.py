@@ -231,9 +231,15 @@ def test_contraindications_are_knowledge_assertions_text_mined(built: dict[str, 
 def test_treats_carries_fda_approval_and_spl_evidence(built: dict[str, Any]) -> None:
     """Legacy ``approval`` (NDA) + ``supporting_spls`` survive as FDA_regulatory_approvals + supporting_spl_*."""
     for rec in _family_rows(built["tables"], TREATS):
-        assert str(rec.get("FDA_regulatory_approvals")).strip() or str(rec.get("upstream_resource_ids")) in {"infores:ema", "infores:epar"}, "treats row missing FDA approval/NDA id"
-        assert str(rec.get("supporting_spl_sets")).strip() or str(rec.get("upstream_resource_ids")) in {"infores:ema", "infores:epar"}, "treats row missing supporting SPL set"
-        assert str(rec.get("supporting_spl_documents")).strip() or str(rec.get("upstream_resource_ids")) in {"infores:ema", "infores:epar"}, "treats row missing supporting SPL document"
+        assert str(rec.get("FDA_regulatory_approvals")).strip() or str(rec.get("upstream_resource_ids")) in {"infores:ema", "infores:epar"}, (
+            "treats row missing FDA approval/NDA id"
+        )
+        assert str(rec.get("supporting_spl_sets")).strip() or str(rec.get("upstream_resource_ids")) in {"infores:ema", "infores:epar"}, (
+            "treats row missing supporting SPL set"
+        )
+        assert str(rec.get("supporting_spl_documents")).strip() or str(rec.get("upstream_resource_ids")) in {"infores:ema", "infores:epar"}, (
+            "treats row missing supporting SPL document"
+        )
 
 
 def test_all_edge_families_carry_identifier_provenance(built: dict[str, Any]) -> None:

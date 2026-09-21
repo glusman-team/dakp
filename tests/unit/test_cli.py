@@ -665,6 +665,7 @@ def test_up_builds_nercache_into_workdir_bin(monkeypatch: pytest.MonkeyPatch, sa
 
 # --- export-ner (GLiNER2 training-data bundle) ------------------------------------
 
+
 @pytest.fixture
 def offline_ner(monkeypatch: pytest.MonkeyPatch):
     """Swap the CLI's production GLiNER backend for the deterministic offline gazetteer.
@@ -677,6 +678,7 @@ def offline_ner(monkeypatch: pytest.MonkeyPatch):
     from dakp_pipeline.ner import ner as ner_module
 
     monkeypatch.setattr(ner_module.DiseaseNER, "for_contraindications", classmethod(lambda cls, **kwargs: default_ner(None)))
+
 
 def _write_interim_tables(workdir: Path) -> None:
     """Materialize the three interim tables the export consumes (minimal but real parquets)."""
@@ -710,6 +712,7 @@ def _write_interim_tables(workdir: Path) -> None:
         }
     ).write_parquet(interim / "faers" / "cases.parquet")
 
+
 def test_export_ner_happy_path_copies_to_out(sandbox: Path, capsys: pytest.CaptureFixture[str], offline_ner) -> None:
     """Default mode exports from a materialized workdir — no acquisition, no downloads."""
     workdir = sandbox / "materialized"
@@ -730,6 +733,7 @@ def test_export_ner_happy_path_copies_to_out(sandbox: Path, capsys: pytest.Captu
     # The store copy (where the export stage writes) exists alongside the --out copy.
     assert (workdir / "store" / "ner-export" / "manifest.json").exists()
 
+
 def test_export_ner_default_out_is_the_store_bundle(sandbox: Path, offline_ner) -> None:
     """Without --out/--workdir the bundle stays where the export stage wrote it (no copy)."""
     _write_interim_tables(sandbox / "work")  # the sandbox fixture points _DEFAULT_WORKDIR here
@@ -744,6 +748,7 @@ def test_export_ner_default_out_is_the_store_bundle(sandbox: Path, offline_ner) 
     assert len(lines) == 5
     assert all(json.loads(line)["input"] for line in lines)
 
+
 def test_export_ner_missing_interim_tables_fail_loudly(sandbox: Path, capsys: pytest.CaptureFixture[str], offline_ner) -> None:
     """An unmaterialized workdir is a loud error naming ALL THREE tables — never a download."""
     code = cli.run_export_ner()
@@ -756,6 +761,7 @@ def test_export_ner_missing_interim_tables_fail_loudly(sandbox: Path, capsys: py
     assert "faers/cases.parquet" in out
     assert "never downloads" in out
     assert not (sandbox / "work" / "store" / "ner-export").exists()  # no partial bundle
+
 
 def test_export_ner_names_only_the_missing_tables(sandbox: Path, capsys: pytest.CaptureFixture[str], offline_ner) -> None:
     """When one interim table exists, the error names exactly the two that are missing."""
@@ -770,6 +776,7 @@ def test_export_ner_names_only_the_missing_tables(sandbox: Path, capsys: pytest.
     assert "ema/ema_registry.parquet" in out
     assert "faers/cases.parquet" in out
     assert out.count(".parquet") == 2  # only the missing tables are named
+
 
 def test_export_ner_command_raises_systemexit(sandbox: Path, offline_ner) -> None:
     _write_interim_tables(sandbox / "work")

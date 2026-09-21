@@ -504,13 +504,9 @@ def copy_export_bundle(src_dir: Path, out_dir: Path) -> dict[str, Path]:
     from dakp_pipeline import ner_export
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    names = (
-        ner_export.MANIFEST_FILENAME,
-        ner_export.EXAMPLES_AVRO_FILENAME,
-        ner_export.EXAMPLES_NDJSON_FILENAME,
-        ner_export.GOLD_FILENAME,
-    )
+    names = (ner_export.MANIFEST_FILENAME, ner_export.EXAMPLES_AVRO_FILENAME, ner_export.EXAMPLES_NDJSON_FILENAME, ner_export.GOLD_FILENAME)
     return {name: Path(shutil.copyfile(src_dir / name, out_dir / name)) for name in names}
+
 
 def run_export_ner(*, out: str | None = None, workdir: str | None = None) -> int:
     """Export the GLiNER2 training-data bundle from the DailyMed + FAERS + EMA extracts.
@@ -546,6 +542,7 @@ def run_export_ner(*, out: str | None = None, workdir: str | None = None) -> int
     print(f"GLiNER2 training-data bundle ready: {out_dir}")
     return 0
 
+
 # --- cyclopts app (console-script entry point: `dakp = dakp_pipeline.cli:app`) -----
 
 app = App(name="dakp", help="DAKP pipeline runner — one command runs the whole Airflow-native pipeline.")
@@ -572,9 +569,7 @@ def up(
 
 @app.command
 def export_ner(
-    *,
-    out: Annotated[str | None, Parameter(name=["--out", "-o"])] = None,
-    workdir: Annotated[str | None, Parameter(name=["--workdir", "-w"])] = None,
+    *, out: Annotated[str | None, Parameter(name=["--out", "-o"])] = None, workdir: Annotated[str | None, Parameter(name=["--workdir", "-w"])] = None
 ) -> None:
     """Export the GLiNER2 training-data bundle from the DailyMed + FAERS + EMA extracts.
 
@@ -583,6 +578,7 @@ def export_ner(
     composite backend (GPU), so this command needs the model cached under the workdir.
     """
     raise SystemExit(run_export_ner(out=out, workdir=workdir))
+
 
 @app.command
 def down() -> None:

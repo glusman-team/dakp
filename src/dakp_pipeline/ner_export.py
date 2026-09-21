@@ -119,20 +119,24 @@ from dakp_pipeline.paths import Workdir
 # not a pipeline.
 # ======================================================================================
 
+
 class StrictBase(AvroBaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", use_enum_values=True)
 
     class Meta:
         namespace: str = "relmedner.ingests"
 
+
 class Entity(StrictBase):
     label: str = Field(...)
     mentions: list[str] = Field(...)
     description: str | None = Field(None)
 
+
 class Description(StrictBase):
     key: str = Field(...)
     description: str = Field(...)
+
 
 class ChoiceField(StrictBase):
     value: str = Field(...)
@@ -140,6 +144,7 @@ class ChoiceField(StrictBase):
 
     def to_output(self) -> dict[str, Any]:
         return {"value": self.value, "choices": self.choices}
+
 
 class StructureField(StrictBase):
     name: str = Field(...)
@@ -149,9 +154,11 @@ class StructureField(StrictBase):
     def to_value(self) -> Any:
         return self.value.to_output() if isinstance(self.value, ChoiceField) else self.value
 
+
 class Structure(StrictBase):
     name: str = Field(...)
     fields: list[StructureField] = Field(...)
+
 
 class Classification(StrictBase):
     task: str = Field(...)
@@ -161,9 +168,11 @@ class Classification(StrictBase):
     prompt: str | None = Field(None)
     label_descriptions: list[Description] | None = Field(None)
 
+
 class RelationField(StrictBase):
     name: str = Field(...)
     value: str = Field(...)
+
 
 class Relation(StrictBase):
     name: str = Field(...)
@@ -175,8 +184,10 @@ class Relation(StrictBase):
     """how the triple was observed: asserted (the row's drug->object assertion relation
     named by context_predicate) or mined (qualifier attachment)"""
 
+
 def describe(descriptions: list[Description] | None) -> dict[str, str]:
     return {entry.key: entry.description for entry in descriptions or []}
+
 
 class TrainingExample(StrictBase):
     text: str = Field(...)
@@ -232,6 +243,7 @@ class TrainingExample(StrictBase):
                 output |= getattr(self, f"{shape}_out")()
         return {"input": self.text, "output": output}
 
+
 # ======================================================================================
 # Bundle constants
 # ======================================================================================
@@ -279,9 +291,11 @@ _CLASSIFICATION_TASK = "indication context classification"
 _CONTEXT_LABELS: tuple[str, ...] = tuple(ASSERTION_CONTEXTS)
 _BIOLINK_PREFIX = "biolink:"
 
+
 def _is_faers_partition_ref(ref: ArtifactRef) -> bool:
     """Return whether a cases table is under an extractor quarter partition."""
     return bool(_FAERS_QUARTER_PARTITION.fullmatch(ref.uri.parent.name))
+
 
 #: The training task for a DailyMed section LOINC: contraindications (``34070-3``) and the
 #: boxed-warning/warnings sections (Pass 3) both carry contraindication-family supervision;
@@ -306,6 +320,7 @@ _RELATION_BY_FIELD: dict[str, str] = {
 
 # --- inputs -------------------------------------------------------------------------
 
+
 def gold_path() -> Path:
     """The committed NER gold benchmark, resolved from the repo root.
 
@@ -318,6 +333,7 @@ def gold_path() -> Path:
         msg = f"ner_export: NER gold benchmark is missing: {path}"
         raise FileNotFoundError(msg)
     return path
+
 
 def read_dailymed_sections(path: Path) -> pl.DataFrame | None:
     """Read only the export-LOINC sections of ``spl_documents.parquet``, projected to 4 columns.
@@ -341,6 +357,7 @@ def read_dailymed_sections(path: Path) -> pl.DataFrame | None:
         logger.warning("export_ner: skipping unreadable input {} ({})", path, exc)
         return None
 
+
 def read_ema_registry(path: Path) -> pl.DataFrame | None:
     """Read the EMA registry's indication columns, projected to 5 columns.
 
@@ -358,9 +375,11 @@ def read_ema_registry(path: Path) -> pl.DataFrame | None:
         logger.warning("export_ner: skipping unreadable input {} ({})", path, exc)
         return None
 
+
 def _normalized(text: str) -> str:
     """Dedupe normalization: lowercase + whitespace collapse."""
     return " ".join(text.split()).lower()
+
 
 def _singleton_subjects(table: pl.DataFrame) -> dict[str, str]:
     """One subject ingredient per SPL document that carries EXACTLY one distinct non-blank one.
@@ -389,6 +408,7 @@ def _singleton_subjects(table: pl.DataFrame) -> dict[str, str]:
         if known != ingredient:
             subjects[document_id] = ""
     return {document_id: ingredient for document_id, ingredient in subjects.items() if ingredient}
+
 
 def select_dailymed_rows(table: pl.DataFrame) -> list[dict[str, str]]:
     """DailyMed candidate rows: contraindication (34070-3), boxed warnings (34066-1, 43685-7,
@@ -423,9 +443,11 @@ def select_dailymed_rows(table: pl.DataFrame) -> list[dict[str, str]]:
         )
     return rows
 
+
 def _split_semicolons(cell: str) -> list[str]:
     """Split a semicolon-joined EMA cell into its stripped, non-empty values."""
     return [part.strip() for part in cell.split(";") if part.strip()]
+
 
 def select_ema_rows(table: pl.DataFrame) -> list[dict[str, str]]:
     """EMA candidate rows: one ``indication`` row per registry row with indication text.
@@ -455,6 +477,7 @@ def select_ema_rows(table: pl.DataFrame) -> list[dict[str, str]]:
             }
         )
     return rows
+
 
 def reduce_faers_frame(table: pl.DataFrame) -> pl.DataFrame:
     """Collapse duplicate FAERS indication strings before any of them becomes a Python dict.
@@ -487,6 +510,7 @@ def reduce_faers_frame(table: pl.DataFrame) -> pl.DataFrame:
         .collect(engine="streaming")
     )
 
+
 def _quarter_urls(table: pl.DataFrame) -> dict[str, str]:
     """One validated FDA quarter URL per distinct quarter label in ``table``.
 
@@ -500,6 +524,7 @@ def _quarter_urls(table: pl.DataFrame) -> dict[str, str]:
     labels = table.get_column("quarter").unique().to_list()
     return {("" if label is None else str(label).strip().upper()): faers_record_url(label) for label in labels}
 
+
 def _nonblank_indications(table: pl.DataFrame) -> pl.DataFrame:
     """The rows :func:`select_faers_rows` will actually emit, so quarter validation matches it.
 
@@ -509,6 +534,7 @@ def _nonblank_indications(table: pl.DataFrame) -> pl.DataFrame:
     if "indication" not in table.columns:
         return table
     return table.filter(pl.col("indication").cast(pl.Utf8).fill_null("").str.strip_chars() != "")
+
 
 def select_faers_rows(table: pl.DataFrame) -> list[dict[str, str]]:
     """FAERS candidate rows: one indication row per case row with non-blank ``indication``.
@@ -539,7 +565,9 @@ def select_faers_rows(table: pl.DataFrame) -> list[dict[str, str]]:
         )
     return rows
 
+
 # --- dedupe + determinism -------------------------------------------------------------
+
 
 def _sort_key(row: Mapping[str, str]) -> tuple[str, ...]:
     """Deterministic row order (export contract R5).
@@ -560,6 +588,7 @@ def _sort_key(row: Mapping[str, str]) -> tuple[str, ...]:
         row.get("subject") or "",
     )
 
+
 def dedupe_sort(rows: Iterable[Mapping[str, str]]) -> list[dict[str, str]]:
     """Dedupe on ``(task, normalized text)`` and sort deterministically (export contract R5).
 
@@ -578,7 +607,9 @@ def dedupe_sort(rows: Iterable[Mapping[str, str]]) -> list[dict[str, str]]:
         winners.append(dict(row))
     return winners
 
+
 # --- gold validation -----------------------------------------------------------------
+
 
 def _load_gold(path: Path) -> dict[str, Any]:
     """Parse and validate a gold benchmark; loud errors, never a silent fallback.
@@ -611,7 +642,9 @@ def _load_gold(path: Path) -> dict[str, Any]:
         raise ValueError(msg)
     return gold
 
+
 # --- mining + row build ----------------------------------------------------------------
+
 
 def mine_rows(rows: Sequence[Mapping[str, str]], ner: DiseaseNER, cache: MentionCache | None) -> list[list[Mention]]:
     """Extract mixed-channel mentions per row, cache-backed (one mention list per row, in order).
@@ -626,6 +659,7 @@ def mine_rows(rows: Sequence[Mapping[str, str]], ner: DiseaseNER, cache: Mention
         return {(item[0], item[1]): ner.extract(item[2]) for item in work_items}
 
     return mine_by_position(items, ner, _mine, cache)
+
 
 def _localize(text: str, mentions: Sequence[Mention]) -> tuple[Callable[[Mention], str | None], list[Mention]]:
     """Rewrite ``mentions`` to sentence-relative offsets and map each to its sentence text.
@@ -653,6 +687,7 @@ def _localize(text: str, mentions: Sequence[Mention]) -> tuple[Callable[[Mention
                 break
     return (lambda mention: sentence_by_mention.get(id(mention))), localized
 
+
 def _entity_groups(mentions: Sequence[Mention]) -> list[Entity]:
     """Group mined mentions (both channels) by canonical type, first-occurrence ordered."""
     mentions_by_label: dict[str, list[str]] = {}
@@ -662,6 +697,7 @@ def _entity_groups(mentions: Sequence[Mention]) -> list[Entity]:
         if mention.text not in bucket:
             bucket.append(mention.text)
     return [Entity(label=label, mentions=values, description=None) for label, values in mentions_by_label.items() if values]
+
 
 def _qualifier_relations(objects: Sequence[Mention], qualifiers: Sequence[Mention], sentence_of: Callable[[Mention], str | None]) -> list[Relation]:
     """Qualifier mentions -> relations (head = qualified object, tail = qualifier mention).
@@ -687,6 +723,7 @@ def _qualifier_relations(objects: Sequence[Mention], qualifiers: Sequence[Mentio
             )
     return relations
 
+
 def _disease_context_relations(objects: Sequence[Mention], sentence_of: Callable[[Mention], str | None]) -> tuple[list[Relation], set[int]]:
     """Build patient-clause disease-context relations and return context-only object indexes.
 
@@ -706,6 +743,7 @@ def _disease_context_relations(objects: Sequence[Mention], sentence_of: Callable
         for index, context in sorted(clause.contexts.items())
     ]
     return relations, {*clause.context_only, *clause.ambiguous}
+
 
 def _normal_relations(row: Mapping[str, str], objects: Sequence[Mention]) -> list[Relation]:
     """The row's ordinary assertion relation(s), subject drug -> each object mention.
@@ -737,6 +775,7 @@ def _normal_relations(row: Mapping[str, str], objects: Sequence[Mention]) -> lis
         )
     return relations
 
+
 def build_example(row: Mapping[str, str], mentions: Sequence[Mention]) -> TrainingExample:
     """Turn one deduped candidate row + its mined mentions into one gliner2 ``TrainingExample``.
 
@@ -767,22 +806,20 @@ def build_example(row: Mapping[str, str], mentions: Sequence[Mention]) -> Traini
         entities=_entity_groups(mentions),
         classifications=[
             Classification(
-                task=_CLASSIFICATION_TASK,
-                labels=list(_CONTEXT_LABELS),
-                true_label=[context],
-                multi_label=False,
-                prompt=None,
-                label_descriptions=None,
+                task=_CLASSIFICATION_TASK, labels=list(_CONTEXT_LABELS), true_label=[context], multi_label=False, prompt=None, label_descriptions=None
             )
         ],
         relations=relations,
     )
 
+
 def build_examples(rows: Sequence[Mapping[str, str]], ner: DiseaseNER, cache: MentionCache | None) -> list[TrainingExample]:
     """Mine every deduped row and build its ``TrainingExample`` (one call per row's text)."""
     return [build_example(row, mentions) for row, mentions in zip(rows, mine_rows(rows, ner, cache), strict=True)]
 
+
 # --- bundle assembly -------------------------------------------------------------------
+
 
 def build_manifest(
     avro_path: Path,
@@ -822,6 +859,7 @@ def build_manifest(
         "inputs": sorted({ref.blake3 for ref in input_refs}),
     }
 
+
 def write_bundle(
     out_dir: Path,
     candidate_rows: Iterable[Mapping[str, str]],
@@ -855,11 +893,15 @@ def write_bundle(
     with paths[EXAMPLES_NDJSON_FILENAME].open("w", encoding="utf-8") as handle:
         handle.writelines(json.dumps(example.to_output(), ensure_ascii=False) + "\n" for example in examples)
     shutil.copyfile(gold_src, paths[GOLD_FILENAME])
-    manifest = build_manifest(paths[EXAMPLES_AVRO_FILENAME], paths[EXAMPLES_NDJSON_FILENAME], paths[GOLD_FILENAME], list(input_refs), rows=rows, gold=gold)
+    manifest = build_manifest(
+        paths[EXAMPLES_AVRO_FILENAME], paths[EXAMPLES_NDJSON_FILENAME], paths[GOLD_FILENAME], list(input_refs), rows=rows, gold=gold
+    )
     paths[MANIFEST_FILENAME].write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return paths
 
+
 # --- stage entry point ------------------------------------------------------------------
+
 
 def export(inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
     """Export the GLiNER2 training-data bundle (Transformer-shaped entry point).
@@ -918,11 +960,16 @@ def export(inputs: list[ArtifactRef], ctx: TaskContext) -> list[ArtifactRef]:
         rows_written = int(json.loads(paths[MANIFEST_FILENAME].read_text(encoding="utf-8"))["files"][EXAMPLES_NDJSON_FILENAME]["rows"])
         operation = OperationBlock(name=_OPERATION)
         manifest_ref = store.register(paths[MANIFEST_FILENAME], media_type=_JSON_MEDIA_TYPE, inputs=input_ids, operation=operation)
-        avro_ref = store.register(paths[EXAMPLES_AVRO_FILENAME], media_type=_AVRO_MEDIA_TYPE, rows=rows_written, inputs=input_ids, operation=operation)
-        ndjson_ref = store.register(paths[EXAMPLES_NDJSON_FILENAME], media_type=_NDJSON_MEDIA_TYPE, rows=rows_written, inputs=input_ids, operation=operation)
+        avro_ref = store.register(
+            paths[EXAMPLES_AVRO_FILENAME], media_type=_AVRO_MEDIA_TYPE, rows=rows_written, inputs=input_ids, operation=operation
+        )
+        ndjson_ref = store.register(
+            paths[EXAMPLES_NDJSON_FILENAME], media_type=_NDJSON_MEDIA_TYPE, rows=rows_written, inputs=input_ids, operation=operation
+        )
         gold_ref = store.register(paths[GOLD_FILENAME], media_type=_JSON_MEDIA_TYPE, inputs=input_ids, operation=operation)
         stats(logger, _OPERATION, out_dir=str(out_dir), examples=rows_written, manifest_blake3=manifest_ref.blake3)
     return [manifest_ref, avro_ref, ndjson_ref, gold_ref]
+
 
 __all__ = [
     "EXAMPLES_AVRO_FILENAME",

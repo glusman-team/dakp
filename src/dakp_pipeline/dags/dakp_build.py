@@ -497,6 +497,7 @@ def _build_ner_export_stage(extracts: ExtractOutputs, shape_tasks: AssertionOutp
 
         return export_ner_training_data(extracts.dailymed, extracts.faers, extracts.ema, ner_models, shape_tasks.contraindications)
 
+
 @dag(dag_id=DAG_ID, start_date=datetime(2026, 1, 1), schedule=None, catchup=False, tags=["dakp", "drug-approvals"], doc_md=_DAG_DOC_MD)
 def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies execute only under an Airflow runtime
     """Full DAKP build DAG: acquire -> extract (native Go) -> shape -> Tablassert handoff -> legacy TSV export.

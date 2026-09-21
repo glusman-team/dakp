@@ -153,7 +153,6 @@ class MentionDecision:
     context_text: str = ""
 
 
-
 # --- sentence filtering for Pass 2 (indication-section contraindications) ------------
 
 
@@ -352,9 +351,7 @@ def _classify_mentions(item: ContraWorkItem | tuple[str, str, str], mentions: li
         sentence_by_mention[id(local_mention)] = (sentence, source_start)
 
     clause = patient_clause_contexts(
-        localized,
-        lambda mention: sentence_by_mention[id(mention)][0],
-        group_of=lambda mention: sentence_by_mention[id(mention)][1],
+        localized, lambda mention: sentence_by_mention[id(mention)][0], group_of=lambda mention: sentence_by_mention[id(mention)][1]
     )
     for local_index, sentence in clause.ambiguous.items():
         # ``A and B``/``A or B`` in a patient clause is not representable by one scalar
