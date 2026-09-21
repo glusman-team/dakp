@@ -165,3 +165,66 @@ func TestServerFileAtomicWriteAndRemove(t *testing.T) {
 		t.Fatalf("removing a missing server.json must not error: %v", err)
 	}
 }
+
+func TestBatchDeletePurgesAndStopsServing(t *testing.T) {
+	storeDir := t.TempDir()
+	s, err := Open(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(s.Handler())
+	defer httpServer.Close()
+
+	keyA, keyB, keyMiss := hexKey('a'), hexKey('b'), hexKey('f')
+	put(t, httpServer.URL, map[string]json.RawMessage{
+		keyA: json.RawMessage(`[{"text":"asthma","start":0,"end":6}]`),
+		keyB: json.RawMessage(`[]`),
+	})
+
+	body, err := json.Marshal(batchDeleteRequest{Keys: []string{keyA, keyMiss}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(httpServer.URL+"/batch_delete", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("batch_delete status = %d", resp.StatusCode)
+	}
+	var out batchDeleteResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Deleted != 2 {
+		t.Fatalf("deleted = %d, want 2 (miss keys count as deleted too)", out.Deleted)
+	}
+
+	got := get(t, httpServer.URL, keyA, keyB)
+	if len(got.Hits) != 1 {
+		t.Fatalf("hits = %d, want 1 (deleted key must not be served)", len(got.Hits))
+	}
+	if _, ok := got.Hits[keyA]; ok {
+		t.Fatalf("deleted key %s resurrected", keyA)
+	}
+
+	// Deletes must persist across close/reopen, like puts.
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	reHttp := httptest.NewServer(reopened.Handler())
+	defer reHttp.Close()
+	reHits := get(t, reHttp.URL, keyA, keyB)
+	if _, ok := reHits.Hits[keyA]; ok {
+		t.Fatal("deleted key resurrected after reopen")
+	}
+	if len(reHits.Hits) != 1 {
+		t.Fatalf("hits after reopen = %d, want 1", len(reHits.Hits))
+	}
+}

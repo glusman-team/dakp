@@ -292,10 +292,18 @@ def mine_with_cache(work_items: Sequence[Any], ner: DiseaseNER, mine: MineFn, ca
     hits = cache.get_many(sorted(set(key_by_item.values())))
 
     usable: dict[tuple[str, str], list[Mention]] = {}
+    used_keys: set[str] = set()
     for set_id, doc_id, text in parts:
         cached = hits.get(key_by_item[(set_id, doc_id)])
         if cached is not None and _mentions_fit(text, cached):
             usable[(set_id, doc_id)] = cached
+            used_keys.add(key_by_item[(set_id, doc_id)])
+    # Purge-on-refusal: a hit whose offsets index a different text must not linger in the
+    # store, where every future run would re-serve it and re-refuse it (the stale counter
+    # that never shrank). Refused keys are re-mined and freshly re-put right below.
+    refused = sorted(set(hits) - used_keys)
+    if refused:
+        cache.delete_many(refused)
 
     representatives: dict[str, Any] = {}  # exact text -> one item carrying it
     for item, (set_id, doc_id, _text) in zip(work_items, parts, strict=True):

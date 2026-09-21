@@ -60,11 +60,17 @@ def test_mention_key_is_stable_64_hex() -> None:
     assert all(c in "0123456789abcdef" for c in key1)
 
 
-def test_mention_key_collapses_whitespace() -> None:
-    """Strip + internal whitespace runs folded to one space: variants share a key."""
+def test_mention_key_folds_whitespace_but_keys_raw_variants_apart() -> None:
+    """Whitespace folds into the normalized text, but the RAW length rides in the key.
+
+    Variants of one section fold to the same text yet index different strings, so equal-folded
+    entries must not share a key (that collision made every run refuse and re-mine). Two raws of
+    equal length are the remaining collision case — the fit check still guards those.
+    """
     base = mention_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "severe asthma")
-    assert mention_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "  severe   asthma\n") == base
-    assert mention_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "severe\tasthma") == base
+    assert mention_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "severe\tasthma") == base  # same raw length
+    assert mention_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "  severe   asthma\n") != base
+    assert mention_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "severe asthma ") != base
 
 
 def test_mention_key_is_case_and_punctuation_sensitive() -> None:
@@ -177,6 +183,10 @@ class _FakeNercacheHandler(BaseHTTPRequestHandler):
         elif self.path == "/batch_put":
             _FAKE_STORE.update(body["items"])
             self._respond({"ok": True})
+        elif self.path == "/batch_delete":
+            for key in body["keys"]:
+                _FAKE_STORE.pop(key, None)
+            self._respond({"deleted": len(body["keys"])})
         else:
             self.send_error(404)
 
@@ -212,6 +222,18 @@ def test_mention_cache_round_trip_via_live_server(fake_server: Path) -> None:
     assert hits == {key: [mention]}
     assert hits[key][0] == mention  # exact field-for-field equality
 
+
+def test_mention_cache_delete_many_purges(fake_server: Path) -> None:
+    """Purge-on-refusal wire path: deleted keys stop being served, misses are tolerated."""
+    cache = MentionCache(fake_server)
+    key = mention_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "severe asthma")
+    with cache:
+        cache.delete_many([])  # empty is a no-op, never a request
+        assert cache.get_many([key]) == {}
+        cache.put_many({key: [_mention()]})
+        cache.delete_many([key, "ff" * 32])
+        assert cache.get_many([key]) == {}
+    cache.close()
 
 def test_mention_cache_reuses_server_without_spawning(fake_server: Path) -> None:
     """The client must not spawn a second server when server.json points at a live one."""
