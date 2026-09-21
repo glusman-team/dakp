@@ -327,13 +327,13 @@ def _ref(path: Path) -> ArtifactRef:
 
 # --- FAERS '?' mangling restoration ---------------------------------------------
 
+
 def test_defaersifies_mangled_nonascii_placeholders(tmp_path: Path) -> None:
     d = tmp_path / "faers"
     d.mkdir()
     (d / "DEMO24Q3.txt").write_text("PRIMARYID$CASEID$OCCP_COD$REPORTER_COUNTRY$\n1001$5001$MD$US$\n")
     (d / "DRUG24Q3.txt").write_text(
-        "PRIMARYID$DRUG_SEQ$DRUGNAME$ROLE_COD$NDA_NUM$PROD_AI$\n"
-        "1001$1$PFIZER?BIONTECH COVID?19 VACCINE$PS$020777$Famtozinameran$\n"
+        "PRIMARYID$DRUG_SEQ$DRUGNAME$ROLE_COD$NDA_NUM$PROD_AI$\n1001$1$PFIZER?BIONTECH COVID?19 VACCINE$PS$020777$Famtozinameran$\n"
     )
     (d / "INDI24Q3.txt").write_text("PRIMARYID$INDI_DRUG_SEQ$INDI_PT$\n1001$1$exposure?during?pregnancy$\n")
     refs = [ArtifactRef(uri=p, blake3=hash_file(p), media_type=infer_media_type(p)) for p in sorted(d.glob("*.txt"))]
