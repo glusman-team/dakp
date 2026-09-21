@@ -368,6 +368,7 @@ class _FakeCache:
         self.store: dict[str, list[dict[str, Any]]] = {}
         self.get_calls = 0
         self.put_calls = 0
+        self.deleted: list[str] = []
 
     def get_many(self, keys: list[str]) -> dict[str, list[Mention]]:
         self.get_calls += 1
@@ -376,6 +377,11 @@ class _FakeCache:
     def put_many(self, items: dict[str, list[Mention]]) -> None:
         self.put_calls += 1
         self.store.update({key: [mention.to_dict() for mention in mentions] for key, mentions in items.items()})
+
+    def delete_many(self, keys: list[str]) -> None:
+        for key in keys:
+            self.deleted.append(key)
+            self.store.pop(key, None)
 
 
 def _production_ner(tmp_path: Path) -> DiseaseNER:
@@ -419,7 +425,7 @@ def test_mentions_fit_rejects_an_entry_mined_from_another_text() -> None:
 
 
 def test_mine_with_cache_reminds_when_a_cached_entry_does_not_fit_the_text(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A stale entry is a MISS: the text is re-mined and the entry overwritten.
+    """A stale entry is a MISS: the entry is purged, the text re-mined, the value re-stored.
 
     Regression guard for run 13 — a cached entry mined from a whitespace variant of the section
     served offsets past the end of the requesting text (589..605 into 568 chars), which the
@@ -440,23 +446,29 @@ def test_mine_with_cache_reminds_when_a_cached_entry_does_not_fit_the_text(monke
     assert calls == ["asthma"]  # re-mined instead of served
     assert second == first  # and the correct mentions are back
     assert cache.store[key] != stale  # the stale entry was overwritten
+    assert cache.deleted == [key]  # and the refused entry was purged before the re-put
 
 
-def test_mine_with_cache_separates_texts_that_share_a_folded_cache_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Whitespace variants share one cache key but need their own offsets, so each is mined.
+def test_mine_with_cache_keys_whitespace_variants_separately(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Whitespace variants of one section carry offsets into different strings, so they key apart.
 
-    Keying folds whitespace while offsets index the raw text; deduplicating representatives by key
-    would hand one variant the other's mentions.
+    Keying folds whitespace, which made variants collide: each run re-served one variant's entry
+    to the other, refused it on the mention contract, and re-mined — the stale counter that never
+    shrank. The raw-text length in the key disambiguates variants, so both variants cache their
+    own offsets and a second run is all hits.
     """
     ner = _production_ner(tmp_path)
     calls = _counting_extract(ner, monkeypatch)
     cache = _FakeCache()
     items = [("S1", "D1", "asthma  in adults"), ("S2", "D2", "asthma in adults")]
-    out = mine_with_cache(items, ner, _sequential_mine(ner), cache)  # type: ignore[arg-type]
+    mine_with_cache(items, ner, _sequential_mine(ner), cache)  # type: ignore[arg-type]
     assert sorted(calls) == ["asthma  in adults", "asthma in adults"]
-    assert [mention.text for mention in out[("S1", "D1")]] == ["asthma  in adults"]
-    assert [mention.text for mention in out[("S2", "D2")]] == ["asthma in adults"]
-    assert len(cache.store) == 1  # one folded key: last write wins, _mentions_fit re-checks it
+    assert len(cache.store) == 2  # one key per raw variant: no collision, no see-saw
+
+    calls.clear()
+    mine_with_cache(items, ner, _sequential_mine(ner), cache)  # type: ignore[arg-type]
+    assert calls == []  # both variants served from their own entries
+    assert cache.deleted == []  # nothing refused, nothing purged
 
 
 def test_mine_with_cache_none_cache_passes_through() -> None:

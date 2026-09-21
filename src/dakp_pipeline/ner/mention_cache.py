@@ -62,10 +62,14 @@ def mention_key(model_id: str, model_b3: str, config_fingerprint: str, text: str
     """The 64-char hex BLAKE3 cache key for one ``(model, config, text)`` triple.
 
     ``model_b3`` may be given with or without the ``b3:`` prefix (normalized away). The
-    keyed string is ``"<model_id>|<model_b3>|<config_fingerprint>|<normalized text>"`` —
-    see :func:`normalize_key_text` for the text normalization.
+    keyed string is ``"<model_id>|<model_b3>|<config_fingerprint>|<normalized text>|<len>"`` —
+    see :func:`normalize_key_text` for the text normalization. The trailing RAW-text length
+    disambiguates whitespace variants of one section, which fold to the same normalized text
+    but carry offsets into different strings (the fit-refusal see-saw that kept the stale
+    counter nonzero on every run). Keys written before the ``|<len>`` suffix become orphans;
+    they are inert (never requested again) and the refused-entry purge keeps fresh keys honest.
     """
-    canonical = f"{model_id}|{digest_dirname(model_b3)}|{config_fingerprint}|{normalize_key_text(text)}"
+    canonical = f"{model_id}|{digest_dirname(model_b3)}|{config_fingerprint}|{normalize_key_text(text)}|{len(text)}"
     return digest_dirname(hash_bytes(canonical.encode("utf-8")))
 
 
@@ -254,6 +258,12 @@ class MentionCache:
             return
         payload = {key: [mention.to_dict() for mention in mentions] for key, mentions in items.items()}
         self._post("/batch_put", {"items": payload})
+
+    def delete_many(self, keys: list[str]) -> None:
+        """Purge ``keys`` from the store (purge-on-refusal support); no-op when unavailable."""
+        if not keys:
+            return
+        self._post("/batch_delete", {"keys": list(keys)})
 
     def _stop_owned(self) -> None:
         """SIGTERM the server process, but only when THIS instance started it."""
