@@ -5,8 +5,9 @@ constants, the 17-task graph, the visual TaskGroups (with unprefixed/stable task
 DailyMed/FAERS/Drugs@FDA ``extract_*`` tasks are native Go SDK stubs routed to the ``golang``
 queue (the EMA parse is a plain Python task beside them), that
 acquisition/extraction resource pools let those tasks run concurrently, that the two DailyMed GLiNER-mining shape tasks serialize on the 1-slot ``ner_mining`` pool,
-that FAERS observed-use shaping bypasses NER, and that the MEDliNER
-export task branches off the DailyMed + FAERS extracts as a default-pool leaf.
+that FAERS observed-use shaping bypasses NER, and that the GLiNER2 NER-export task runs on
+the ``ner_mining`` pool AFTER the shape stage (warm mention cache), consuming the DailyMed +
+FAERS + EMA extracts.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ _EXPECTED_TASK_IDS = {
     "run_tablassert",
     "export_legacy_tsv",
     "publish_release_artifacts",
-    "export_medliner_training_data",
+    "export_ner_training_data",
 }
 
 _GO_STUB_IDS = {"extract_dailymed", "extract_faers", "extract_drugsfda"}
@@ -42,7 +43,7 @@ _EXPECTED_GROUP_MEMBERS = {
     "shape": {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"},
     "tablassert": {"generate_tablassert_configs", "run_tablassert"},
     "export": {"export_legacy_tsv", "publish_release_artifacts"},
-    "medliner": {"export_medliner_training_data"},
+    "ner-export": {"export_ner_training_data"},
 }
 
 
@@ -148,13 +149,21 @@ def test_dag_task_graph(dakp_build) -> None:
     assert upstream("publish_release_artifacts") == {"run_tablassert", "export_legacy_tsv"}
     assert downstream("publish_release_artifacts") == set()
 
-    # The MEDliNER export branches off the DailyMed + FAERS extracts ONLY (no shape-stage
-    # dependency) and is a leaf: nothing downstream waits on the bundle.
-    assert upstream("export_medliner_training_data") == {"extract_dailymed", "extract_faers"}
-    assert downstream("export_medliner_training_data") == set()
+    # The NER export consumes the DailyMed + FAERS + EMA extracts, orders after model
+    # acquisition (GLiNER weights cached) and after the shape stage (whose mining warms the
+    # mention cache the export's own GLiNER inference then hits), and is a leaf: nothing
+    # downstream waits on the bundle.
+    assert upstream("export_ner_training_data") == {
+        "extract_dailymed",
+        "extract_faers",
+        "extract_ema",
+        "acquire_ner_models",
+        "shape_contraindication_tables",
+    }
+    assert downstream("export_ner_training_data") == set()
 
 
-def test_medliner_export_task_uses_the_default_pool(dakp_build) -> None:
-    """The export reads two interim tables and writes JSON files — no scarce resource to bound,
-    so it stays on the default pool (never the download/extract/NER pools)."""
-    assert dakp_build.dag_obj.get_task("export_medliner_training_data").pool == "default_pool"
+def test_ner_export_task_uses_the_ner_pool(dakp_build) -> None:
+    """The export runs GLiNER inference, so it shares the 1-slot ``ner_mining`` pool with the
+    other GLiNER consumers instead of competing for the GPUs unbounded."""
+    assert dakp_build.dag_obj.get_task("export_ner_training_data").pool == "ner_mining"

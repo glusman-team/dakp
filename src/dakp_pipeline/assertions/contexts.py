@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
 from dakp_pipeline.logging_setup import logger, stats
-from dakp_pipeline.ner.dictionary import OBJECT_TYPES, canonical_type
+from dakp_pipeline.ner.dictionary import OBJECT_TYPES, TYPE_DISEASE, canonical_type, normalize_text
 from dakp_pipeline.ner.lexical import Mention
 
 ASSERTION_CONTEXTS = ("indication", "contraindication", "prevention", "observed_prevention")
@@ -177,4 +178,118 @@ def attach_qualifiers_with_scores(
     return _attach_qualifiers_with_scores(objects, qualifiers, sentence_of)
 
 
-__all__ = ["ASSERTION_CONTEXTS", "PREVENTION_CUE", "assertion_context", "attach_qualifiers", "attach_qualifiers_with_scores", "context_predicate"]
+# --- explicit patient-clause disease context ---------------------------------------
+
+PATIENT_WITH_MARKER = re.compile(
+    r"\b(?:in|among|for)\s+(?:patients?|people|individuals|subjects|persons|those)\s+"
+    r"(?:with|having|who\s+(?:have|has))\b",
+    re.IGNORECASE,
+)
+CONTEXT_INTRO = re.compile(
+    r"\b(?:for\s+(?:the\s+)?(?:treatment|management)\s+of|"
+    r"(?:when|if)\s+(?:used|given|administered)\s+(?:for|to\s+treat)|"
+    r"used\s+in\s+the\s+treatment\s+of)\b",
+    re.IGNORECASE,
+)
+MEDICATION_CONTEXT = re.compile(
+    r"\b(?:receiving|taking|administered\s+with|co[- ]?administered|concomitant|"
+    r"concurrent\s+(?:use|therapy)|drug[- ]drug\s+interaction)\b",
+    re.IGNORECASE,
+)
+
+@dataclass(frozen=True)
+class PatientClause:
+    """Result of the explicit patient-clause scan over one group of object mentions.
+
+    ``contexts`` maps an object-mention index to its context disease surface (the explicit
+    ``for treatment of A in patients with B`` template). ``context_only`` maps a mention
+    index to ``(rejection reason, evidence sentence)`` for a mention consumed as context —
+    it described the treated condition, so it is withheld as an object. ``ambiguous`` maps
+    object-mention indices to their sentence for the ``A and B`` conjunction case, where a
+    scalar qualifier cannot preserve the AND/OR requirement and every member of the
+    sentence is dropped rather than falsely asserting either alone.
+    """
+
+    contexts: dict[int, str]
+    context_only: dict[int, tuple[str, str]]
+    ambiguous: dict[int, str]
+
+def patient_clause_contexts(
+    objects: Sequence[Mention],
+    sentence_of: Callable[[Mention], str | None],
+    group_of: Callable[[Mention], object] | None = None,
+) -> PatientClause:
+    """Assign explicit disease context to objects via the patient-clause template.
+
+    ``objects`` are object-channel mentions whose offsets are relative to the string
+    returned by ``sentence_of`` (the same sentence-local contract as
+    :func:`attach_qualifiers_with_scores`); a ``None`` sentence skips the mention — it
+    cannot join per-sentence grouping. Mentions group on ``group_of(mention)`` when given
+    (the shaper passes the mapped source-sentence origin so repeated identical sentences
+    across one mined text stay separate groups) and on the sentence text otherwise.
+    Guards, in order: an explicit patient marker (:data:`PATIENT_WITH_MARKER`), exactly one
+    before-marker candidate and one after-marker object, an intro phrase
+    (:data:`CONTEXT_INTRO`) vouching for the context (never starting inside it), a
+    non-blank normalized context, the disease-range rule (Biolink's
+    ``disease_context_qualifier`` is disease-ranged), and the companion-medication guard
+    (:data:`MEDICATION_CONTEXT`). Shared verbatim by the contraindication shaper and the
+    ``ner_export`` training-data rows.
+    """
+    groups: dict[object, tuple[str, list[tuple[int, int, int]]]] = {}
+    for index, mention in enumerate(objects):
+        sentence = sentence_of(mention)
+        if sentence is None:
+            continue
+        key = group_of(mention) if group_of is not None else sentence
+        members = groups.get(key)
+        if members is None:
+            members = (sentence, [])
+            groups[key] = members
+        members[1].append((index, mention.start, mention.end))
+    contexts: dict[int, str] = {}
+    context_only: dict[int, tuple[str, str]] = {}
+    ambiguous: dict[int, str] = {}
+    for sentence, members in groups.values():
+        members.sort(key=lambda member: (member[1], member[2], member[0]))
+        marker = PATIENT_WITH_MARKER.search(sentence)
+        if marker is None:
+            continue
+        before = [member for member in members if member[2] <= marker.start()]
+        after = [member for member in members if member[1] >= marker.end()]
+        if len(after) > 1:
+            for index, _start, _end in members:
+                ambiguous[index] = sentence
+            continue
+        if len(before) != 1 or len(after) != 1:
+            continue
+        context_index, context_start, context_end = before[0]
+        object_index = after[0][0]
+        intro = CONTEXT_INTRO.search(sentence, 0, marker.start())
+        if intro is None or intro.end() > context_start:
+            continue
+        context_text = normalize_text(sentence[context_start:context_end])
+        if not context_text:
+            continue
+        if canonical_type(str(objects[context_index].type)) != TYPE_DISEASE:
+            context_only[context_index] = ("context_not_disease", sentence)
+            continue
+        if MEDICATION_CONTEXT.search(sentence):
+            context_only[context_index] = ("context_only_medication", sentence)
+            continue
+        context_only[context_index] = ("context_only", sentence)
+        contexts[object_index] = context_text
+    return PatientClause(contexts=contexts, context_only=context_only, ambiguous=ambiguous)
+
+__all__ = [
+    "ASSERTION_CONTEXTS",
+    "CONTEXT_INTRO",
+    "MEDICATION_CONTEXT",
+    "PATIENT_WITH_MARKER",
+    "PREVENTION_CUE",
+    "PatientClause",
+    "assertion_context",
+    "attach_qualifiers",
+    "attach_qualifiers_with_scores",
+    "context_predicate",
+    "patient_clause_contexts",
+]

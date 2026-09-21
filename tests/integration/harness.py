@@ -7,8 +7,8 @@ outside the coverage ``source`` (``src/``), and adds no run-config concepts of i
 explicit ``params`` it forwards to :func:`dakp_pipeline.runtime.build_context`.
 
 WHY a harness and not per-test wiring: the four end-to-end integration tests (semantic-equivalence,
-offline-pipeline, prod-smoke, KGX) all run the identical acquire -> extract -> MEDliNER export ->
-shape -> Tablassert -> legacy TSV -> release publish sequence. Centralizing it in one place means
+offline-pipeline, prod-smoke, KGX) all run the identical acquire -> extract -> shape -> NER
+export -> Tablassert -> legacy TSV -> release publish sequence. Centralizing it in one place means
 a stage signature
 change touches one call site, the byte-determinism re-run uses the exact same path as the first
 run, and monkeypatch boundaries stay identical across tests.
@@ -34,16 +34,16 @@ from typing import Any
 import pytest
 
 from dakp_pipeline import legacy_tsv as _legacy_tsv
-from dakp_pipeline import medliner_export as _medliner_export
+from dakp_pipeline import ner_export as _ner_export
 from dakp_pipeline import release as _release
 from dakp_pipeline import tablassert as _tablassert
 from dakp_pipeline.assertions import approved_treats, contraindications, observed_uses
-from dakp_pipeline.extract import drugsfda_products, faers_ascii, spl_xml
+from dakp_pipeline.extract import drugsfda_products, ema_registry, faers_ascii, spl_xml
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import configure_logging
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.runtime import build_context
-from dakp_pipeline.sources import dailymed, drugsfda, faers
+from dakp_pipeline.sources import dailymed, drugsfda, ema, faers
 
 
 @dataclass
@@ -64,9 +64,9 @@ class StageResult:
     #: The registered assertion-table ArtifactRefs (approved-treats + observed-uses +
     #: contraindications), in production order.
     assertion_refs: list[ArtifactRef] = field(default_factory=list)
-    #: The three MEDliNER export-bundle refs ([manifest, candidates, gold]); empty if the
-    #: export stage did not run.
-    medliner_export_refs: list[ArtifactRef] = field(default_factory=list)
+    #: The four NER export-bundle refs ([manifest, examples.avro, examples.ndjson, gold]);
+    #: empty if the export stage did not run.
+    ner_export_refs: list[ArtifactRef] = field(default_factory=list)
     #: The legacy-named release copies (nodes/edges ndjson + tsv, graph yaml); empty on a
     #: deferred Tablassert handoff.
     release_refs: list[ArtifactRef] = field(default_factory=list)
@@ -88,6 +88,7 @@ def install_fixture_fetchers(monkeypatch: pytest.MonkeyPatch) -> None:
     the three Drugs@FDA tables, and every FAERS ``.txt`` family under ``fixture_root/faers``.
     """
     monkeypatch.setattr(dailymed, "fetch", lambda ctx: [ctx.fixture("dailymed/dailymed_spl.xml.gz")])
+    monkeypatch.setattr(ema, "fetch", lambda ctx: [ctx.fixture("ema/medicines-output-medicines-report_en.xlsx")])
     monkeypatch.setattr(
         drugsfda,
         "fetch",
@@ -108,10 +109,10 @@ def install_fixture_fetchers(monkeypatch: pytest.MonkeyPatch) -> None:
 def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: Mapping[str, Any] | None = None) -> StageResult:
     """Wire the DAKP stages exactly as the Airflow DAG does, end-to-end.
 
-    Stages: acquire -> extract -> MEDliNER export -> shape assertions -> generate Tablassert
+    Stages: acquire -> extract -> shape assertions -> NER export -> generate Tablassert
     configs -> Tablassert handoff -> legacy TSV export -> release publish (legacy names).
-    The same sequence the DAG drives (the MEDliNER export branches off the
-    DailyMed + FAERS extracts as a leaf hand-off nothing downstream waits on); the only
+    The same sequence the DAG drives (the NER export runs AFTER the shape stage, which warms
+    the mention cache its GLiNER mining then hits); the only
     difference is this runs Airflow-free in-process so the tests exercise the real stage
     functions (and the pure-Python reference extractors) with full monkeypatch control.
     ``params`` carries the explicit run behavior (``run_tablassert``, ``quarter_limit``,
@@ -128,23 +129,25 @@ def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: 
     dm_raw = dailymed.fetch(ctx)
     faers_raw = faers.fetch(ctx)
     drugsfda_raw = drugsfda.fetch(ctx)
+    ema_raw = ema.fetch(ctx)
 
     # 2. Extract raw -> interim parquet tables (pure-Python reference extractors).
     dm_ext = spl_xml.extract(dm_raw, ctx)
     faers_ext = faers_ascii.extract(faers_raw, ctx)
     drugsfda_ext = drugsfda_products.extract(drugsfda_raw, ctx)
-
-    # 2b. MEDliNER training-data export: a leaf hand-off bundle consuming ONLY the DailyMed +
-    # FAERS extracts (the DAG's `medliner` group runs it in parallel with the shape stage, and
-    # nothing downstream is gated on it).
-    medliner_refs = _medliner_export.export([*dm_ext, *faers_ext], ctx)
+    ema_ext = ema_registry.extract(ema_raw, ctx)
 
     # 3. Shape assertion tables (uncompressed TSV, Tablassert-facing). Observed-uses consumes the
     # produced approved-treats table for its approval-status cross-reference (as the DAG wires it).
-    approved = approved_treats.transform([*dm_ext, *drugsfda_ext, *faers_ext], ctx)
+    approved = approved_treats.transform([*dm_ext, *drugsfda_ext, *faers_ext, *ema_ext], ctx)
     uses = observed_uses.transform([*faers_ext, *dm_ext, *approved], ctx)
     contra = contraindications.transform([*dm_ext], ctx)
     assertion_refs = [*approved, *uses, *contra]
+
+    # 3b. GLiNER2 training-data export: runs AFTER shaping (which warms the mention cache the
+    # export's own mining then hits), consuming the DailyMed + FAERS + EMA interim extracts —
+    # the DAG wires exactly these inputs plus the shape dependency.
+    ner_refs = _ner_export.export([*dm_ext, *faers_ext, *ema_ext], ctx)
 
     # 4. Generate Tablassert Graph + per-table configs.
     config_refs = _tablassert.generate(assertion_refs, ctx)
@@ -160,7 +163,7 @@ def run_stages(*, workdir: Path | str, fixture_root: Path | str | None, params: 
     release_refs = _release.publish(kgx_refs, legacy_refs, ctx)
 
     tables = {ref.uri.stem: TableOutput(ref.uri.stem, ref.uri, ref.rows or 0) for ref in assertion_refs}
-    return StageResult(workdir=wd, tables=tables, assertion_refs=assertion_refs, medliner_export_refs=medliner_refs, release_refs=release_refs)
+    return StageResult(workdir=wd, tables=tables, assertion_refs=assertion_refs, ner_export_refs=ner_refs, release_refs=release_refs)
 
 
 __all__ = ["StageResult", "TableOutput", "install_fixture_fetchers", "run_stages"]

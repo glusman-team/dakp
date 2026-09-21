@@ -74,7 +74,9 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, object_mentions, row_for
-from dakp_pipeline.assertions.contexts import attach_qualifiers_with_scores
+from dakp_pipeline.assertions.contexts import MEDICATION_CONTEXT as _MEDICATION_CONTEXT
+from dakp_pipeline.assertions.contexts import PATIENT_WITH_MARKER as _PATIENT_WITH_MARKER
+from dakp_pipeline.assertions.contexts import attach_qualifiers_with_scores, patient_clause_contexts
 from dakp_pipeline.assertions.evidence import (
     build_fda_approval_index,
     dailymed_document_url,
@@ -93,7 +95,7 @@ from dakp_pipeline.assertions.ner_dispatch import _shard_by_text_length as _shar
 from dakp_pipeline.assertions.ner_dispatch import _spawn_safe_main as _spawn_safe_main
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
-from dakp_pipeline.ner.dictionary import TYPE_DISEASE, canonical_type, normalize_text
+from dakp_pipeline.ner.dictionary import normalize_text
 from dakp_pipeline.ner.mention_cache import MentionCache
 from dakp_pipeline.ner.ner import DiseaseNER, Mention, extract_contraindication_diseases
 
@@ -150,23 +152,6 @@ class MentionDecision:
     evidence_text: str
     context_text: str = ""
 
-
-_PATIENT_WITH_MARKER = re.compile(
-    r"\b(?:in|among|for)\s+(?:patients?|people|individuals|subjects|persons|those)\s+"
-    r"(?:with|having|who\s+(?:have|has))\b",
-    re.IGNORECASE,
-)
-_CONTEXT_INTRO = re.compile(
-    r"\b(?:for\s+(?:the\s+)?(?:treatment|management)\s+of|"
-    r"(?:when|if)\s+(?:used|given|administered)\s+(?:for|to\s+treat)|"
-    r"used\s+in\s+the\s+treatment\s+of)\b",
-    re.IGNORECASE,
-)
-_MEDICATION_CONTEXT = re.compile(
-    r"\b(?:receiving|taking|administered\s+with|co[- ]?administered|concomitant|"
-    r"concurrent\s+(?:use|therapy)|drug[- ]drug\s+interaction)\b",
-    re.IGNORECASE,
-)
 
 
 # --- sentence filtering for Pass 2 (indication-section contraindications) ------------
@@ -353,55 +338,36 @@ def _classify_mentions(item: ContraWorkItem | tuple[str, str, str], mentions: li
     if not isinstance(item, ContraWorkItem) or not mentions:
         return decisions
 
-    local: list[tuple[int, str, int, int, int]] = []
+    localized: list[Mention] = []
+    origin: list[int] = []
+    sentence_by_mention: dict[int, tuple[str, int]] = {}
     for index, mention in enumerate(mentions):
         mapped = _mention_local_span(item, mention)
-        if mapped is not None:
-            sentence, start, end, source_start = mapped
-            local.append((index, sentence, start, end, source_start))
+        if mapped is None:
+            continue
+        sentence, start, end, source_start = mapped
+        local_mention = replace(mention, start=start, end=end, text=sentence[start:end])
+        origin.append(index)
+        localized.append(local_mention)
+        sentence_by_mention[id(local_mention)] = (sentence, source_start)
 
-    by_sentence: dict[tuple[int, str], list[tuple[int, int, int]]] = {}
-    for index, sentence, start, end, source_start in local:
-        by_sentence.setdefault((source_start, sentence), []).append((index, start, end))
-
-    for (_source_start, sentence), members in by_sentence.items():
-        members.sort(key=lambda value: (value[1], value[2], value[0]))
-        marker = _PATIENT_WITH_MARKER.search(sentence)
-        if marker is None:
-            continue
-        before = [member for member in members if member[2] <= marker.start()]
-        after = [member for member in members if member[1] >= marker.end()]
-        if len(after) > 1:
-            # ``A and B``/``A or B`` in a patient clause is not representable by one scalar
-            # qualifier without changing the logic. Drop these candidate objects rather than
-            # falsely asserting either disease alone.
-            for index, _start, _end in members:
-                decisions[index] = MentionDecision(False, "ambiguous_patient_conjunction", sentence)
-            continue
-        if len(before) != 1 or len(after) != 1:
-            continue
-        context_index, context_start, context_end = before[0]
-        object_index, _object_start, _object_end = after[0]
-        intro = _CONTEXT_INTRO.search(sentence, 0, marker.start())
-        if intro is None or intro.end() > context_start:
-            continue
-        # A companion medication may occur in the same condition clause, but it is never a
-        # disease_context_qualifier. Keep the base disease edge and its evidence sentence.
-        context_text = normalize_text(sentence[context_start:context_end])
-        if not context_text:
-            continue
-        if canonical_type(str(mentions[context_index].type)) != TYPE_DISEASE:
-            # Biolink's disease_context_qualifier is disease-ranged. Keep the explicit object
-            # edge, but do not put a phenotype/symptom into this qualifier slot.
-            decisions[context_index] = MentionDecision(False, "context_not_disease", sentence)
-            continue
-        if _MEDICATION_CONTEXT.search(sentence):
-            decisions[context_index] = MentionDecision(False, "context_only_medication", sentence)
-            continue
-        decisions[context_index] = MentionDecision(False, "context_only", sentence)
-        if decisions[object_index].accepted:
-            current = decisions[object_index]
-            decisions[object_index] = MentionDecision(True, current.trigger, current.evidence_text, context_text)
+    clause = patient_clause_contexts(
+        localized,
+        lambda mention: sentence_by_mention[id(mention)][0],
+        group_of=lambda mention: sentence_by_mention[id(mention)][1],
+    )
+    for local_index, sentence in clause.ambiguous.items():
+        # ``A and B``/``A or B`` in a patient clause is not representable by one scalar
+        # qualifier without changing the logic. Drop these candidate objects rather than
+        # falsely asserting either disease alone.
+        decisions[origin[local_index]] = MentionDecision(False, "ambiguous_patient_conjunction", sentence)
+    for local_index, (reason, sentence) in clause.context_only.items():
+        decisions[origin[local_index]] = MentionDecision(False, reason, sentence)
+    for local_index, context_text in clause.contexts.items():
+        index = origin[local_index]
+        if decisions[index].accepted:
+            current = decisions[index]
+            decisions[index] = MentionDecision(True, current.trigger, current.evidence_text, context_text)
     return decisions
 
 

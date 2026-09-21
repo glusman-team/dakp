@@ -80,6 +80,8 @@ def _downloaded_payloads() -> dict[str, bytes]:
                 "Submissions.tsv": _read_fixture("drugsfda/drugsfda_submissions.tsv"),
             }
         ),
+        # EMA: the fixed-name Medicines report xlsx (read verbatim; it is not a ZIP).
+        "ema": _read_fixture("ema/medicines-output-medicines-report_en.xlsx"),
     }
 
 
@@ -112,6 +114,7 @@ def _install_fake_http(monkeypatch: pytest.MonkeyPatch, requested: list[str]) ->
         ("faers_ascii_2024q2.zip", payloads["faers_24q2"]),
         ("FPD-QDE-FAERS.html", _FAERS_INDEX_HTML.encode("utf-8")),
         ("fda.gov/media/89850/download", payloads["drugsfda"]),
+        ("medicines-output-medicines-report_en.xlsx", payloads["ema"]),
     ]
 
     def fake_urlopen(url: object, timeout: float | None = None, **kwargs: object) -> _FakeHTTPResponse:
