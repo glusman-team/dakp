@@ -122,7 +122,7 @@ dependencies = [
     # the app without it, and logging is a silent no-op without `[log]` (loguru), so a build would
     # emit no progress or warning logs at all. Both are load-bearing for `run_tablassert`, hence
     # explicit. `[qc]` still backs the `--qc` audit.
-    "tablassert[cli,log,qc]>=19.0.0,<20",
+    "tablassert[cli,log,qc]>=19.2.0,<20",
     # torch is transitive (sentence-transformers via tablassert[qc]; gliner2 needs it too but
     # only declares it under the `[local]`/`[train]` extras we do not use) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host
