@@ -874,7 +874,7 @@ wheels = [
 
 [[package]]
 name = "dakp-pipeline"
-version = "1.12.4"
+version = "1.12.5"
 source = { editable = "." }
 dependencies = [
     { name = "apache-airflow" },
