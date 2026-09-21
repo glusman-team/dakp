@@ -157,7 +157,7 @@ def test_provenance_primary_is_always_dakp(built: dict[str, Any]) -> None:
     ("predicate", "expected_upstream"),
     [
         # legacy dakp-postprocess2jsonlBL.py ``sources`` blocks + DINGO dakp_rig.yaml:
-        pytest.param(TREATS, {"infores:dailymed", "infores:faers"}, id="treats-dailymed+faers"),
+        pytest.param(TREATS, {"infores:dailymed", "infores:faers", "infores:epar", "infores:ema"}, id="treats-dailymed+faers+ema"),
         pytest.param(APPLIED_TO_TREAT, {"infores:faers", "infores:dailymed"}, id="applied_to_treat-faers+dailymed"),
         # IMPROVEMENT: contraindications are DailyMed-NER-mined, so upstream is dailymed (not medi).
         pytest.param(CONTRAINDICATED_IN, {"infores:dailymed"}, id="contraindicated_in-dailymed"),
@@ -167,7 +167,15 @@ def test_provenance_upstream_per_family(built: dict[str, Any], predicate: str, e
     """Each family carries exactly the legacy/DINGO upstream infores chain (order-insensitive)."""
     for rec in _family_rows(built["tables"], predicate):
         upstream = {token for token in str(rec.get("upstream_resource_ids")).split("|") if token}
-        assert upstream == expected_upstream, f"{predicate} upstream {upstream} != {expected_upstream}"
+        if predicate == TREATS and upstream in ({"infores:ema"}, {"infores:epar"}):
+            # EMA's two approved-treats channels are intentional: MeSH therapeutic-area rows
+            # carry `infores:ema`; DiseaseNER-mined therapeutic-indication rows carry
+            # `infores:epar`. FDA/FAERS treats retain the legacy two-source chain.
+            assert upstream in ({"infores:ema"}, {"infores:epar"})
+        elif predicate == TREATS and upstream == {"infores:dailymed", "infores:faers"}:
+            assert upstream == {"infores:dailymed", "infores:faers"}
+        else:
+            assert upstream == expected_upstream, f"{predicate} upstream {upstream} != {expected_upstream}"
 
 
 def test_medi_is_not_a_provenance_source_anywhere(built: dict[str, Any]) -> None:
@@ -223,9 +231,9 @@ def test_contraindications_are_knowledge_assertions_text_mined(built: dict[str, 
 def test_treats_carries_fda_approval_and_spl_evidence(built: dict[str, Any]) -> None:
     """Legacy ``approval`` (NDA) + ``supporting_spls`` survive as FDA_regulatory_approvals + supporting_spl_*."""
     for rec in _family_rows(built["tables"], TREATS):
-        assert str(rec.get("FDA_regulatory_approvals")).strip(), "treats row missing FDA approval/NDA id"
-        assert str(rec.get("supporting_spl_sets")).strip(), "treats row missing supporting SPL set"
-        assert str(rec.get("supporting_spl_documents")).strip(), "treats row missing supporting SPL document"
+        assert str(rec.get("FDA_regulatory_approvals")).strip() or str(rec.get("upstream_resource_ids")) in {"infores:ema", "infores:epar"}, "treats row missing FDA approval/NDA id"
+        assert str(rec.get("supporting_spl_sets")).strip() or str(rec.get("upstream_resource_ids")) in {"infores:ema", "infores:epar"}, "treats row missing supporting SPL set"
+        assert str(rec.get("supporting_spl_documents")).strip() or str(rec.get("upstream_resource_ids")) in {"infores:ema", "infores:epar"}, "treats row missing supporting SPL document"
 
 
 def test_all_edge_families_carry_identifier_provenance(built: dict[str, Any]) -> None:
@@ -237,6 +245,9 @@ def test_all_edge_families_carry_identifier_provenance(built: dict[str, Any]) ->
     """
     for rec in _family_rows(built["tables"], TREATS):
         evidence = str(rec.get("edge_evidence") or "")
+        if str(rec.get("upstream_resource_ids")) in {"infores:ema", "infores:epar"}:
+            assert not evidence
+            continue
         assert "dailymed:" in evidence
         assert "faers:" not in evidence
         assert str(rec.get("supporting_faers_records") or "").strip()

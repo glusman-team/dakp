@@ -6,8 +6,8 @@ bundle workers** (``go/cmd/dakp-bundle``): the DailyMed/FAERS/Drugs@FDA ``extrac
 ``@task.stub(queue="golang")`` declarations whose Go implementations the ExecutableCoordinator
 forks per task instance; the EMA ``extract_ema`` task is a plain Python ``@task`` (polars parses
 the small xlsx in-process). Every other stage (acquisition, assertion shaping, Tablassert handoff,
-legacy TSV export, release publishing, MEDliNER export) is a real Python TaskFlow task reusing the
-existing stage modules.
+legacy TSV export, release publishing, GLiNER2 NER export) is a real Python TaskFlow task
+reusing the existing stage modules.
 
 Tasks pass ``list[ArtifactRef]`` manifests over XCom (serialized to JSON dicts via
 :mod:`dakp_pipeline.io.xcom` so the native Go workers read/write the same manifests); heavy bytes
@@ -66,9 +66,11 @@ The DAG is organized into six visual TaskGroups while preserving the historical 
 5. **export** — retrofit the KGX pair into the legacy DAKP TSV schema and publish the final
    ndjson/tsv pair plus the Tablassert RIG under the legacy `drug_approvals_kg_*_v<version>`
    names (skipped when the handoff was deferred — no fullmap means no KGX to convert).
-6. **medliner** — export the MEDliNER training-data bundle from the DailyMed + FAERS extracts;
-   a leaf hand-off artifact (no shape-stage dependency, default pool; nothing downstream waits
-   on it).
+6. **ner-export** — export the GLiNER2 training-data bundle (RelMedNER `TrainingExample`
+   Avro records + their gliner2 NDJSON projection) from the DailyMed + FAERS + EMA extracts.
+   Scheduled AFTER the shape stage so the `dakp-nercache` store warmed by assertion mining
+   serves the export's own GLiNER inference mostly from cache; runs on the `ner_mining`
+   pool like the other GLiNER consumers.
 
 The `dakp_extract` pool has 4 slots; each extract consumes the default 1 slot, so DailyMed, FAERS,
 and Drugs@FDA all extract concurrently. (The streaming FAERS rewrite — plans/fix-faers-memory.md —
@@ -81,7 +83,7 @@ _EXTRACT_DOC_MD = """Native Go SDK bundle extraction; heavy payloads stay in the
 _SHAPE_DOC_MD = """Shape interim artifacts into DAKP assertion TSVs without moving table bytes through XCom."""
 _TABLASSERT_DOC_MD = """Generate Tablassert configs and optionally run the installed Tablassert CLI."""
 _EXPORT_DOC_MD = """Convert the Tablassert KGX ndjson pair into the legacy DAKP `.nodes.tsv` / `.edges.tsv` schema, then publish the ndjson/tsv pair and the Tablassert `.RIG.yaml` under the legacy `drug_approvals_kg_*_v<version>` names."""
-_MEDLINER_DOC_MD = """Export the MEDliNER training-data bundle (`dakp.medliner.export.v1`) from the DailyMed + FAERS extracts."""
+_NER_EXPORT_DOC_MD = """Export the GLiNER2 training-data bundle (`dakp.ner.export.v1`: RelMedNER-compatible Avro + gliner2 NDJSON) from the DailyMed + FAERS + EMA extracts."""
 
 
 @dataclass(frozen=True)
@@ -456,41 +458,56 @@ def _build_export_stage(tablassert_outputs: TablassertOutputs) -> None:
         publish_release_artifacts(tablassert_outputs.kgx, legacy)
 
 
-def _build_medliner_stage(extracts: ExtractOutputs) -> Any:
-    """Create the MEDliNER-export TaskGroup and return its task handle.
+def _build_ner_export_stage(extracts: ExtractOutputs, shape_tasks: AssertionOutputs, ner_models: Any) -> Any:
+    """Create the NER-export TaskGroup and return its task handle.
 
-    The bundle is a leaf hand-off artifact: it consumes ONLY the DailyMed + FAERS extract XComs
-    (no shape-stage dependency), runs on the default pool (no GPU/network scarcity), and nothing
-    downstream waits on it.
+    The export is a GLiNER consumer, so it runs on the NER pool and AFTER the shape stage
+    (its ``contraindications`` handle is a real input dependency): assertion mining warms the
+    ``dakp-nercache`` mention store first, and the export's re-extraction of the same section
+    texts then lands mostly on cache hits. The shape-table refs themselves are NOT inputs —
+    the export consumes the DailyMed + FAERS + EMA interim extracts directly; the shape
+    dependency exists purely to reuse warm-cache mining.
     """
-    with TaskGroup(group_id="medliner", prefix_group_id=False, tooltip="MEDliNER training-data export", doc_md=_MEDLINER_DOC_MD):
+    with TaskGroup(group_id="ner-export", prefix_group_id=False, tooltip="GLiNER2 training-data export", doc_md=_NER_EXPORT_DOC_MD):
 
-        @task(doc_md="Export the MEDliNER training-data bundle from the DailyMed + FAERS extracts.")
-        def export_medliner_training_data(
-            dm_ext: Any, faers_ext: Any
+        @task(pool=NER_MINING_POOL, doc_md="Export the GLiNER2 training-data bundle after the shape stage warmed the mention cache.")
+        def export_ner_training_data(
+            dm_ext: Any, faers_ext: Any, ema_ext: Any, ner_models_ref: Any, shape_dep: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
-            from dakp_pipeline import medliner_export
+            # ``ner_models_ref`` orders this task after model acquisition (the GLiNER weights are
+            # cached under the workdir before any consumer runs); ``shape_dep`` orders it after
+            # the shape stage so its mining is cache-served. Neither is a data input.
+            del ner_models_ref, shape_dep
+            from dakp_pipeline import ner_export
+            from dakp_pipeline.io.contracts import TaskContext
+            from dakp_pipeline.ner.ner import DiseaseNER
 
             ctx = _ctx()
-            with step(logger, "task export_medliner_training_data"):
-                refs = medliner_export.export([*_refs_from_xcom(dm_ext), *_refs_from_xcom(faers_ext)], ctx)
-                stats(logger, "task export_medliner_training_data", output_refs=len(refs))
+            with step(logger, "task export_ner_training_data"):
+                dailymed_refs, faers_refs, ema_refs = _refs_from_xcom(dm_ext), _refs_from_xcom(faers_ext), _refs_from_xcom(ema_ext)
+                stats(logger, "task export_ner_training_data", dailymed_refs=len(dailymed_refs), faers_refs=len(faers_refs), ema_refs=len(ema_refs))
+                # Production composite NER (curated gazetteer anchors + GLiNER2 recall) at the
+                # recall-first acceptance point: training rows want coverage. Offline tests
+                # inject their own deterministic backend via ctx.params["ner"].
+                ner = DiseaseNER.for_contraindications(offline=False, workdir=ctx.workdir)
+                ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
+                refs = ner_export.export([*dailymed_refs, *faers_refs, *ema_refs], ctx)
+                stats(logger, "task export_ner_training_data", output_refs=len(refs))
                 return _refs_to_xcom(refs)
 
-        return export_medliner_training_data(extracts.dailymed, extracts.faers)
-
+        return export_ner_training_data(extracts.dailymed, extracts.faers, extracts.ema, ner_models, shape_tasks.contraindications)
 
 @dag(dag_id=DAG_ID, start_date=datetime(2026, 1, 1), schedule=None, catchup=False, tags=["dakp", "drug-approvals"], doc_md=_DAG_DOC_MD)
 def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies execute only under an Airflow runtime
     """Full DAKP build DAG: acquire -> extract (native Go) -> shape -> Tablassert handoff -> legacy TSV export.
 
-    The MEDliNER training-data export branches off the DailyMed + FAERS extracts as a leaf
-    hand-off (parallel with shape onward; nothing downstream waits on it).
+    The GLiNER2 NER export runs after assertion shaping, consumes DailyMed + FAERS + EMA
+    extracts, and emits RelMedNER-compatible Avro plus gliner2 NDJSON training data.
     """
     acquired = _build_acquire_stage()
     extracted = _build_extract_stage(acquired)
     assertions = _build_shape_stage(extracted, acquired.ner_models)
-    _build_medliner_stage(extracted)
+    _build_ner_export_stage(extracted, assertions, acquired.ner_models)
     tablassert_outputs = _build_tablassert_stage(assertions)
     _build_export_stage(tablassert_outputs)
 

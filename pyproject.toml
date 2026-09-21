@@ -94,6 +94,16 @@ dependencies = [
     "apache-airflow>=3,<4",
     "blake3>=1.0.0",
     "cyclopts>=4",
+    # Avro models + writer for the `ner_export` GLiNER2 training-data bundle. The models in
+    # `dakp_pipeline.ner_export` mirror RelMedNER's `relmedner.models` TrainingExample tree
+    # field-for-field under the same Avro namespace (`relmedner.ingests`), so the exported
+    # `examples.avro` is schema-compatible with RelMedNER's own `build-dataset` output (pinned
+    # by the committed schema snapshot `tests/eval/ner_training_schema.json`). The `[pydantic]`
+    # extra is required for `dataclasses_avroschema.pydantic.AvroBaseModel`; fastavro is the
+    # record writer (also dataclasses-avroschema's serialization backend, pinned explicitly
+    # because the export imports it directly).
+    "dataclasses-avroschema[pydantic]>=0.70.9",
+    "fastavro>=1.12",
     # GLiNER2 (import name `gliner2`) is the NER production backend: `AutoExtractor` loads the
     # boundary checkpoint and extracts schema-conditioned zero-shot entities. Deliberately the
     # BASE package, NOT `gliner2[local]`: the `[local]` extra hard-pins `transformers<5,>=4.38`

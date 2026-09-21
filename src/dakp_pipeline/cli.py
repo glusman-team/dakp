@@ -13,7 +13,7 @@ Commands::
     uv run dakp down           # stop the local Airflow started by `up`
     uv run dakp clean          # stop a live NER cache server, then remove caches, coverage data, tmp/, and the Go worker binary
     uv run dakp clean -no      # remove only the NER mention cache (Pebble store + hash keys)
-    uv run dakp export-medliner --out <dir>   # export the MEDliNER training-data bundle (--fixtures = offline path)
+    uv run dakp export-ner --out <dir>       # export the GLiNER2 training-data bundle from the interim extracts
 
 ``up`` is a faithful Python port of ``dakp_up.sh``: preflight-verifies the Airflow install
 (self-heals a corrupt venv), builds + packs the native Go bundle, starts Airflow standalone with the
@@ -458,17 +458,14 @@ def run_clean(ner_only: bool = False) -> int:
     return 0
 
 
-# --- export-medliner (MEDliNER training-data bundle; offline-capable) -----------
+# --- export-ner (GLiNER2 training-data bundle) -----------------------------------
 
-#: The interim tables the MEDliNER export consumes, relative to ``Workdir.interim``.
-_EXPORT_INTERIM_TABLES: tuple[str, ...] = ("dailymed/spl_documents.parquet", "faers/cases.parquet")
-#: The DailyMed fixture the offline ``--fixtures`` path extracts (the FAERS side takes every
-#: ``faers/*.txt`` family, exactly the harness fixture set).
-_FIXTURE_DAILYMED_SPL = "dailymed/dailymed_spl.xml.gz"
+#: The interim tables the NER export consumes, relative to ``Workdir.interim``.
+_EXPORT_INTERIM_TABLES: tuple[str, ...] = ("dailymed/spl_documents.parquet", "ema/ema_registry.parquet", "faers/cases.parquet")
 
 
 def export_interim_refs(workdir: Path) -> list[ArtifactRef]:
-    """Refs for the already-extracted interim tables the MEDliNER export consumes.
+    """Refs for already-extracted DailyMed, EMA, and FAERS tables consumed by NER export.
 
     Raises ``FileNotFoundError`` naming EVERY missing table when the workdir is not materialized:
     this command never runs acquisition or extraction, so it never triggers a download.
@@ -481,7 +478,7 @@ def export_interim_refs(workdir: Path) -> list[ArtifactRef]:
     interim = Workdir(workdir).interim
     missing = [name for name in _EXPORT_INTERIM_TABLES if not (interim / name).exists()]
     if missing:
-        msg = f"export-medliner: missing interim table(s) under {interim}: {', '.join(missing)} \u2014 run `dakp up` first (this command never downloads)"
+        msg = f"export-ner: missing interim table(s) under {interim}: {', '.join(missing)} \u2014 run `dakp up` first (this command never downloads)"
         raise FileNotFoundError(msg)
     return [
         ArtifactRef(uri=interim / name, blake3=hash_file(interim / name), media_type=infer_media_type(interim / name))
@@ -490,63 +487,64 @@ def export_interim_refs(workdir: Path) -> list[ArtifactRef]:
 
 
 def extract_fixture_sources(ctx: TaskContext, fixture_root: Path) -> list[ArtifactRef]:
-    """Run the pure-Python reference extractors over the committed fixture pipeline (offline).
+    """Run the pure-Python reference extractors over the committed fixture pipeline (tests).
 
     The same fixture plumbing the integration harness uses: the single DailyMed SPL fixture plus
-    every FAERS ``.txt`` family under ``fixture_root/faers`` (no Drugs@FDA — the export consumes
-    only the DailyMed + FAERS extracts).
+    every FAERS ``.txt`` family under ``fixture_root/faers``.
     """
     from dakp_pipeline.extract import faers_ascii, spl_xml
 
-    dailymed_raw = [ctx.fixture(_FIXTURE_DAILYMED_SPL)]
+    dailymed_raw = [ctx.fixture("dailymed/dailymed_spl.xml.gz")]
     faers_raw = [ctx.fixture(f"faers/{path.name}") for path in sorted((fixture_root / "faers").glob("*.txt"))]
     return [*spl_xml.extract(dailymed_raw, ctx), *faers_ascii.extract(faers_raw, ctx)]
 
 
 def copy_export_bundle(src_dir: Path, out_dir: Path) -> dict[str, Path]:
-    """Copy the three MEDliNER bundle files into ``out_dir``, overwriting ONLY those files."""
-    from dakp_pipeline import medliner_export
+    """Copy the four NER bundle files into ``out_dir``, overwriting ONLY those files."""
+    from dakp_pipeline import ner_export
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    names = (medliner_export.MANIFEST_FILENAME, medliner_export.CANDIDATES_FILENAME, medliner_export.GOLD_FILENAME)
+    names = (
+        ner_export.MANIFEST_FILENAME,
+        ner_export.EXAMPLES_AVRO_FILENAME,
+        ner_export.EXAMPLES_NDJSON_FILENAME,
+        ner_export.GOLD_FILENAME,
+    )
     return {name: Path(shutil.copyfile(src_dir / name, out_dir / name)) for name in names}
 
+def run_export_ner(*, out: str | None = None, workdir: str | None = None) -> int:
+    """Export the GLiNER2 training-data bundle from the DailyMed + FAERS + EMA extracts.
 
-def run_export_medliner(*, out: str | None = None, workdir: str | None = None, fixtures: bool = False) -> int:
-    """Export the MEDliNER training-data bundle from the DailyMed + FAERS extracts.
-
-    Returns a process exit code. Default mode reads the already-extracted interim tables from a
-    materialized ``workdir`` and NEVER downloads — a missing table is a loud error naming it.
-    ``fixtures`` first runs the pure-Python reference extractors over the committed pipeline
-    fixtures (the fully offline path). The bundle lands under
-    ``<workdir>/store/medliner-export`` and is copied to ``out`` when it points elsewhere.
+    Returns a process exit code. Reads the already-extracted interim tables from a materialized
+    ``workdir`` and NEVER downloads — a missing table is a loud error naming it. The rows are
+    mined with the production composite NER backend (GLiNER2 inference; the mention cache keeps
+    repeat runs cheap). The bundle lands under ``<workdir>/store/ner-export`` and is copied to
+    ``out`` when it points elsewhere.
     """
-    from dakp_pipeline import medliner_export
+    from dakp_pipeline import ner_export
     from dakp_pipeline.io.contracts import TaskContext
     from dakp_pipeline.logging_setup import configure_logging
+    from dakp_pipeline.ner.ner import DiseaseNER
     from dakp_pipeline.paths import Workdir
 
     workdir_root = Path(workdir) if workdir is not None else _DEFAULT_WORKDIR
     wd = Workdir(workdir_root)
     wd.create()
     configure_logging(wd.root, level=_DEFAULT_LOG_LEVEL, for_airflow=False)
-    ctx = TaskContext(workdir=wd.root, fixture_root=_DEFAULT_FIXTURE_ROOT if fixtures else None, params={})
-    if fixtures:
-        refs = extract_fixture_sources(ctx, _DEFAULT_FIXTURE_ROOT)
-    else:
-        try:
-            refs = export_interim_refs(workdir_root)
-        except FileNotFoundError as exc:
-            print(f"error: {exc}")
-            return 1
-    medliner_export.export(refs, ctx)
-    src_dir = wd.store / medliner_export.OUT_DIRNAME
+    ner = DiseaseNER.for_contraindications(offline=False, workdir=wd.root)
+    ctx = TaskContext(workdir=wd.root, fixture_root=None, params={"ner": ner})
+    try:
+        refs = export_interim_refs(workdir_root)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}")
+        return 1
+    ner_export.export(refs, ctx)
+    src_dir = wd.store / ner_export.OUT_DIRNAME
     out_dir = Path(out) if out is not None else src_dir
     if out_dir != src_dir:
         copy_export_bundle(src_dir, out_dir)
-    print(f"MEDliNER training-data bundle ready: {out_dir}")
+    print(f"GLiNER2 training-data bundle ready: {out_dir}")
     return 0
-
 
 # --- cyclopts app (console-script entry point: `dakp = dakp_pipeline.cli:app`) -----
 
@@ -573,21 +571,18 @@ def up(
 
 
 @app.command
-def export_medliner(
+def export_ner(
     *,
     out: Annotated[str | None, Parameter(name=["--out", "-o"])] = None,
     workdir: Annotated[str | None, Parameter(name=["--workdir", "-w"])] = None,
-    fixtures: Annotated[bool, Parameter(name=["--fixtures"])] = False,
 ) -> None:
-    """Export the MEDliNER training-data bundle from the DailyMed + FAERS extracts.
+    """Export the GLiNER2 training-data bundle from the DailyMed + FAERS + EMA extracts.
 
-    Default mode exports from a materialized workdir (after ``dakp up``) and never downloads —
-    missing interim tables are a loud error naming them. ``--fixtures`` first runs the
-    pure-Python reference extractors over the committed pipeline fixtures (fully offline); it is
-    also the documented way to regenerate MEDliNER's committed sample bundle.
+    Exports from a materialized workdir (after ``dakp up``) and never downloads — missing
+    interim tables are a loud error naming them. Rows are mined with the production GLiNER2
+    composite backend (GPU), so this command needs the model cached under the workdir.
     """
-    raise SystemExit(run_export_medliner(out=out, workdir=workdir, fixtures=fixtures))
-
+    raise SystemExit(run_export_ner(out=out, workdir=workdir))
 
 @app.command
 def down() -> None:
@@ -616,7 +611,7 @@ __all__ = [
     "pid_alive",
     "run_clean",
     "run_down",
-    "run_export_medliner",
+    "run_export_ner",
     "run_state",
     "run_subprocess",
     "run_up",

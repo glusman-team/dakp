@@ -25,7 +25,15 @@ from dakp_pipeline import __version__, translator
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.medliner_export import CANDIDATES_FILENAME, GOLD_FILENAME, MANIFEST_FILENAME, OUT_DIRNAME, SCHEMA_VERSION, gold_path
+from dakp_pipeline.ner_export import (
+    EXAMPLES_AVRO_FILENAME,
+    EXAMPLES_NDJSON_FILENAME,
+    GOLD_FILENAME,
+    MANIFEST_FILENAME,
+    OUT_DIRNAME,
+    SCHEMA_VERSION,
+    gold_path,
+)
 from dakp_pipeline.paths import Workdir
 from dakp_pipeline.sources import dailymed, drugsfda, faers
 from dakp_pipeline.tablassert import GRAPH_NAME, REPORT_NAME
@@ -120,36 +128,69 @@ def test_default_deferred_handoff_runs_clean(monkeypatch, tmp_path: Path) -> Non
     assert list((tmp_path / "work" / "kgx").glob("*.edges.tsv")) == []
 
 
-def test_fixture_run_exports_a_valid_medliner_bundle(monkeypatch, tmp_path: Path) -> None:
-    """US-002: the fixture pipeline run produces a valid MEDliNER training-data bundle.
+def test_fixture_run_exports_a_valid_ner_bundle(monkeypatch, tmp_path: Path) -> None:
+    """US-002: the fixture pipeline run produces a valid GLiNER2 training-data bundle.
 
-    WHY: in the DAG the ``medliner`` stage is a leaf branch off the DailyMed + FAERS extracts;
-    this guards that full offline path (real reference extractors -> export) end-to-end: the
-    manifest carries the export schema, the recorded blake3 hashes re-verify against the written
-    files (contract R7), and every ``candidates.ndjson`` line parses into a row with a legal
-    task/family (contract R3/R4).
+    WHY: in the DAG the ``ner-export`` stage runs after shaping, consuming the DailyMed + FAERS
+    + EMA interim extracts; this guards that full path (real reference extractors -> export)
+    end-to-end: the manifest carries the export schema, the recorded blake3 hashes re-verify
+    against the written files, every ``examples.ndjson`` line parses as one gliner2 JSON object
+    per line with legal task/family values, and the Avro records round-trip under the
+    RelMedNER-compatible schema.
     """
     install_fixture_fetchers(monkeypatch)
     result = run_stages(fixture_root=_FIXTURE_ROOT, workdir=tmp_path / "work")
 
-    # The export registered exactly the three bundle files ([manifest, candidates, gold]).
-    assert [ref.uri.name for ref in result.medliner_export_refs] == [MANIFEST_FILENAME, CANDIDATES_FILENAME, GOLD_FILENAME]
-    bundle = result.medliner_export_refs[0].uri.parent
+    # The export registered exactly the four bundle files.
+    assert [ref.uri.name for ref in result.ner_export_refs] == [
+        MANIFEST_FILENAME,
+        EXAMPLES_AVRO_FILENAME,
+        EXAMPLES_NDJSON_FILENAME,
+        GOLD_FILENAME,
+    ]
+    bundle = result.ner_export_refs[0].uri.parent
     assert bundle == Workdir(tmp_path / "work").store / OUT_DIRNAME
-    assert sorted(path.name for path in bundle.iterdir()) == sorted([MANIFEST_FILENAME, CANDIDATES_FILENAME, GOLD_FILENAME])
+    assert sorted(path.name for path in bundle.iterdir()) == sorted(
+        [MANIFEST_FILENAME, EXAMPLES_AVRO_FILENAME, EXAMPLES_NDJSON_FILENAME, GOLD_FILENAME]
+    )
 
     manifest = json.loads((bundle / MANIFEST_FILENAME).read_text(encoding="utf-8"))
     assert manifest["schema_version"] == SCHEMA_VERSION
-    # R7: the recorded hashes reproduce against the written files.
-    assert manifest["files"][CANDIDATES_FILENAME]["blake3"] == hash_file(bundle / CANDIDATES_FILENAME)
+    # The recorded hashes reproduce against the written files.
+    assert manifest["files"][EXAMPLES_AVRO_FILENAME]["blake3"] == hash_file(bundle / EXAMPLES_AVRO_FILENAME)
+    assert manifest["files"][EXAMPLES_NDJSON_FILENAME]["blake3"] == hash_file(bundle / EXAMPLES_NDJSON_FILENAME)
     assert manifest["files"][GOLD_FILENAME]["blake3"] == hash_file(bundle / GOLD_FILENAME)
 
-    # Every candidates.ndjson line parses; counts in the manifest match the parseable rows.
-    lines = (bundle / CANDIDATES_FILENAME).read_text(encoding="utf-8").splitlines()
-    assert len(lines) == manifest["files"][CANDIDATES_FILENAME]["rows"] > 0
+    # Every examples.ndjson line parses; counts in the manifest match the parseable rows.
+    lines = (bundle / EXAMPLES_NDJSON_FILENAME).read_text(encoding="utf-8").splitlines()
+    assert len(lines) == manifest["files"][EXAMPLES_NDJSON_FILENAME]["rows"] > 0
     rows = [json.loads(line) for line in lines]
-    assert {"contraindication", "indication"} == {row["task"] for row in rows}
-    assert manifest["task_counts"] == {task: sum(row["task"] == task for row in rows) for task in ("contraindication", "indication")}
-    assert manifest["family_counts"] == {family: sum(row["source_family"] == family for row in rows) for family in ("dailymed", "faers")}
-    # R6: the gold file is a byte-identical copy of the committed benchmark.
+    assert {"input", "output"} == set(rows[0].keys())
+    assert {"contraindication", "indication"} == {
+        task
+        for row in rows
+        for classification in row["output"].get("classifications", [])
+        for task in classification["true_label"]
+    }
+    assert manifest["task_counts"] == {
+        "contraindication": sum(
+            any(classification["true_label"] == ["contraindication"] for classification in row["output"].get("classifications", []))
+            for row in rows
+        ),
+        "indication": sum(
+            any(classification["true_label"] == ["indication"] for classification in row["output"].get("classifications", []))
+            for row in rows
+        ),
+    }
+    assert manifest["family_counts"] == {family: manifest["family_counts"][family] for family in ("dailymed", "ema", "faers")}
+    assert sum(manifest["family_counts"].values()) == len(rows)
+    # The gold file is a byte-identical copy of the committed benchmark.
     assert (bundle / GOLD_FILENAME).read_bytes() == gold_path().read_bytes()
+
+    # The Avro payload round-trips under the RelMedNER-compatible schema.
+    from fastavro import reader
+
+    with (bundle / EXAMPLES_AVRO_FILENAME).open("rb") as handle:
+        records = list(reader(handle))
+    assert len(records) == len(rows)
+    assert [record["text"] for record in records] == [row["input"] for row in rows]

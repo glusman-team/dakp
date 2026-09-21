@@ -1,0 +1,246 @@
+{
+  "type": "record",
+  "name": "TrainingExample",
+  "fields": [
+    {
+      "name": "text",
+      "type": "string"
+    },
+    {
+      "name": "entities",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "Entity",
+          "fields": [
+            {
+              "name": "label",
+              "type": "string"
+            },
+            {
+              "name": "mentions",
+              "type": {
+                "type": "array",
+                "items": "string",
+                "name": "mention"
+              }
+            },
+            {
+              "name": "description",
+              "type": [
+                "null",
+                "string"
+              ],
+              "default": null
+            }
+          ],
+          "namespace": "relmedner.ingests"
+        },
+        "name": "entity"
+      },
+      "default": []
+    },
+    {
+      "name": "classifications",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "Classification",
+          "fields": [
+            {
+              "name": "task",
+              "type": "string"
+            },
+            {
+              "name": "labels",
+              "type": {
+                "type": "array",
+                "items": "string",
+                "name": "label"
+              }
+            },
+            {
+              "name": "true_label",
+              "type": {
+                "type": "array",
+                "items": "string",
+                "name": "true_label"
+              }
+            },
+            {
+              "name": "multi_label",
+              "type": "boolean",
+              "default": false
+            },
+            {
+              "name": "prompt",
+              "type": [
+                "null",
+                "string"
+              ],
+              "default": null
+            },
+            {
+              "name": "label_descriptions",
+              "type": [
+                "null",
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "record",
+                    "name": "Description",
+                    "fields": [
+                      {
+                        "name": "key",
+                        "type": "string"
+                      },
+                      {
+                        "name": "description",
+                        "type": "string"
+                      }
+                    ],
+                    "namespace": "relmedner.ingests"
+                  },
+                  "name": "label_description"
+                }
+              ],
+              "default": null
+            }
+          ],
+          "namespace": "relmedner.ingests"
+        },
+        "name": "classification"
+      },
+      "default": []
+    },
+    {
+      "name": "structures",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "Structure",
+          "fields": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "fields",
+              "type": {
+                "type": "array",
+                "items": {
+                  "type": "record",
+                  "name": "StructureField",
+                  "fields": [
+                    {
+                      "name": "name",
+                      "type": "string"
+                    },
+                    {
+                      "name": "value",
+                      "type": [
+                        "string",
+                        {
+                          "type": "array",
+                          "items": "string",
+                          "name": "value"
+                        },
+                        {
+                          "type": "record",
+                          "name": "ChoiceField",
+                          "fields": [
+                            {
+                              "name": "value",
+                              "type": "string"
+                            },
+                            {
+                              "name": "choices",
+                              "type": {
+                                "type": "array",
+                                "items": "string",
+                                "name": "choice"
+                              }
+                            }
+                          ],
+                          "namespace": "relmedner.ingests"
+                        }
+                      ]
+                    },
+                    {
+                      "name": "description",
+                      "type": [
+                        "null",
+                        "string"
+                      ],
+                      "default": null
+                    }
+                  ],
+                  "namespace": "relmedner.ingests"
+                },
+                "name": "field"
+              }
+            }
+          ],
+          "namespace": "relmedner.ingests"
+        },
+        "name": "structure"
+      },
+      "default": []
+    },
+    {
+      "name": "relations",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "Relation",
+          "fields": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "fields",
+              "type": {
+                "type": "array",
+                "items": {
+                  "type": "record",
+                  "name": "RelationField",
+                  "fields": [
+                    {
+                      "name": "name",
+                      "type": "string"
+                    },
+                    {
+                      "name": "value",
+                      "type": "string"
+                    }
+                  ],
+                  "namespace": "relmedner.ingests"
+                },
+                "name": "field"
+              }
+            },
+            {
+              "name": "negated",
+              "type": "boolean",
+              "default": false
+            },
+            {
+              "name": "evidence",
+              "type": "string",
+              "default": "asserted"
+            }
+          ],
+          "namespace": "relmedner.ingests"
+        },
+        "name": "relation"
+      },
+      "default": []
+    }
+  ],
+  "namespace": "relmedner.ingests"
+}
