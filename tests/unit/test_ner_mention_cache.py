@@ -235,6 +235,7 @@ def test_mention_cache_delete_many_purges(fake_server: Path) -> None:
         assert cache.get_many([key]) == {}
     cache.close()
 
+
 def test_mention_cache_reuses_server_without_spawning(fake_server: Path) -> None:
     """The client must not spawn a second server when server.json points at a live one."""
     cache = MentionCache(fake_server)
