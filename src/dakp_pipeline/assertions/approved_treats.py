@@ -124,6 +124,7 @@ from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text, normalize_with_map
 from dakp_pipeline.ner.mention_cache import MentionCache
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
+from dakp_pipeline.textnorm import defaersify
 
 _TABLE = "approved_treats_assertions"
 _PREDICATE = "biolink:treats"
@@ -819,7 +820,10 @@ def _faers_candidates(
     nda_raw = _text_column("nda_raw")
     ingredient = _text_column("ingredient")
     drugname = _text_column("drugname")
-    indication = _text_column("indication").str.strip_chars()
+    # defaersify is idempotent; it re-cleans legacy cached tables extracted before the
+    # '?'-mangling fix in extract.faers_ascii (cache reuse is keyed on input ids, so old
+    # quarters whose bytes contained no '?' would otherwise keep their mangled rows).
+    indication = defaersify(_text_column("indication")).str.strip_chars()
     quarter = _text_column("quarter")
     primaryid = _text_column("primaryid")
     source_record_id = _text_column("source_record_id")
@@ -829,7 +833,7 @@ def _faers_candidates(
         .select(
             normalized_nda.alias("norm_nda"),
             indication.alias("indication"),
-            pl.when(ingredient != "").then(ingredient).otherwise(drugname).str.strip_chars().alias("fallback_subject"),
+            pl.when(ingredient != "").then(ingredient).otherwise(drugname).str.strip_chars().pipe(defaersify).alias("fallback_subject"),
             pl.struct(
                 quarter.alias("quarter"), primaryid.alias("primaryid"), source_record_id.alias("source_record_id"), nda_raw.alias("nda_raw")
             ).alias("faers_row"),
