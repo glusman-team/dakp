@@ -666,15 +666,17 @@ def _localize(text: str, mentions: Sequence[Mention]) -> tuple[Callable[[Mention
 
     Returns the ``sentence_of`` callable that :func:`attach_qualifiers_with_scores` and
     :func:`patient_clause_contexts` consume, plus the rewritten mentions (the export does
-    not mutate its inputs). A mention covered by no sentence span (tokenization gaps) is
-    excluded from the relation build but keeps its entity slot.
+    not mutate its inputs). A mention covered by no sentence span (tokenization gaps) or
+    crossing a sentence boundary (whole-row mining can emit either) is excluded from the
+    relation build but keeps its entity slot: it has no sentence-relative form, so the
+    attachment bounds guard must never see it.
     """
     spans = _sentence_spans(text)
     localized: list[Mention] = []
     sentence_by_mention: dict[int, str] = {}
     for mention in mentions:
         for span in spans:
-            if mention.start < span.end and span.start < mention.end:
+            if span.start <= mention.start and mention.end <= span.end:
                 local = Mention(
                     text=span.text[mention.start - span.start : mention.end - span.start],
                     start=mention.start - span.start,

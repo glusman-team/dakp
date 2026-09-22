@@ -240,6 +240,17 @@ def test_localize_drops_mentions_outside_every_sentence_span() -> None:
     assert sentence_of(stray) is None
 
 
+def test_localize_drops_mentions_crossing_sentence_boundaries() -> None:
+    """A mention spanning two sentences cannot be made sentence-relative; it is excluded
+    from the relation build (entity slot kept) instead of tripping the attachment bounds
+    guard on real mined data."""
+    text = "Drug treats asthma. Patients tolerate it well."
+    crosser = Mention(text="asthma. Patients", start=12, end=28, type="disease", score=1.0)
+    sentence_of, localized = ner_export._localize(text, [crosser])
+    assert localized == []
+    assert sentence_of(crosser) is None
+
+
 def test_qualifier_relations_fire_when_one_host_matches() -> None:
     sentence = "Drug treats asthma in adult male patients."
     objects = [Mention(text="asthma", start=12, end=18, type="disease", score=1.0)]
