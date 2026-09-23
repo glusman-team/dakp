@@ -171,6 +171,9 @@ dev = [
     { include-group = "ci" },
     "pre-commit>=4.5.1",
     "ruff>=0.15.6",
+    # Postgres driver for pointing AIRFLOW__DATABASE__SQL_ALCHEMY_CONN at a real metadata db
+    # (sqlite WAL still deadlocks the scheduler under full-run write load; see wenceslaus runs).
+    "psycopg2-binary>=2.9.13",
 ]
 
 [project.scripts]
