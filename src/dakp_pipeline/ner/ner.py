@@ -54,6 +54,7 @@ Output is sorted deterministically by ``(start, end, type, text)``.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import fcntl
 import itertools
@@ -61,7 +62,7 @@ import os
 import re
 import signal
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -507,7 +508,7 @@ def _overlaps(start: int, end: int, other: tuple[int, int]) -> bool:
     return start < other[1] and other[0] < end
 
 
-def _overlaps_any(start: int, end: int, covered: list[tuple[int, int]]) -> bool:
+def _overlaps_any(start: int, end: int, covered: Iterable[tuple[int, int]]) -> bool:
     return any(_overlaps(start, end, span) for span in covered)
 
 
@@ -568,18 +569,27 @@ def _candidates_vs_gazetteer(model_spans: list[_ModelSpan], gazetteer_spans: lis
     * contains **several** gazetteer spans -> a conjunction (``asthma or hypertension``), not a
       qualifier: the gazetteer spans stand and the model span is dropped;
     * no overlap at all -> free-standing candidate (``anchor=-1``), the OOV-recall case.
+
+    ``ordered`` iteration order does not change accept/drop decisions or the anchor: a span is
+    dropped when any overlap is a blocker OR more than one gazetteer span is strictly contained
+    (both order-independent), and a kept span's anchor is its single contained index.
+
+    Only gazetteer spans with ``start < span.end`` can overlap, so the spans are sorted once
+    and a bisect bounds the scan to just that prefix (the previous code examined every
+    gazetteer span for every model span: O(m x g) per text).
     """
+    ordered = sorted(enumerate(gazetteer_spans), key=lambda item: (item[1][0], item[1][1]))
+    starts = [gazetteer_span[0] for _index, gazetteer_span in ordered]
     candidates: list[_Candidate] = []
     for span in model_spans:
         bounds = (span.start, span.end)
         contained: list[int] = []
         blocked = False
-        for index, gazetteer_span in enumerate(gazetteer_spans):
-            if not _overlaps(span.start, span.end, gazetteer_span):
-                continue
+        for position in range(bisect.bisect_left(starts, span.end)):
+            index, gazetteer_span = ordered[position]
             if gazetteer_span != bounds and _contains(bounds, gazetteer_span):
                 contained.append(index)
-            else:
+            elif gazetteer_span == bounds or _overlaps(span.start, span.end, gazetteer_span):
                 blocked = True
                 break
         if blocked or len(contained) > 1:
@@ -597,7 +607,7 @@ def _select_candidates(candidates: list[_Candidate]) -> list[_Candidate]:
     ordered = sorted(candidates, key=lambda c: (-(c.span.end - c.span.start), -c.span.score, c.span.start, c.span.end, c.span.type))
     kept: list[_Candidate] = []
     for candidate in ordered:
-        if not _overlaps_any(candidate.span.start, candidate.span.end, [(k.span.start, k.span.end) for k in kept]):
+        if not _overlaps_any(candidate.span.start, candidate.span.end, ((k.span.start, k.span.end) for k in kept)):
             kept.append(candidate)
     return kept
 
