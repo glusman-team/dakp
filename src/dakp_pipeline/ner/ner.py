@@ -1108,8 +1108,14 @@ class DiseaseNER:
         model = self._load_model()
         budget = _token_budget(model, self._chunk_words)
         windows: list[tuple[int, int, str]] = []
+        windows_by_text: dict[int, list[tuple[int, str]]] = {}
         for text_index, text in active:
-            windows.extend((text_index, start, window) for start, window in _windows(text, budget))
+            text_windows = _windows(text, budget)
+            windows.extend((text_index, start, window) for start, window in text_windows)
+            # Grouped once here so the per-text post-processing loop below reads its own
+            # windows in O(own_windows) instead of re-filtering the flat shard-wide list
+            # (O(total_windows) per text, quadratic across a shard).
+            windows_by_text[text_index] = text_windows
         texts = [window for _text_index, _start, window in windows]
         raw_batches = self._infer_windows(model, texts)
         degraded_windows = 0
@@ -1135,7 +1141,7 @@ class DiseaseNER:
             if not text or not text.strip():
                 output.append([])
                 continue
-            text_windows = [(start, window) for text_index, start, window in windows if text_index == index]
+            text_windows = windows_by_text[index]
             try:
                 output.append(
                     self._mentions_for_text(
