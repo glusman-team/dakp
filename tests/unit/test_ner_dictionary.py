@@ -206,3 +206,13 @@ def test_normalized_terms_sorted() -> None:
 def test_items_yields_sorted_pairs() -> None:
     gaz = Gazetteer({"pain": "disease", "asthma": "disease", "fever": "phenotype"})
     assert list(gaz.items()) == [("asthma", TYPE_DISEASE), ("fever", TYPE_PHENOTYPE), ("pain", TYPE_DISEASE)]
+
+
+def test_normalize_text_folds_the_faers_junk_classes_to_one_key() -> None:
+    # US-005 contract: every NER mention->node-text choke point (approved_treats object
+    # emission, contraindication aggregation) canonicalizes mention surfaces with
+    # normalize_text, so the junk classes the FAERS chain strips (case variants, trailing
+    # periods, punctuation runs, doubled spaces) must all fold to ONE object_text key.
+    # Otherwise mined rows fragment into parallel nodes for a single disease.
+    surfaces = ["asthma", "Asthma.", "  ASTHMA ,", "asthma!!"]
+    assert len({normalize_text(surface) for surface in surfaces}) == 1
