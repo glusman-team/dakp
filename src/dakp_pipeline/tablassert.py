@@ -140,6 +140,7 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -1194,13 +1195,16 @@ _TABLE_QUALIFIERS: dict[str, tuple[tuple[str, str], ...]] = {
 _GENERATE_OPERATION = "generate_tablassert_configs"
 
 
+@lru_cache(maxsize=1)
 def _biolink_categories() -> tuple[str, ...]:
     """All entity category names of the installed Tablassert's Biolink model, sorted.
 
     Tablassert builds its ``Categories`` enum dynamically from the Biolink Model it ships, so
     deriving the universe from the installed package (instead of freezing a copy here) keeps the
     emitted ``avoid`` lists exactly consistent with the enum that validates them at config load —
-    across Tablassert/Biolink upgrades and fullmap rebuilds alike.
+    across Tablassert/Biolink upgrades and fullmap rebuilds alike. The first import parses the
+    whole LinkML model (seconds), so the result is cached per interpreter: the model is static
+    within a process, and ``table_config`` calls this once per encoded slot.
     """
     from tablassert.biolink import Categories  # lazy: keep this module's own import light
 
