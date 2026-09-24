@@ -1,5 +1,5 @@
 name: DRUG_APPROVALS_KP
-version: "1.13.0"
+version: "1.13.1"
 fullmap: ".fullmap"
 rig:
   supporting_data_source_info:
@@ -86,7 +86,7 @@ rig:
       - kgx
     data_versioning_and_releases: >-
       DAKP versions follow the Python package version (pyproject.toml,
-      currently 1.13.0); every build embeds it in the graph config via
+      currently 1.13.1); every build embeds it in the graph config via
       graph_config(version=...). Re-ingests track the upstream cadence:
       FAERS quarterly ASCII extracts, DailyMed SPL releases, and the
       nightly-regenerated EMA medicines export. DailyMed, Drugs@FDA, and EMA
