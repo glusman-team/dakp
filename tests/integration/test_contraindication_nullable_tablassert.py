@@ -34,7 +34,10 @@ def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_
     pytest-xdist the default fork inherits execnet/loguru threads and their locks, and a child
     forked while a lock is held deadlocks forever (seen live in CI 2026-09-23/24; faulthandler
     pinned the parent in ``Pool`` wait at tablassert/cli.py extract stage). Spawn re-imports
-    cleanly, sidestepping inherited-thread state entirely.
+    cleanly, sidestepping inherited-thread state entirely. ``processes=1`` keeps exactly one
+    such child: the assertion shape under test (qualifier keeps rows distinct) does not depend
+    on worker count, and every extra spawn child re-imports the full tablassert stack for
+    nothing.
 
     Tablassert 15.1's ``CLASS_FIELD_OVERRIDES`` grant (SkyeAv/Tablassert#120) lets the pinned
     ``EntityToDiseaseAssociation`` keep ``disease_context_qualifier``, and the emitted qualifier is
@@ -42,7 +45,7 @@ def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_
     asthma" no longer deduplicate: the qualifier distinguishes them. The qualified edge carries the
     resolved context CURIE; the blank-context row keeps its edge minus only the qualifier.
     """
-    monkeypatch.setattr("tablassert.cli.Pool", lambda: multiprocessing.get_context("spawn").Pool())
+    monkeypatch.setattr("tablassert.cli.Pool", lambda: multiprocessing.get_context("spawn").Pool(processes=1))
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".tablassert" / "store").mkdir(parents=True)
     (tmp_path / "tabular").mkdir(parents=True)

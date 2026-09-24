@@ -6,8 +6,15 @@ Proves the FULL path works on a TINY, hermetic fullmap (no network):
    (``tabular/*_assertions.tsv``) + the generated ``tables/*.yaml`` Tablassert configs;
 2. build a tiny ``fullmap.redb`` (:mod:`tiny_fullmap`) mapping the assertion-table mention text
    (Ibuprofen/Advil, Examplestatin, hypercholesterolemia, headache, pain, asthma, ...) to CURIEs;
-3. invoke a REAL ``tablassert build-kg`` through the DAKP :class:`TablassertRunner` (the installed
-   ``tablassert`` CLI, real subprocess);
+3. invoke the real Tablassert ``build-kg`` through the DAKP :class:`TablassertRunner`, with the
+   runner's subprocess boundary (``stream_subprocess``) monkeypatched to call
+   ``tablassert.cli.build_pipeline`` IN-PROCESS plus the nullable-test spawn-``Pool(1)`` guard
+   (which also sidesteps the fork-in-xdist deadlock entirely). Why not the real subprocess:
+   the runner's only added responsibility is report assembly + KGX-contract validation, which
+   run either way, and the hermetic e2e must run on 2-core CI without redb flocks across
+   processes or spawn-child interpreter boots (minutes, and the historical hang vector). The
+   real ``tablassert`` CLI stays exercised by every production pipeline run; every assertion
+   below stays byte-comparable.
 4. load the produced KGX ``DRUG_APPROVALS_KP_1.0.0.{nodes,edges}.ndjson`` and assert: nodes carry
    ``id``/``name``/``category``; edges carry ``subject``/``predicate``/``object`` + DAKP provenance
    (``infores:multiomics-drugapprovals`` primary + the per-family upstream infores); all three edge
@@ -28,7 +35,11 @@ FAERS supporting entry on ``applied_to_treat`` edges also carries the static AEM
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,8 +47,10 @@ from typing import Any
 import pytest
 import tiny_fullmap
 from harness import install_fixture_fetchers, run_stages
+from tablassert import rs
 
 from dakp_pipeline import legacy_tsv
+from dakp_pipeline import tablassert as dakp_tablassert_module
 from dakp_pipeline.assertions.evidence import DAILYMED_SET_CURIE_PREFIX
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
@@ -106,19 +119,47 @@ def kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
         monkeypatch.undo()
 
     # (2) Tiny fullmap at <work>/.fullmap/fullmap.redb (graph.yaml's `fullmap: ".fullmap"` resolves
-    #     relative to the build cwd = <work>). Built in a child process so the build-kg subprocess
-    #     below can acquire redb's exclusive flock (see tiny_fullmap docstring).
-    tiny_fullmap.build_tiny_fullmap(work / ".fullmap" / "fullmap.redb")
+    #     relative to the build cwd = <work>). Built IN-PROCESS: the in-process build-kg below
+    #     holds no cross-process redb flock, so the child-interpreter dance is unnecessary
+    #     (tiny_fullmap's flock note applies to its real-subprocess consumer only).
+    fullmap_dir = work / ".fullmap"
+    classes, synonyms = tiny_fullmap.write_fullmap_inputs(fullmap_dir)
+    rs.build_fullmap_db(fullmap_dir / "fullmap.redb", [classes], [synonyms])
 
-    # (3) REAL build-kg via the DAKP TablassertRunner (installed tablassert CLI, real subprocess).
-    tabular = work / "tabular"
-    assertion_refs = [_ref(path, "text/tab-separated-values") for path in sorted(tabular.glob("*_assertions.tsv"))]
-    tables_dir = work / "tables"
-    config_refs = [_ref(path, "application/x-yaml") for path in sorted(tables_dir.glob("*.yaml"))]
-    # We call TablassertRunner.run() directly (bypassing the module-level run() dispatcher); only
-    # params["fullmap"] is read by the runner.
-    ctx = TaskContext(workdir=work, fixture_root=_FIXTURE_ROOT, params={"fullmap": ".fullmap"})
-    report_refs = TablassertRunner().run(assertion_refs, config_refs, ctx)
+    # (3) REAL build-kg via the DAKP TablassertRunner, with its subprocess boundary swapped for an
+    #     in-process call (module docstring rationale). The spawned section-extraction Pool goes to
+    #     spawn/1 for the same reason as the nullable test: fork inherits xdist thread locks.
+    import multiprocessing
+
+    from tablassert.cli import build_pipeline as _tablassert_build_pipeline
+    from tablassert.progress import PipelineProgress as _TablassertProgress
+
+    def _run_build_in_process(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        graph_yaml = Path(command[command.index("build-kg") + 1])
+        out = io.StringIO()
+        previous = os.getcwd()
+        try:
+            os.chdir(cwd)
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                _tablassert_build_pipeline(graph_yaml, _TablassertProgress(total_stages=6))
+        finally:
+            os.chdir(previous)
+        return subprocess.CompletedProcess(command, 0, out.getvalue(), "")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("tablassert.cli.Pool", lambda: multiprocessing.get_context("spawn").Pool(processes=1))
+    monkeypatch.setattr(dakp_tablassert_module, "stream_subprocess", _run_build_in_process)
+    try:
+        tabular = work / "tabular"
+        assertion_refs = [_ref(path, "text/tab-separated-values") for path in sorted(tabular.glob("*_assertions.tsv"))]
+        tables_dir = work / "tables"
+        config_refs = [_ref(path, "application/x-yaml") for path in sorted(tables_dir.glob("*.yaml"))]
+        # We call TablassertRunner.run() directly (bypassing the module-level run() dispatcher); only
+        # params["fullmap"] is read by the runner.
+        ctx = TaskContext(workdir=work, fixture_root=_FIXTURE_ROOT, params={"fullmap": ".fullmap"})
+        report_refs = TablassertRunner().run(assertion_refs, config_refs, ctx)
+    finally:
+        monkeypatch.undo()
     report: dict[str, Any] = json.loads(report_refs[0].uri.read_text(encoding="utf-8"))
 
     # (4) Load the produced KGX NDJSON (compile_graph writes <name>_<version>.{nodes,edges}.ndjson
