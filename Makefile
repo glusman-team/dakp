@@ -4,9 +4,17 @@
 setup:
 	uv sync --group dev
 
-# Run the Python test suite (parallel, with the 100% coverage gate from pyproject.toml).
+# Run the Python test suite. Two phases, because they have opposite parallelism needs:
+#   unit        - pure in-process tests; pytest-xdist fans them out (`-n auto` from addopts).
+#   integration - spawn NER workers, real `tablassert build-kg` subprocesses, and coverage's
+#                 .pth-based child instrumentation. Under xdist this mix deadlocked the CI
+#                 runner non-deterministically (worker execnet + spawn children + subprocess
+#                 flocks), so it runs sequentially: `-n 0` on the CLI overrides the addopts.
+# Coverage data ACCUMULATES across the two runs (--cov-append), and the fail_under gate in
+# pyproject.toml is evaluated by coverage at the END of each run over the combined data.
 test:
-	uv run pytest
+	uv run pytest tests/unit
+	uv run pytest tests/integration --cov-append
 
 # Run the Go test suite.
 test-go:

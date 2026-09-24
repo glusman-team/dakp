@@ -4,8 +4,8 @@
 #
 #   python-lint   make lint + make fmt-check (gofmt needs a Go toolchain, hence setup-go)
 #   python-type   make typecheck
-#   python-test   make test (addopts adds `-n auto`; pytest-cov combines per-xdist-worker
-#                 coverage so the 100% branch gate in pyproject.toml still holds)
+#   python-test   make test: parallel unit run + sequential integration run (coverage
+#                 appended; see the Makefile target for why integration must not run under xdist)
 #   go            make test-go + make vet
 #   pre-commit    make precommit (validates the contributor hook wiring)
 #
@@ -84,9 +84,10 @@ jobs:
 
   python-test:
     runs-on: ubuntu-latest
-    # Baseline is ~2 min; a wedged run should fail loudly at 30 min (faulthandler_timeout dumps
-    # the stuck test's stack at 10 min) instead of silently burning an hour of runner time.
-    timeout-minutes: 30
+    # The two-phase suite is a ~1 min baseline; a wedged run should fail loudly at 15 min
+    # (faulthandler_timeout dumps the stuck test's stack at 10 min) instead of silently
+    # burning runner time.
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -99,9 +100,10 @@ jobs:
           cache-suffix: ci
       - name: Sync dependencies
         run: uv sync --frozen ${{ env.SYNC_ARGS }}
-      # addopts supplies `-n auto --cov`; pytest-cov merges the per-worker .coverage files and the
-      # fail_under=100 branch gate (pyproject.toml) fails the job on any regression.
-      - name: Run tests (parallel, with coverage gate)
+      # addopts supplies `-q -n auto --cov=dakp_pipeline`; the Makefile target runs unit tests
+      # under xdist and integration sequentially (`-n 0`), appending coverage across the two
+      # runs so the fail_under gate (pyproject.toml) sees the combined data.
+      - name: Run tests (parallel unit + sequential integration, coverage gate)
         run: make test
 
   go:
