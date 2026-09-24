@@ -27,11 +27,15 @@ one — the DINGO ingest already coerced it to ``not_provided`` — and would em
 edges now that Tablassert >= 8.2 emits the field first-class). The observed-use meaning stays on
 the edge via ``predicate = applied_to_treat`` + ``knowledge_level = observation`` (config override).
 
-Pair matching is case/punctuation-insensitive normalized text on both sides
-(:func:`~dakp_pipeline.ner.dictionary.normalize_text`). Limitation: observed-uses subjects are raw
-FAERS drugnames while approved-treats subjects are DailyMed ingredient text, so name variants
-("Advil" vs "Ibuprofen") MISS and read as ``off_label_use`` for actually-approved pairs — the
-same caveat the legacy pipeline carried.
+Pair matching runs both sides through the same normalization chain
+(:func:`_pair_key`: the textnorm chain then gazetteer normalization), so dosage/form junk,
+brand aliases (:data:`~dakp_pipeline.textnorm.BRAND_ALIASES`), punctuation, and casing
+cannot make ONE pair answer asymmetrically: every spelling variant of one real pair derives
+ONE ``clinical_approval_status``, and Tablassert's ``uuid_on_collision`` first-wins merge
+never sees a conflicting scalar (v1.13.0's foldreport recorded 3,283 such conflicts, driven
+by pre-textnorm drugname junk). Residual free-text spelling variants beyond the alias table
+(non-English INN spellings, typos) can still miss and read as ``off_label_use`` for
+actually-approved pairs — the same caveat the legacy pipeline carried.
 
 FAERS text handling
 -------------------
@@ -69,7 +73,7 @@ from dakp_pipeline.assertions.evidence import (
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
-from dakp_pipeline.textnorm import defaersify
+from dakp_pipeline.textnorm import defaers_text, defaersify
 
 _TABLE = "faers_applied_to_treat_assertions"
 _PREDICATE = "biolink:applied_to_treat"
@@ -133,15 +137,34 @@ def _approved_pair_index(approved: pl.DataFrame) -> set[tuple[str, str]]:
 
     Matching is normalized text on both sides because the two tables spell drugs differently
     (observed-uses subjects are raw FAERS drugnames; approved-treats subjects are DailyMed
-    ingredient text), so name variants can still miss — see the module docstring.
+    ingredient text). Both sides run through :func:`_pair_key` — the SAME chain the
+    observed-uses lookup uses (:func:`~dakp_pipeline.textnorm.defaers_text` followed by the
+    gazetteer :func:`~dakp_pipeline.ner.dictionary.normalize_text`) — so dosage/form junk,
+    brand aliases, and punctuation differences cannot make ONE pair asymmetric: every
+    spelling variant of one real pair derives ONE status, and Tablassert's
+    ``uuid_on_collision`` first-wins merge then never sees a conflicting
+    ``clinical_approval_status`` scalar (v1.13.0 foldreport recorded 3,283 such conflicts,
+    driven by pre-textnorm drugname junk). Residual free-text spelling variants beyond the
+    alias table (e.g. non-English INN spellings, typos) can still asymmetrically miss and
+    read as ``off_label_use`` — the same caveat the legacy pipeline carried.
     """
     pairs: set[tuple[str, str]] = set()
     for rec in approved.iter_rows(named=True):
-        subject = normalize_text(str(rec.get("subject_text") or ""))
-        obj = normalize_text(str(rec.get("object_text") or ""))
+        subject = _pair_key(str(rec.get("subject_text") or ""))
+        obj = _pair_key(str(rec.get("object_text") or ""))
         if subject and obj:
             pairs.add((subject, obj))
     return pairs
+
+
+def _pair_key(text: str) -> str:
+    """Canonical (drug, condition) lookup key: textnorm chain, then gazetteer normalization.
+
+    Single source of truth for both the approved-pair index and the observed-uses status
+    lookup; keeping it identical on both sides is what makes the derived status canonical
+    across spelling variants.
+    """
+    return normalize_text(defaers_text(text))
 
 
 def build_observed_use_rows(
@@ -319,7 +342,7 @@ def build_observed_use_rows(
         anon_tokens.update(f"anon:row:{drug}:{obj['text']}:{index}" for index in range(max(pad, 0)))
         if approved_pairs is None:
             status = _STATUS_NOT_PROVIDED
-        elif (normalize_text(drug), normalize_text(obj["text"])) in approved_pairs:
+        elif (_pair_key(drug), _pair_key(obj["text"])) in approved_pairs:
             status = _STATUS_APPROVED
         else:
             status = _STATUS_OFF_LABEL
