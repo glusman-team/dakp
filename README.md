@@ -74,6 +74,38 @@ BLAKE3-keyed mentions under `tmp/cache/ner/`), e.g. to force re-mining without l
 - **MEDliNER export**: hands the annotation corpus to MEDliNER as a deterministic,
   self-describing `dakp.medliner.export.v1` bundle under `<workdir>/store/medliner-export`.
 
+## Text normalization
+
+DAKP normalizes source text, never ontology IDs: mention text goes in, mention text comes
+out, and Tablassert/fullmap resolves it at build-kg time. The chain lives in
+`src/dakp_pipeline/textnorm.py` as a string twin (`defaers_text`) and a polars twin
+(`defaersify`) that must agree on every input class (the test suite cross-checks them).
+
+Order matters:
+
+1. Combo canonicalization: multi-ingredient packaging/drugname strings join ingredients
+   with `\` or `;`; each component runs the full chain below, empty components drop, and
+   survivors join with ` / ` (the fullmap mixture-wording convention). Policy: one FAERS
+   case contributes to ONE product edge at mixture level; components are never split into
+   per-ingredient edges, because case attribution is at product level and splitting would
+   fabricate per-ingredient evidence. Bare `/` (salt-pair notation) is not a separator.
+2. `?` -> `-` separator restoration and collapsed-hyphen repair (FAERS ASCII mangling).
+3. Dosage/form tail truncation, `#` line labels, empty parens, trailing periods, legacy
+   `.GREEK.` tokens, fully-wrapped parens.
+4. Brand aliases: a small curated regex table (`BRAND_ALIASES`) maps brand spellings to
+   generic ingredient text (XEFO -> Lornoxicam, BETOLVEX -> Cyanocobalamin,
+   rADAMTS13 -> apadamtase alfa) so true matches survive Tablassert QC. Entries are
+   data-backed only: a rejection must be a TRUE match lost, never a correct garbage-catch.
+
+Invariants: idempotent on clean text; never empties a name; no CURIEs minted anywhere.
+The same chain canonicalizes both sides of any pair lookup, so spelling variants of one
+(drug, condition) pair derive one `clinical_approval_status`. NER mention surfaces keep
+raw text for offsets during matching and are canonicalized only at node-text emission.
+The generated table configs additionally word-denylist trap aliases (e.g. CRYING) and
+exclude known admin-code concepts (e.g. `UMLS:C1314429`, an HCPCS injection description
+categorized as Drug) so wording-channel collisions cannot leak past the category
+allow-list.
+
 ## Output tables
 
 | Assertion table | Predicate | Subject → Object | Upstream |
