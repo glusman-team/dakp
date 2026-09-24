@@ -235,6 +235,23 @@ def test_status_is_canonical_across_drugname_spelling_variants(disease_map: dict
     assert {r["clinical_approval_status"] for r in rows2} == {"off_label_use"}
 
 
+def test_combo_drugname_stays_one_edge_with_exact_case_count(disease_map: dict[str, dict[str, str]]) -> None:
+    # US-004 invariant: one FAERS case contributes to ONE product edge. A multi-ingredient
+    # drugname canonicalizes to its mixture-level subject_text and the distinct-case count
+    # passes through unchanged (components are never split into per-ingredient edges).
+    cases = pl.DataFrame(
+        {
+            "drugname": [".ALPHA.-TOCOPHEROL ACETATE\\ASCORBIC ACID", ".ALPHA.-TOCOPHEROL ACETATE\\ASCORBIC ACID"],
+            "indication": ["fatigue", "fatigue"],
+            "primaryid": ["1001", "1002"],
+        }
+    )
+    rows = build_observed_use_rows(cases, disease_map, approved_pairs=None)
+    assert len(rows) == 1
+    assert rows[0]["subject_text"] == "alpha-TOCOPHEROL ACETATE / ASCORBIC ACID"
+    assert rows[0]["number_of_cases"] == "2"
+
+
 def test_approved_pair_index_runs_the_full_textnorm_chain() -> None:
     # The index is built from approved-treats subject_text, which can itself carry FAERS
     # fallback junk (brand aliases, dosage tails); both sides must canonicalize identically
