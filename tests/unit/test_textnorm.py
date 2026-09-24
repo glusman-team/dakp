@@ -118,6 +118,50 @@ def test_defaersify_expr_matches_str_twin_on_brand_aliases() -> None:
     assert out == [defaers_text(case) for case in cases]
 
 
+def test_combo_products_canonicalize_to_slash_joined_mixture() -> None:
+    # US-004 decision: mixture-level subject. Fullmap quick-map on wenceslaus resolved 0/20
+    # raw backslash-joined combos and 4/20 canonical ' / '-joined forms (incl. real
+    # MolecularMixture concepts), so the product the patient took stays ONE subject.
+    assert (
+        defaers_text(".ALPHA.-TOCOPHEROL ACETATE\\ASCORBIC ACID\\BIOTIN\\CHOLECALCIFEROL")
+        == "alpha-TOCOPHEROL ACETATE / ASCORBIC ACID / BIOTIN / CHOLECALCIFEROL"
+    )
+    assert defaers_text("IBUPROFEN 400MG TABLET\\CAFFEINE 50MG CAP") == "IBUPROFEN / CAFFEINE"
+    assert (
+        defaers_text("(6S)-5-METHYLTETRAHYDROFOLATE GLUCOSAMINE;BIOTIN;CALCIUM PANTOTHENATE")
+        == "(6S)-5-METHYLTETRAHYDROFOLATE GLUCOSAMINE / BIOTIN / CALCIUM PANTOTHENATE"
+    )
+
+
+def test_combo_single_survivor_collapses_and_junk_never_empties() -> None:
+    # One surviving component collapses to that ingredient; all-junk combos fall back to the
+    # stripped original so the value never empties (both invariants from specs/combo-products).
+    assert defaers_text("()\\;PREDNISONE.") == "PREDNISONE"
+    assert defaers_text("()\\;") != ""
+
+
+def test_combo_rule_never_splits_salt_pair_slash_notation() -> None:
+    # Bare '/' names one conceptual product (a salt pair), NOT an ingredient list; only the
+    # list separators '\\' and ';' trigger mixture canonicalization.
+    once = defaers_text("AMOXICILLIN/CLAVULANATE POTASSIUM")
+    assert "/" in once
+    assert " / " not in once
+
+
+def test_combo_canonicalization_is_idempotent() -> None:
+    for value in (".ALPHA.-TOCOPHEROL ACETATE\\ASCORBIC ACID\\BIOTIN", "CARBOPLATIN;PACLITAXEL", "()\\;PREDNISONE."):
+        once = defaers_text(value)
+        assert defaers_text(once) == once
+
+
+def test_defaersify_expr_matches_str_twin_on_combos() -> None:
+    cases = [".ALPHA.-TOCOPHEROL ACETATE\\ASCORBIC ACID\\BIOTIN", "CARBOPLATIN;PACLITAXEL", "()\\;PREDNISONE.", "Advil", None]
+    out = pl.DataFrame({"t": cases}).select(defaersify(pl.col("t")).alias("t"))["t"].to_list()
+    non_null = [case for case in cases if case is not None]
+    assert [value for value in out if value is not None] == [defaers_text(case) for case in non_null]
+    assert out[4] is None
+
+
 def test_defaers_text_junk_rules_are_idempotent() -> None:
     for value in ("PREDNISONE.", "# CIPROFLOXACIN CIPROFLOXACIN HCL 500MG TAB)", ".ALPHA.-TOCOPHEROL", "(ALEMTUZUMAB) - UNKNOWN - 30 MG"):
         once = defaers_text(value)
