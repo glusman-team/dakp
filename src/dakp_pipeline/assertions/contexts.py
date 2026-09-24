@@ -83,6 +83,31 @@ def _log_withheld(reason: str, qualifier: Mention, host_count: int = 0) -> None:
     stats(logger, "qualifier_withheld", level="DEBUG", reason=reason, qualifier=qualifier.text, qualifier_type=qualifier.type, host_count=host_count)
 
 
+# Wording-level junk filters applied at attachment time, keyed by the model's canonical
+# qualifier type. These kill qualifier spans whose SURFACE text is known junk before the text
+# ever reaches fullmap resolution; junk CANDIDATES behind a legitimate wording ("eye" also
+# matching a specimen concept) are handled at resolution instead, via the qualifier configs'
+# ``exclude_prefixes``/``exclude_regex`` (:data:`dakp_pipeline.tablassert._QUALIFIER_EXCLUDE_REGEX`).
+# Evidence: v1.13.0 release audit of every distinct resolved qualifier CURIE per slot.
+#   frequency: dosage-form product wordings mined as frequency ("oral tablet", "Extended Release
+#     Oral Capsule", "injection", "topical cream" resolve to drug products / chemical forms);
+#   temporal: anamnesis / documentation wordings ("medical history", "prior therapy",
+#     "H/O: hypertension", "documentation") resolve to Phenomenon history-of concepts.
+# Genuine frequency wordings ("once daily", "twice a week", "every 6 hours", "at bedtime") and
+# temporal wordings ("preoperative", "short-term", "chronic") never match.
+_QUALIFIER_WORDING_DENYLIST: dict[str, re.Pattern[str]] = {
+    "frequency_qualifier": re.compile(
+        r"\b(?:tablets?|capsules?|suppositor(?:y|ies)|injections?|solutions?|suspensions?|creams?|gels?"
+        r"|inhalers?|inhalants?|sprays?|patches?)\b|"
+        r"\b(?:disintegrating|sublingual|delayed[- ]release|extended[- ]release)\b",
+        re.IGNORECASE,
+    ),
+    "temporal_context_qualifier": re.compile(
+        r"\b(?:medical\s+)?history\b|\bprior\s+therap|\bprevious\s+therap|\bh/o\b|\bdocuments?\b|\bdocumentation\b", re.IGNORECASE
+    ),
+}
+
+
 def _template_host_indices(sentence: str, objects: Sequence[Mention], sentence_of: Callable[[Mention], str | None]) -> list[int]:
     """Return the sole post-marker host for an explicit patient template, if unambiguous."""
     marker = re.search(
@@ -144,6 +169,10 @@ def _attach_qualifiers_with_scores(
         qtype = canonical_type(qualifier.type)
         if qtype in OBJECT_TYPES:
             _log_withheld("context_not_disease", qualifier)
+            continue
+        deny = _QUALIFIER_WORDING_DENYLIST.get(qtype)
+        if deny is not None and deny.search(qualifier.text or ""):
+            _log_withheld("qualifier_junk_wording", qualifier)
             continue
         field = {
             "AnatomicalEntity": "anatomical_context_text",

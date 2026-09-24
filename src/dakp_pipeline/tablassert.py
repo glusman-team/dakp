@@ -38,11 +38,12 @@ The configs match the ACTUAL current Tablassert schema (verified against
   shape — the DAKP wrapper entry carries the gestalt ``{edge_id}`` record-URL template
   (:data:`GESTALT_RECORD_URL_TEMPLATE`), resolved by Tablassert on the final edges;
 * column-encoded ``statement.qualifiers`` where an assertion column carries the qualifier's entity
-  (per-table :data:`_TABLE_QUALIFIERS`). A Tablassert qualifier is a node encoding resolved through
+  (per-table :data:`_QUALIFIER_GUARD`). A Tablassert qualifier is a node encoding resolved through
   the fullmap alongside subject/object; every qualifier is ``nullable``, so a blank or
   unresolvable cell omits only the qualifier rather than dropping the edge, and each slot carries
-  its own category allow-list when its Biolink range names a class
-  (:data:`_QUALIFIER_GUARD`; the type-ranged frequency/temporal slots carry none);
+  its own category allow-list (:data:`_QUALIFIER_GUARD`), CURIE denylists
+  (:data:`_QUALIFIER_EXCLUDE_REGEX` / :data:`_QUALIFIER_EXCLUDE_PREFIXES`), and — upstream of
+  resolution — wording-level junk filters in :mod:`dakp_pipeline.assertions.contexts`.
 * column-encoded evidence ``annotations`` (aggregated evidence columns carry ``split_by: "|"``
   so pipe-joined assertion cells emit as real JSON arrays, not joined scalars).
 
@@ -977,18 +978,161 @@ OBJECT_CATEGORY_OVERRIDE: dict[str, str] = {"Disease": "EntityToDiseaseAssociati
 
 
 # Per-slot category guard for qualifier node encodings: the soft ``prioritize`` list plus the
-# hard ``avoid`` complement emitted alongside it. Keys are exactly the class-ranged qualifier
-# slots whose Biolink range names a category the installed Tablassert ``Categories`` enum can
-# express. The two granted slots ABSENT here (``frequency_qualifier``: UO ``frequency value``
-# range; ``temporal_context_qualifier``: ``xsd:string`` ``time type`` range) are type-ranged,
-# not class-ranged — no ``Categories`` member names an honest allow-list for their values — so
-# they emit with NO category guard: the fullmap resolves what it can and ``nullable: true``
-# keeps the edge when nothing resolves.
+# hard ``avoid`` complement emitted alongside it. Every granted qualifier slot carries a guard —
+# for class-ranged slots the allow-list is the slot's Biolink range category; for the type-ranged
+# slots the allow-lists are EVIDENCE-derived from the v1.13.0 release audit (every distinct
+# resolved qualifier CURIE categorized against the production fullmap):
+# ``frequency_qualifier`` — 40/40 InformationContentEntity values legitimate ("Dosage", "Daily",
+# "Nearly every day"); all 78 off-list values junk (42 Drug dosage-form products like "clopidogrel
+# Oral Tablet", 16 ChemicalEntity forms like "Tablets", 2 Publication instruments like the
+# "Urgency Perception Scale Questionnaire", plus procedures/activities/locations);
+# ``temporal_context_qualifier`` — 72 InformationContentEntity values legitimate ("7 days",
+# "Preoperative", "short-term") plus exactly three legitimate Phenomenon values, all numeric
+# duration ranges ("3 to 5 days", "2 to 4 years", "1-5 years"); every off-list value junk
+# (Publications, a butterfly genus "Historis", genes "Minute"/"frst", diseases).
+# ``sex_qualifier`` is widened past its nominal ``BiologicalSex`` range because the fullmap has
+# essentially no BiologicalSex rows — sex wordings resolve to population-group concepts
+# ("women" -> UMLS:C0043210 "Woman") — so without PopulationOfIndividualOrganisms in the
+# allow-list every sex cell resolves to nothing and the slot never emits.
 _QUALIFIER_GUARD: dict[str, tuple[str, ...]] = {
     "disease_context_qualifier": ("Disease",),
     "anatomical_context_qualifier": ("AnatomicalEntity",),
-    "sex_qualifier": ("BiologicalSex",),
+    "sex_qualifier": ("BiologicalSex", "PopulationOfIndividualOrganisms"),
     "population_context_qualifier": ("PopulationOfIndividualOrganisms",),
+    "frequency_qualifier": ("InformationContentEntity",),
+    "temporal_context_qualifier": ("InformationContentEntity", "Phenomenon"),
+}
+
+# CURIE namespace prefixes dropped during qualifier entity resolution (``Qualifier`` extends
+# ``NodeEncoding``, so ``exclude_prefixes`` applies verbatim). ``EMAPA`` is the Mouse Anatomy
+# ontology; 65 anatomical-context edges in v1.13.0 carried ``EMAPA:36867`` (craniocervical
+# region) on human drug data.
+_QUALIFIER_EXCLUDE_PREFIXES: dict[str, tuple[str, ...]] = {"anatomical_context_qualifier": ("EMAPA",)}
+
+# Anchored CURIE denylists for qualifier node encodings (same mechanism as
+# :data:`_OBJECT_EXCLUDE_REGEX`): junk candidates the fullmap ties to legitimate wordings, where
+# denying the WORDING would also kill the honest candidate. Every entry is evidence-cited from
+# the v1.13.0 release audit (edge counts in parentheses). Denying a junk candidate lets the next
+# ranked candidate win — "eye" then resolves to the UBERON concept instead of the UMLS specimen
+# concept — and an unresolvable cell keeps its edge minus only the qualifier (``nullable``).
+_QUALIFIER_EXCLUDE_REGEX: dict[str, tuple[str, ...]] = {
+    "anatomical_context_qualifier": (
+        # UMLS specimen / bodily-material concepts (category AnatomicalEntity, but lab specimens
+        # and products, not anatomy): "Eye Specimen" (195), "Skin Specimen" (127),
+        # "Plasma - SpecimenType" (52), "Plasma Product" NCIT (52), "SpecimenType - Cornea" (48),
+        # "Fetal Tissue" (36), "Tumor tissue sample" (35), "Serum specimen" (19),
+        # "Specimen Type - Bone" (15), "XXX bone" (14), "Specimen Type - Wound" (12),
+        # "Specimen Type - Throat" (8), "Peripheral blood specimen" (8),
+        # "Bronchial Secretion" UMLS+NCIT (5+5), "Breast tissue sample" (2),
+        # "Red Blood Cells Product" NCIT (2), "Urethra specimen" (2), "Milk, Human" (2),
+        # "Placenta Specimen" (2), "Tissue specimen" (1), "Specimen Type - Skeletal muscle" (1),
+        # "Cervix Specimen" (1), "Specimen Type - Conjunctiva" (1), "Blood Glucose" NCIT (1).
+        r"^UMLS:C1550636$",
+        r"^UMLS:C0444099$",
+        r"^UMLS:C1609077$",
+        r"^NCIT:C133266$",
+        r"^UMLS:C1550625$",
+        r"^UMLS:C0242291$",
+        r"^UMLS:C0475358$",
+        r"^UMLS:C1550100$",
+        r"^UMLS:C1550616$",
+        r"^UMLS:C1442209$",
+        r"^UMLS:C1550680$",
+        r"^UMLS:C1550663$",
+        r"^UMLS:C1292451$",
+        r"^UMLS:C1511332$",
+        r"^NCIT:C13465$",
+        r"^UMLS:C0444070$",
+        r"^NCIT:C133280$",
+        r"^UMLS:C1550675$",
+        r"^UMLS:C0026140$",
+        r"^UMLS:C1550656$",
+        r"^UMLS:C1292533$",
+        r"^UMLS:C1550659$",
+        r"^UMLS:C1550623$",
+        r"^UMLS:C1550624$",
+        r"^NCIT:C94312$",
+        # Non-human / cross-taxon concepts: "Mouse Uterus" (20), "Mouse Vagina" (7),
+        # "Animal Tarsus" (1), insect "adult cerebral ganglion" UBERON (12),
+        # invertebrate "somatic muscle" UBERON (1). Mouse-anatomy EMAPA namespace prefixes are
+        # dropped wholesale via :data:`_QUALIFIER_EXCLUDE_PREFIXES`.
+        r"^UMLS:C1519876$",
+        r"^UMLS:C1519910$",
+        r"^UMLS:C1522382$",
+        r"^UBERON:6110636$",
+        r"^UBERON:0014895$",
+        # UMLS structural breadcrumb concepts ( anatomical parent>child path strings, not
+        # anatomy themselves): "Head>Eye" (195), "Lower extremity>Knee" (79),
+        # "Abdomen>Liver" (45), "Pelvis>Fallopian tube" (28), "Chest>Heart" (26),
+        # "Lower extremity>Hip" (20), "Pelvis>Uterus" (20), "Head+Neck>Nasopharynx" (14),
+        # "Pelvis>Rectum" (12), "Head>Brain" (12), "Pelvis>Ovary" (11), "Chest>Lung" (10),
+        # "Neck>Thyroid gland" (9), "Upper extremity>Forearm" (8), "Abdomen>Pancreas" (7),
+        # "Pelvis>Vagina" (7), "Abdomen+Pelvis>Gastrointestinal tract" (5),
+        # "Pelvis>Groin" (3), "Lower extremity>Thigh" (3),
+        # "Abdomen+Pelvis>Urinary bladder" (3), "Abdomen+Pelvis>Colon" (3),
+        # "Chest>Aortic arch" (2), "Head>Sinuses" (2), "Upper extremity>Shoulder" (2),
+        # "Pelvis>Placenta" (2), "Head>Face" (1), "Lower extremity>Toes" (1),
+        # "Abdomen>Stomach" (1), "Upper extremity>Finger" (1), "Head>Teeth" (1),
+        # "Chest>Airway" (1).
+        r"^UMLS:C4266572$",
+        r"^UMLS:C4299094$",
+        r"^UMLS:C4037986$",
+        r"^UMLS:C4266534$",
+        r"^UMLS:C4037974$",
+        r"^UMLS:C4299095$",
+        r"^UMLS:C4266525$",
+        r"^UMLS:C4266579$",
+        r"^UMLS:C4482211$",
+        r"^UMLS:C4266577$",
+        r"^UMLS:C4266530$",
+        r"^UMLS:C4037972$",
+        r"^UMLS:C4266537$",
+        r"^UMLS:C4299051$",
+        r"^UMLS:C4037927$",
+        r"^UMLS:C4482396$",
+        r"^UMLS:C4299166$",
+        r"^UMLS:C4266533$",
+        r"^UMLS:C4299091$",
+        r"^UMLS:C4037992$",
+        r"^UMLS:C4071907$",
+        r"^UMLS:C4037976$",
+        r"^UMLS:C4071871$",
+        r"^UMLS:C4299050$",
+        r"^UMLS:C4266528$",
+        r"^UMLS:C4266571$",
+        r"^UMLS:C4299090$",
+        r"^UMLS:C4266636$",
+        r"^UMLS:C4299059$",
+        r"^UMLS:C4071855$",
+        r"^UMLS:C4071894$",
+    ),
+    "population_context_qualifier": (
+        # Survey/administrative UMLS Population-Group concepts that are not populations of
+        # individuals for our purposes: "Humanities" (2), "Respondents" (2),
+        # "Health Personnel" (1).
+        r"^UMLS:C0020157$",
+        r"^UMLS:C0282122$",
+        r"^UMLS:C0018724$",
+    ),
+    "temporal_context_qualifier": (
+        # History-of / anamnesis Phenomenon concepts — the category guard keeps Phenomenon for
+        # genuine duration ranges ("3 to 5 days"), so these are excluded by CURIE:
+        # "Medical History" (73), "History of osteoporotic fracture" (25), "Prior Therapy" (13),
+        # "Planning to become pregnant" (12), "Prolonged menses" (6), "Past history of" (4),
+        # "H/O: hypertension" (3), "Childhood onset" (2), "previous therapy" (1),
+        # "Undiagnosed" (1), "history of drug abuse" (1).
+        r"^UMLS:C0262926$",
+        r"^UMLS:C4075937$",
+        r"^UMLS:C1514463$",
+        r"^UMLS:C2081645$",
+        r"^UMLS:C0425945$",
+        r"^UMLS:C0332119$",
+        r"^UMLS:C0455527$",
+        r"^UMLS:C1837352$",
+        r"^UMLS:C2114510$",
+        r"^UMLS:C1408353$",
+        r"^UMLS:C1299544$",
+    ),
 }
 
 # Per-table biolink statement qualifiers: (qualifier slot, backing assertion column). Emitted as
@@ -1178,9 +1322,13 @@ def table_config(table: str) -> dict[str, Any]:
             "nullable": True,
         }
         guard = _QUALIFIER_GUARD.get(qualifier)
-        if guard is not None:  # class-ranged slots get the hard category allow-list complement
+        if guard is not None:  # every slot gets the hard category allow-list complement
             entry["prioritize"] = list(guard)
             entry["avoid"] = category_avoid_list(guard)
+        if prefixes := _QUALIFIER_EXCLUDE_PREFIXES.get(qualifier):
+            entry["exclude_prefixes"] = list(prefixes)
+        if patterns := _QUALIFIER_EXCLUDE_REGEX.get(qualifier):
+            entry["exclude_regex"] = list(patterns)
         qualifiers.append(entry)
     statement: dict[str, Any] = {
         "subject": {

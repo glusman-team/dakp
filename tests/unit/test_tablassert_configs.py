@@ -336,16 +336,16 @@ def test_table_config_qualifiers(table: str) -> None:
         assert entry["encoding"] == tablassert_configs.column_letter(table, backing)
         # Sparse by construction: a blank or unresolved cell keeps the edge, omitting the qualifier.
         assert entry["nullable"] is True
-        guard = tablassert_configs._QUALIFIER_GUARD.get(entry["qualifier"])
-        if guard is not None:
-            assert entry["prioritize"] == list(guard)
-            assert entry["avoid"] == category_avoid_list(guard)
-        else:
-            assert "prioritize" not in entry
-            assert "avoid" not in entry
-        # Qualifiers carry no CURIE guard: the avoid complement names every off-allow-list
-        # category since Tablassert 18.1.0 (GenomicEntity included).
-        assert "exclude_regex" not in entry
+        # Every slot carries the hard category allow-list guard (the avoid complement names
+        # every off-allow-list category since Tablassert 18.1.0, GenomicEntity included) — the
+        # type-ranged frequency/temporal slots too, per the v1.13.0 junk-CURIE audit.
+        guard = tablassert_configs._QUALIFIER_GUARD[entry["qualifier"]]
+        assert entry["prioritize"] == list(guard)
+        assert entry["avoid"] == category_avoid_list(guard)
+        # CURIE denylists match the module dicts exactly: anchored junk-candidate regexes plus
+        # the EMAPA (Mouse Anatomy) namespace prefix on anatomical context.
+        assert entry.get("exclude_prefixes", []) == list(tablassert_configs._QUALIFIER_EXCLUDE_PREFIXES.get(entry["qualifier"], ()))
+        assert entry.get("exclude_regex", []) == list(tablassert_configs._QUALIFIER_EXCLUDE_REGEX.get(entry["qualifier"], ()))
 
 
 def test_declared_qualifier_emits_a_column_encoding() -> None:
@@ -1614,3 +1614,42 @@ def test_graph_stem_raises_when_keys_missing(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="missing top-level name/version"):
         _graph_stem(config)
+
+
+def test_every_qualifier_slot_carries_a_category_guard() -> None:
+    """Every granted qualifier slot (class-ranged AND type-ranged) emits a hard category guard.
+
+    The v1.13.0 audit showed the unguarded type-ranged slots resolved drug products, chemical
+    dosage forms, publications, genes, and a butterfly genus into frequency/temporal cells, and
+    the narrow ``BiologicalSex``-only sex guard resolved nothing at all (the fullmap has no
+    BiologicalSex rows; sex wordings resolve to population-group concepts).
+    """
+    import re
+
+    from dakp_pipeline.tablassert import _QUALIFIER_EXCLUDE_PREFIXES, _QUALIFIER_EXCLUDE_REGEX, _QUALIFIER_GUARD
+
+    assert _QUALIFIER_GUARD == {
+        "disease_context_qualifier": ("Disease",),
+        "anatomical_context_qualifier": ("AnatomicalEntity",),
+        "sex_qualifier": ("BiologicalSex", "PopulationOfIndividualOrganisms"),
+        "population_context_qualifier": ("PopulationOfIndividualOrganisms",),
+        "frequency_qualifier": ("InformationContentEntity",),
+        "temporal_context_qualifier": ("InformationContentEntity", "Phenomenon"),
+    }
+    for qualifier in _QUALIFIER_GUARD:
+        assert category_avoid_list(_QUALIFIER_GUARD[qualifier])  # avoid complement is never empty
+    # Every CURIE exclusion is anchored and compiles; anatomical exclusions also carry EMAPA.
+    for patterns in _QUALIFIER_EXCLUDE_REGEX.values():
+        assert patterns
+        for pattern in patterns:
+            assert pattern.startswith("^") and pattern.endswith("$")
+            re.compile(pattern)
+    assert _QUALIFIER_EXCLUDE_PREFIXES == {"anatomical_context_qualifier": ("EMAPA",)}
+    # The emitted configs carry the guards on exactly the slots that back columns.
+    for table in TABLES:
+        by_slot = {entry["qualifier"]: entry for entry in tablassert_configs.table_config(table)["statement"].get("qualifiers", [])}
+        for qualifier, entry in by_slot.items():
+            assert entry["prioritize"] == list(_QUALIFIER_GUARD[qualifier])
+            assert entry["avoid"] == category_avoid_list(_QUALIFIER_GUARD[qualifier])
+            assert entry.get("exclude_prefixes", []) == list(_QUALIFIER_EXCLUDE_PREFIXES.get(qualifier, ()))
+            assert entry.get("exclude_regex", []) == list(_QUALIFIER_EXCLUDE_REGEX.get(qualifier, ()))

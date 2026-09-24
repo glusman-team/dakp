@@ -205,3 +205,39 @@ def test_patient_clause_contexts_skips_mentions_without_a_sentence() -> None:
     assert clause.contexts == {}
     assert clause.context_only == {}
     assert clause.ambiguous == {}
+
+
+def test_junk_wording_qualifiers_are_withheld() -> None:
+    """Dosage-form frequency spans and anamnesis temporal spans are junk wordings.
+
+    The v1.13.0 release audit showed these wordings resolve to drug products, chemical dosage
+    forms, and history-of Phenomenon concepts, so they are withheld at attachment time, before
+    entity resolution. A legitimate wording in the same sentence still attaches.
+    """
+    sentence = "Medical history noted; drug treats asthma twice daily short-term."
+    host = [mention("asthma", sentence.index("asthma"), sentence.index("asthma") + 6, "Disease")]
+    qualifiers = [
+        mention("oral tablet", 0, 11, "frequency_qualifier"),
+        mention("Extended Release Oral Capsule", 0, 28, "frequency_qualifier"),
+        mention("twice daily", sentence.index("twice daily"), sentence.index("twice daily") + 11, "frequency_qualifier"),
+        mention("Medical history", 0, 15, "temporal_context_qualifier"),
+        mention("H/O: hypertension", 0, 17, "temporal_context_qualifier"),
+        mention("short-term", sentence.index("short-term"), sentence.index("short-term") + 10, "temporal_context_qualifier"),
+    ]
+    assert attach_qualifiers(host, qualifiers, lambda _m: sentence) == {0: {"frequency_text": "twice daily", "temporal_context_text": "short-term"}}
+
+
+def test_junk_wording_regex_never_matches_legit_wordings() -> None:
+    """Genuine frequency/temporal wordings pass the denylist untouched."""
+    from dakp_pipeline.assertions.contexts import _QUALIFIER_WORDING_DENYLIST
+
+    freq = _QUALIFIER_WORDING_DENYLIST["frequency_qualifier"]
+    for legit in ("once daily", "twice a week", "every 6 hours", "at bedtime", "3 times daily", "as needed"):
+        assert freq.search(legit) is None, legit
+    for junk in ("oral tablet", "tablets", "injection", "topical cream", "Extended Release Oral Capsule", "oral suspension", "suppository"):
+        assert freq.search(junk), junk
+    temporal = _QUALIFIER_WORDING_DENYLIST["temporal_context_qualifier"]
+    for legit in ("preoperative", "short-term", "chronic", "7 days", "during treatment", "postoperative"):
+        assert temporal.search(legit) is None, legit
+    for junk in ("medical history", "history", "prior therapy", "previous therapy", "H/O: hypertension", "documentation", "documents"):
+        assert temporal.search(junk), junk
