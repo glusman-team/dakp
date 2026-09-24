@@ -69,13 +69,57 @@ def test_defaers_text_leaves_clean_names_alone() -> None:
     assert defaers_text("PYRIDOXINE HYDROCHLORIDE 5'-PHOSPHATE SODIUM") == "PYRIDOXINE HYDROCHLORIDE 5'-PHOSPHATE SODIUM"
 
 
+def test_brand_aliases_normalize_to_generic_ingredient_text() -> None:
+    # v1.13.0 audit: tablassert QC rejected TRUE brand matches on weak fuzz/SapBERT
+    # scores (XEFO->Lornoxicam fuzz 33, BETOLVEX->Cyanocobalamin fuzz 27,
+    # rADAMTS13->Apadamtase alfa fuzz 70/sapbert 0.47). Normalizing the mention TEXT to
+    # the generic ingredient name gives the fullmap a strong match so QC never fires on
+    # a true match. TEXT-level only: DAKP never resolves CURIEs (tablassert's job).
+    assert defaers_text("XEFO") == "Lornoxicam"
+    assert defaers_text("Xefo") == "Lornoxicam"
+    assert defaers_text("XEFOCAM 8MG") == "Lornoxicam"
+    assert defaers_text("BETOLVEX") == "Cyanocobalamin"
+    assert defaers_text("Betolvex") == "Cyanocobalamin"
+    assert defaers_text("rADAMTS13") == "apadamtase alfa"
+    assert defaers_text("R-ADAMTS-13") == "apadamtase alfa"
+    assert defaers_text("recombinant ADAMTS13") == "apadamtase alfa"
+
+
+def test_brand_alias_requires_the_recombinant_marker() -> None:
+    # Bare ADAMTS13 is the endogenous enzyme, not the drug -- aliasing it would fabricate
+    # drug edges from enzyme mentions.
+    assert defaers_text("ADAMTS13") == "ADAMTS13"
+    assert defaers_text("ADAMTS-13 DEFICIENCY") == "ADAMTS-13 DEFICIENCY"
+
+
+def test_brand_alias_composes_with_dosage_and_hash_rules() -> None:
+    # Real FAERS-shaped junk: the alias must survive the dosage-tail and line-label rules.
+    assert defaers_text("XEFO 90 MG TABLET") == "Lornoxicam"
+    assert defaers_text("# BETOLVEX 1MG/ML INJ") == "Cyanocobalamin"
+
+
+def test_brand_aliases_never_touch_clean_or_deliberate_text() -> None:
+    # Generic names, unrelated strings, and the deliberate non-alias (the v1.13.0 QC
+    # rejection of PFIZER-BIONTECH to tozinameran product concepts was a CORRECT
+    # garbage-catch) must pass through unchanged.
+    for clean in ("Lornoxicam", "lornoxicam", "Cyanocobalamin", "apadamtase alfa", "Advil", "PFIZER-BIONTECH COVID-19 VACCINE"):
+        assert defaers_text(clean) == clean
+
+
+def test_brand_aliases_are_idempotent() -> None:
+    for value in ("XEFO 90 MG TABLET", "rADAMTS13 INJ", "Betolvex"):
+        once = defaers_text(value)
+        assert defaers_text(once) == once
+
+
+def test_defaersify_expr_matches_str_twin_on_brand_aliases() -> None:
+    cases = ["XEFO", "Betolvex 1MG/ML INJ", "rADAMTS13", "ADAMTS13", "Advil"]
+    out = pl.DataFrame({"t": cases}).select(defaersify(pl.col("t")).alias("t"))["t"].to_list()
+    assert out == [defaers_text(case) for case in cases]
+
+
 def test_defaers_text_junk_rules_are_idempotent() -> None:
-    for value in (
-        "PREDNISONE.",
-        "# CIPROFLOXACIN CIPROFLOXACIN HCL 500MG TAB)",
-        ".ALPHA.-TOCOPHEROL",
-        "(ALEMTUZUMAB) - UNKNOWN - 30 MG",
-    ):
+    for value in ("PREDNISONE.", "# CIPROFLOXACIN CIPROFLOXACIN HCL 500MG TAB)", ".ALPHA.-TOCOPHEROL", "(ALEMTUZUMAB) - UNKNOWN - 30 MG"):
         once = defaers_text(value)
         assert defaers_text(once) == once
 

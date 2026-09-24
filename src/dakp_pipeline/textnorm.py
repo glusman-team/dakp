@@ -21,6 +21,12 @@ Two families of mangling reach the lexical/fullmap resolvers through these helpe
    (the same conservation argument as the ``?`` restoration). Dosage tails truncate
    from the FIRST dosage token only when a non-empty name remains before it, so a
    string that is all dosage (``0.9% NACL ...``) is left untouched.
+
+3. **Brand/alias spellings** — brand drug names whose fullmap candidates are weak-score
+   (``XEFO``, ``BETOLVEX``, ``rADAMTS13``) got QC-rejected in v1.13.0 despite being TRUE
+   matches. The :data:`BRAND_ALIASES` table normalizes the mention text to the generic
+   ingredient name, which the fullmap resolves strongly — text normalization only, DAKP
+   still never resolves CURIEs (tablassert owns ontology mapping).
 """
 
 from __future__ import annotations
@@ -34,10 +40,7 @@ _LEADING_HASH = re.compile(r"^#+\s*")
 _EMPTY_PARENS = re.compile(r"\(\)")
 # Truncate at the first dosage token (``500MG TAB)``, ``0.5% EYE DROPS``, ``30 MG``);
 # lazy ``(.+?)`` + required leading ``\s`` keep a non-empty name prefix mandatory.
-_DOSAGE_TAIL = re.compile(
-    r"^(.+?)\s+\d+(?:[.,]\d+)?\s*(?:(?:MCGS?|GMS?|MGS?|MLS?|UNITS?|IUS?|G)\b|%).*$",
-    re.IGNORECASE | re.DOTALL,
-)
+_DOSAGE_TAIL = re.compile(r"^(.+?)\s+\d+(?:[.,]\d+)?\s*(?:(?:MCGS?|GMS?|MGS?|MLS?|UNITS?|IUS?|G)\b|%).*$", re.IGNORECASE | re.DOTALL)
 _WRAPPED_PARENS = re.compile(r"^\((.+)\)$")
 _TRAILING_PERIOD = re.compile(r"([A-Za-z])\.$")
 _MULTI_SPACE = re.compile(r"\s{2,}")
@@ -45,14 +48,53 @@ _MULTI_SPACE = re.compile(r"\s{2,}")
 _GREEK_TOKENS = tuple(
     f".{word}."
     for word in (
-        "ALPHA", "BETA", "GAMMA", "DELTA", "EPSILON", "ZETA", "ETA", "THETA",
-        "IOTA", "KAPPA", "LAMBDA", "MU", "NU", "XI", "OMICRON", "PI", "RHO",
-        "SIGMA", "TAU", "UPSILON", "PHI", "CHI", "PSI", "OMEGA",
+        "ALPHA",
+        "BETA",
+        "GAMMA",
+        "DELTA",
+        "EPSILON",
+        "ZETA",
+        "ETA",
+        "THETA",
+        "IOTA",
+        "KAPPA",
+        "LAMBDA",
+        "MU",
+        "NU",
+        "XI",
+        "OMICRON",
+        "PI",
+        "RHO",
+        "SIGMA",
+        "TAU",
+        "UPSILON",
+        "PHI",
+        "CHI",
+        "PSI",
+        "OMEGA",
     )
 )
-_POLARS_DOSAGE_TAIL = (
-    r"(?is)^(.+?)\s+\d+(?:[.,]\d+)?\s*(?:(?:MCGS?|GMS?|MGS?|MLS?|UNITS?|IUS?|G)\b|%).*$"
+# Brand/alias mention TEXT normalization (v1.13.0 data audit, plans/v1.13.0-data-audit-findings.md):
+# tablassert's QC rejected these brand spellings on weak fuzz/SapBERT scores even though the
+# matches were TRUE (tmp/.tablassert/log/tablassert.log on wenceslaus): XEFO -> Lornoxicam
+# (fuzz 33), BETOLVEX -> Cyanocobalamin (fuzz 27), rADAMTS13 -> Apadamtase alfa (fuzz 70 but
+# sapbert 0.47). Normalizing the mention text to the generic ingredient name gives the fullmap
+# a strong exact match, so QC never fires on a true match. This is TEXT-level only -- DAKP
+# performs no ontology resolution; tablassert still resolves the generic name to its CURIE.
+# Deliberately absent: PFIZER-BIONTECH COVID-19 VACCINE (its QC rejection to the tozinameran
+# product concepts was a CORRECT garbage-catch -- the brand maps to a product concept, not the
+# administered vaccine, and no generic single-ingredient name exists).
+BRAND_ALIASES: tuple[tuple[re.Pattern[str], str], ...] = (
+    # Xefo / Xefocam are lornoxicam brand names (Nycomed/Takeda).
+    (re.compile(r"(?i)\bXEFO(?:CAM)?\b"), "Lornoxicam"),
+    # Betolvex is a cyanocobalamin (vitamin B12) depot brand.
+    (re.compile(r"(?i)\bBETOLVEX\b"), "Cyanocobalamin"),
+    # rADAMTS13 (also written R-ADAMTS-13 / recombinant ADAMTS13) is the drug apadamtase alfa;
+    # bare ADAMTS13 is the endogenous enzyme and must NOT alias.
+    (re.compile(r"(?i)\bR[- ]?ADAMTS-?13\b|\bRECOMBINANT\s+ADAMTS-?13\b"), "apadamtase alfa"),
 )
+_POLARS_BRAND_ALIASES: tuple[tuple[str, str], ...] = tuple((pattern.pattern, replacement) for pattern, replacement in BRAND_ALIASES)
+_POLARS_DOSAGE_TAIL = r"(?is)^(.+?)\s+\d+(?:[.,]\d+)?\s*(?:(?:MCGS?|GMS?|MGS?|MLS?|UNITS?|IUS?|G)\b|%).*$"
 _POLARS_TRAILING_PERIOD = r"(?i)([A-Za-z])\.$"
 _POLARS_WRAPPED_PARENS = r"^\((.+)\)$"
 _POLARS_LEADING_HASH = r"^#+\s*"
@@ -81,6 +123,9 @@ def defaers_text(value: str) -> str:
     for token in _GREEK_TOKENS:
         if token in value:
             value = value.replace(token, token[1:-1].lower())
+    for pattern, generic in BRAND_ALIASES:
+        if pattern.search(value):
+            value = pattern.sub(generic, value)
     return _MULTI_SPACE.sub(" ", value).strip(_EDGE_JUNK)
 
 
@@ -100,7 +145,9 @@ def defaersify(expr: pl.Expr) -> pl.Expr:
     expr = expr.str.replace_all(_POLARS_TRAILING_PERIOD, "${1}")
     for token in _GREEK_TOKENS:
         expr = expr.str.replace_all(token, token[1:-1].lower(), literal=True)
+    for pattern, generic in _POLARS_BRAND_ALIASES:
+        expr = expr.str.replace_all(pattern, generic)
     return expr.str.replace_all(_POLARS_MULTI_SPACE, " ").str.strip_chars(_EDGE_JUNK)
 
 
-__all__ = ["defaers_text", "defaersify"]
+__all__ = ["BRAND_ALIASES", "defaers_text", "defaersify"]
