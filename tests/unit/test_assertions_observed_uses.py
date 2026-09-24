@@ -220,6 +220,29 @@ def test_pair_matching_is_case_and_punctuation_insensitive() -> None:
     assert rows[0]["clinical_approval_status"] == "approved_for_condition"
 
 
+def test_status_is_canonical_across_drugname_spelling_variants(disease_map: dict[str, dict[str, str]]) -> None:
+    # v1.13.0 foldreport: 3,283 merged edges carried conflicting clinical_approval_status
+    # scalars because cross-spelling drugname variants derived different statuses. The pair
+    # key now runs the SAME textnorm chain on both sides, so the brand alias (Xefo ->
+    # Lornoxicam), a dosage-junk variant, and the plain generic ALL derive the ONE status of
+    # the approved pair -- Tablassert's first-wins merge then sees no conflict.
+    cases = pl.DataFrame({"drugname": ["XEFO", "Xefo 90 MG TABLET", "LORNOXICAM"], "indication": ["arthritis", "arthritis", "arthritis"]})
+    rows = build_observed_use_rows(cases, disease_map, {("lornoxicam", "arthritis")})
+    assert {r["clinical_approval_status"] for r in rows} == {"approved_for_condition"}
+    # A drug with no treats counterpart stays off_label in every variant.
+    cases2 = pl.DataFrame({"drugname": ["XEFO", "LORNOXICAM"], "indication": ["dizziness", "dizziness"]})
+    rows2 = build_observed_use_rows(cases2, disease_map, {("lornoxicam", "arthritis")})
+    assert {r["clinical_approval_status"] for r in rows2} == {"off_label_use"}
+
+
+def test_approved_pair_index_runs_the_full_textnorm_chain() -> None:
+    # The index is built from approved-treats subject_text, which can itself carry FAERS
+    # fallback junk (brand aliases, dosage tails); both sides must canonicalize identically
+    # or the lookup answers asymmetrically.
+    frame = pl.DataFrame({"subject_text": ["XEFO 8MG", "Examplestatin"], "object_text": ["Arthritis", "Pain"]})
+    assert _approved_pair_index(frame) == {("lornoxicam", "arthritis"), ("examplestatin", "pain")}
+
+
 def test_approved_pair_index_normalizes_and_skips_incomplete_rows() -> None:
     frame = pl.DataFrame({"subject_text": ["Examplestatin", "", "DrugY"], "object_text": ["Hypercholesterolemia", "pain", ""]})
     assert _approved_pair_index(frame) == {("examplestatin", "hypercholesterolemia")}
