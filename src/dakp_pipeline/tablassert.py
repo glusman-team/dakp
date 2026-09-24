@@ -1321,10 +1321,9 @@ def table_config(table: str) -> dict[str, Any]:
             # (Tablassert >= 15.1 ``nullable`` semantics).
             "nullable": True,
         }
-        guard = _QUALIFIER_GUARD.get(qualifier)
-        if guard is not None:  # every slot gets the hard category allow-list complement
-            entry["prioritize"] = list(guard)
-            entry["avoid"] = category_avoid_list(guard)
+        guard = _QUALIFIER_GUARD[qualifier]  # every granted slot carries a guard; KeyError = unknown slot
+        entry["prioritize"] = list(guard)
+        entry["avoid"] = category_avoid_list(guard)
         if prefixes := _QUALIFIER_EXCLUDE_PREFIXES.get(qualifier):
             entry["exclude_prefixes"] = list(prefixes)
         if patterns := _QUALIFIER_EXCLUDE_REGEX.get(qualifier):

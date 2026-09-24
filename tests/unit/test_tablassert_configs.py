@@ -1642,7 +1642,8 @@ def test_every_qualifier_slot_carries_a_category_guard() -> None:
     for patterns in _QUALIFIER_EXCLUDE_REGEX.values():
         assert patterns
         for pattern in patterns:
-            assert pattern.startswith("^") and pattern.endswith("$")
+            assert pattern.startswith("^")
+            assert pattern.endswith("$")
             re.compile(pattern)
     assert _QUALIFIER_EXCLUDE_PREFIXES == {"anatomical_context_qualifier": ("EMAPA",)}
     # The emitted configs carry the guards on exactly the slots that back columns.
