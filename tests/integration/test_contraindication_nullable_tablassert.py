@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 from pathlib import Path
 from typing import Any
 
@@ -29,12 +30,19 @@ def _class(curie: str) -> dict[str, Any]:
 def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Context-bearing and unconditional rows stay DISTINCT edges; only the first is qualified.
 
+    The test forces tablassert's section-extraction ``Pool`` onto the ``spawn`` context: under
+    pytest-xdist the default fork inherits execnet/loguru threads and their locks, and a child
+    forked while a lock is held deadlocks forever (seen live in CI 2026-09-23/24; faulthandler
+    pinned the parent in ``Pool`` wait at tablassert/cli.py extract stage). Spawn re-imports
+    cleanly, sidestepping inherited-thread state entirely.
+
     Tablassert 15.1's ``CLASS_FIELD_OVERRIDES`` grant (SkyeAv/Tablassert#120) lets the pinned
     ``EntityToDiseaseAssociation`` keep ``disease_context_qualifier``, and the emitted qualifier is
     ``nullable`` — so "contraindicated in asthma when treating hypertension" and "contraindicated in
     asthma" no longer deduplicate: the qualifier distinguishes them. The qualified edge carries the
     resolved context CURIE; the blank-context row keeps its edge minus only the qualifier.
     """
+    monkeypatch.setattr("tablassert.cli.Pool", lambda: multiprocessing.get_context("spawn").Pool())
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".tablassert" / "store").mkdir(parents=True)
     (tmp_path / "tabular").mkdir(parents=True)
