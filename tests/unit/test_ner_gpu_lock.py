@@ -430,11 +430,7 @@ def test_acquire_gpu_lock_timeout_reaps_orphaned_holder_and_succeeds(monkeypatch
         # With the default 10s grace the test burned the full wait on a zombie. The real reap
         # path (SIGKILL candidates, wait loop, released-flock retry) still runs end to end.
         real_reaper = ner_module._reap_orphaned_lock_competitors
-        monkeypatch.setattr(
-            ner_module,
-            "_reap_orphaned_lock_competitors",
-            lambda path, **kwargs: real_reaper(path, grace=0.3, **kwargs),
-        )
+        monkeypatch.setattr(ner_module, "_reap_orphaned_lock_competitors", lambda path, **kwargs: real_reaper(path, grace=0.3, **kwargs))
         started = time.monotonic()
         fd = _acquire_gpu_lock("cuda:0", tmp_path, timeout=0.3)  # would raise without the reap
         try:
