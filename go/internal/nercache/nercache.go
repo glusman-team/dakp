@@ -18,9 +18,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"sync/atomic"
 
 	"github.com/cockroachdb/pebble/v2"
+	"golang.org/x/sync/errgroup"
 )
 
 // ServerFileName is the discovery file written next to the DB directory on listen:
@@ -140,18 +143,38 @@ func (s *Server) handleBatchGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hits := make(map[string]json.RawMessage, len(req.Keys))
+	if len(req.Keys) == 0 {
+		writeJSON(w, http.StatusOK, batchGetResponse{Hits: hits})
+		return
+	}
+	// Pebble Gets are independent per key, but a shard-wide batch is tens of
+	// thousands of keys and one goroutine's sequential memtable/L-seek latency
+	// dominates it. Issue them from a bounded worker pool (one worker per CPU);
+	// the response map is identical regardless of completion order.
+	var mu sync.Mutex
+	group := new(errgroup.Group)
+	group.SetLimit(min(runtime.NumCPU(), len(req.Keys)))
 	for _, key := range req.Keys {
-		value, closer, err := s.db.Get([]byte(key))
-		if err == pebble.ErrNotFound {
-			continue
-		}
-		if err != nil {
-			writeError(w, fmt.Errorf("batch_get: %w", err))
-			return
-		}
-		// Get's slice aliases DB memory: copy before releasing the closer.
-		hits[key] = append(json.RawMessage(nil), value...)
-		_ = closer.Close()
+		key := key
+		group.Go(func() error {
+			value, closer, err := s.db.Get([]byte(key))
+			if err == pebble.ErrNotFound {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			// Get's slice aliases DB memory: copy before releasing the closer.
+			mu.Lock()
+			hits[key] = append(json.RawMessage(nil), value...)
+			mu.Unlock()
+			_ = closer.Close()
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		writeError(w, fmt.Errorf("batch_get: %w", err))
+		return
 	}
 	writeJSON(w, http.StatusOK, batchGetResponse{Hits: hits})
 }

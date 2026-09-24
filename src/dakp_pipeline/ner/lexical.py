@@ -128,8 +128,13 @@ class LexicalMatcher:
         raw_ignore = DEFAULT_IGNORE_TERMS if ignore_terms is None else ignore_terms
         self._ignore = frozenset(normalize_text(term) for term in raw_ignore)
         self._synonyms: dict[str, str] = {normalize_text(k): normalize_text(v) for k, v in (synonyms or {}).items()}
-        # Longest-first (then lexicographic) (term, type) pairs for deterministic greedy matching.
-        self._terms = sorted(gazetteer.items(), key=lambda item: (-len(item[0]), item[0]))
+        # Longest-first (then lexicographic) (term, first_word, type) triples for deterministic
+        # greedy matching. ``first_word`` precomputes the presence pre-filter in match(): a
+        # word-bounded occurrence of a term requires its first word to occur as a token in the
+        # normalized text, so terms whose first word is absent can never match and skip the
+        # str.find scan entirely.
+        ordered = sorted(gazetteer.items(), key=lambda item: (-len(item[0]), item[0]))
+        self._term_entries: list[tuple[str, str, str]] = [(term, term.split(" ", 1)[0], etype) for term, etype in ordered]
 
     # -- ignore handling -------------------------------------------------------
     def is_ignored_text(self, text: str) -> bool:
@@ -142,6 +147,12 @@ class LexicalMatcher:
 
         Whole-field ignore terms yield no mentions. Output is sorted by
         ``(start, end, type, text)``.
+
+        A term is find-scanned only when its precomputed first word occurs as a token in the
+        normalized text (exact: a word-bounded match is impossible otherwise) and the term is
+        no longer than the text. Term processing keeps the global longest-first order, so
+        coverage decisions and output are identical to a full scan; only absent terms are
+        skipped, turning the per-text cost from O(terms x text_len) into O(terms + text_len).
         """
         if not text or not text.strip() or self.is_ignored_text(text):
             return []
@@ -153,7 +164,11 @@ class LexicalMatcher:
 
         mentions: list[Mention] = []
         covered: list[tuple[int, int]] = []  # accepted normalized-space spans
-        for term, etype in self._terms:
+        present = frozenset(normalized.split(" "))
+        text_len = len(normalized)
+        for term, first_word, etype in self._term_entries:
+            if len(term) > text_len or first_word not in present:
+                continue
             for start in _find_word_bounded(normalized, term):
                 end = start + len(term)
                 if _overlaps_any(start, end, covered):

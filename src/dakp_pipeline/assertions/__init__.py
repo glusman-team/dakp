@@ -36,7 +36,12 @@ def match_diseases(text: str, disease_map: Mapping[str, Mapping[str, str]]) -> l
     lowered = (text or "").lower()
     matches: list[dict[str, str]] = []
     for key, info in disease_map.items():
-        if key and key.lower() in lowered:
+        if not key:
+            continue
+        # Keys are essentially always already lowercase; islower() avoids allocating a
+        # lowered copy of every key on every call (match_diseases runs per text).
+        needle = key if key.islower() else key.lower()
+        if needle in lowered:
             matches.append({"text": key, "curie": info.get("curie", ""), "name": info.get("name", key), "category": info.get("category", "Disease")})
     return matches
 

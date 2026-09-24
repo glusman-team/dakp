@@ -47,6 +47,11 @@ _START_WAIT_SECONDS = 5.0
 _START_POLL_SECONDS = 0.1
 #: How long close() waits for SIGTERM to stop a server this instance started.
 _STOP_WAIT_SECONDS = 3.0
+#: Maximum items per batch_put request. A shard can hold tens of thousands of freshly
+#: mined texts; one giant request would hold the whole serialized body in memory at once.
+#: Chunking bounds the per-request footprint; the server applies each chunk independently,
+#: and the cache is fail-soft, so a failed chunk only means the rest is re-mined later.
+_PUT_CHUNK_SIZE = 4000
 
 
 def normalize_key_text(text: str) -> str:
@@ -253,11 +258,15 @@ class MentionCache:
         return out
 
     def put_many(self, items: dict[str, list[Mention]]) -> None:
-        """Store ``{key: mentions}``; a no-op when the cache is unavailable."""
+        """Store ``{key: mentions}`` in bounded chunks; a no-op when the cache is unavailable."""
         if not items:
             return
-        payload = {key: [mention.to_dict() for mention in mentions] for key, mentions in items.items()}
-        self._post("/batch_put", {"items": payload})
+        keys = sorted(items)
+        for start in range(0, len(keys), _PUT_CHUNK_SIZE):
+            chunk = keys[start : start + _PUT_CHUNK_SIZE]
+            payload = {key: [mention.to_dict() for mention in items[key]] for key in chunk}
+            if self._post("/batch_put", {"items": payload}) is None:
+                return  # fail-soft: stop on first failed chunk (warned once in _post)
 
     def delete_many(self, keys: list[str]) -> None:
         """Purge ``keys`` from the store (purge-on-refusal support); no-op when unavailable."""
