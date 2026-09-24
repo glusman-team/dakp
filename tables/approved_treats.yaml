@@ -601,6 +601,15 @@ template:
       - column: F
         comparison: ne
         comparator: "Glucose tolerance test"
+      - column: F
+        comparison: ne
+        comparator: CRYING
+      - column: F
+        comparison: ne
+        comparator: crying
+      - column: F
+        comparison: ne
+        comparator: Crying
   statement:
     subject:
       method: column
@@ -767,6 +776,8 @@ template:
         - Virus
         - WebPage
         - Zygosity
+      exclude_regex:
+        - "^UMLS:C1314429$"
     predicate: treats
     object:
       method: column

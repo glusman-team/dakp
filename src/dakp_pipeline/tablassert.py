@@ -768,6 +768,13 @@ _TABLE_OBJECT_DENYLIST: tuple[str, ...] = (
     "UNEVALUABLE EVENT",
     "SUBSTANCE USE",
     "GLUCOSE TOLERANCE TEST",
+    # (4) patient-state wordings with no disease referent (v1.13.0 data audit): "CRYING" was
+    # QC-rejected by Tablassert in the v1.12.7 build (tied to NCIT:C103385 "Complete Response
+    # with Incomplete Bone Marrow Recovery" — an oncology status term, not crying) and the
+    # 2026jul22 fullmap ties it to fly/mouse "cri" gene concepts; the v1.13.0 category
+    # allow-lists happened to drop all of those, and the emitted KG carries 0 crying objects.
+    # Denying the wording at load keeps that guarantee against fullmap source churn.
+    "CRYING",
 )
 
 # CURIEs dropped from the OBJECT side during entity resolution via the object NodeEncoding's
@@ -782,6 +789,18 @@ _TABLE_OBJECT_DENYLIST: tuple[str, ...] = (
 # CURIE; extend this tuple only with CURIEs whose wording channels are shared with real diseases
 # — wording-only junk belongs in :data:`_TABLE_OBJECT_DENYLIST` above.
 _OBJECT_EXCLUDE_REGEX: tuple[str, ...] = (r"^UMLS:C0812393$",)
+
+# CURIEs dropped from the SUBJECT side during entity resolution via the subject NodeEncoding's
+# ``exclude_regex`` (same mechanism as :data:`_OBJECT_EXCLUDE_REGEX`, subject flavor). Seeded
+# from the v1.13.0 data audit (plans/v1.13.0-data-audit-findings.md): UMLS:C1314429 is the
+# HCPCS admin-code concept "INJECTION, OXALIPLATIN, 0.5 MG ADMINISTERED" — an administration
+# billing term, not a drug — but it is categorized ``biolink:Drug`` (so the subject category
+# allow-list passes it) and the fullmap ties it to the SAME wording as the real drug
+# ("OXALIPLATIN" + pipe-joined spelling variants): 197 v1.13.0 subject edges landed on it.
+# Wording-level denial is impossible (it would kill the real drug's rows); excluding the CURIE
+# lets "OXALIPLATIN" fall through to CHEBI oxaliplatin. Exact-CURIE anchor: the audit found no
+# other HCPCS admin-code concepts among the emitted nodes, so no range pattern is justified.
+_SUBJECT_EXCLUDE_REGEX: tuple[str, ...] = (r"^UMLS:C1314429$",)
 
 # Deliberately KEPT — the outcome/exposure relatives that name REAL conditions: "sensory loss"
 # (the real phenotype NCIT:C182234 wrongly also carries the procedure wording "anaesthesia"; its
@@ -1339,6 +1358,7 @@ def table_config(table: str) -> dict[str, Any]:
             "encoding": column_letter(table, SUBJECT_COLUMN),
             "prioritize": list(SUBJECT_PRIORITIZE),
             "avoid": category_avoid_list(SUBJECT_PRIORITIZE),
+            "exclude_regex": list(_SUBJECT_EXCLUDE_REGEX),
         },
         "predicate": predicate,
         "object": {

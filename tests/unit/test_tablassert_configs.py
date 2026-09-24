@@ -296,7 +296,10 @@ def test_table_config_structure(table: str) -> None:
     assert statement["subject"]["encoding"] == tablassert_configs.column_letter(table, "subject_text")
     assert statement["subject"]["prioritize"] == ["Drug", "SmallMolecule", "ChemicalEntity"]
     assert statement["subject"]["avoid"] == category_avoid_list(SUBJECT_PRIORITIZE)
-    assert "exclude_regex" not in statement["subject"]  # the avoid complement is complete since 18.1.0
+    # Subject-side CURIE exclusions are only the HCPCS admin-code guard (UMLS:C1314429, the
+    # v1.13.0 audit's 197-edge "INJECTION, OXALIPLATIN, 0.5 MG ADMINISTERED" leak): wording
+    # filters cannot express "drop this CURIE, keep that one" for the shared drug name.
+    assert statement["subject"]["exclude_regex"] == list(tablassert_configs._SUBJECT_EXCLUDE_REGEX)
     assert statement["object"]["method"] == "column"
     assert statement["object"]["encoding"] == tablassert_configs.column_letter(table, "object_text")
     assert statement["object"]["prioritize"] == ["Disease", "PhenotypicFeature"]
@@ -849,8 +852,26 @@ def test_object_exclude_regex_on_all_tables() -> None:
     for table in TABLES:
         section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
         assert list(section.statement.object.exclude_regex or []) == expected
-        # The subject encoding carries no CURIE guard: the avoid complement is complete since 18.1.0.
-        assert not section.statement.subject.exclude_regex
+        # The subject encoding carries only the HCPCS admin-code guard (US-002, v1.13.0 audit:
+        # UMLS:C1314429 tied to the same "OXALIPLATIN" wording as the real drug, categorized
+        # biolink:Drug so the allow-list passed it, 197 leaked subject edges).
+        assert list(section.statement.subject.exclude_regex or []) == list(tablassert_configs._SUBJECT_EXCLUDE_REGEX)
+
+
+def test_subject_exclude_regex_on_all_tables() -> None:
+    # CURIE-level subject exclusions: UMLS:C1314429 ("INJECTION, OXALIPLATIN, 0.5 MG
+    # ADMINISTERED") is an HCPCS administration billing concept categorized biolink:Drug —
+    # the subject category allow-list cannot drop it, and the fullmap ties it to the SAME
+    # wording as the real drug (197 v1.13.0 subject edges), so the junk CURIE is dropped at
+    # resolution via the subject NodeEncoding's exclude_regex (Tablassert >= 16). Exercises the
+    # Section model's polars-compatibility validator on each pattern.
+    from tablassert.models import Section
+
+    expected = [r"^UMLS:C1314429$"]
+    assert list(tablassert_configs._SUBJECT_EXCLUDE_REGEX) == expected
+    for table in TABLES:
+        section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
+        assert list(section.statement.subject.exclude_regex or []) == expected
 
 
 # --- graph config structure -------------------------------------------------------
