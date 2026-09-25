@@ -69,6 +69,27 @@ def test_defaers_text_leaves_clean_names_alone() -> None:
     assert defaers_text("PYRIDOXINE HYDROCHLORIDE 5'-PHOSPHATE SODIUM") == "PYRIDOXINE HYDROCHLORIDE 5'-PHOSPHATE SODIUM"
 
 
+def test_defaers_text_strips_unclosed_paren_junk() -> None:
+    # v1.13.1 audit: 3,723 distinct FAERS subjects carry an unterminated ``( ...`` tail from
+    # ASCII truncation. The tail is noise around a longer name: 'ACETYLSALICYLIC ACID (}'
+    # fuzzy-matched onto Clofedanol (wrong drug) in the v1.13.1 full build.
+    assert defaers_text("ACETYLSALICYLIC ACID (}") == "ACETYLSALICYLIC ACID"
+    assert defaers_text("NAPROXEN SODIUM ({") == "NAPROXEN SODIUM"
+    assert defaers_text("BARICITINIB (baricitinib") == "BARICITINIB"
+    assert defaers_text("(CARBIDOPA") == "CARBIDOPA"
+    assert defaers_text("EFRACEA (DOXYCYCLINE) (40 MG") == "EFRACEA (DOXYCYCLINE)"
+    assert defaers_text("A (B (C") == "A"
+    # Balanced parens are never touched, and a truncation that would empty the name keeps it.
+    assert defaers_text("bosentan (as monohydrate)") == "bosentan (as monohydrate)"
+    assert defaers_text("((") == "(("
+
+
+def test_defaersify_expr_matches_str_twin_on_unclosed_parens() -> None:
+    cases = ["ACETYLSALICYLIC ACID (}", "(CARBIDOPA", "A (B (C", "bosentan (as monohydrate)", "((", None]
+    out = pl.DataFrame({"t": cases}).select(defaersify(pl.col("t")).alias("t"))["t"].to_list()
+    assert out == [defaers_text(case) if case is not None else None for case in cases]
+
+
 def test_brand_aliases_normalize_to_generic_ingredient_text() -> None:
     # v1.13.0 audit: tablassert QC rejected TRUE brand matches on weak fuzz/SapBERT
     # scores (XEFO->Lornoxicam fuzz 33, BETOLVEX->Cyanocobalamin fuzz 27,
@@ -83,6 +104,37 @@ def test_brand_aliases_normalize_to_generic_ingredient_text() -> None:
     assert defaers_text("rADAMTS13") == "apadamtase alfa"
     assert defaers_text("R-ADAMTS-13") == "apadamtase alfa"
     assert defaers_text("recombinant ADAMTS13") == "apadamtase alfa"
+    # v1.14.0 growth: the top unresolved FAERS brand subjects by case mass (HUMIRA alone was
+    # 632,251 dropped cases in v1.13.1 -- brand texts miss the fullmap, the generic resolves;
+    # targets verified against the v1.13.1 node names / treats-side CURIEs).
+    assert defaers_text("HUMIRA") == "Adalimumab"
+    assert defaers_text("DUPIXENT") == "Dupilumab"
+    assert defaers_text("ENBREL") == "Etanercept"
+    assert defaers_text("Enbrel") == "Etanercept"
+    assert defaers_text("TYSABRI") == "Natalizumab"
+    assert defaers_text("REMICADE") == "Infliximab"
+    assert defaers_text("INFLECTRA") == "Infliximab"
+    assert defaers_text("ZANTAC") == "Ranitidine"
+    assert defaers_text("COSENTYX") == "Secukinumab"
+    assert defaers_text("REPATHA") == "Evolocumab"
+    assert defaers_text("PROLIA") == "Denosumab"
+    assert defaers_text("LANTUS SOLOSTAR") == "Insulin glargine"
+    assert defaers_text("PROVENTIL HFA") == "Albuterol HFA"
+    assert defaers_text("AVONEX") == "Interferon beta-1a"
+    assert defaers_text("REBIF") == "Interferon beta-1a"
+    assert defaers_text("CABOZANTINIB S-MALATE") == "Cabozantinib"
+    # Indication-text canonicalization: v1.13.1 resolved 'CUSHING'S SYNDROME' into the
+    # hyperaldosteronism wording channel while the treats side carries Cushing syndrome.
+    assert defaers_text("CUSHING'S SYNDROME") == "Cushing syndrome"
+    assert defaers_text("CUSHINGS SYNDROME") == "Cushing syndrome"
+
+
+def test_brand_alias_growth_never_captures_lookalikes() -> None:
+    # FORTECORTIN (dexamethasone brand) contains FORTEO as a prefix; the word boundary must
+    # not fire, and the deliberate non-aliases stay put.
+    assert defaers_text("FORTECORTIN") == "FORTECORTIN"
+    assert defaers_text("FORTECORTIN DEXAMETHASONE") == "FORTECORTIN DEXAMETHASONE"
+    assert defaers_text("ADAMTS13") == "ADAMTS13"
 
 
 def test_brand_alias_requires_the_recombinant_marker() -> None:

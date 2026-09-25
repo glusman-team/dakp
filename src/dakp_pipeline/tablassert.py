@@ -800,7 +800,14 @@ _OBJECT_EXCLUDE_REGEX: tuple[str, ...] = (r"^UMLS:C0812393$",)
 # Wording-level denial is impossible (it would kill the real drug's rows); excluding the CURIE
 # lets "OXALIPLATIN" fall through to CHEBI oxaliplatin. Exact-CURIE anchor: the audit found no
 # other HCPCS admin-code concepts among the emitted nodes, so no range pattern is justified.
-_SUBJECT_EXCLUDE_REGEX: tuple[str, ...] = (r"^UMLS:C1314429$",)
+# HCPCS administration billing concepts categorized ``biolink:Drug`` whose wording shares
+# the real drug's wording channel (v1.13.0: UMLS:C1314429 "INJECTION, OXALIPLATIN, 0.5 MG
+# ADMINISTERED", 197 leaked subject edges; v1.14.0: UMLS:C0812740 "INJECTION, PIPERACILLIN
+# SODIUM/TAZOBACTAM SODIUM, 1 GRAM/0.125 GRAMS (1.125 GRAMS) ADMINISTERED", which carried an
+# unbacked approved_for_condition edge in the v1.13.1 build). Exact-CURIE anchors: the
+# concepts share wording with their ingredient, so no class-wide wording filter can express
+# "drop this CURIE, keep that one".
+_SUBJECT_EXCLUDE_REGEX: tuple[str, ...] = (r"^UMLS:C1314429$", r"^UMLS:C0812740$")
 
 # Deliberately KEPT — the outcome/exposure relatives that name REAL conditions: "sensory loss"
 # (the real phenotype NCIT:C182234 wrongly also carries the procedure wording "anaesthesia"; its

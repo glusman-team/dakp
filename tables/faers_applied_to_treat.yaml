@@ -840,6 +840,7 @@ template:
         - Zygosity
       exclude_regex:
         - "^UMLS:C1314429$"
+        - "^UMLS:C0812740$"
     predicate: applied_to_treat
     object:
       method: column

@@ -11,8 +11,11 @@ Two families of mangling reach the lexical/fullmap resolvers through these helpe
 2. **FAERS ``drugname`` field junk** — the free-text drugname field mixes product label
    text with dosage/form suffixes (``CIPROFLOXACIN CIPROFLOXACIN HCL 500MG TAB)``,
    ``(ALEMTUZUMAB) - UNKNOWN - 30 MG``), line-label ``#`` prefixes, empty ``()`` pairs,
-   trailing sentence periods (``PREDNISONE.`` — 2,219 rows in v1.13.0), and legacy
-   NCR-style Greek tokens (``.ALPHA.-TOCOPHEROL``). None of that reaches the resolver
+   unterminated parentheticals from ASCII truncation (``ACETYLSALICYLIC ACID (}``,
+   ``NAPROXEN SODIUM ({``, ``BARICITINIB (baricitinib`` — 3,723 distinct v1.13.1
+   subjects; the v1.13.1 audit's ``ACETYLSALICYLIC ACID (}`` fuzzy-matched onto
+   Clofedanol, a wrong drug), trailing sentence periods (``PREDNISONE.`` — 2,219 rows
+   in v1.13.0), and legacy NCR-style Greek tokens (``.ALPHA.-TOCOPHEROL``). None of that reaches the resolver
    as a clean ingredient name: the v1.13.0 audit measured 45,929 distinct unresolved
    texts carrying a dosage tail (10/12 sample rescue rate once truncated), 3,541
    trailing-dot texts (6/12 rescue), plus hundreds of ``()``/``#`` rows. Every rule
@@ -24,9 +27,12 @@ Two families of mangling reach the lexical/fullmap resolvers through these helpe
 
 3. **Brand/alias spellings** — brand drug names whose fullmap candidates are weak-score
    (``XEFO``, ``BETOLVEX``, ``rADAMTS13``) got QC-rejected in v1.13.0 despite being TRUE
-   matches. The :data:`BRAND_ALIASES` table normalizes the mention text to the generic
-   ingredient name, which the fullmap resolves strongly — text normalization only, DAKP
-   still never resolves CURIEs (tablassert owns ontology mapping).
+   matches, and v1.13.1 left the top FAERS brand subjects entirely unresolved (HUMIRA
+   alone: 632,251 dropped cases; DUPIXENT 454,729; ZANTAC 429,605; ENBREL 422,903 — the
+   generic ingredient texts resolve strongly, the brands miss). The :data:`BRAND_ALIASES`
+   table normalizes the mention text to the generic ingredient name, which the fullmap
+   resolves strongly — text normalization only, DAKP still never resolves CURIEs
+   (tablassert owns ontology mapping).
 """
 
 from __future__ import annotations
@@ -38,6 +44,11 @@ import polars as pl
 _COLLAPSED_HYPHENS = re.compile(r"-{2,}")
 _LEADING_HASH = re.compile(r"^#+\s*")
 _EMPTY_PARENS = re.compile(r"\(\)")
+# Unterminated parenthetical tail (FAERS ASCII truncation): ``ACETYLSALICYLIC ACID (}``,
+# ``NAPROXEN SODIUM ({``, ``BARICITINIB (baricitinib``. The tail from the last unclosed
+# ``( is noise around a longer name, so dropping it only raises lexical similarity; a
+# truncation that would empty the name keeps its original text.
+_UNCLOSED_PAREN_TAIL = re.compile(r"\([^()]*$")
 # Truncate at the first dosage token (``500MG TAB)``, ``0.5% EYE DROPS``, ``30 MG``);
 # lazy ``(.+?)`` + required leading ``\s`` keep a non-empty name prefix mandatory.
 _DOSAGE_TAIL = re.compile(r"^(.+?)\s+\d+(?:[.,]\d+)?\s*(?:(?:MCGS?|GMS?|MGS?|MLS?|UNITS?|IUS?|G)\b|%).*$", re.IGNORECASE | re.DOTALL)
@@ -92,6 +103,52 @@ BRAND_ALIASES: tuple[tuple[re.Pattern[str], str], ...] = (
     # rADAMTS13 (also written R-ADAMTS-13 / recombinant ADAMTS13) is the drug apadamtase alfa;
     # bare ADAMTS13 is the endogenous enzyme and must NOT alias.
     (re.compile(r"(?i)\bR[- ]?ADAMTS-?13\b|\bRECOMBINANT\s+ADAMTS-?13\b"), "apadamtase alfa"),
+    # --- v1.14.0 growth (wenceslaus v1.13.1 audit: the top unresolved FAERS brand
+    # subjects by case mass; the generic resolves, the brand text misses the fullmap).
+    # Biologics / autoimmunity
+    (re.compile(r"(?i)\bHUMIRA\b"), "Adalimumab"),
+    (re.compile(r"(?i)\bDUPIXENT\b"), "Dupilumab"),
+    (re.compile(r"(?i)\bENBREL\b"), "Etanercept"),
+    (re.compile(r"(?i)\bREMICADE\b|\bINFLECTRA\b"), "Infliximab"),
+    (re.compile(r"(?i)\bTYSABRI\b"), "Natalizumab"),
+    (re.compile(r"(?i)\bCOSENTYX\b"), "Secukinumab"),
+    (re.compile(r"(?i)\bACTEMRA\b"), "Tocilizumab"),
+    (re.compile(r"(?i)\bORENCIA\b"), "Abatacept"),
+    (re.compile(r"(?i)\bXOLAIR\b"), "Omalizumab"),
+    (re.compile(r"(?i)\bRITUXAN\b"), "Rituximab"),
+    (re.compile(r"(?i)\bOCREVUS\b"), "Ocrelizumab"),
+    (re.compile(r"(?i)\bSKYRIZI\b"), "Risankizumab"),
+    (re.compile(r"(?i)\bTALTZ\b"), "Ixekizumab"),
+    (re.compile(r"(?i)\bCOPAXONE\b"), "Glatiramer acetate"),
+    # Oncology
+    (re.compile(r"(?i)\bAVASTIN\b"), "Bevacizumab"),
+    (re.compile(r"(?i)\bKEYTRUDA\b"), "Pembrolizumab"),
+    (re.compile(r"(?i)\bHERCEPTIN\b"), "Trastuzumab"),
+    # Marketed cabozantinib IS the S-malate salt; the treats side resolves the parent name
+    # (CHEBI:72317), so the salt spelling must not fork the subject CURIE.
+    (re.compile(r"(?i)\bCABOZANTINIB\s+S[- ]?MALATE\b"), "Cabozantinib"),
+    # Metabolic / endocrine / bone
+    (re.compile(r"(?i)\bLANTUS(?:\s+SOLOSTAR)?\b"), "Insulin glargine"),
+    (re.compile(r"(?i)\bREPATHA\b"), "Evolocumab"),
+    (re.compile(r"(?i)\bPROLIA\b"), "Denosumab"),
+    (re.compile(r"(?i)\bFORTEO\b"), "Teriparatide"),
+    (re.compile(r"(?i)\bTYMLOS\b"), "Abaloparatide"),
+    (re.compile(r"(?i)\bZEPBOUND\b"), "Tirzepatide"),
+    (re.compile(r"(?i)\bAIMOVIG\b"), "Erenumab"),
+    (re.compile(r"(?i)\bNEULASTA\b"), "Pegfilgrastim"),
+    # Respiratory / allergy
+    (re.compile(r"(?i)\bPROVENTIL\b"), "Albuterol"),
+    # Gastro / withdrawn-market history still present in FAERS quarters
+    (re.compile(r"(?i)\bZANTAC\b"), "Ranitidine"),
+    # Ophthalmology
+    (re.compile(r"(?i)\bEYLEA\b"), "Aflibercept"),
+    # Interferon brands share one INN (AVONEX and REBIF are both interferon beta-1a).
+    (re.compile(r"(?i)\bAVONEX\b|\bREBIF\b"), "Interferon beta-1a"),
+    # Indication-text canonicalization: the v1.13.1 audit caught FAERS 'CUSHING'S SYNDROME'
+    # resolving into the hyperaldosteronism wording channel (MONDO:0003009) while the treats
+    # side carries ketoconazole -> Cushing syndrome (MONDO:0018912). Canonicalizing the
+    # indication text to the label wording keeps both sides on one concept.
+    (re.compile(r"(?i)\bCUSHING'?S?\s+SYNDROME\b"), "Cushing syndrome"),
 )
 _POLARS_BRAND_ALIASES: tuple[tuple[str, str], ...] = tuple((pattern.pattern, replacement) for pattern, replacement in BRAND_ALIASES)
 _POLARS_DOSAGE_TAIL = r"(?is)^(.+?)\s+\d+(?:[.,]\d+)?\s*(?:(?:MCGS?|GMS?|MGS?|MLS?|UNITS?|IUS?|G)\b|%).*$"
@@ -101,6 +158,18 @@ _POLARS_LEADING_HASH = r"^#+\s*"
 _POLARS_MULTI_SPACE = r"\s{2,}"
 
 _EDGE_JUNK = " -,;"
+
+
+def _strip_unclosed_paren_tail(value: str) -> str:
+    """Drop unterminated ``( ...`` tails; str twin of the polars branch in :func:`defaersify`."""
+    while (match := _UNCLOSED_PAREN_TAIL.search(value)) and re.search(r"[A-Za-z0-9]", value[: match.start()]):
+        # Only strip while a real name remains ahead: the rule removes noise around a longer
+        # name, so an all-paren string like ``((`` passes through untouched.
+        value = value[: match.start()].rstrip()
+    if value.startswith("(") and ")" not in value and re.search(r"[A-Za-z0-9]", value[1:]):
+        # A leading unclosed paren with no closer anywhere: ``(CARBIDOPA`` -> ``CARBIDOPA``.
+        value = value.lstrip("(").strip()
+    return value
 
 
 def defaers_text(value: str) -> str:
@@ -118,6 +187,7 @@ def defaers_text(value: str) -> str:
     value = _COLLAPSED_HYPHENS.sub("-", value)
     value = _LEADING_HASH.sub("", value)
     value = _EMPTY_PARENS.sub("", value)
+    value = _strip_unclosed_paren_tail(value)
     tail = _DOSAGE_TAIL.match(value)
     if tail and tail.group(1).strip(_EDGE_JUNK):
         value = tail.group(1)
@@ -176,6 +246,13 @@ def defaersify(expr: pl.Expr) -> pl.Expr:
     expr = expr.str.replace_all(r"-{2,}", "-")
     expr = expr.str.replace_all(_POLARS_LEADING_HASH, "")
     expr = expr.str.replace_all("()", "", literal=True)
+    # Unterminated ``( ...`` tails (FAERS ASCII truncation): parity with the str twin via the
+    # same helper, guarded to rows that actually contain one (29M-row extraction path).
+    expr = (
+        pl.when(expr.cast(pl.Utf8).str.contains(r"\([^()]*$"))
+        .then(expr.cast(pl.Utf8).map_elements(_strip_unclosed_paren_tail, return_dtype=pl.Utf8))
+        .otherwise(expr.cast(pl.Utf8))
+    )
     expr = expr.str.replace_all(_POLARS_DOSAGE_TAIL, "${1}")
     expr = expr.str.replace_all(_POLARS_WRAPPED_PARENS, "${1}")
     expr = expr.str.replace_all(_POLARS_TRAILING_PERIOD, "${1}")

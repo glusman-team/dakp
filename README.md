@@ -90,21 +90,24 @@ Order matters:
    per-ingredient edges, because case attribution is at product level and splitting would
    fabricate per-ingredient evidence. Bare `/` (salt-pair notation) is not a separator.
 2. `?` -> `-` separator restoration and collapsed-hyphen repair (FAERS ASCII mangling).
-3. Dosage/form tail truncation, `#` line labels, empty parens, trailing periods, legacy
-   `.GREEK.` tokens, fully-wrapped parens.
-4. Brand aliases: a small curated regex table (`BRAND_ALIASES`) maps brand spellings to
-   generic ingredient text (XEFO -> Lornoxicam, BETOLVEX -> Cyanocobalamin,
-   rADAMTS13 -> apadamtase alfa) so true matches survive Tablassert QC. Entries are
-   data-backed only: a rejection must be a TRUE match lost, never a correct garbage-catch.
+3. Dosage/form tail truncation, `#` line labels, empty parens, unterminated parenthetical
+   tails from ASCII truncation (`ACETYLSALICYLIC ACID (}` -> `ACETYLSALICYLIC ACID`),
+   trailing periods, legacy `.GREEK.` tokens, fully-wrapped parens.
+4. Brand aliases: a curated regex table (`BRAND_ALIASES`) maps brand spellings to
+   generic ingredient text (XEFO -> Lornoxicam, HUMIRA -> Adalimumab, DUPIXENT ->
+   Dupilumab, ENBREL -> Etanercept, ZANTAC -> Ranitidine, ...) so true matches survive
+   Tablassert QC and the top FAERS brand subjects resolve instead of dropping (v1.13.1
+   lost 7.1M cases to unresolved brands). Entries are data-backed only: a rejection must
+   be a TRUE match lost, never a correct garbage-catch.
 
 Invariants: idempotent on clean text; never empties a name; no CURIEs minted anywhere.
 The same chain canonicalizes both sides of any pair lookup, so spelling variants of one
 (drug, condition) pair derive one `clinical_approval_status`. NER mention surfaces keep
 raw text for offsets during matching and are canonicalized only at node-text emission.
 The generated table configs additionally word-denylist trap aliases (e.g. CRYING) and
-exclude known admin-code concepts (e.g. `UMLS:C1314429`, an HCPCS injection description
-categorized as Drug) so wording-channel collisions cannot leak past the category
-allow-list.
+exclude known admin-code concepts (e.g. `UMLS:C1314429`, `UMLS:C0812740`, HCPCS injection
+descriptions categorized as Drug) so wording-channel collisions cannot leak past the
+category allow-list.
 
 ## Output tables
 

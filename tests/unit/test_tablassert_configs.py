@@ -296,9 +296,10 @@ def test_table_config_structure(table: str) -> None:
     assert statement["subject"]["encoding"] == tablassert_configs.column_letter(table, "subject_text")
     assert statement["subject"]["prioritize"] == ["Drug", "SmallMolecule", "ChemicalEntity"]
     assert statement["subject"]["avoid"] == category_avoid_list(SUBJECT_PRIORITIZE)
-    # Subject-side CURIE exclusions are only the HCPCS admin-code guard (UMLS:C1314429, the
-    # v1.13.0 audit's 197-edge "INJECTION, OXALIPLATIN, 0.5 MG ADMINISTERED" leak): wording
-    # filters cannot express "drop this CURIE, keep that one" for the shared drug name.
+    # Subject-side CURIE exclusions are the HCPCS admin-code guards (UMLS:C1314429, the
+    # v1.13.0 audit's 197-edge "INJECTION, OXALIPLATIN, 0.5 MG ADMINISTERED" leak; UMLS:C0812740,
+    # the v1.13.1 PIPERACILLIN/TAZOBACTAM leak): wording filters cannot express "drop this
+    # CURIE, keep that one" for the shared drug name.
     assert statement["subject"]["exclude_regex"] == list(tablassert_configs._SUBJECT_EXCLUDE_REGEX)
     assert statement["object"]["method"] == "column"
     assert statement["object"]["encoding"] == tablassert_configs.column_letter(table, "object_text")
@@ -859,15 +860,17 @@ def test_object_exclude_regex_on_all_tables() -> None:
 
 
 def test_subject_exclude_regex_on_all_tables() -> None:
-    # CURIE-level subject exclusions: UMLS:C1314429 ("INJECTION, OXALIPLATIN, 0.5 MG
-    # ADMINISTERED") is an HCPCS administration billing concept categorized biolink:Drug —
-    # the subject category allow-list cannot drop it, and the fullmap ties it to the SAME
-    # wording as the real drug (197 v1.13.0 subject edges), so the junk CURIE is dropped at
-    # resolution via the subject NodeEncoding's exclude_regex (Tablassert >= 16). Exercises the
-    # Section model's polars-compatibility validator on each pattern.
+    # CURIE-level subject exclusions: HCPCS administration billing concepts categorized
+    # biolink:Drug -- the subject category allow-list cannot drop them, and the fullmap ties
+    # each to the SAME wording as the real drug, so the junk CURIE is dropped at resolution
+    # via the subject NodeEncoding's exclude_regex (Tablassert >= 16). UMLS:C1314429
+    # ("INJECTION, OXALIPLATIN, 0.5 MG ADMINISTERED", 197 v1.13.0 subject edges); UMLS:C0812740
+    # ("INJECTION, PIPERACILLIN SODIUM/TAZOBACTAM SODIUM, ... ADMINISTERED", one unbacked
+    # approved_for_condition edge in the v1.13.1 build). Exercises the Section model's
+    # polars-compatibility validator on each pattern.
     from tablassert.models import Section
 
-    expected = [r"^UMLS:C1314429$"]
+    expected = [r"^UMLS:C1314429$", r"^UMLS:C0812740$"]
     assert list(tablassert_configs._SUBJECT_EXCLUDE_REGEX) == expected
     for table in TABLES:
         section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
