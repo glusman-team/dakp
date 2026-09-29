@@ -79,7 +79,7 @@ def test_fixture_treats_edges_carry_the_full_ema_union_upstream_chain() -> None:
     for edge in treats:
         sources: list[dict[str, object]] = edge["sources"]  # type: ignore[assignment]
         primary = sources[0]
-        assert primary["resource_id"] == "infores:multiomics-drugapprovals"
+        assert primary["resource_id"] == "infores:drugapprovals-kp"
         assert set(primary["upstream_resource_ids"]) == {"infores:dailymed", "infores:faers", "infores:ema", "infores:epar"}  # type: ignore[arg-type]
         assert {entry["resource_id"] for entry in sources[1:]} == {"infores:dailymed", "infores:faers", "infores:ema", "infores:epar"}
         assert all(entry["resource_role"] == "supporting_data_source" for entry in sources[1:])
@@ -101,10 +101,8 @@ def test_single_inline_valid_edge_passes() -> None:
             "category": ["biolink:EntityToDiseaseAssociation"],
             "knowledge_level": "knowledge_assertion",
             "agent_type": "manual_validation_of_automated_agent",
-            "primary_knowledge_source": "infores:multiomics-drugapprovals",
-            "sources": [
-                {"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:dailymed", "infores:faers", "infores:ema"]}
-            ],
+            "primary_knowledge_source": "infores:drugapprovals-kp",
+            "sources": [{"resource_id": "infores:drugapprovals-kp", "upstream_resource_ids": ["infores:dailymed", "infores:faers", "infores:ema"]}],
         }
     ]
     assert validate_kgx(nodes, edges).ok is True
@@ -122,8 +120,8 @@ def test_treats_edge_with_ema_only_upstream_passes() -> None:
             "category": ["biolink:EntityToDiseaseAssociation"],
             "knowledge_level": "knowledge_assertion",
             "agent_type": "manual_validation_of_automated_agent",
-            "primary_knowledge_source": "infores:multiomics-drugapprovals",
-            "sources": [{"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:ema"]}],
+            "primary_knowledge_source": "infores:drugapprovals-kp",
+            "sources": [{"resource_id": "infores:drugapprovals-kp", "upstream_resource_ids": ["infores:ema"]}],
         }
     ]
     assert validate_kgx(nodes, edges).ok is True
@@ -141,8 +139,8 @@ def test_treats_edge_with_epar_only_upstream_passes() -> None:
             "category": ["biolink:EntityToDiseaseAssociation"],
             "knowledge_level": "knowledge_assertion",
             "agent_type": "manual_validation_of_automated_agent",
-            "primary_knowledge_source": "infores:multiomics-drugapprovals",
-            "sources": [{"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:epar"]}],
+            "primary_knowledge_source": "infores:drugapprovals-kp",
+            "sources": [{"resource_id": "infores:drugapprovals-kp", "upstream_resource_ids": ["infores:epar"]}],
         }
     ]
     assert validate_kgx(nodes, edges).ok is True
@@ -167,7 +165,7 @@ def test_treats_alternative_upstream_without_dakp_provenance_fails(alternative: 
     ]
     report = validate_kgx(nodes, edges)
     assert MISSING_PROVENANCE in _codes(report)
-    assert "infores:multiomics-drugapprovals" in _by_entity(report, "e1")[0].message
+    assert "infores:drugapprovals-kp" in _by_entity(report, "e1")[0].message
 
 
 def test_validation_is_deterministic() -> None:
@@ -282,8 +280,8 @@ def test_bare_association_edge_fails_the_pin() -> None:
             "category": ["biolink:Association"],  # escaped the OBJECT_CATEGORY_OVERRIDE pin
             "knowledge_level": "knowledge_assertion",
             "agent_type": "manual_validation_of_automated_agent",
-            "primary_knowledge_source": "infores:multiomics-drugapprovals",
-            "sources": [{"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:dailymed", "infores:faers"]}],
+            "primary_knowledge_source": "infores:drugapprovals-kp",
+            "sources": [{"resource_id": "infores:drugapprovals-kp", "upstream_resource_ids": ["infores:dailymed", "infores:faers"]}],
         }
     ]
     report = validate_kgx(nodes, edges)
@@ -313,9 +311,9 @@ def test_genomic_entity_object_leak_shape_fails_both_category_checks() -> None:
             "category": ["biolink:Association"],
             "knowledge_level": "observation",
             "agent_type": "manual_validation_of_automated_agent",
-            "primary_knowledge_source": "infores:multiomics-drugapprovals",
+            "primary_knowledge_source": "infores:drugapprovals-kp",
             "sources": [
-                {"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:dailymed", "infores:faers"]},
+                {"resource_id": "infores:drugapprovals-kp", "upstream_resource_ids": ["infores:dailymed", "infores:faers"]},
                 {"resource_id": "infores:faers", "resource_role": "supporting_data_source"},
             ],
             "has_supporting_studies": {"faers_applied_to_treat": {"id": "faers_applied_to_treat", "has_study_results": []}},
@@ -341,8 +339,8 @@ def test_junk_drawer_supporting_studies_descriptions_fail() -> None:
         "category": ["biolink:EntityToDiseaseAssociation"],
         "knowledge_level": "knowledge_assertion",
         "agent_type": "manual_validation_of_automated_agent",
-        "primary_knowledge_source": "infores:multiomics-drugapprovals",
-        "sources": [{"resource_id": "infores:multiomics-drugapprovals", "upstream_resource_ids": ["infores:dailymed", "infores:faers"]}],
+        "primary_knowledge_source": "infores:drugapprovals-kp",
+        "sources": [{"resource_id": "infores:drugapprovals-kp", "upstream_resource_ids": ["infores:dailymed", "infores:faers"]}],
     }
     clean = {**base, "has_supporting_studies": {"table": {"id": "table", "has_study_results": [{"id": "row:1"}]}}}
     assert INVALID_SUPPORTING_STUDIES not in _codes(validate_kgx(nodes, [clean]))

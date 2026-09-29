@@ -1,5 +1,5 @@
 name: DRUG_APPROVALS_KP
-version: "1.14.0"
+version: "1.15.0"
 fullmap: ".fullmap"
 rig:
   supporting_data_source_info:
@@ -55,7 +55,7 @@ rig:
             Bulk export of centrally reviewed medicines; MeSH therapeutic areas
             and EPAR indication text
   source_info:
-    infores_id: "infores:multiomics-drugapprovals"
+    infores_id: "infores:drugapprovals-kp"
     name: "Drug Approvals Knowledge Provider (DAKP)"
     description: >-
       Drug Approvals Knowledge Provider: FDA/EMA-approved treatment
@@ -86,7 +86,7 @@ rig:
       - kgx
     data_versioning_and_releases: >-
       DAKP versions follow the Python package version (pyproject.toml,
-      currently 1.14.0); every build embeds it in the graph config via
+      currently 1.15.0); every build embeds it in the graph config via
       graph_config(version=...). Re-ingests track the upstream cadence:
       FAERS quarterly ASCII extracts, DailyMed SPL releases, and the
       nightly-regenerated EMA medicines export. DailyMed, Drugs@FDA, and EMA
@@ -224,7 +224,7 @@ uuid_fields:
   - population_context_qualifier
   - frequency_qualifier
   - temporal_context_qualifier
-uuid_domain: "infores:multiomics-drugapprovals"
+uuid_domain: "infores:drugapprovals-kp"
 uuid_on_collision: merge
 tables:
   - tables/approved_treats.yaml

@@ -3,7 +3,7 @@
 The legacy DAKP build (``ref/legacy/bin/drug2indi2kg.py``, ``ref/legacy/bin/uselist2kg.py``,
 ``ref/legacy/bin/dakp-postprocess2jsonlBL.py``, ``ref/legacy/matrix/bin/contraindications2kg.py``)
 established a precise Translator contract: three edge families, fixed subject/object categories,
-a per-family provenance chain under ``infores:multiomics-drugapprovals``, a
+a per-family provenance chain under ``infores:drugapprovals-kp``, a
 ``clinical_approval_status`` rule, and FDA-approval / FAERS-case / SPL evidence fields. This
 module asserts the rebuild **preserves** those semantics.
 
@@ -147,7 +147,7 @@ def test_object_categories_are_disease_or_phenotype(built: dict[str, Any]) -> No
 
 
 def test_provenance_primary_is_always_dakp(built: dict[str, Any]) -> None:
-    """Every family aggregates under infores:multiomics-drugapprovals as primary_knowledge_source."""
+    """Every family aggregates under infores:drugapprovals-kp as primary_knowledge_source."""
     for frame in built["tables"].values():
         primaries = {str(rec.get("primary_knowledge_source")) for rec in frame.iter_rows(named=True)}
         assert primaries == {translator.INFORES_DAKP}, f"unexpected primary sources: {primaries}"

@@ -83,7 +83,7 @@ def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_
             subject_category="ChemicalEntity",
             knowledge_level="knowledge_assertion",
             agent_type="manual_validation_of_automated_agent",
-            primary_knowledge_source="infores:multiomics-drugapprovals",
+            primary_knowledge_source="infores:drugapprovals-kp",
             upstream_resource_ids="infores:dailymed",
         )
         rows.append(row)

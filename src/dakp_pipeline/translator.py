@@ -21,7 +21,7 @@ import-safe and monkeypatchable. Three public entry points:
      ``edge_type_info``, plus the pinned association classes
      (:data:`PINNED_EDGE_CATEGORIES`) every family edge must carry — bare
      ``biolink:Association`` is the signature of a row that escaped the category pin;
-  5. **source provenance** — the ``infores:multiomics-drugapprovals`` chain plus the upstream
+  5. **source provenance** — the ``infores:drugapprovals-kp`` chain plus the upstream
      infores required per family (dailymed/faers, or the ``infores:ema`` / ``infores:epar``
      alternative chains for treats, which unions FDA- and EMA-derived rows).
 
@@ -45,7 +45,7 @@ import-safe and monkeypatchable. Three public entry points:
   * ``biolink:contraindicated_in`` — contraindication assertions text-mined from DailyMed SPL
     contraindication sections, with DailyMed upstream.
 
-  Every family aggregates under the DAKP knowledge provider (``infores:multiomics-drugapprovals``)
+  Every family aggregates under the DAKP knowledge provider (``infores:drugapprovals-kp``)
   as ``primary_knowledge_source``. A family being *absent* is a coverage concern, not a regression
   violation; :attr:`RegressionReport.families_seen` records which families appeared.
 """
@@ -67,7 +67,7 @@ from dakp_pipeline.logging_setup import logger, stats
 
 # --- Translator provenance constants (match dakp_pipeline.assertions + ../DINGO) ----
 
-INFORES_DAKP = "infores:multiomics-drugapprovals"
+INFORES_DAKP = "infores:drugapprovals-kp"
 INFORES_DAILYMED = "infores:dailymed"
 INFORES_EMA = "infores:ema"
 INFORES_EPAR = "infores:epar"
@@ -109,7 +109,7 @@ class EdgeFamily:
 
     ``alternative_upstream`` lists acceptable UPSTREAM chains beyond canonical
     ``required_upstream``. It never replaces DAKP's own primary provenance: a valid treats edge
-    always carries ``infores:multiomics-drugapprovals`` plus either the FDA
+    always carries ``infores:drugapprovals-kp`` plus either the FDA
     ``dailymed|faers`` chain, the ``infores:ema`` chain (MeSH therapeutic-area rows), or the
     ``infores:epar`` chain (EPAR indication-mined rows). The Tablassert table-level override
     stamps the union of all upstreams on emitted KGX edges.

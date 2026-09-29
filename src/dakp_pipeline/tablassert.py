@@ -158,7 +158,7 @@ from dakp_pipeline.sources import faers as faers_source
 
 # --- Translator provenance constants (match dakp_pipeline.assertions + ../DINGO) ----
 
-INFORES_DAKP = "infores:multiomics-drugapprovals"
+INFORES_DAKP = "infores:drugapprovals-kp"
 AGENT_TYPE = "manual_validation_of_automated_agent"
 
 GRAPH_NAME = "DRUG_APPROVALS_KP"
@@ -829,7 +829,7 @@ _TABLE_SPECS: dict[str, tuple[str, str, str, str]] = {
     "contraindication_assertions": ("contraindications", "contraindicated_in", "knowledge_assertion", AGENT_TYPE),
 }
 
-#: Per-edge record URL template carried by the ``infores:multiomics-drugapprovals`` sources
+#: Per-edge record URL template carried by the ``infores:drugapprovals-kp`` sources
 #: entry — the gestalt viewer deep-links each edge by its own id. ``{edge_id}`` is resolved by
 #: Tablassert in a post-dedup sweep of the final edges ndjson (``override.sources``,
 #: SkyeAv/Tablassert#116).

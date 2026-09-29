@@ -63,7 +63,7 @@ def test_provenance_columns_are_dailymed_text_mining(dailymed_refs: list[Artifac
         assert row["knowledge_level"] == "knowledge_assertion"
         # Legacy DAKP shipped manual_validation_of_automated_agent on all three predicates.
         assert row["agent_type"] == "manual_validation_of_automated_agent"
-        assert row["primary_knowledge_source"] == "infores:multiomics-drugapprovals"
+        assert row["primary_knowledge_source"] == "infores:drugapprovals-kp"
         # Text-mined from DailyMed only — NO MEDI anywhere in the provenance.
         assert row["upstream_resource_ids"] == "infores:dailymed"
         assert "medi" not in row["upstream_resource_ids"]

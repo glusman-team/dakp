@@ -1864,7 +1864,7 @@ template:
   provenance:
     override:
       sources:
-        - resource_id: "infores:multiomics-drugapprovals"
+        - resource_id: "infores:drugapprovals-kp"
           resource_role: primary_knowledge_source
           upstream_resource_ids:
             - "infores:dailymed"

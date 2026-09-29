@@ -18,7 +18,7 @@ from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef
 from dakp_pipeline.translator import check_assertion_tables, check_rows
 
-_DAKP = "infores:multiomics-drugapprovals"
+_DAKP = "infores:drugapprovals-kp"
 
 
 def test_check_rows_skips_unconstrained_invariants(monkeypatch: pytest.MonkeyPatch) -> None:

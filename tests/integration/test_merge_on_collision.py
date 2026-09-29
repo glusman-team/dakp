@@ -89,7 +89,7 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
             FDA_regulatory_approvals=approvals,
             knowledge_level="statistical_association",
             agent_type="manual_validation_of_automated_agent",
-            primary_knowledge_source="infores:multiomics-drugapprovals",
+            primary_knowledge_source="infores:drugapprovals-kp",
             upstream_resource_ids="infores:dailymed|infores:faers",
         )
         rows.append(row)

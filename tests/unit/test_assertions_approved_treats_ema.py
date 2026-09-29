@@ -70,7 +70,7 @@ def test_ema_rows_fan_out_per_substance_and_mesh_term(disease_map: dict[str, dic
     assert row["clinical_approval_status"] == "approved_for_condition"
     assert row["knowledge_level"] == "knowledge_assertion"
     assert row["agent_type"] == "manual_validation_of_automated_agent"
-    assert row["primary_knowledge_source"] == "infores:multiomics-drugapprovals"
+    assert row["primary_knowledge_source"] == "infores:drugapprovals-kp"
     assert row["upstream_resource_ids"] == "infores:ema"
 
 
@@ -184,7 +184,7 @@ def test_epar_rows_mined_from_indication_text(disease_map: dict[str, dict[str, s
     assert row["clinical_approval_status"] == "approved_for_condition"
     assert row["knowledge_level"] == "knowledge_assertion"
     assert row["agent_type"] == "manual_validation_of_automated_agent"
-    assert row["primary_knowledge_source"] == "infores:multiomics-drugapprovals"
+    assert row["primary_knowledge_source"] == "infores:drugapprovals-kp"
     assert row["upstream_resource_ids"] == "infores:epar"
 
 

@@ -24,7 +24,7 @@ from dakp_pipeline.translator import (
     validate_kgx,
 )
 
-_DAKP = "infores:multiomics-drugapprovals"
+_DAKP = "infores:drugapprovals-kp"
 
 
 def _ref(path: Path) -> ArtifactRef:

@@ -17,7 +17,7 @@ Proves the FULL path works on a TINY, hermetic fullmap (no network):
    below stays byte-comparable.
 4. load the produced KGX ``DRUG_APPROVALS_KP_1.0.0.{nodes,edges}.ndjson`` and assert: nodes carry
    ``id``/``name``/``category``; edges carry ``subject``/``predicate``/``object`` + DAKP provenance
-   (``infores:multiomics-drugapprovals`` primary + the per-family upstream infores); all three edge
+   (``infores:drugapprovals-kp`` primary + the per-family upstream infores); all three edge
    families (``treats`` / ``applied_to_treat`` / ``contraindicated_in``) are present; and
    :func:`dakp_pipeline.translator.validate_kgx` passes.
 
@@ -27,7 +27,7 @@ so the skip does not affect the 100% ``src/`` coverage gate.
 
 Provenance shape (Tablassert >= 14.0, explicit ``override.sources``, SkyeAv/Tablassert#116): edges
 carry NO flat ``primary_knowledge_source`` scalar — retrieval provenance lives only in the
-``sources`` list, where ``infores:multiomics-drugapprovals`` is the primary knowledge source
+``sources`` list, where ``infores:drugapprovals-kp`` is the primary knowledge source
 for every edge family and carries the gestalt per-edge record URL with the edge's OWN id
 resolved in place of ``{edge_id}``; DailyMed and FAERS follow as supporting entries, and the
 FAERS supporting entry on ``applied_to_treat`` edges also carries the static AEMS record URL.

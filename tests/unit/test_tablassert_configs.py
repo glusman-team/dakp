@@ -56,7 +56,7 @@ _RUN_MODULE = importlib.import_module("dakp_pipeline.tablassert")
 
 TABLES = ("approved_treats_assertions", "faers_applied_to_treat_assertions", "contraindication_assertions")
 
-INFORES_DAKP = "infores:multiomics-drugapprovals"
+INFORES_DAKP = "infores:drugapprovals-kp"
 AGENT_TYPE = "manual_validation_of_automated_agent"
 
 # assertion table -> (config basename, predicate, knowledge_level, agent_type). Every family

@@ -16,7 +16,7 @@ from dakp_pipeline.ner.dictionary import OBJECT_TYPES
 from dakp_pipeline.ner.lexical import Mention
 
 # Translator provenance constants (Translator provenance conventions).
-INFORES_DAKP = "infores:multiomics-drugapprovals"
+INFORES_DAKP = "infores:drugapprovals-kp"
 INFORES_DAILYMED = "infores:dailymed"
 INFORES_EMA = "infores:ema"
 INFORES_EPAR = "infores:epar"

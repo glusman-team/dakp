@@ -16,7 +16,7 @@ from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.translator import EXPECTED_FAMILIES, RegressionReport, check_assertion_tables, check_rows
 
-_DAKP = "infores:multiomics-drugapprovals"
+_DAKP = "infores:drugapprovals-kp"
 
 
 def _row(

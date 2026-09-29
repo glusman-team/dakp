@@ -122,7 +122,7 @@ def test_denylisted_rows_are_dropped_at_load_time(tmp_path: Path, monkeypatch: p
             case_ids=case_ids,
             knowledge_level="statistical_association",
             agent_type="manual_validation_of_automated_agent",
-            primary_knowledge_source="infores:multiomics-drugapprovals",
+            primary_knowledge_source="infores:drugapprovals-kp",
             upstream_resource_ids="infores:dailymed|infores:faers",
         )
         rows.append(row)

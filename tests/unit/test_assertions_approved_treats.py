@@ -187,7 +187,7 @@ def test_provenance_columns_are_fixed(
         assert row["clinical_approval_status"] == "approved_for_condition"
         assert row["knowledge_level"] == "knowledge_assertion"
         assert row["agent_type"] == "manual_validation_of_automated_agent"
-        assert row["primary_knowledge_source"] == "infores:multiomics-drugapprovals"
+        assert row["primary_knowledge_source"] == "infores:drugapprovals-kp"
         assert row["upstream_resource_ids"] == "infores:dailymed|infores:faers"
         assert row["subject_category"] == "ChemicalEntity"
 
