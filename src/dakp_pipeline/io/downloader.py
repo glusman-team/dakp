@@ -60,10 +60,20 @@ def resolve_aria2c() -> Path | None:
     if os.environ.get("DAKP_ARIA2", "1") in ("0", "false", ""):
         return None
     bundled = _bundled_aria2c()
-    if bundled is not None and bundled.exists():
+    if bundled is not None and _stat_accessible(bundled):
         return bundled
     found = shutil.which("aria2c")
     return Path(found) if found else None
+
+
+def _stat_accessible(path: Path) -> bool:
+    """``exists()`` that also survives stat errors: on some hosts (autofs, root-squashed NFS,
+    non-traversable parents) a missing path raises ``PermissionError`` instead of returning
+    ENOENT, and ``resolve_aria2c`` must never raise for an unavailable optional binary."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
 
 
 def _build_aria2c_args(exe: Path, url: str, dest: Path, *, timeout: float, headers: dict[str, str] | None, connections: int) -> list[str]:
