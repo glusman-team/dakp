@@ -167,3 +167,31 @@ def test_ner_export_task_uses_the_ner_pool(dakp_build) -> None:
     """The export runs GLiNER inference, so it shares the 1-slot ``ner_mining`` pool with the
     other GLiNER consumers instead of competing for the GPUs unbounded."""
     assert dakp_build.dag_obj.get_task("export_ner_training_data").pool == "ner_mining"
+
+
+# --- stall-recovery budgets ---------------------------------------------------------
+
+
+def test_stall_recovery_budgets(dakp_build) -> None:
+    """Every task is bounded by an execution timeout and retries once; the run itself is capped.
+
+    The unbounded-DAG failure mode is recorded history: an orphaned task ran for hours while
+    ``dakp up``'s poll loop had already given up, and nothing ever reaped it. Shaping gets the
+    8 h headroom (cold contraindication mining is ~3.5 h on four P100s); everything else sits at
+    the 2 h default (acquisition tightens to 1 h). A retried task resumes from the two-tier NER
+    cache instead of re-mining completed work.
+    """
+    from datetime import timedelta
+
+    dag = dakp_build.dag_obj
+    assert dag.dagrun_timeout == timedelta(hours=12)
+    assert {t.task_id for t in dag.tasks} == _EXPECTED_TASK_IDS
+    for task in dag.tasks:
+        assert task.retries == 1, task.task_id
+        assert task.execution_timeout is not None, task.task_id
+    tasks = {t.task_id: t for t in dag.tasks}
+    assert tasks["acquire_dailymed"].execution_timeout == timedelta(hours=1)
+    for task_id in ("shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables", "export_ner_training_data"):
+        assert tasks[task_id].execution_timeout == timedelta(hours=8), task_id
+    assert tasks["run_tablassert"].execution_timeout == timedelta(hours=2)
+    assert tasks["extract_dailymed"].execution_timeout == timedelta(hours=2)
