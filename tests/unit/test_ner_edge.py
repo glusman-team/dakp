@@ -1255,3 +1255,35 @@ def test_stall_watchdog_is_inert_without_cuda(monkeypatch: pytest.MonkeyPatch, t
     texts = ["a", "bb", "ccc"]
     results = backend._run_with_stall_watchdog(model, texts, 2)
     assert [result["text"] for result in results] == texts
+
+
+# --- compute_dtype (fp16 experiments) -----------------------------------------------
+
+
+def test_compute_dtype_is_model_side_key_material(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A dtype change moves the Tier B fingerprint (fp16 output bits differ from fp32)."""
+    _install_fake_gliner2(monkeypatch, tmp_path, [])
+    fp32 = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path)
+    fp16 = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path, compute_dtype="fp16")
+    assert fp32.span_material() != fp16.span_material()
+    assert fp32.span_material()["compute_dtype"] == "fp32"
+    # Worker reconstruction carries the dtype.
+    rebuilt = DiseaseNER(device="cpu", **dict(fp16._config()))
+    assert rebuilt._config()["compute_dtype"] == "fp16"
+
+
+def test_compute_dtype_rejects_unknown_values(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="compute_dtype"):
+        DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path, compute_dtype="bf16")
+
+
+def test_fp16_autocast_arms_only_on_cuda(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """fp16 + CPU runs the plain call; the autocast branch is reachable only with cuda."""
+    _install_fake_gliner2(monkeypatch, tmp_path, [])
+    backend = DiseaseNER(offline=False, gazetteer={}, device="cpu", workdir=tmp_path, compute_dtype="fp16")
+    model = _BatchRecordingModel()
+    results = backend._raw_batch_extract(model, ["a", "bb"], 2)
+    assert [r["text"] for r in results] == ["a", "bb"]  # inert on CPU, no autocast error
+    # Sanity: the fp32 default path shares the non-autocast branch.
+    fp32_backend = DiseaseNER(offline=False, gazetteer={}, device="cpu", workdir=tmp_path)
+    assert fp32_backend._raw_batch_extract(model, ["a"], 1)[0]["text"] == "a"

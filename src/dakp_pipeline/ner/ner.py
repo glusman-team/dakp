@@ -1119,6 +1119,7 @@ class DiseaseNER:
         workdir: Path | str | None = None,
         device: str | None = None,
         strict_extension_threshold: float | None = None,
+        compute_dtype: str = "fp32",
     ) -> None:
         if isinstance(gazetteer, Gazetteer):
             resolved = gazetteer
@@ -1143,6 +1144,9 @@ class DiseaseNER:
         self._cache_dir = cache_dir
         self._workdir = workdir
         self._device = device
+        if compute_dtype not in ("fp32", "fp16"):
+            raise ValueError("compute_dtype must be 'fp32' or 'fp16'")
+        self._compute_dtype = compute_dtype
         self._strict_extension_threshold = strict_extension_threshold
         self._model: Any = None
         self._gpu_lock_fd: int | None = None
@@ -1351,14 +1355,29 @@ class DiseaseNER:
 
     # -- production model (lazy) -----------------------------------------------
     def _raw_batch_extract(self, model: Any, texts: list[str], batch_size: int) -> list[Any]:
-        """One batched GLiNER2 inference call over ``texts`` (whole vocabulary, both channels)."""
-        if hasattr(model, "batch_extract"):
-            return model.batch_extract(
+        """One batched GLiNER2 inference call over ``texts`` (whole vocabulary, both channels).
+
+        With ``compute_dtype='fp16'`` on a CUDA device the forward runs under
+        ``torch.autocast('cuda', float16)``: the P100 executes fp16 at twice the fp32 rate,
+        and autocast keeps accumulation-sensitive ops (LayerNorm, softmax) in fp32. Raw output
+        bits differ from fp32 at the margin, which is exactly why ``compute_dtype`` is part of
+        the Tier B key material - a dtype change is a re-mine, never a silent cache serve.
+        """
+        call = lambda: (
+            model.batch_extract(
                 texts, self._schema_for_model(model), batch_size=batch_size, threshold=self._threshold, include_confidence=True, include_spans=True
             )
-        return model.batch_extract_entities(
-            texts, self._model_labels, batch_size=batch_size, threshold=self._threshold, include_confidence=True, include_spans=True
+            if hasattr(model, "batch_extract")
+            else model.batch_extract_entities(
+                texts, self._model_labels, batch_size=batch_size, threshold=self._threshold, include_confidence=True, include_spans=True
+            )
         )
+        if self._compute_dtype == "fp16" and str(self._device).startswith("cuda"):
+            import torch  # lazy: no torch at module load
+
+            with torch.autocast("cuda", dtype=torch.float16):
+                return call()
+        return call()
 
     def _infer_windows(self, model: Any, texts: list[str]) -> list[Any]:
         """Batched GLiNER2 inference over ``texts``, submitted in bounded chunks.
@@ -1558,6 +1577,7 @@ class DiseaseNER:
             "cache_dir": self._cache_dir,
             "workdir": self._workdir,
             "strict_extension_threshold": self._strict_extension_threshold,
+            "compute_dtype": self._compute_dtype,
         }
 
     def span_material(self) -> dict[str, Any]:
@@ -1574,7 +1594,16 @@ class DiseaseNER:
         resolved budget is a pure function of the model content + this kwarg, both of which the
         key already pins.
         """
-        return {"model_id": self._model_id, "model_labels": self._model_labels, "threshold": self._threshold, "chunk_words": self._chunk_words}
+        return {
+            "model_id": self._model_id,
+            "model_labels": self._model_labels,
+            "threshold": self._threshold,
+            "chunk_words": self._chunk_words,
+            # fp16 changes raw output BITS (not just speed): two dtypes produce different span
+            # sets at the margin, so a dtype experiment must never serve the other dtype's
+            # cached spans.
+            "compute_dtype": self._compute_dtype,
+        }
 
     def _merge_model_spans(self, text: str, gazetteer_mentions: list[Mention]) -> list[Mention]:
         """Run ONE inference call per window and route its spans to both channels.
