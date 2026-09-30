@@ -292,6 +292,7 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
     # so the packer is built as a normal package and 0 is pinned on the PACK step as well (the
     # packer shells out to `go build` for the bundle binary, which embeds the same init).
     packer_bin = _REPO_ROOT / "go" / ".tools" / "airflow-go-pack"
+    packer_bin.parent.mkdir(parents=True, exist_ok=True)  # go build -o does not create parents
     build = run_subprocess(
         ["go", "build", "-o", str(packer_bin), "github.com/apache/airflow/go-sdk/cmd/airflow-go-pack"],
         cwd=_REPO_ROOT / "go",
