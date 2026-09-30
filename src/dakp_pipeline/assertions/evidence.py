@@ -43,7 +43,7 @@ from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.content_hash import hash_bytes
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import OperationBlock, TableBlock, read_manifest
-from dakp_pipeline.logging_setup import logger, stats
+from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.paths import Workdir
 
 # LOINC section codes DAKP consumes for SPL support (mirrors extract.spl_xml.SECTION_CODE_NAMES).
@@ -736,25 +736,28 @@ def write_assertion_table(
     (:func:`dakp_pipeline.io.schemas.coerce_count_column`); non-whole counts raise.
     """
     columns = schemas.columns_for(table)
-    frame = pl.DataFrame(rows, schema=columns) if rows else pl.DataFrame(schema=columns)
-    frame = schemas.coerce_count_column(frame)
-    out = Workdir(ctx.workdir).tabular / f"{table}.tsv"
-    rows_written = schemas.write_tsv(frame, out)
-    fingerprint = schemas.schema_fingerprint(columns)
-    store = ArtifactStore(Workdir(ctx.workdir))
-    # The manifest inputs carry the shape-stage config fingerprint as a synthetic final id so
-    # the operation-index entry (maintained by ``register``) matches the shape task's skip
-    # lookup (see ``shape_operation_inputs`` / ``cached_shape_outputs``).
-    input_ids = shape_operation_inputs(inputs, ctx)
-    ref = store.register(
-        out,
-        media_type=schemas.TSV_MEDIA_TYPE,
-        rows=rows_written,
-        schema_fingerprint=fingerprint,
-        inputs=input_ids,
-        operation=OperationBlock(name=operation),
-        table=TableBlock(rows=rows_written, schema_fingerprint=fingerprint),
-    )
+    # Per-phase timer (US-007): the TSV write + provenance registration is the CPU tail every
+    # shaper pays; separating it from aggregation shows whether the tail or the merge dominates.
+    with step(logger, "assertion_table.write", table=table):
+        frame = pl.DataFrame(rows, schema=columns) if rows else pl.DataFrame(schema=columns)
+        frame = schemas.coerce_count_column(frame)
+        out = Workdir(ctx.workdir).tabular / f"{table}.tsv"
+        rows_written = schemas.write_tsv(frame, out)
+        fingerprint = schemas.schema_fingerprint(columns)
+        store = ArtifactStore(Workdir(ctx.workdir))
+        # The manifest inputs carry the shape-stage config fingerprint as a synthetic final id so
+        # the operation-index entry (maintained by ``register``) matches the shape task's skip
+        # lookup (see ``shape_operation_inputs`` / ``cached_shape_outputs``).
+        input_ids = shape_operation_inputs(inputs, ctx)
+        ref = store.register(
+            out,
+            media_type=schemas.TSV_MEDIA_TYPE,
+            rows=rows_written,
+            schema_fingerprint=fingerprint,
+            inputs=input_ids,
+            operation=OperationBlock(name=operation),
+            table=TableBlock(rows=rows_written, schema_fingerprint=fingerprint),
+        )
     stats(logger, "assertion_table", table=table, rows=rows_written, path=str(out), blake3=ref.blake3, schema_fingerprint=fingerprint)
     return [ref]
 

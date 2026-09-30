@@ -38,8 +38,8 @@ from pathlib import Path
 from typing import Any
 
 from dakp_pipeline.logging_setup import WORKER_LOG_SUBDIR, configure_worker_logging, logger, prune_worker_logs, stats
-from dakp_pipeline.ner.mention_cache import MentionCache, mention_key, ner_cache_material
-from dakp_pipeline.ner.ner import DiseaseNER, Mention, _cuda_device_supported
+from dakp_pipeline.ner.mention_cache import MentionCache, mention_key, ner_cache_material, span_cache_material, span_key
+from dakp_pipeline.ner.ner import DiseaseNER, Mention, RawTextSpans, _cuda_device_supported, spans_from_cache
 
 #: Historical build-host default retained for compatibility with callers that import it. Runtime
 #: dispatch no longer uses this fixed list: :func:`_resolve_devices` discovers every visible CUDA
@@ -159,13 +159,17 @@ def _set_parent_death_signal() -> None:
         os._exit(1)
 
 
-def _mine_shard(shard: Sequence[Any], ner_config: dict[str, Any], device: str, *, in_worker: bool = False) -> list[tuple[str, str, list[Mention]]]:
-    """ProcessPoolExecutor worker: load GLiNER on ``device``, mine each text, return mentions.
+def _mine_shard(shard: Sequence[Any], ner_config: dict[str, Any], device: str, *, in_worker: bool = False) -> list[tuple[str, str, RawTextSpans]]:
+    """ProcessPoolExecutor worker: load GLiNER on ``device``, mine each text, return RAW spans.
 
     Reconstructs a :class:`DiseaseNER` from the picklable ``ner_config`` pinned to ``device``,
-    then runs extraction over every ``(set_id, doc_id, text)`` item in its shard. The model
-    loads lazily on the first extract call, so each worker initializes its own CUDA context
-    (safe under the ``spawn`` start method).
+    then runs the span pass (:meth:`DiseaseNER.extract_spans_batch`) over every
+    ``(set_id, doc_id, text)`` item in its shard. Workers return each text's RAW model spans
+    (:class:`~dakp_pipeline.ner.ner.RawTextSpans`, pickled whole - the JSON-ready projection for
+    the cache happens parent-side in ``mine_with_cache``) - NOT final mentions: the parent
+    re-merges per run so the Tier B span cache stays merge-config-independent. The model loads
+    lazily on the first extract call, so each worker initializes its own CUDA context (safe under
+    the ``spawn`` start method).
 
     ``in_worker`` is passed ONLY by the ``pool.submit`` call site, so the process-global
     logging reconfiguration below can never fire in the parent. It is an explicit flag rather
@@ -192,7 +196,7 @@ def _mine_shard(shard: Sequence[Any], ner_config: dict[str, Any], device: str, *
     ner = DiseaseNER(device=device, **ner_config)
     items = [_item_parts(item) for item in shard]
     try:
-        mentions = ner.extract_batch([text for _set_id, _doc_id, text in items])
+        spans = ner.extract_spans_batch([text for _set_id, _doc_id, text in items])
     except Exception:
         # The parent only ever receives the pickled exception (``future.result()``), and a spawned
         # child's stderr is this file, so without this line the worker log simply STOPS mid-shard:
@@ -200,23 +204,24 @@ def _mine_shard(shard: Sequence[Any], ner_config: dict[str, Any], device: str, *
         # anywhere on disk. Name the device and the shard size, keep the traceback, re-raise.
         logger.exception("ner_shard_failed: device = {} items = {}", device, len(items))
         raise
-    return [(set_id, doc_id, result) for (set_id, doc_id, _text), result in zip(items, mentions, strict=True)]
+    return [(set_id, doc_id, result) for (set_id, doc_id, _text), result in zip(items, spans, strict=True)]
 
 
-def _mine_multi_gpu(work_items: Sequence[Any], ner: DiseaseNER, devices: Sequence[str]) -> dict[tuple[str, str], list[Mention]]:
-    """Dispatch NER extraction across one worker per GPU and collect results.
+def _mine_multi_gpu(work_items: Sequence[Any], ner: DiseaseNER, devices: Sequence[str]) -> dict[tuple[str, str], RawTextSpans]:
+    """Dispatch NER span extraction across one worker per GPU and collect raw spans.
 
     Shards ``work_items`` across ``len(devices)`` groups (LPT-balanced by text length), spawns
     one process per device via :class:`~concurrent.futures.ProcessPoolExecutor` (``spawn``
-    start method — CUDA + ``fork`` is unsafe), and returns a ``{(set_id, doc_id): [mentions]}``
-    map. The model cache on disk is shared read-only across workers.
+    start method - CUDA + ``fork`` is unsafe), and returns a ``{(set_id, doc_id): RawTextSpans}``
+    map of raw model output (the parent re-merges and caches it - see :func:`mine_with_cache`).
+    The model cache on disk is shared read-only across workers.
     """
     n_workers = min(len(devices), len(work_items))
     shards = _shard_by_text_length(work_items, n_workers)
     ner_config = ner._config()
     _announce_worker_logs(ner_config.get("workdir"))
     ctx = mp.get_context("spawn")
-    results: dict[tuple[str, str], list[Mention]] = {}
+    results: dict[tuple[str, str], RawTextSpans] = {}
     with _spawn_safe_main(), ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
         futures = [pool.submit(_mine_shard, shard, ner_config, devices[i], in_worker=True) for i, shard in enumerate(shards)]
         for index, future in enumerate(futures):
@@ -233,14 +238,37 @@ def _mine_multi_gpu(work_items: Sequence[Any], ner: DiseaseNER, devices: Sequenc
                     str(Path(ner_config.get("workdir") or "") / WORKER_LOG_SUBDIR),
                 )
                 raise
-            for set_id, doc_id, mentions in shard_results:
-                results[(set_id, doc_id)] = mentions
+            for set_id, doc_id, result in shard_results:
+                results[(set_id, doc_id)] = result
     return results
 
 
 #: A shaper's existing mining path (multi-GPU dispatch or sequential loop) over the given
 #: items, returning ``{(set_id, doc_id): [mentions]}``.
 MineFn = Callable[[Sequence[Any]], dict[tuple[str, str], list[Mention]]]
+
+
+def _run_and_merge(
+    work_items: Sequence[Any], ner: DiseaseNER, mine: MineFn, spans_by_text: dict[str, dict[str, Any]], tier_b_hits: int
+) -> dict[tuple[str, str], list[Mention]]:
+    """Run ``mine`` and normalize every result to final mentions, passing span payloads through.
+
+    The single convergence point for all three sources - cache misses, Tier B hits are handled
+    by the caller, and the no-cache pass-through. Span-valued results (production) are merged
+    here and their ``to_cache`` projection collected into ``spans_by_text`` so the caller can
+    store them; mention-valued results (legacy callers and tests) pass through unchanged.
+    """
+    results = mine(work_items)
+    merged: dict[tuple[str, str], list[Mention]] = {}
+    for item in work_items:
+        set_id, doc_id, text = _item_parts(item)
+        value = results.get((set_id, doc_id), [])
+        if isinstance(value, RawTextSpans):
+            spans_by_text[text] = value.to_cache()
+            merged[(set_id, doc_id)] = ner.merge_spans(text, value)
+        else:
+            merged[(set_id, doc_id)] = list(value)
+    return merged
 
 
 def _mentions_fit(text: str, mentions: Sequence[Mention]) -> bool:
@@ -260,32 +288,43 @@ def _mentions_fit(text: str, mentions: Sequence[Mention]) -> bool:
 
 
 def mine_with_cache(work_items: Sequence[Any], ner: DiseaseNER, mine: MineFn, cache: MentionCache | None) -> dict[tuple[str, str], list[Mention]]:
-    """Run ``mine`` over ``work_items``, serving repeats from the persistent mention cache.
+    """Run ``mine`` over ``work_items``, serving repeats from a TWO-TIER persistent cache.
 
-    Central caching seam for the DailyMed NER shapers. Text-level flow: every item's cache key
-    (:func:`~dakp_pipeline.ner.mention_cache.mention_key` over model id + model content b3 +
-    config fingerprint + normalized text) is batch-fetched up front; a hit is used only when its
-    offsets index the requesting item's own text (:func:`_mentions_fit`), everything else reaches
-    ``mine`` — one representative per distinct TEXT, so duplicate texts are mined once while two
-    texts that merely share a folded cache key are mined separately. Freshly mined results are
-    batch-put back before the hit+miss merge. The returned ``{(set_id, doc_id): [mentions]}`` map
-    is byte-identical to a no-cache run — hits round-trip
-    :meth:`Mention.to_dict`/:meth:`Mention.from_dict` losslessly and the server stores the value
-    bytes verbatim.
+    Tier A (the original mention cache) stores FINAL mentions keyed by the full config
+    fingerprint - a hit means zero post-processing, exactly the warm fast path this seam has
+    always provided. Tier B (the span cache) stores RAW MODEL SPANS per text, keyed by model-side
+    material only. A Tier B hit is re-merged parent-side (``DiseaseNER.merge_spans`` - cheap,
+    deterministic CPU work), which makes gazetteer edits, threshold sweeps, and merge-logic
+    changes re-merge on CPU instead of re-mining on GPU: the multi-hour cost of touching anything
+    merge-side is what this split exists to delete.
 
-    Cache access happens ONLY in this parent process: spawned GPU workers
-    (:func:`_mine_shard`) receive no cache handle, which keeps the Pebble store
-    single-owner and the worker code untouched. Pass-through (``mine`` over everything)
-    when ``cache`` is None, when the backend is offline (the gazetteer is deterministic and
-    CPU-cheap — deliberately not cached), or when the cache server is unavailable
-    (:class:`~dakp_pipeline.ner.mention_cache.MentionCache` degrades to a no-op).
+    Lookup order per item: A -> (per distinct text) B -> mine. Freshly mined texts are written to
+    BOTH tiers; Tier B hits are written through to Tier A so the next unchanged-config run is all
+    A hits. Span-valued ``mine`` results (the production path: workers return raw spans) feed the
+    B tier; mention-valued results (legacy callers and tests) feed A only and keep the exact
+    historical flow.
+
+    Text-level flow: every item's A key (:func:`~dakp_pipeline.ner.mention_cache.mention_key`)
+    is batch-fetched up front; a hit is used only when its offsets index the requesting item's
+    own text (:func:`_mentions_fit`); refused entries are purged and re-mined. B keys
+    (:func:`~dakp_pipeline.ner.mention_cache.span_key`) are fetched per distinct text; a hit is
+    used only when its stored window tiling matches the text's own resolution (a mismatch is a
+    MISS, not an error). One representative per distinct TEXT reaches ``mine``, so duplicate texts
+    are mined once. The returned ``{(set_id, doc_id): [mentions]}`` map is byte-identical to a
+    no-cache run.
+
+    Cache access happens ONLY in this parent process: spawned GPU workers receive no cache
+    handle, which keeps the Pebble store single-owner and the worker code untouched. Pass-through
+    (``mine`` over everything, verbatim) when ``cache`` is None, when the backend is offline, or
+    when the cache server is unavailable.
     """
     if cache is None:
-        return mine(work_items)
+        return _run_and_merge(work_items, ner, mine, {}, 0)
     material = ner_cache_material(ner)
     if material is None:
-        return mine(work_items)
+        return _run_and_merge(work_items, ner, mine, {}, 0)
     model_id, model_b3, fingerprint = material
+    span_material = span_cache_material(ner)
 
     parts = [_item_parts(item) for item in work_items]
     key_by_item = {(set_id, doc_id): mention_key(model_id, model_b3, fingerprint, text) for set_id, doc_id, text in parts}
@@ -294,10 +333,12 @@ def mine_with_cache(work_items: Sequence[Any], ner: DiseaseNER, mine: MineFn, ca
     usable: dict[tuple[str, str], list[Mention]] = {}
     used_keys: set[str] = set()
     for set_id, doc_id, text in parts:
-        cached = hits.get(key_by_item[(set_id, doc_id)])
-        if cached is not None and _mentions_fit(text, cached):
-            usable[(set_id, doc_id)] = cached
-            used_keys.add(key_by_item[(set_id, doc_id)])
+        raw = hits.get(key_by_item[(set_id, doc_id)])
+        if isinstance(raw, list):
+            cached = [Mention.from_dict(entry) for entry in raw]
+            if _mentions_fit(text, cached):
+                usable[(set_id, doc_id)] = cached
+                used_keys.add(key_by_item[(set_id, doc_id)])
     # Purge-on-refusal: a hit whose offsets index a different text must not linger in the
     # store, where every future run would re-serve it and re-refuse it (the stale counter
     # that never shrank). Refused keys are re-mined and freshly re-put right below.
@@ -305,27 +346,77 @@ def mine_with_cache(work_items: Sequence[Any], ner: DiseaseNER, mine: MineFn, ca
     if refused:
         cache.delete_many(refused)
 
+    tier_b_hits = 0
+    merged_by_text: dict[str, list[Mention]] = {}
+    spans_by_text: dict[str, dict[str, Any]] = {}
     representatives: dict[str, Any] = {}  # exact text -> one item carrying it
-    for item, (set_id, doc_id, _text) in zip(work_items, parts, strict=True):
+    a_key_by_text: dict[str, str] = {}
+    for item, (set_id, doc_id, text) in zip(work_items, parts, strict=True):
         if (set_id, doc_id) not in usable:
-            representatives.setdefault(_text, item)
-    mined: dict[str, list[Mention]] = {}
-    if representatives:
-        results = mine(list(representatives.values()))
-        mined = {_item_parts(item)[2]: results.get(_item_parts(item)[:2], []) for item in representatives.values()}
-        cache.put_many({key_by_item[_item_parts(item)[:2]]: mined[_item_parts(item)[2]] for item in representatives.values()})
+            representatives.setdefault(text, item)
+            a_key_by_text.setdefault(text, key_by_item[(set_id, doc_id)])
+
+    if representatives and span_material is not None:
+        span_model_id, span_model_b3, span_fp, model_dir = span_material
+        b_keys = {text: span_key(span_model_id, span_model_b3, span_fp, text) for text in representatives}
+        b_hits = cache.get_many(sorted(set(b_keys.values())))
+        for text, b_key in b_keys.items():
+            raw = b_hits.get(b_key)
+            if raw is None:
+                continue
+            rebuilt = spans_from_cache(text, model_dir, ner._chunk_words, raw)
+            if rebuilt is None:
+                # Window-tiling mismatch (or a corrupt entry): a MISS, not an error - the text
+                # is re-mined below and the fresh spans overwrite this entry.
+                continue
+            tier_b_hits += 1
+            merged_by_text[text] = ner.merge_spans(text, rebuilt)
+            spans_by_text[text] = raw
+
+    still_missing = [item for text, item in representatives.items() if text not in merged_by_text]
+    # Chunked mine+put: each batch is mined, re-merged, and flushed to BOTH tiers before the
+    # next batch starts, so an OOM crash mid-shard strands at most one batch of work instead of
+    # the whole shard (the recorded multi-hour failure mode). A retried task re-fetches per text,
+    # so the persisted batches are consumed on resume - see the chunked-resume test.
+    batch_size = max(1, int(os.environ.get("DAKP_NERCACHE_PUT_BATCH", "512")))
+    tier_b_puts = 0
+    for start in range(0, len(still_missing), batch_size):
+        batch = still_missing[start : start + batch_size]
+        mined = _run_and_merge(batch, ner, mine, spans_by_text, tier_b_hits)
+        for item in batch:
+            set_id, doc_id, text = _item_parts(item)
+            merged_by_text[text] = mined.get((set_id, doc_id), [])
+        batch_texts = [text for _, _, text in (_item_parts(item) for item in batch)]
+        if span_material is not None:
+            span_model_id, span_model_b3, span_fp, _model_dir = span_material
+            span_puts = {span_key(span_model_id, span_model_b3, span_fp, text): spans_by_text[text] for text in batch_texts if text in spans_by_text}
+            if span_puts:
+                cache.put_many(span_puts)
+                tier_b_puts += len(span_puts)
+        batch_a_puts = {a_key_by_text[text]: [mention.to_dict() for mention in merged_by_text[text]] for text in batch_texts if text in a_key_by_text}
+        if batch_a_puts:
+            cache.put_many(batch_a_puts)
+        stats(logger, "ner_cache_put", chunk=start // batch_size + 1, texts=len(batch), tier_b_puts=tier_b_puts, tier_a_puts=len(batch_a_puts))
+
+    # Legacy mention-valued mine results only ever had Tier A, which the batch loop above
+    # already flushed; nothing is left to write here.
     stats(
         logger,
         "ner_mention_cache",
         items=len(work_items),
         hits=len(usable),
+        tier_b_hits=tier_b_hits,
+        tier_b_puts=tier_b_puts,
         mined=len(representatives),
         stale=len(hits) - len({key_by_item[pair] for pair in usable}),
     )
 
     out: dict[tuple[str, str], list[Mention]] = {}
     for set_id, doc_id, text in parts:
-        out[(set_id, doc_id)] = usable[(set_id, doc_id)] if (set_id, doc_id) in usable else mined.get(text, [])
+        if (set_id, doc_id) in usable:
+            out[(set_id, doc_id)] = usable[(set_id, doc_id)]
+        else:
+            out[(set_id, doc_id)] = merged_by_text.get(text, [])
     return out
 
 

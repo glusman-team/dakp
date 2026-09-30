@@ -21,7 +21,17 @@ from typing import Any
 import pytest
 
 from dakp_pipeline.ner import mention_cache, model_cache
-from dakp_pipeline.ner.mention_cache import BINARY_ENV_VAR, MentionCache, config_fingerprint, mention_key, ner_cache_material, normalize_key_text
+from dakp_pipeline.ner.mention_cache import (
+    BINARY_ENV_VAR,
+    MentionCache,
+    config_fingerprint,
+    mention_key,
+    ner_cache_material,
+    normalize_key_text,
+    span_cache_material,
+    span_fingerprint,
+    span_key,
+)
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
 
 _MODEL_ID = "fastino/gliner2.5-base-v1"
@@ -142,7 +152,7 @@ def test_mention_cache_without_any_server_is_a_noop(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr("shutil.which", lambda _name: None)
     cache = MentionCache(tmp_path)
     assert cache.get_many(["ab" * 32]) == {}
-    cache.put_many({"ab" * 32: [_mention()]})  # must not raise
+    cache.put_many({"ab" * 32: [_mention().to_dict()]})  # must not raise
     cache.close()
 
 
@@ -211,16 +221,20 @@ def fake_server(tmp_path: Path):
 
 
 def test_mention_cache_round_trip_via_live_server(fake_server: Path) -> None:
-    """A live server from server.json is reused; mentions round-trip losslessly over HTTP."""
+    """A live server from server.json is reused; payloads round-trip losslessly over HTTP.
+
+    The client is tier-agnostic and stores values VERBATIM (mention dicts from Tier A, span
+    payloads from Tier B), so the round-trip contract is on the serialized form.
+    """
     cache = MentionCache(fake_server)
     key = mention_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "severe asthma")
-    mention = _mention()
+    payload = [_mention().to_dict()]
     with cache:
         assert cache.get_many([key]) == {}  # miss
-        cache.put_many({key: [mention]})
+        cache.put_many({key: payload})
         hits = cache.get_many([key, "ff" * 32])
-    assert hits == {key: [mention]}
-    assert hits[key][0] == mention  # exact field-for-field equality
+    assert hits == {key: payload}
+    assert hits[key][0] == payload[0]  # exact field-for-field equality
 
 
 def test_mention_cache_delete_many_purges(fake_server: Path) -> None:
@@ -230,7 +244,7 @@ def test_mention_cache_delete_many_purges(fake_server: Path) -> None:
     with cache:
         cache.delete_many([])  # empty is a no-op, never a request
         assert cache.get_many([key]) == {}
-        cache.put_many({key: [_mention()]})
+        cache.put_many({key: [_mention().to_dict()]})
         cache.delete_many([key, "ff" * 32])
         assert cache.get_many([key]) == {}
     cache.close()
@@ -397,7 +411,7 @@ def test_get_many_ignores_malformed_hits(static_server: Path) -> None:
     mention = _mention()
     _StaticPayloadHandler.payload = json.dumps({"hits": {key: [mention.to_dict()], "cd" * 32: "bogus"}}).encode("utf-8")
     try:
-        assert MentionCache(static_server).get_many([key, "cd" * 32]) == {key: [mention]}
+        assert MentionCache(static_server).get_many([key, "cd" * 32]) == {key: [mention.to_dict()]}
         _StaticPayloadHandler.payload = json.dumps({"hits": "not-a-dict"}).encode("utf-8")
         # A fresh client re-resolves the (still live) server and gets the new payload.
         assert MentionCache(static_server).get_many([key]) == {}
@@ -429,7 +443,7 @@ def test_mention_cache_spawns_the_binary_and_stops_it_on_close(static_server: Pa
     cache = MentionCache(workdir, binary=binary)
 
     key = mention_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "severe asthma")
-    cache.put_many({key: [_mention()]})  # first use spawns
+    cache.put_many({key: [_mention().to_dict()]})  # first use spawns
     assert cache._proc is not None
     assert cache.get_many([key]) == {}  # the static payload is {} — the SPAWN itself is what's covered
 
@@ -469,3 +483,62 @@ def test_mention_cache_spawn_that_never_publishes_times_out(monkeypatch: pytest.
     cache = MentionCache(tmp_path, binary=binary)
     assert cache.get_many(["ab" * 32]) == {}
     cache.close()  # stops the still-running spawned process
+
+
+# --- Tier B span-cache keys -------------------------------------------------------
+
+
+def test_span_fingerprint_moves_with_model_side_config_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """span_fingerprint tracks model output changes; merge-side edits must NOT move it.
+
+    This is the two-tier cache's load-bearing wall: a gazetteer edit or an accept-threshold
+    sweep that moved the span fingerprint would orphan every cached span and re-mine on GPU -
+    exactly the cost the split exists to delete.
+    """
+    from dakp_pipeline.ner.ner import DiseaseNER
+
+    def production(**kwargs: Any) -> DiseaseNER:
+        return DiseaseNER(offline=False, model_id=_MODEL_ID, **kwargs)
+
+    base = production()
+    assert span_fingerprint(base) == span_fingerprint(production())
+    # Merge-side: must NOT move the fingerprint.
+    assert span_fingerprint(production(gazetteer={"asthma": "Disease"})) == span_fingerprint(base)
+    assert span_fingerprint(production(accept_threshold=0.9)) == span_fingerprint(base)
+    assert span_fingerprint(production(inference_batch_size=64)) == span_fingerprint(base)
+    assert span_fingerprint(production(strict_extension_threshold=0.9)) == span_fingerprint(base)
+    # Model-side: MUST move the fingerprint.
+    assert span_fingerprint(production(threshold=0.5)) != span_fingerprint(base)
+    assert span_fingerprint(production(model_labels={"biolink:Disease": "a disease"})) != span_fingerprint(base)
+    assert span_fingerprint(production(chunk_words=512)) != span_fingerprint(base)
+
+
+def test_span_fingerprint_differs_from_config_fingerprint() -> None:
+    """The tiers use different fingerprints, so their keys can never collide."""
+    from dakp_pipeline.ner.ner import DiseaseNER
+
+    ner = DiseaseNER(offline=False, model_id=_MODEL_ID, gazetteer={"asthma": "Disease"})
+    assert span_fingerprint(ner) != config_fingerprint(ner)
+
+
+def test_span_key_is_stable_and_namespaced_from_mention_key() -> None:
+    """Same canonical discipline as mention_key (folding + raw-length suffix), own namespace."""
+    key1 = span_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "severe asthma")
+    assert key1 == span_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "severe asthma")
+    assert len(key1) == 64
+    assert all(c in "0123456789abcdef" for c in key1)
+    assert key1 != mention_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "severe asthma")
+    # Whitespace folding + raw-length disambiguation behave exactly like the mention key.
+    folded = span_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "severe\tasthma")
+    assert folded == span_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "severe asthma")
+    assert span_key(_MODEL_ID, _MODEL_B3, _FINGERPRINT, "severe asthma ") != folded
+    # Material changes invalidate.
+    assert span_key("other/model", _MODEL_B3, _FINGERPRINT, "severe asthma") != key1
+    assert span_key(_MODEL_ID, _MODEL_B3, "ff" * 32, "severe asthma") != key1
+
+
+def test_span_cache_material_offline_is_none(tmp_path: Path) -> None:
+    """The offline backend has no model output: nothing to cache, same rule as Tier A."""
+    from dakp_pipeline.ner.ner import DiseaseNER
+
+    assert span_cache_material(DiseaseNER()) is None

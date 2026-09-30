@@ -301,12 +301,14 @@ class ApprovedTreatsShaper:
             ner = ner_param if isinstance(ner_param, DiseaseNER) else default_ner(ctx.fixture_root)
             devices = _resolve_devices(ner)
             stats(logger, "shape_approved_treats", inputs=len(inputs), disease_map_terms=len(disease_map))
-            dailymed = load_or_build_dailymed_evidence(inputs, ctx)
-            drugsfda_map = build_drugsfda_ingredient_map(inputs)
-            approvals = build_fda_approval_index(inputs)
-            faers_cases = find_faers_cases(inputs, columns=_FAERS_CASE_COLUMNS)
-            quarter_urls = faers_quarter_urls(inputs)
-            ema_registry = find_table(inputs, _EMA_REGISTRY_FILENAME)
+            # Per-phase timer (US-007): fixed table-loading cost vs the mining/merge phases.
+            with step(logger, "shape_approved_treats.inputs"):
+                dailymed = load_or_build_dailymed_evidence(inputs, ctx)
+                drugsfda_map = build_drugsfda_ingredient_map(inputs)
+                approvals = build_fda_approval_index(inputs)
+                faers_cases = find_faers_cases(inputs, columns=_FAERS_CASE_COLUMNS)
+                quarter_urls = faers_quarter_urls(inputs)
+                ema_registry = find_table(inputs, _EMA_REGISTRY_FILENAME)
             with MentionCache(ctx.workdir) as cache:
                 rows = build_approved_treats_rows(
                     faers_cases,
@@ -358,12 +360,15 @@ def _mine_indication_mentions(
     if not work_items and not ema_items:
         return {}, {}
 
-    def mine(items: Sequence[Any]) -> dict[tuple[str, str], list[Mention]]:
+    def mine(items: Sequence[Any]) -> dict[tuple[str, str], Any]:
         if devices and len(items) > 1 and not ner._offline:
             return _mine_multi_gpu(items, ner, devices)
-        mined: dict[tuple[str, str], list[Mention]] = {}
+        mined: dict[tuple[str, str], Any] = {}
         for done, (key_id, doc_id, text) in enumerate(items, start=1):
-            mined[(key_id, doc_id)] = ner.extract(text)
+            # Production returns RAW SPANS (Tier B cacheable, merged parent-side by
+            # mine_with_cache); offline returns final mentions (never cached). Both normalize
+            # to mention lists at the cache seam.
+            mined[(key_id, doc_id)] = ner.extract_spans(text) if not ner._offline else ner.extract(text)
             progress(logger, "shape_approved_treats", done, len(items), every=_MINING_PROGRESS_EVERY)
         return mined
 
