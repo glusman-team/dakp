@@ -299,7 +299,11 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
         if build.stderr:
             print(build.stderr.strip()[-2000:])
         return 1
-    pack = run_subprocess([str(packer_bin), "--output", str(bundle_dir / "dakp-bundle"), "./cmd/dakp-bundle"], cwd=_REPO_ROOT / "go", env=env)
+    # CGO_ENABLED=1 is pinned on the PACK step too: the packer shells out to `go build` for the
+    # bundle binary, which embeds the same go-sdk init and panics the same way when static.
+    pack = run_subprocess(
+        [str(packer_bin), "--output", str(bundle_dir / "dakp-bundle"), "./cmd/dakp-bundle"], cwd=_REPO_ROOT / "go", env={**env, "CGO_ENABLED": "1"}
+    )
     if pack.returncode != 0:
         print("error: bundle pack failed")
         if pack.stderr:
