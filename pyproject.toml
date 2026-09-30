@@ -125,14 +125,14 @@ dependencies = [
     # so transformers 5.x + torch 2.8 cu126 stay intact. peft also pulls `accelerate`.
     "peft>=0.10,<1",
     "pendulum>=3",
-    "polars>=1.30.0",
+    "polars>=1.44.0",
     "pydantic>=2.12.0",
     # `[cli]` and `[log]` became OPTIONAL in 19.0: the `tablassert` console script `DAKP`'s runner
     # shells out to now preflights the `[cli]` extra (cyclopts + rich) and exits before importing
     # the app without it, and logging is a silent no-op without `[log]` (loguru), so a build would
     # emit no progress or warning logs at all. Both are load-bearing for `run_tablassert`, hence
     # explicit. `[qc]` still backs the `--qc` audit.
-    "tablassert[cli,log,qc]>=19.2.0,<20",
+    "tablassert[cli,log,qc]>=19.3.0,<20",
     # torch is transitive (sentence-transformers via tablassert[qc]; gliner2 needs it too but
     # only declares it under the `[local]`/`[train]` extras we do not use) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host
