@@ -284,9 +284,22 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
     # --- 1. build + pack the Go bundle into executables_root --------------------
     print("[1/6] Building and packing the native Go bundle")
     bundle_dir.mkdir(parents=True, exist_ok=True)
-    pack = run_subprocess(
-        ["go", "tool", "airflow-go-pack", "--output", str(bundle_dir / "dakp-bundle"), "./cmd/dakp-bundle"], cwd=_REPO_ROOT / "go", env=env
+    # Build the packer as a normal cgo package instead of `go tool`: on go1.26 tool builds are
+    # static (CGO off), and the go-sdk api package init panics in user.Current() for LDAP users
+    # whose uid is not in /etc/passwd ("user: unknown userid" — reproduced on wenceslaus, uid
+    # 53261). With cgo linked, user.Current() resolves through NSS like getent does.
+    packer_bin = _REPO_ROOT / "go" / ".tools" / "airflow-go-pack"
+    build = run_subprocess(
+        ["go", "build", "-o", str(packer_bin), "github.com/apache/airflow/go-sdk/cmd/airflow-go-pack"],
+        cwd=_REPO_ROOT / "go",
+        env={**env, "CGO_ENABLED": "1"},
     )
+    if build.returncode != 0:
+        print("error: bundle pack failed")
+        if build.stderr:
+            print(build.stderr.strip()[-2000:])
+        return 1
+    pack = run_subprocess([str(packer_bin), "--output", str(bundle_dir / "dakp-bundle"), "./cmd/dakp-bundle"], cwd=_REPO_ROOT / "go", env=env)
     if pack.returncode != 0:
         print("error: bundle pack failed")
         if pack.stderr:
