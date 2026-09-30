@@ -62,6 +62,7 @@ import json
 import os
 import re
 import signal
+import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -999,6 +1000,15 @@ def _reap_orphaned_lock_competitors(path: Path, grace: float = 10.0) -> list[int
     return candidates
 
 
+_GPU_LOCK_HELD: dict[Path, int] = {}
+"""Fds this process already holds per lock path — flock is per-fd, so a second ``DiseaseNER``
+in the same process (model reload, a test constructing two backends) must reuse the held fd
+instead of blocking on the process's own lock forever (self-deadlock observed on GPU hosts:
+four remote-gate runs burned hours polling a lock their own process owned)."""
+
+_GPU_LOCK_HELD_GUARD = threading.Lock()
+
+
 def _acquire_gpu_lock(device: str, lock_dir: Path, timeout: float | None = None) -> int:
     """Acquire the exclusive flock for a CUDA device, waiting at most the configured ceiling; return the open fd.
 
@@ -1021,6 +1031,10 @@ def _acquire_gpu_lock(device: str, lock_dir: Path, timeout: float | None = None)
     """
     lock_dir.mkdir(parents=True, exist_ok=True)
     path = lock_dir / f"cuda-{_cuda_index(device)}.lock"
+    with _GPU_LOCK_HELD_GUARD:
+        held = _GPU_LOCK_HELD.get(path)
+    if held is not None:
+        return held
     ceiling = _gpu_lock_timeout_seconds(timeout)
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
     try:
@@ -1062,6 +1076,8 @@ def _acquire_gpu_lock(device: str, lock_dir: Path, timeout: float | None = None)
     except BaseException:
         os.close(fd)
         raise
+    with _GPU_LOCK_HELD_GUARD:
+        _GPU_LOCK_HELD[path] = fd
     return fd
 
 
