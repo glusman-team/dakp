@@ -69,11 +69,23 @@ _EN_PRODUCT_INFORMATION_PATH = "/en/documents/product-information/"
 #: Accepts ``..._en.pdf`` and the ``..._en.pdf-0`` variant Drupal serves for a few documents.
 _PDF_SUFFIX = re.compile(r"\.pdf(?:-\d+)?$", re.IGNORECASE)
 
-#: Every key the report carries per record. Required keys are enforced by
-#: :func:`parse_documents`; the rest default to ``""`` so a report that grows or drops an
-#: optional column still parses (the pipeline only reads what it needs).
-_REQUIRED_KEYS = ("id", "type", "medicine_name", "ema_product_number", "document_url")
-_OPTIONAL_KEYS = ("name", "status", "consultation_date", "first_published_date", "last_updated_date", "reference_number")
+#: Every key the report carries per record. Only ``id``/``type``/``document_url`` are structural:
+#: the live 2026-10-01 report has 2 of 20,234 records (an orphan-maintenance report and a
+#: tracked-changes document) with no ``medicine_name``/``ema_product_number``, and rejecting the
+#: whole report for two non-SmPC rows would fail every acquisition. Records missing those keys parse
+#: with ``""`` and the selection rule drops them (a product-information row with no product number
+#: cannot be joined to an active substance), counted in :func:`product_information_documents`.
+_REQUIRED_KEYS = ("id", "type", "document_url")
+_OPTIONAL_KEYS = (
+    "medicine_name",
+    "ema_product_number",
+    "name",
+    "status",
+    "consultation_date",
+    "first_published_date",
+    "last_updated_date",
+    "reference_number",
+)
 
 
 @dataclass(frozen=True)
@@ -112,7 +124,15 @@ def product_information_documents(documents: list[EparDocument]) -> list[EparDoc
     narration and any partial-failure report — is deterministic across runs.
     """
     selected = [doc for doc in documents if _is_english_human_product_information(doc)]
-    return sorted(selected, key=lambda doc: (doc.ema_product_number, doc.id))
+    unattributable = [doc for doc in selected if not doc.medicine_name.strip()]
+    if unattributable:
+        logger.warning(
+            "acquire_ema_documents: {} product-information document(s) carry no medicine_name and are skipped: {}",
+            len(unattributable),
+            ", ".join(sorted(doc.id for doc in unattributable)),
+        )
+    kept = [doc for doc in selected if doc.medicine_name.strip()]
+    return sorted(kept, key=lambda doc: (doc.ema_product_number, doc.id))
 
 
 def _is_english_human_product_information(doc: EparDocument) -> bool:

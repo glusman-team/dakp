@@ -234,7 +234,8 @@ def test_parse_documents_maps_every_field() -> None:
         ([], "expected a JSON object"),
         ({"data": {}}, "'data' must be a list"),
         ({"data": ["nope"]}, "record 0 must be an object"),
-        ({"data": [{"id": "1", "type": "product-information"}]}, "missing required key\\(s\\): medicine_name"),
+        ({"data": [{"id": "1", "type": "product-information"}]}, "missing required key\\(s\\): document_url"),
+        ({"data": [{"id": "1", "document_url": "https://x/y_en.pdf"}]}, "missing required key\\(s\\): type"),
         (
             {"data": [{"id": "1", "type": "product-information", "medicine_name": "X", "ema_product_number": "EMEA/H/C/1", "document_url": "  "}]},
             "document_url",
@@ -245,6 +246,56 @@ def test_parse_documents_rejects_malformed_reports(payload: object, match: str) 
     """A malformed report is an acquisition failure, never a partial (silently small) crawl."""
     with pytest.raises(ValueError, match=match):
         ema_documents.parse_documents(payload)
+
+
+def test_records_without_medicine_metadata_parse_and_are_never_crawled() -> None:
+    """The live report has 2 of 20,234 records (an orphan-maintenance report, a tracked-changes
+    document) with no medicine_name/ema_product_number. They must not fail the acquisition, and a
+    product-information row lacking them must not be crawled: it could not be joined to a substance."""
+    payload = {
+        "data": [
+            {
+                "id": "75411",
+                "type": "orphan-maintenance-report",
+                "document_url": "https://www.ema.europa.eu/en/documents/orphan-maintenance-report/x_en.pdf",
+            },
+            {
+                "id": "9",
+                "type": "product-information",
+                "ema_product_number": "EMEA/H/C/000009",
+                "document_url": "https://www.ema.europa.eu/en/documents/product-information/nameless_en.pdf",
+            },
+            {
+                "id": "10",
+                "type": "product-information",
+                "medicine_name": "Named",
+                "ema_product_number": "EMEA/H/C/000010",
+                "document_url": "https://www.ema.europa.eu/en/documents/product-information/named_en.pdf",
+            },
+        ]
+    }
+    documents = ema_documents.parse_documents(payload)
+    assert [doc.id for doc in documents] == ["75411", "9", "10"]
+    assert documents[0].medicine_name == ""
+    assert [doc.id for doc in ema_documents.product_information_documents(documents)] == ["10"]
+
+
+def test_the_live_report_shape_parses(tmp_path: Path) -> None:
+    """Regression: the first draft required medicine_name and rejected the WHOLE live report."""
+    payload = json.loads(_FIXTURE.read_text(encoding="utf-8"))
+    payload["data"].append(
+        {
+            "id": "75411",
+            "name": "Nezglyal : Orphan maintenance assessment report",
+            "type": "orphan-maintenance-report",
+            "medicine_name": "",
+            "ema_product_number": "",
+            "document_url": "https://www.ema.europa.eu/en/documents/orphan-maintenance-report/nezglyal-orphan-maintenance-assessment-report_en.pdf",
+        }
+    )
+    path = tmp_path / "report.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert len(ema_documents.load_documents(path)) == 10
 
 
 # --- product-information selection ---------------------------------------------
