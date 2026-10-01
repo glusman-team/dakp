@@ -1,5 +1,5 @@
 name: DRUG_APPROVALS_KP
-version: "1.16.0"
+version: "1.17.0"
 fullmap: ".fullmap"
 rig:
   supporting_data_source_info:
