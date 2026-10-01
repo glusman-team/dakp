@@ -28,6 +28,7 @@ import random
 import sys
 import time
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
