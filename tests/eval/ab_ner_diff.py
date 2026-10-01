@@ -26,6 +26,7 @@ import argparse
 import json
 import random
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -82,7 +83,9 @@ def main() -> int:
     parser.add_argument("--chunk-words", type=int, default=None, help="Experiment window budget (default: production)")
     parser.add_argument("--batch-size", type=int, default=None, help="Experiment inference batch (default: production)")
     parser.add_argument("--dtype", choices=("fp32", "fp16"), default=None, help="Experiment compute dtype (default: production)")
-    parser.add_argument("--devices", type=str, default="", help="Comma-separated CUDA devices for the experiment mine (e.g. cuda:0,cuda:1)")
+    parser.add_argument(
+        "--device", type=str, default=None, help="Device for BOTH sides' mines (e.g. cuda:2); one config per GPU lets a sweep run in parallel"
+    )
     parser.add_argument("--out", type=Path, default=None, help="Write the diff report JSON here")
     parser.add_argument("--gate", action="store_true", help="Exit nonzero when any text differs (adoptability gate)")
     args = parser.parse_args()
@@ -93,8 +96,9 @@ def main() -> int:
         return 2
     print(f"sampled {len(texts)} real section texts (seed={args.seed})")
 
-    baseline = DiseaseNER.for_contraindications(offline=False, workdir=args.workdir)
-    experiment_kwargs: dict[str, Any] = {}
+    device_kwargs: dict[str, Any] = {"device": args.device} if args.device else {}
+    baseline = DiseaseNER.for_contraindications(offline=False, workdir=args.workdir, **device_kwargs)
+    experiment_kwargs: dict[str, Any] = dict(device_kwargs)
     if args.chunk_words is not None:
         experiment_kwargs["chunk_words"] = args.chunk_words
     if args.batch_size is not None:
@@ -110,13 +114,17 @@ def main() -> int:
         from dakp_pipeline.assertions.ner_dispatch import mine_with_cache
 
         items = [("ab", f"doc{i}", text) for i, text in enumerate(texts)]
+        started = time.monotonic()
         baseline_mentions = mine_with_cache(items, baseline, lambda it: _extract(baseline, [x[2] for x in it]), cache)
+        baseline_seconds = time.monotonic() - started
+        started = time.monotonic()
         experiment_mentions = mine_with_cache(
             items,
             experiment,
             lambda it: _extract(experiment, [x[2] for x in it]),
             None,  # the experiment config must not write sweep entries into the production cache
         )
+        experiment_seconds = time.monotonic() - started
         for i, text in enumerate(texts):
             base = _mention_multiset([m.to_dict() for m in baseline_mentions.get(("ab", f"doc{i}"), [])])
             exp = _mention_multiset([m.to_dict() for m in experiment_mentions.get(("ab", f"doc{i}"), [])])
@@ -137,7 +145,13 @@ def main() -> int:
     report = {
         "sample": len(texts),
         "seed": args.seed,
-        "experiment": {"chunk_words": args.chunk_words, "batch_size": args.batch_size, "dtype": args.dtype},
+        "experiment": {"chunk_words": args.chunk_words, "batch_size": args.batch_size, "dtype": args.dtype, "device": args.device},
+        # Wall time of each side. The baseline side is cache-served (CPU re-merge only), so the
+        # experiment side's seconds are the GPU cost of the config under test; compare configs
+        # against a control run (no experiment flags) on the same sample, not against baseline.
+        "baseline_seconds": round(baseline_seconds, 1),
+        "experiment_seconds": round(experiment_seconds, 1),
+        "experiment_texts_per_s": round(len(texts) / experiment_seconds, 2) if experiment_seconds else None,
         "baseline_cache_served": len(texts) - baseline_missing,
         "texts_with_no_baseline_entry": baseline_missing,
         "differing": differing,
