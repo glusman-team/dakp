@@ -45,21 +45,23 @@ def test_shard_uses_one_batch_per_gpu_worker(monkeypatch: pytest.MonkeyPatch) ->
     ner = _ner("asthma")
     calls: list[list[str]] = []
 
-    def extract_batch(texts: Sequence[str]) -> list[list[Mention]]:
+    def extract_spans_batch(texts: Sequence[str]) -> list[Any]:
         calls.append(list(texts))
-        return [ner.extract(text) for text in texts]
+        # Raw spans of an OFFLINE backend are empty (no model); the shard contract only cares
+        # that ONE batched span pass ran per worker and every item came back aligned.
+        return [dispatch.RawTextSpans(windows=[], objects=[], qualifiers=[]) for _ in texts]
 
     class WorkerNER:
         def __init__(self, **_kwargs: Any) -> None:
             pass
 
-        def extract_batch(self, texts: Sequence[str]) -> list[list[Mention]]:
-            return extract_batch(texts)
+        def extract_spans_batch(self, texts: Sequence[str]) -> list[Any]:
+            return extract_spans_batch(texts)
 
     monkeypatch.setattr(dispatch, "DiseaseNER", WorkerNER)
     result = dispatch._mine_shard([("S1", "D1", "asthma"), ("S2", "D2", "asthma")], ner._config(), "cpu")
     assert calls == [["asthma", "asthma"]]
-    assert {(set_id, doc_id) for set_id, doc_id, _mentions in result} == {("S1", "D1"), ("S2", "D2")}
+    assert {(set_id, doc_id) for set_id, doc_id, _spans in result} == {("S1", "D1"), ("S2", "D2")}
 
 
 def test_mine_shard_defaults_to_leaving_process_logging_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -89,8 +91,8 @@ def test_mine_shard_in_worker_configures_logging_before_loading_the_model(monkey
         def __init__(self, **kwargs: Any) -> None:
             calls.append(("construct_ner", kwargs["device"]))
 
-        def extract_batch(self, texts: Sequence[str]) -> list[list[Mention]]:
-            return [[] for _ in texts]
+        def extract_spans_batch(self, texts: Sequence[str]) -> list[Any]:
+            return [dispatch.RawTextSpans(windows=[], objects=[], qualifiers=[]) for _ in texts]
 
     monkeypatch.setattr(dispatch, "configure_worker_logging", lambda workdir, name: calls.append(("configure_logging", workdir, name)))
     monkeypatch.setattr(dispatch, "_set_parent_death_signal", lambda: calls.append("pdeathsig"))
@@ -115,7 +117,7 @@ def test_mine_shard_logs_the_traceback_before_propagating(monkeypatch: pytest.Mo
         def __init__(self, **_kwargs: Any) -> None:
             pass
 
-        def extract_batch(self, _texts: Sequence[str]) -> list[list[Mention]]:
+        def extract_spans_batch(self, _texts: Sequence[str]) -> list[Any]:
             raise IndexError("string index out of range")
 
     monkeypatch.setattr(dispatch, "DiseaseNER", BoomNER)
@@ -357,26 +359,26 @@ def test_default_ner_without_fixture_root_uses_embedded_gazetteer() -> None:
 
 
 class _FakeCache:
-    """In-memory stand-in for MentionCache, serializing values like the real server does.
+    """In-memory stand-in for MentionCache, mirroring the real client's raw-value contract.
 
-    Stores ``[mention.to_dict(), ...]`` and deserializes on read, emulating the Go server's
-    verbatim-bytes round-trip — a hit is only byte-identical if the Mention (de)serialization
-    is lossless.
+    Stores mention/span payloads VERBATIM (``to_dict``/``to_cache`` projections) and returns
+    them undecoded on read - decoding is the caller's job now (the server is tier-agnostic),
+    so a hit is only byte-identical if the caller's own (de)serialization is lossless.
     """
 
     def __init__(self) -> None:
-        self.store: dict[str, list[dict[str, Any]]] = {}
+        self.store: dict[str, Any] = {}
         self.get_calls = 0
         self.put_calls = 0
         self.deleted: list[str] = []
 
-    def get_many(self, keys: list[str]) -> dict[str, list[Mention]]:
+    def get_many(self, keys: list[str]) -> dict[str, Any]:
         self.get_calls += 1
-        return {key: [Mention.from_dict(item) for item in self.store[key]] for key in keys if key in self.store}
+        return {key: self.store[key] for key in keys if key in self.store}
 
-    def put_many(self, items: dict[str, list[Mention]]) -> None:
+    def put_many(self, items: dict[str, Any]) -> None:
         self.put_calls += 1
-        self.store.update({key: [mention.to_dict() for mention in mentions] for key, mentions in items.items()})
+        self.store.update(items)
 
     def delete_many(self, keys: list[str]) -> None:
         for key in keys:
@@ -525,3 +527,183 @@ def test_mine_with_cache_results_match_no_cache_run(monkeypatch: pytest.MonkeyPa
     cached_warm = mine_with_cache(items, ner, _sequential_mine(ner), cache)  # type: ignore[arg-type]
     assert cached_cold == no_cache
     assert cached_warm == no_cache
+
+
+# --- Tier B span-cache flow -------------------------------------------------------
+
+
+class _SpanMine:
+    """A production-style mine closure: returns raw spans and records every text it mined."""
+
+    def __init__(self, ner: DiseaseNER) -> None:
+        self.ner = ner
+        self.mined: list[str] = []
+
+    def __call__(self, items: Sequence[Any]) -> dict[tuple[str, str], Any]:
+        out: dict[tuple[str, str], Any] = {}
+        for set_id, doc_id, text in items:
+            self.mined.append(text)
+            out[(set_id, doc_id)] = self.ner.extract_spans(text)
+        return out
+
+
+def _counting_extract_spans(ner: DiseaseNER, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Replace ``ner.extract_spans`` with a counting fake returning ONE full-text span.
+
+    The real ``extract_spans`` loads GLiNER (network + torch); these tests exercise the CACHE
+    tiers and the parent-side merge, not the model, so a deterministic single-span fake keeps
+    them hermetic while still exercising ``merge_spans`` on real span material.
+    """
+    calls: list[str] = []
+
+    def fake_extract_spans(text: str) -> Any:
+        calls.append(text)
+        from dakp_pipeline.ner.ner import RawTextSpans, _ModelSpan
+
+        return RawTextSpans(windows=[(0, text)], objects=[[_ModelSpan(start=0, end=len(text), type="Disease", score=0.9)]], qualifiers=[])
+
+    monkeypatch.setattr(ner, "extract_spans", fake_extract_spans)
+    return calls
+
+
+def test_mine_with_cache_tier_b_stores_spans_and_write_through_tier_a(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A span-valued cold run fills BOTH tiers: B gets raw spans, A gets the merged mentions."""
+    ner = _production_ner(tmp_path)
+    calls = _counting_extract_spans(ner, monkeypatch)
+    cache = _FakeCache()
+    items = [("S1", "D1", "asthma in adults")]
+    out = mine_with_cache(items, ner, _SpanMine(ner), cache)  # type: ignore[arg-type]
+    assert [m.text for m in out[("S1", "D1")]] == ["asthma in adults"]  # the fake span, merged
+    assert len(calls) == 1
+    assert cache.put_calls == 2  # one put_many per tier
+    assert len(cache.store) == 2  # one span payload + one mention list
+    span_entries = [v for v in cache.store.values() if isinstance(v, dict)]
+    mention_entries = [v for v in cache.store.values() if isinstance(v, list)]
+    assert len(span_entries) == 1
+    assert "starts" in span_entries[0]
+    assert len(mention_entries) == 1
+
+
+def test_mine_with_cache_tier_b_hit_avoids_the_gpu_on_merge_side_changes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """THE payoff test: an accept-threshold sweep hits Tier B and never re-mines.
+
+    The threshold change invalidates every Tier A key (full fingerprint) but NOT Tier B
+    (model-side fingerprint), so the second run serves spans from B, re-merges on CPU, and the
+    extract path (the GPU cost) never runs. This is what makes gazetteer/threshold iteration
+    CPU-cheap.
+    """
+    ner = _production_ner(tmp_path)
+    calls = _counting_extract_spans(ner, monkeypatch)
+    cache = _FakeCache()
+    items = [("S1", "D1", "asthma in adults")]
+    mine = _SpanMine(ner)
+    first = mine_with_cache(items, ner, mine, cache)  # type: ignore[arg-type]
+    assert mine.mined == ["asthma in adults"]
+    assert calls == ["asthma in adults"]
+
+    swept = DiseaseNER(offline=False, model_id="acme/test-ner", accept_threshold=0.9, cache_dir=tmp_path)
+    swept_calls = _counting_extract_spans(swept, monkeypatch)
+    swept_out = mine_with_cache(items, swept, _SpanMine(swept), cache)  # type: ignore[arg-type]
+    assert swept_calls == []  # Tier B hit: no GPU, only a CPU re-merge under the new floor
+    assert swept_out == first  # same fake-model output -> same mentions
+
+
+def test_mine_with_cache_tier_b_window_mismatch_is_a_miss(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A Tier B entry whose stored tiling does not match the text's budget resolution is re-mined.
+
+    Windows are recomputed parent-side and checked against the stored starts; an entry produced
+    under a different chunk_words must never be merged with the wrong tiling.
+    """
+    ner = _production_ner(tmp_path)
+    calls = _counting_extract_spans(ner, monkeypatch)
+    cache = _FakeCache()
+    items = [("S1", "D1", "asthma in adults")]
+    mine = _SpanMine(ner)
+    mine_with_cache(items, ner, mine, cache)  # type: ignore[arg-type]
+    assert calls == ["asthma in adults"]
+    assert len(cache.store) == 2
+
+    # Corrupt the span payload's tiling: the entry must be treated as a MISS (re-mined),
+    # not merged blindly.
+    span_key = next(k for k, v in cache.store.items() if isinstance(v, dict))
+    cache.store[span_key] = {**cache.store[span_key], "starts": [999]}
+    rebudget_ner = DiseaseNER(offline=False, model_id="acme/test-ner", chunk_words=512, cache_dir=tmp_path)
+    rebudget_calls = _counting_extract_spans(rebudget_ner, monkeypatch)
+    mine_with_cache(items, rebudget_ner, _SpanMine(rebudget_ner), cache)  # type: ignore[arg-type]
+    assert rebudget_calls == ["asthma in adults"]  # mismatch -> re-mine, never a corrupt merge
+
+
+def test_mine_with_cache_none_cache_normalizes_spans_to_mentions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The no-cache pass-through still merges spans: shapers always receive final mentions."""
+    ner = _production_ner(tmp_path)
+    _counting_extract_spans(ner, monkeypatch)
+    items = [("S1", "D1", "asthma in adults")]
+    out = mine_with_cache(items, ner, _SpanMine(ner), None)  # type: ignore[arg-type]
+    assert [m.text for m in out[("S1", "D1")]] == ["asthma in adults"]
+
+
+# --- chunked mine+put (crash-bounded shard writes) ---------------------------------
+
+
+class _ExplodingMine:
+    """Mines the first N texts, then raises - simulates an OOM crash mid-shard."""
+
+    def __init__(self, ner: DiseaseNER, survive: int) -> None:
+        self.ner = ner
+        self.survive = survive
+        self.mined: list[str] = []
+
+    def __call__(self, items: Sequence[Any]) -> dict[tuple[str, str], Any]:
+        out: dict[tuple[str, str], Any] = {}
+        for set_id, doc_id, text in items:
+            if len(self.mined) >= self.survive:
+                raise RuntimeError("simulated OOM: worker died mid-shard")
+            self.mined.append(text)
+            out[(set_id, doc_id)] = self.ner.extract_spans(text)
+        return out
+
+
+def test_chunked_puts_resume_after_mid_shard_crash(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A crash mid-shard keeps the completed batches; the retry mines only the remainder.
+
+    Batches are flushed to BOTH tiers as soon as they finish, so the retry's cache state shows
+    exactly where the first attempt died: the resumed shard's output must equal an uninterrupted
+    run's, with the survived texts served from cache (no GPU) and only the rest mined.
+    """
+    monkeypatch.setenv("DAKP_NERCACHE_PUT_BATCH", "2")
+    ner = _production_ner(tmp_path)
+    calls = _counting_extract_spans(ner, monkeypatch)
+    cache = _FakeCache()
+    texts = [f"indicated for asthma {i}" for i in range(5)]
+    items = [("S1", f"D{i}", text) for i, text in enumerate(texts)]
+
+    boom = _ExplodingMine(ner, survive=4)
+    with pytest.raises(RuntimeError, match="simulated OOM"):
+        mine_with_cache(items, ner, boom, cache)  # type: ignore[arg-type]
+    stored_after_crash = len(cache.store)
+    assert stored_after_crash == 8  # two flushed batches x (B span + A mention); batch 3 never ran
+    assert calls == texts[:4]  # exactly the survived texts were mined
+
+    # Retry with a healthy mine closure: batches 1-2 are all cache hits, the tail is mined.
+    retry_calls = _counting_extract_spans(ner, monkeypatch)
+    recovered = mine_with_cache(items, ner, _SpanMine(ner), cache)  # type: ignore[arg-type]
+    assert len(retry_calls) == 1  # texts[4:] re-mined; texts[:4] came from its own earlier chunks
+    assert set(retry_calls) == set(texts[4:])
+
+    # The recovered result is identical to a never-crashed run.
+    fresh_cache = _FakeCache()
+    fresh_calls = _counting_extract_spans(ner, monkeypatch)
+    fresh = mine_with_cache(items, ner, _SpanMine(ner), fresh_cache)  # type: ignore[arg-type]
+    assert len(fresh_calls) == 5
+    assert recovered == fresh
+
+
+def test_chunked_puts_single_batch_when_unconfigured(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Without the env override, the whole shard is one mine+put (the pre-chunking behavior)."""
+    ner = _production_ner(tmp_path)
+    _counting_extract_spans(ner, monkeypatch)
+    cache = _FakeCache()
+    items = [("S1", f"D{i}", f"text {i}") for i in range(5)]
+    out = mine_with_cache(items, ner, _SpanMine(ner), cache)  # type: ignore[arg-type]
+    assert len(out) == 5
+    assert cache.put_calls == 2  # one B flush + one A flush for the whole shard

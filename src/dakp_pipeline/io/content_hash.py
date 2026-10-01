@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -85,12 +86,19 @@ def hash_file_with_sri(path: Path, *, chunk_size: int = _DEFAULT_CHUNK) -> tuple
 
 
 def hash_tree(root: Path, *, chunk_size: int = _DEFAULT_CHUNK) -> str:
-    """Deterministic BLAKE3 tree hash over a directory.
+    """Deterministic BLAKE3 tree hash over a directory (algorithm ``b3-tree-v1``).
 
     Nix-NAR-like in spirit but BLAKE3-based: stable over sorted relative paths, file
     sizes, and file contents. Directory mtimes, traversal order, and empty dirs do not
     affect the result. Returns ``b3:<hex>``. File contents are fed via
     ``Hasher.update_mmap``; ``chunk_size`` is advisory only on that path.
+
+    Single-threaded by construction: the interleaved metadata updates (path/size between
+    file payloads) cannot use Rayon chunk parallelism, and the hasher is constructed
+    without ``max_threads``. Callers hashing large trees (model weights) should prefer
+    :func:`hash_tree_mt` - at the cost of a DIFFERENT digest (see there). This function's
+    digest is frozen forever: the Go-side artifact store mirrors it byte-for-byte
+    (``go/internal/blake3store``), and existing content-addressed artifacts depend on it.
     """
     del chunk_size  # advisory only on the mmap path
     hasher = blake3()
@@ -103,6 +111,54 @@ def hash_tree(root: Path, *, chunk_size: int = _DEFAULT_CHUNK) -> str:
         hasher.update(str(size).encode("ascii"))
         hasher.update(b"\x00")
         hasher.update_mmap(str(path))
+        hasher.update(b"\x00")
+    return artifact_id(hasher.hexdigest())
+
+
+#: Algorithm tag recorded in model-cache manifests so old and new tree hashes can be
+#: told apart. ``b3-tree-v1`` is :func:`hash_tree` (frozen); ``b3-tree-v2-mt`` is
+#: :func:`hash_tree_mt` (multithreaded, different digest by construction).
+TREE_HASH_V1 = "b3-tree-v1"
+TREE_HASH_V2_MT = "b3-tree-v2-mt"
+
+
+def hash_tree_mt(root: Path, *, max_workers: int | None = None) -> str:
+    """Multithreaded BLAKE3 tree hash (algorithm ``b3-tree-v2-mt``).
+
+    BLAKE3 scales ~linearly with cores, and model-weight trees run into gigabytes, so the
+    sequential ``b3-tree-v1`` walk leaves the whole machine idle. This variant parallelizes
+    twice over: per-FILE hashing runs on a thread pool (files are independent), and each
+    file's own BLAKE3 uses Rayon chunk parallelism (``max_threads=blake3.AUTO`` over the
+    mmap). The per-file results (relative path, size, file digest) are then combined in the
+    same sorted-path order ``b3-tree-v1`` uses, so the result is deterministic regardless
+    of worker count or completion order.
+
+    The digest is deliberately DIFFERENT from :func:`hash_tree` for the same tree - the
+    per-file contribution is the file's own digest, not its raw bytes - which is why the
+    algorithm name is recorded alongside the hash (model-cache manifests carry
+    ``hash_algo``). Never feed a ``b3-tree-v2-mt`` digest into a path expecting ``b3-tree-v1``
+    (the Go-side artifact store) or vice versa.
+    """
+    files = sorted((p for p in root.rglob("*") if p.is_file()), key=lambda p: p.relative_to(root).as_posix())
+
+    def file_entry(path: Path) -> tuple[bytes, int, str]:
+        hasher = blake3(max_threads=blake3.AUTO)
+        hasher.update_mmap(str(path))
+        return path.relative_to(root).as_posix().encode("utf-8"), path.stat().st_size, hasher.hexdigest()
+
+    workers = max_workers if max_workers is not None else min(32, (os.cpu_count() or 4))
+    if workers <= 1 or len(files) <= 1:
+        entries = [file_entry(path) for path in files]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            entries = list(pool.map(file_entry, files))
+    hasher = blake3()
+    for rel, size, file_hex in entries:
+        hasher.update(rel)
+        hasher.update(b"\x00")
+        hasher.update(str(size).encode("ascii"))
+        hasher.update(b"\x00")
+        hasher.update(file_hex.encode("ascii"))
         hasher.update(b"\x00")
     return artifact_id(hasher.hexdigest())
 
@@ -127,4 +183,16 @@ def digest_dirname(artifact_id_str: str) -> str:
     return _hex(artifact_id_str)
 
 
-__all__ = ["BLAKE3_ALGORITHM", "artifact_id", "digest_dirname", "hash_bytes", "hash_file", "hash_file_with_sri", "hash_tree", "sha256_sri"]
+__all__ = [
+    "BLAKE3_ALGORITHM",
+    "TREE_HASH_V1",
+    "TREE_HASH_V2_MT",
+    "artifact_id",
+    "digest_dirname",
+    "hash_bytes",
+    "hash_file",
+    "hash_file_with_sri",
+    "hash_tree",
+    "hash_tree_mt",
+    "sha256_sri",
+]

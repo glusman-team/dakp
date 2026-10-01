@@ -52,6 +52,7 @@ baseline; subjects carry no CURIE (FAERS gives no drug id here). Canonical mappi
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Mapping
 
@@ -122,10 +123,14 @@ class ObservedUsesShaper:
             stats(logger, "shape_faers_applied_to_treat", inputs=len(inputs), disease_map_terms=len(disease_map))
             # Projection: only the three columns the aggregation needs (the production case table
             # is tens of millions of rows wide; reading all 17 columns wastes gigabytes).
-            faers_cases = find_faers_cases(inputs, columns=("drugname", "indication", "primaryid", "nda", "nda_raw", "quarter", "source_record_id"))
-            approved = find_table(inputs, "approved_treats_assertions.tsv")
-            approved_pairs = _approved_pair_index(approved) if approved is not None else None
-            approvals = build_fda_approval_index(inputs)
+            # Per-phase timer (US-007): the FAERS case projection is the fixed cost here.
+            with step(logger, "shape_faers_applied_to_treat.inputs"):
+                faers_cases = find_faers_cases(
+                    inputs, columns=("drugname", "indication", "primaryid", "nda", "nda_raw", "quarter", "source_record_id")
+                )
+                approved = find_table(inputs, "approved_treats_assertions.tsv")
+                approved_pairs = _approved_pair_index(approved) if approved is not None else None
+                approvals = build_fda_approval_index(inputs)
             rows = build_observed_use_rows(
                 faers_cases, disease_map, approved_pairs, approvals=approvals, faers_quarter_urls=faers_quarter_urls(inputs)
             )
@@ -157,12 +162,14 @@ def _approved_pair_index(approved: pl.DataFrame) -> set[tuple[str, str]]:
     return pairs
 
 
+@functools.lru_cache(maxsize=1 << 20)
 def _pair_key(text: str) -> str:
     """Canonical (drug, condition) lookup key: textnorm chain, then gazetteer normalization.
 
     Single source of truth for both the approved-pair index and the observed-uses status
     lookup; keeping it identical on both sides is what makes the derived status canonical
-    across spelling variants.
+    across spelling variants. Pure and memoized: the 1.7M production rows repeat each drug
+    and object text many times (US-007 profiling: ~17% of the FAERS shaping wall time).
     """
     return normalize_text(defaers_text(text))
 
@@ -232,11 +239,10 @@ def build_observed_use_rows(
             primaryid.alias("primaryid"),
             _text_column("nda").alias("nda"),
             _text_column("nda_raw").alias("nda_raw"),
-            _text_column("quarter").alias("quarter"),
+            _text_column("quarter").str.strip_chars().str.to_uppercase().alias("quarter"),
             _text_column("source_record_id").alias("source_record_id"),
         )
         .filter((pl.col("drugname") != "") & (pl.col("indication") != ""))
-        .with_columns(pl.struct(["primaryid", "nda", "nda_raw", "quarter", "source_record_id"]).alias("faers_row"))
     )
 
     # Resolve each distinct stop-list-passing indication to its object BEFORE aggregation.
@@ -282,6 +288,11 @@ def build_observed_use_rows(
         .map_elements(lambda value: assertion_context("faers", "indication", str(value or "")), return_dtype=pl.Utf8)
         .alias("assertion_context")
     )
+    # Vectorized per-group set building (US-007): the previous form materialized EVERY source
+    # row as a Python dict (49M structs on production) and folded it in a nested loop - ~2/3 of
+    # the 5 h phase. The polars aggregations below compute the same distinct sets in one pass;
+    # the Python loop only walks the (much smaller) per-group result lists.
+    _pid = pl.col("primaryid")
     pairs = (
         cases.join(mapping.lazy(), on="indication", how="inner")  # stop-listed indications carry no mapping entry
         .group_by("drugname", "object_text", "assertion_context")
@@ -290,14 +301,23 @@ def build_observed_use_rows(
             pl.col("object_name").first(),
             pl.col("object_category").first(),
             pl.col("indication").first().alias("context_indication"),
-            pl.col("primaryid").filter(pl.col("primaryid") != "").n_unique().alias("distinct_cases"),
-            pl.col("primaryid").filter(pl.col("primaryid") == "").len().alias("anon_rows"),
-            pl.col("faers_row").unique().alias("faers_rows"),
+            _pid.filter(_pid != "").n_unique().alias("distinct_cases"),
+            _pid.filter(_pid != "").unique().alias("case_ids"),
+            _pid.filter(_pid == "").len().alias("anon_rows"),
+            # Distinct quarters that carry a case id: the evidence-URL set is exactly the URLs of
+            # these (a quarter maps to one URL), so the URL strings themselves are resolved in the
+            # small second pass instead of per source row.
+            pl.col("quarter").filter((_pid != "") & (pl.col("quarter") != "")).unique().alias("quarters"),
+            pl.col("source_record_id").filter(pl.col("source_record_id") != "").unique().alias("source_records"),
+            # Anonymous rows (no primaryid) contribute `anon:<source_record_id>` tokens.
+            pl.col("source_record_id").filter((_pid == "") & (pl.col("source_record_id") != "")).unique().alias("anon_records"),
+            pl.struct([pl.col("nda_raw"), pl.col("nda")]).unique().alias("nda_pairs"),
         )
         .collect()
         .sort("drugname", "object_text")
     )
 
+    quarter_urls = dict(faers_quarter_urls or {})  # once, not per case row (was 49M dict copies)
     rows: list[dict[str, str]] = []
     for rec in pairs.iter_rows(named=True):
         drug = str(rec["drugname"])
@@ -307,25 +327,12 @@ def build_observed_use_rows(
             "name": str(rec["object_name"]),
             "category": str(rec["object_category"]),
         }
-        source_records: set[str] = set()
-        evidence_urls: set[str] = set()
+        evidence_urls = {faers_record_url(quarter, quarter_urls) for quarter in rec.get("quarters") or ()}
+        source_records = {str(value) for value in rec.get("source_records") or () if value}
         approval_values_by_norm: dict[str, set[str]] = {}
-        case_ids: set[str] = set()
-        anon_records: set[str] = set()
-        for raw in rec.get("faers_rows") or []:
-            row = raw or {}
-            q = str(row.get("quarter") or "").strip()
-            pid = str(row.get("primaryid") or "").strip()
-            if q and pid:
-                evidence_urls.add(faers_record_url(q, dict(faers_quarter_urls or {})))
-            source_id = str(row.get("source_record_id") or "").strip()
-            if source_id:
-                source_records.add(source_id)
-            if pid:
-                case_ids.add(pid)
-            elif source_id:
-                anon_records.add(source_id)
-            raw_nda = str(row.get("nda_raw") or row.get("nda") or "").strip()
+        for raw_pair in rec.get("nda_pairs") or ():
+            pair = raw_pair or {}
+            raw_nda = str(pair.get("nda_raw") or pair.get("nda") or "").strip()
             norm_nda = normalize_nda(raw_nda)
             if norm_nda:
                 approval_values_by_norm.setdefault(norm_nda, set()).add(raw_nda)
@@ -337,9 +344,12 @@ def build_observed_use_rows(
         # source_record_ids (and an id-less row leaves no token at all), so pad with per-group
         # synthetic tokens — unique across rows that could merge downstream because the group
         # key is embedded — keeping len(case_ids) == number_of_cases exact.
+        anon_records = {str(value) for value in rec.get("anon_records") or () if value}
         anon_tokens = {f"anon:{record}" for record in anon_records}
         pad = int(rec["anon_rows"]) - len(anon_tokens)
         anon_tokens.update(f"anon:row:{drug}:{obj['text']}:{index}" for index in range(max(pad, 0)))
+        # Identified case ids: distinct non-empty primaryids of the group.
+        case_ids = {str(value) for value in rec.get("case_ids") or () if value}
         if approved_pairs is None:
             status = _STATUS_NOT_PROVIDED
         elif (_pair_key(drug), _pair_key(obj["text"])) in approved_pairs:

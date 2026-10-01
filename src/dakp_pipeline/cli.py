@@ -68,8 +68,7 @@ _API_WAIT_ROUNDS = 90
 _API_WAIT_SECONDS = 2
 _DAG_WAIT_ROUNDS = 45
 _DAG_WAIT_SECONDS = 2
-_RUN_WAIT_ROUNDS = 1200  # 60 min @ 3s: a release's GLiNER contraindication mining + KG build can take ~20+ min
-_RUN_WAIT_SECONDS = 3
+_RUN_WAIT_SECONDS = 3  # unbounded rounds: re-attach until the DAG run is terminal (dagrun_timeout is the bound)
 
 #: Heal steps cap uv's cache-lock wait: a stray long-running ``uv run`` child (e.g. an orphaned
 #: ``airflow standalone``) holds uv's cache lock for its whole lifetime, and uv's 300s default
@@ -197,6 +196,13 @@ def _airflow_env(airflow_home: Path, bundle_dir: Path, port: int) -> dict[str, s
             # ...and wrap task logs by default: the native Go workers log one wide slog JSON
             # record per line, and without wrap the task-log view horizontal-scrolls instead.
             "AIRFLOW__API__DEFAULT_WRAP": "True",
+            # --- stall recovery ------------------------------------------------------
+            # A task whose heartbeat goes silent for this long is declared zombie and failed
+            # (triggering the DAG-level retry) instead of squatting on its pool slot forever —
+            # the exact failure that left this build wedged for hours with all shape tasks
+            # stuck 'scheduled' behind a dead task that still claimed to be running. 10 min
+            # stays clear of the longest legitimate silent stretch (a single GLiNER batch).
+            "AIRFLOW__SCHEDULER__ZOMBIE_TASK_THRESHOLD": "10",
         }
     )
     return env
@@ -278,8 +284,27 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
     # --- 1. build + pack the Go bundle into executables_root --------------------
     print("[1/6] Building and packing the native Go bundle")
     bundle_dir.mkdir(parents=True, exist_ok=True)
+    # CGO_ENABLED=0 is pinned on both steps below. Root cause on wenceslaus (LDAP uid 53261,
+    # no /etc/passwd line): the go-sdk api package init panics in user.Current() with "user:
+    # unknown userid" when the lookup runs through the cgo/glibc getpwuid_r path, while the
+    # pure-Go lookup succeeds — verified with a two-line probe binary (CGO_ENABLED=1 panics,
+    # CGO_ENABLED=0 works, identical source). `go tool` inherits the ambient default (cgo on),
+    # so the packer is built as a normal package and 0 is pinned on the PACK step as well (the
+    # packer shells out to `go build` for the bundle binary, which embeds the same init).
+    packer_bin = _REPO_ROOT / "go" / ".tools" / "airflow-go-pack"
+    packer_bin.parent.mkdir(parents=True, exist_ok=True)  # go build -o does not create parents
+    build = run_subprocess(
+        ["go", "build", "-o", str(packer_bin), "github.com/apache/airflow/go-sdk/cmd/airflow-go-pack"],
+        cwd=_REPO_ROOT / "go",
+        env={**env, "CGO_ENABLED": "0"},
+    )
+    if build.returncode != 0:
+        print("error: bundle pack failed")
+        if build.stderr:
+            print(build.stderr.strip()[-2000:])
+        return 1
     pack = run_subprocess(
-        ["go", "tool", "airflow-go-pack", "--output", str(bundle_dir / "dakp-bundle"), "./cmd/dakp-bundle"], cwd=_REPO_ROOT / "go", env=env
+        [str(packer_bin), "--output", str(bundle_dir / "dakp-bundle"), "./cmd/dakp-bundle"], cwd=_REPO_ROOT / "go", env={**env, "CGO_ENABLED": "0"}
     )
     if pack.returncode != 0:
         print("error: bundle pack failed")
@@ -369,11 +394,20 @@ def run_up(*, fullmap: str | None, port: int, log_level: str, detach: bool, smal
         return 0
 
     # --- 6. wait for completion -------------------------------------------------
-    print("[6/6] Waiting for the run to finish")
+    # Re-attach until the run reaches a TERMINAL state, with no round cap: the previous
+    # 1200-round budget printed an error at ~60 min while the DAG kept running, orphaning the
+    # build (nobody was watching it) and tripping operators into re-triggering a duplicate.
+    # The DAG's own dagrun_timeout is the real bound; this loop just reports it.
+    print("[6/6] Waiting for the run to finish (re-attaching until a terminal state)")
     final = ""
-    for i in range(1, _RUN_WAIT_ROUNDS + 1):
+    previous = ""
+    i = 0
+    while True:
+        i += 1
         state = run_state(db_path, DAG_ID)
-        print(f"    [{i}] run_state={state}")
+        if state != previous or i % 20 == 0:
+            print(f"    [{i}] run_state={state}")
+            previous = state
         if state == "success":
             final = "success"
             break

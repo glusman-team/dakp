@@ -19,6 +19,7 @@ limits) comes from the ``dakp_config`` Airflow Variable, set by the one-command 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from airflow.sdk import TaskGroup, Variable, dag, task
@@ -156,6 +157,7 @@ def _build_acquire_stage() -> AcquireOutputs:
 
         @task(
             pool=DOWNLOAD_POOL,
+            execution_timeout=_ACQUIRE_TIMEOUT,
             doc_md="Download/cache DailyMed SPL artifacts; pushes ONE refs-file `ArtifactRef` over XCom (the per-member SPL refs live in a single store JSON, not inline).",
         )
         def acquire_dailymed() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
@@ -172,7 +174,11 @@ def _build_acquire_stage() -> AcquireOutputs:
                 stats(logger, "task acquire_dailymed", output_refs=len(refs), refs_file=str(refs_file.uri))
                 return _refs_to_xcom([refs_file])
 
-        @task(pool=DOWNLOAD_POOL, doc_md="Download/cache FAERS quarterly ASCII artifacts; returns `ArtifactRef` manifests only.")
+        @task(
+            pool=DOWNLOAD_POOL,
+            execution_timeout=_ACQUIRE_TIMEOUT,
+            doc_md="Download/cache FAERS quarterly ASCII artifacts; returns `ArtifactRef` manifests only.",
+        )
         def acquire_faers() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline import acquire
 
@@ -182,7 +188,11 @@ def _build_acquire_stage() -> AcquireOutputs:
                 stats(logger, "task acquire_faers", output_refs=len(refs))
                 return _refs_to_xcom(refs)
 
-        @task(pool=DOWNLOAD_POOL, doc_md="Download/cache the Drugs@FDA data-files ZIP; returns `ArtifactRef` manifests only.")
+        @task(
+            pool=DOWNLOAD_POOL,
+            execution_timeout=_ACQUIRE_TIMEOUT,
+            doc_md="Download/cache the Drugs@FDA data-files ZIP; returns `ArtifactRef` manifests only.",
+        )
         def acquire_drugsfda() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline import acquire
 
@@ -192,7 +202,11 @@ def _build_acquire_stage() -> AcquireOutputs:
                 stats(logger, "task acquire_drugsfda", output_refs=len(refs))
                 return _refs_to_xcom(refs)
 
-        @task(pool=DOWNLOAD_POOL, doc_md="Download/cache the EMA centrally-authorised medicines xlsx; returns `ArtifactRef` manifests only.")
+        @task(
+            pool=DOWNLOAD_POOL,
+            execution_timeout=_ACQUIRE_TIMEOUT,
+            doc_md="Download/cache the EMA centrally-authorised medicines xlsx; returns `ArtifactRef` manifests only.",
+        )
         def acquire_ema() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline import acquire
 
@@ -202,7 +216,11 @@ def _build_acquire_stage() -> AcquireOutputs:
                 stats(logger, "task acquire_ema", output_refs=len(refs))
                 return _refs_to_xcom(refs)
 
-        @task(pool=DOWNLOAD_POOL, doc_md="Ensure the production GLiNER checkpoint is cached before contraindication mining.")
+        @task(
+            pool=DOWNLOAD_POOL,
+            execution_timeout=_ACQUIRE_TIMEOUT,
+            doc_md="Ensure the production GLiNER checkpoint is cached before contraindication mining.",
+        )
         def acquire_ner_models() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline import acquire
 
@@ -253,7 +271,11 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
     """Create the assertion-shaping TaskGroup and return assertion task handles."""
     with TaskGroup(group_id="shape", prefix_group_id=False, tooltip="Shape assertion tables", doc_md=_SHAPE_DOC_MD):
 
-        @task(pool=NER_MINING_POOL, doc_md="Shape FDA/EMA-approved treatment assertions from DailyMed, Drugs@FDA, FAERS, and the EMA registry refs.")
+        @task(
+            pool=NER_MINING_POOL,
+            execution_timeout=_SHAPE_TIMEOUT,
+            doc_md="Shape FDA/EMA-approved treatment assertions from DailyMed, Drugs@FDA, FAERS, and the EMA registry refs.",
+        )
         def shape_treatment_tables(
             dm_ext: Any, drugsfda_ext: Any, faers_ext: Any, ema_ext: Any, ner_models_ref: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
@@ -294,7 +316,8 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                 return _refs_to_xcom(out)
 
         @task(
-            doc_md="Shape FAERS observed-use assertions from FAERS cases + DailyMed/Drugs@FDA refs, cross-referenced with the approved-treats table for the approval status. FAERS text bypasses NER and goes directly to intervention mapping."
+            execution_timeout=_SHAPE_TIMEOUT,
+            doc_md="Shape FAERS observed-use assertions from FAERS cases + DailyMed/Drugs@FDA refs, cross-referenced with the approved-treats table for the approval status. FAERS text bypasses NER and goes directly to intervention mapping.",
         )
         def shape_faers_use_tables(
             faers_ext: Any, dm_ext: Any, drugsfda_ext: Any, approved: Any
@@ -328,7 +351,11 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                 stats(logger, "task shape_faers_use_tables", output_refs=len(out))
                 return _refs_to_xcom(out)
 
-        @task(pool=NER_MINING_POOL, doc_md="Mine contraindication assertions from DailyMed + Drugs@FDA refs after production NER models are cached.")
+        @task(
+            pool=NER_MINING_POOL,
+            execution_timeout=_SHAPE_TIMEOUT,
+            doc_md="Mine contraindication assertions from DailyMed + Drugs@FDA refs after production NER models are cached.",
+        )
         def shape_contraindication_tables(
             dm_ext: Any, drugsfda_ext: Any, ner_models_ref: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
@@ -470,7 +497,11 @@ def _build_ner_export_stage(extracts: ExtractOutputs, shape_tasks: AssertionOutp
     """
     with TaskGroup(group_id="ner-export", prefix_group_id=False, tooltip="GLiNER2 training-data export", doc_md=_NER_EXPORT_DOC_MD):
 
-        @task(pool=NER_MINING_POOL, doc_md="Export the GLiNER2 training-data bundle after the shape stage warmed the mention cache.")
+        @task(
+            pool=NER_MINING_POOL,
+            execution_timeout=_SHAPE_TIMEOUT,
+            doc_md="Export the GLiNER2 training-data bundle after the shape stage warmed the mention cache.",
+        )
         def export_ner_training_data(
             dm_ext: Any, faers_ext: Any, ema_ext: Any, ner_models_ref: Any, shape_dep: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
@@ -498,7 +529,27 @@ def _build_ner_export_stage(extracts: ExtractOutputs, shape_tasks: AssertionOutp
         return export_ner_training_data(extracts.dailymed, extracts.faers, extracts.ema, ner_models, shape_tasks.contraindications)
 
 
-@dag(dag_id=DAG_ID, start_date=datetime(2026, 1, 1), schedule=None, catchup=False, tags=["dakp", "drug-approvals"], doc_md=_DAG_DOC_MD)
+#: Stage budgets (US stall-recovery): no task may run unbounded. Shaping gets the headroom
+#: because a cold contraindication mine is ~3.5 h on four P100s; acquisition is bounded at the
+#: slowest observed upstream snapshot; everything else sits at the 2 h default. A timed-out task
+#: retries once (5 min later) before the task fails — the two-tier NER cache makes the retry
+#: resume from completed work instead of re-mining.
+_DEFAULT_ARGS: dict[str, Any] = {"retries": 1, "retry_delay": timedelta(minutes=5), "execution_timeout": timedelta(hours=2)}
+_ACQUIRE_TIMEOUT = timedelta(hours=1)
+_SHAPE_TIMEOUT = timedelta(hours=8)
+_DAGRUN_TIMEOUT = timedelta(hours=12)
+
+
+@dag(
+    dag_id=DAG_ID,
+    start_date=datetime(2026, 1, 1),
+    schedule=None,
+    catchup=False,
+    tags=["dakp", "drug-approvals"],
+    doc_md=_DAG_DOC_MD,
+    default_args=_DEFAULT_ARGS,
+    dagrun_timeout=_DAGRUN_TIMEOUT,
+)
 def dakp_build() -> None:  # pragma: no cover - Airflow task graph; task bodies execute only under an Airflow runtime
     """Full DAKP build DAG: acquire -> extract (native Go) -> shape -> Tablassert handoff -> legacy TSV export.
 

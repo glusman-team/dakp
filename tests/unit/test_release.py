@@ -62,7 +62,9 @@ def test_legacy_name_schema(tmp_path: Path) -> None:
         f"drug_approvals_kg_edges_v{__version__}.tsv",
         f"drug_approvals_kg_v{__version__}.RIG.yaml",
     }
-    workdir = tmp_path / "absent"
+    # Hermetic guaranteed-missing dir: literal /nonexistent exists as a root-owned
+    # non-traversable directory on some hosts (wenceslaus), so exists() is True there.
+    workdir = tmp_path / "missing"
     assert data_names  # documented here; the publish test below asserts them on disk
     assert not workdir.exists()
 

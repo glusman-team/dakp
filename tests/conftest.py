@@ -41,3 +41,18 @@ def _force_urllib_downloads(monkeypatch: pytest.MonkeyPatch) -> None:
     ``monkeypatch.delenv("DAKP_ARIA2", raising=False)``.
     """
     monkeypatch.setenv("DAKP_ARIA2", "0")
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_gpu_lock_dir(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the CUDA flock at a per-test directory (``DAKP_GPU_LOCK_DIR`` wins in ``_gpu_lock_dir``).
+
+    On CPU-only dev boxes device selection never resolves to CUDA and no flock is taken, so tests
+    are hermetic by accident. On a GPU host (e.g. wenceslaus) the production path activates for
+    tests that fake only the model seam, and without this override every such test would flock the
+    REAL user cache lock (``~/.cache/dakp/gpu-locks/cuda-0.lock``) — contending with live builds
+    and, worse, with other xdist workers: one holder parked the whole remote gate for 4 h (41
+    serialized one-hour ``GpuLockTimeoutError`` ceilings). A per-test directory keeps workers
+    independent of each other and of the host.
+    """
+    monkeypatch.setenv("DAKP_GPU_LOCK_DIR", str(tmp_path_factory.mktemp("gpu-locks")))

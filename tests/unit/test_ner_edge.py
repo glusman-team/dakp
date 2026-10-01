@@ -451,7 +451,7 @@ def test_extract_batch_isolates_an_unreadable_window_result(monkeypatch: pytest.
         out = backend.extract_batch(["asthma in adults", "chronic hives"])
     assert [[mention.text for mention in row] for row in out] == [["asthma"], []]
     assert any("ner_window_spans: unreadable model result" in line for line in lines)
-    assert any("ner_extract_batch: degraded_texts = 0 of 2 degraded_windows = 2 of 2" in line for line in lines)
+    assert any("ner_span_pass: degraded_windows = 2 of 2" in line for line in lines)
 
 
 def test_extract_batch_isolates_a_text_whose_post_processing_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1039,3 +1039,251 @@ def test_config_can_reconstruct_equivalent_backend(tmp_path: Path) -> None:
     text = "patient has asthma"
     assert [m.text for m in reconstructed.extract(text)] == [m.text for m in original.extract(text)]
     assert reconstructed._offline == original._offline
+
+
+# --- Tier B raw-span path (extract_spans_batch / merge_spans) --------------------
+
+
+def test_span_path_is_byte_identical_to_extract_batch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """extract_spans_batch + merge_spans must produce EXACTLY what extract_batch produces.
+
+    The two-tier cache rides on this: cached raw spans re-merged parent-side replace a GPU
+    re-mine, so any drift between the split path and the fused path would silently change
+    production mentions depending on cache state. The equality is the invariant, asserted per
+    text on real (fake-model) output including gazetteer contests and qualifier routing.
+    """
+    predictions = [
+        {"start": 20, "end": 30, "label": "biolink:Disease", "score": 0.97},  # OOV: asthma-adjacent span
+        {"start": 0, "end": 7, "label": "biolink:Disease", "score": 0.9},  # overlaps gazetteer below
+    ]
+    _install_fake_gliner2(monkeypatch, tmp_path, predictions)
+    texts = ["Contraindicated in patients with pulmonary hypertension.", "Avoid use in patients with asthma or recent myocardial infarction."]
+    backend = DiseaseNER(offline=False, gazetteer={"asthma": "Disease", "hypertension": "Disease"}, device="cpu", workdir=tmp_path)
+
+    fused = backend.extract_batch(texts)
+    raw = backend.extract_spans_batch(texts)
+    split = [backend.merge_spans(text, spans) for text, spans in zip(texts, raw, strict=True)]
+    assert split == fused
+
+
+def test_raw_text_spans_cache_round_trip_and_window_mismatch(tmp_path: Path) -> None:
+    """to_cache/from_cache is lossless for matching tilings and a MISS for mismatched ones.
+
+    The stored payload drops window TEXTS (recomputable from text + budget) and keeps starts;
+    from_cache recomputes the tiling and refuses entries whose starts disagree - that refusal is
+    what makes a budget change a safe miss instead of a corrupt merge.
+    """
+    from dakp_pipeline.ner.ner import RawTextSpans, _ModelSpan, spans_from_cache
+
+    text = "Contraindicated in patients with asthma."
+    windows = [(0, text)]
+    spans = RawTextSpans(
+        windows=windows,
+        objects=[[_ModelSpan(start=29, end=35, type="Disease", score=0.9)]],
+        qualifiers=[_ModelSpan(start=0, end=14, type="temporal_context_qualifier", score=0.4)],
+    )
+    payload = spans.to_cache()
+    assert "starts" in payload
+    assert payload["starts"] == [0]
+
+    model_dir = tmp_path  # no config.json -> the 384 fallback, same as the runtime budget here
+    rebuilt = spans_from_cache(text, model_dir, None, payload)
+    assert rebuilt is not None
+    assert rebuilt.windows == windows
+    assert rebuilt.objects == spans.objects
+    assert rebuilt.qualifiers == spans.qualifiers
+
+    tampered = dict(payload)
+    tampered["starts"] = [5]  # a different budget's tiling
+    assert spans_from_cache(text, model_dir, None, tampered) is None
+    corrupt = {"starts": [0]}  # missing span fields
+    assert spans_from_cache(text, model_dir, None, corrupt) is None
+
+
+def test_span_material_excludes_merge_side_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Tier B keys must move with MODEL-side config only, never merge-side config.
+
+    Gazetteer growth and accept-threshold sweeps are the cheapest iteration loops in this
+    pipeline; if either changed the span fingerprint, every sweep would re-mine on GPU and the
+    two-tier design would be dead on arrival. The generation threshold and the label vocabulary
+    DO change model output, so they must be IN.
+    """
+    _install_fake_gliner2(monkeypatch, tmp_path, [])
+    base = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path)
+
+    gazetteer_growth = DiseaseNER(offline=False, gazetteer={"asthma": "Disease", "cirrhosis": "Disease"}, device="cpu", workdir=tmp_path)
+    accept_sweep = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, accept_threshold=0.9, device="cpu", workdir=tmp_path)
+    batch_bump = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, inference_batch_size=64, device="cpu", workdir=tmp_path)
+    assert gazetteer_growth.span_material() == base.span_material()
+    assert accept_sweep.span_material() == base.span_material()
+    assert batch_bump.span_material() == base.span_material()
+
+    relabeled = DiseaseNER(
+        offline=False, gazetteer={"asthma": "Disease"}, model_labels={"biolink:Disease": "a disease"}, device="cpu", workdir=tmp_path
+    )
+    regen = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, threshold=0.5, device="cpu", workdir=tmp_path)
+    rebudget = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, chunk_words=512, device="cpu", workdir=tmp_path)
+    assert relabeled.span_material() != base.span_material()
+    assert regen.span_material() != base.span_material()
+    assert rebudget.span_material() != base.span_material()
+
+
+# --- length-bucketed batching (zero accuracy change) -------------------------------
+
+
+class _BatchRecordingModel:
+    """Fake gliner2 model that records each batch's texts and tags results per text."""
+
+    def __init__(self) -> None:
+        self.batches: list[list[str]] = []
+
+    def batch_extract_entities(self, texts: list[str], entity_types: Any, batch_size: int = 8, **_kwargs: Any) -> list[dict[str, Any]]:
+        for start in range(0, len(texts), batch_size):
+            self.batches.append(texts[start : start + batch_size])
+        return [{"entities": {text: []}, "text": text} for text in texts]
+
+
+def test_infer_chunk_sorts_by_length_and_restores_order(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Batches are near-uniform in length; outputs land back in submission order.
+
+    Sorting is a pure throughput change: every window's result depends only on its own text, so
+    the reordered submission must not move any result - asserted here element-for-element against
+    an unsorted reference run over the same mixed-length shard.
+    """
+    lengths = [4000, 30, 3800, 45, 3900, 12, 2050, 60, 1990, 22]
+    texts = [("word " * length).strip() for length in lengths]
+    recording = _BatchRecordingModel()
+    backend = DiseaseNER(offline=False, gazetteer={}, inference_batch_size=2, device="cpu", workdir=tmp_path)
+
+    reference = _BatchRecordingModel()
+    # Reference: batching WITHOUT sorting (patch the sort out by calling _raw_batch_extract directly).
+    unsorted_results = backend._raw_batch_extract(reference, list(texts), 2)
+
+    results = backend._infer_chunk(recording, list(texts), 2)
+    assert results == unsorted_results  # byte-identity: same window, same result, any order
+
+    # Each batch pads to its longest member; sorted batches pad far less in total than the
+    # unsorted ones (which pair 4000-word windows with 12-word ones).
+    def total_pad(batches: list[list[str]]) -> int:
+        return sum(max(len(text) for text in batch) * len(batch) - sum(len(text) for text in batch) for batch in batches)
+
+    assert total_pad(recording.batches) < total_pad(reference.batches)
+    # The first batch holds the SHORTEST windows, the last the longest.
+    assert len(recording.batches[0][0]) < len(recording.batches[-1][0])
+
+
+def test_infer_chunk_bisects_the_sorted_list_and_keeps_order(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Fallback paths (bisect) operate on the sorted list; results still restore order."""
+    texts = ["x" * n for n in (500, 10, 300, 20, 400, 5)]
+    flaky = _BatchRecordingModel()
+    calls = {"n": 0}
+    original = flaky.batch_extract_entities
+
+    def flaky_extract(texts: list[str], entity_types: Any, batch_size: int = 8, **kwargs: Any) -> list[dict[str, Any]]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("one pathological window")
+        return original(texts, entity_types, batch_size=batch_size, **kwargs)
+
+    flaky.batch_extract_entities = flaky_extract  # type: ignore[method-assign]
+    backend = DiseaseNER(offline=False, gazetteer={}, device="cpu", workdir=tmp_path)
+    results = backend._infer_chunk(flaky, list(texts), 2)
+    assert len(results) == len(texts)
+    assert all(result["text"] == text for result, text in zip(results, texts, strict=True))
+
+
+# --- stall recovery: OOM-halving cap, stall watchdog, chunk heartbeat --------------------
+
+
+class _OomModel:
+    """Fake model whose batched call always raises a device-OOM-shaped error."""
+
+    def __init__(self) -> None:
+        self.attempts: list[int] = []
+
+    def batch_extract_entities(self, texts: list[str], entity_types: Any, batch_size: int = 8, **_kwargs: Any) -> list[dict[str, Any]]:
+        self.attempts.append(batch_size)
+        raise RuntimeError("CUDA out of memory. Tried to allocate 2.26 GiB")
+
+
+def test_infer_chunk_caps_oom_halving_then_bisects(tmp_path: Path) -> None:
+    """OOM halving is capped per piece; the cap spills into bisection, never an unbounded spiral.
+
+    Each halving re-runs every window in the piece, so an unbounded 16→8→4→2→1 spiral re-pays
+    the full piece cost per attempt (recorded: 4 halvings then 2048 single-window retries, all
+    lost). Two attempts per piece, then the piece is bisected: a half that infers cleanly
+    exonerates the batch size, and a lone OOM window is dropped — the shard survives.
+    """
+    model = _OomModel()
+    backend = DiseaseNER(offline=False, gazetteer={}, device="cpu", workdir=tmp_path)
+    texts = ["patient has asthma"] * 8
+    results = backend._infer_chunk(model, texts, 8)
+    assert len(results) == 8  # the chunk still returns, one canonical-empty entry per window
+    # Every piece tried at most _MAX_OOM_HALVINGS halvings: batch sizes only ever descend
+    # 8 -> 4 -> 2 (then the piece splits), never 8 -> 4 -> 2 -> 1 inside one piece.
+    first_piece = model.attempts[:3]
+    assert first_piece == [8, 4, 2]
+    assert 1 not in first_piece
+
+
+def test_infer_windows_emits_chunk_heartbeats(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Each inference chunk emits a progress heartbeat with cumulative window counts."""
+    from dakp_pipeline.ner import ner as ner_module
+
+    heartbeats: list[dict[str, Any]] = []
+    real_stats = ner_module.stats
+    monkeypatch.setattr(
+        ner_module,
+        "stats",
+        lambda log, event, **fields: (
+            heartbeats.append({"event": event, **fields}) if event == "ner_infer_progress" else real_stats(log, event, **fields)
+        ),
+    )
+    model = _BatchRecordingModel()
+    backend = DiseaseNER(offline=False, gazetteer={}, device="cpu", workdir=tmp_path)
+    texts = [f"window text {i}" for i in range(5)]
+    backend._infer_windows(model, texts)
+    assert len(heartbeats) == 1  # one chunk (5 < _INFERENCE_CHUNK_WINDOWS)
+    assert heartbeats[0]["windows_done"] == 5
+    assert heartbeats[0]["windows_total"] == 5
+
+
+def test_stall_watchdog_is_inert_without_cuda(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """CPU inference (and the test suite) never arms the watchdog: direct call, same result."""
+    model = _BatchRecordingModel()
+    backend = DiseaseNER(offline=False, gazetteer={}, device="cpu", workdir=tmp_path)
+    texts = ["a", "bb", "ccc"]
+    results = backend._run_with_stall_watchdog(model, texts, 2)
+    assert [result["text"] for result in results] == texts
+
+
+# --- compute_dtype (fp16 experiments) -----------------------------------------------
+
+
+def test_compute_dtype_is_model_side_key_material(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A dtype change moves the Tier B fingerprint (fp16 output bits differ from fp32)."""
+    _install_fake_gliner2(monkeypatch, tmp_path, [])
+    fp32 = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path)
+    fp16 = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path, compute_dtype="fp16")
+    assert fp32.span_material() != fp16.span_material()
+    assert fp32.span_material()["compute_dtype"] == "fp32"
+    # Worker reconstruction carries the dtype.
+    rebuilt = DiseaseNER(device="cpu", **dict(fp16._config()))
+    assert rebuilt._config()["compute_dtype"] == "fp16"
+
+
+def test_compute_dtype_rejects_unknown_values(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="compute_dtype"):
+        DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path, compute_dtype="bf16")
+
+
+def test_fp16_autocast_arms_only_on_cuda(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """fp16 + CPU runs the plain call; the autocast branch is reachable only with cuda."""
+    _install_fake_gliner2(monkeypatch, tmp_path, [])
+    backend = DiseaseNER(offline=False, gazetteer={}, device="cpu", workdir=tmp_path, compute_dtype="fp16")
+    model = _BatchRecordingModel()
+    results = backend._raw_batch_extract(model, ["a", "bb"], 2)
+    assert [r["text"] for r in results] == ["a", "bb"]  # inert on CPU, no autocast error
+    # Sanity: the fp32 default path shares the non-autocast branch.
+    fp32_backend = DiseaseNER(offline=False, gazetteer={}, device="cpu", workdir=tmp_path)
+    assert fp32_backend._raw_batch_extract(model, ["a"], 1)[0]["text"] == "a"
