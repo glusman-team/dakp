@@ -26,9 +26,9 @@ from dakp_pipeline.sources import ema_documents, ema_smpc
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 _MANIFEST = _FIXTURE_ROOT / "ema" / "epar_documents_en.json"
-_SMPD_PDF = _FIXTURE_ROOT / "ema" / "smpc" / "ceplene-epar-product-information_en.pdf"
+_SMPC_PDF = _FIXTURE_ROOT / "ema" / "smpc" / "ceplene-epar-product-information_en.pdf"
 _DOCUMENTS_ALIAS = ema_documents.DOCUMENTS_ALIAS
-_FANOUT_ALIAS = ema_smpc.SMPD_FANOUT_ALIAS
+_FANOUT_ALIAS = ema_smpc.SMPC_FANOUT_ALIAS
 
 #: The five English human product-information PDFs the fixture report selects, in crawl order.
 _SELECTED_IDS = ["2441", "10327", "28033", "49893", "50210"]
@@ -83,7 +83,7 @@ def _serve_pdfs(
         if url in blank:
             dest.write_bytes(b"")  # downloader left a zero-byte file behind
             return dest
-        shutil.copyfile(_SMPD_PDF, dest)
+        shutil.copyfile(_SMPC_PDF, dest)
         return dest
 
     monkeypatch.setattr(ema_smpc, "download_ema_smpc_pdf", fake)
@@ -398,6 +398,6 @@ def test_parse_datetime_handles_the_report_forms() -> None:
 def test_download_ema_smpc_pdf_streams_to_dest(tmp_path: Path) -> None:
     """The real downloader (stdlib urllib) copies bytes verbatim from a file:// URL."""
     dest = tmp_path / "downloaded.pdf"
-    result = ema_smpc.download_ema_smpc_pdf(_SMPD_PDF.as_uri(), dest)
+    result = ema_smpc.download_ema_smpc_pdf(_SMPC_PDF.as_uri(), dest)
     assert result == dest
-    assert dest.read_bytes() == _SMPD_PDF.read_bytes()
+    assert dest.read_bytes() == _SMPC_PDF.read_bytes()

@@ -314,11 +314,11 @@ def test_extract_writes_the_sections_and_warnings_tables(tmp_path: Path) -> None
     names = sorted(ref.uri.name for ref in refs)
     assert names == ["smpc_sections.parquet", "smpc_warnings.parquet"]
     sections = pl.read_parquet(next(ref.uri for ref in refs if ref.uri.name == "smpc_sections.parquet"))
-    assert sections.columns == ema_smpc.SMPD_SECTIONS_COLUMNS
+    assert sections.columns == ema_smpc.SMPC_SECTIONS_COLUMNS
     assert sections.height == 3
     assert sections["section_kind"].to_list() == ["indications", "contraindications", "warnings"]
     sections_ref = next(ref for ref in refs if ref.uri.name == "smpc_sections.parquet")
-    assert sections_ref.schema_fingerprint == schemas.schema_fingerprint(ema_smpc.SMPD_SECTIONS_COLUMNS)
+    assert sections_ref.schema_fingerprint == schemas.schema_fingerprint(ema_smpc.SMPC_SECTIONS_COLUMNS)
     store = ArtifactStore(Workdir(workdir))
     manifest = store.read_manifest(sections_ref.blake3)
     assert manifest is not None
@@ -349,7 +349,7 @@ def test_extract_writes_an_empty_typed_table_when_nothing_is_minable(tmp_path: P
 
     sections = pl.read_parquet(next(ref.uri for ref in refs if ref.uri.name == "smpc_sections.parquet"))
     assert sections.height == 0
-    assert sections.columns == ema_smpc.SMPD_SECTIONS_COLUMNS
+    assert sections.columns == ema_smpc.SMPC_SECTIONS_COLUMNS
     assert all(dtype == pl.Utf8 for dtype in sections.dtypes)
     warnings = pl.read_parquet(next(ref.uri for ref in refs if ref.uri.name == "smpc_warnings.parquet"))
     assert warnings["code"].to_list() == ["no_text"]

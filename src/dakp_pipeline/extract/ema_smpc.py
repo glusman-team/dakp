@@ -51,7 +51,7 @@ from dakp_pipeline.sources.ema_documents import EparDocument, load_documents, pr
 
 # --- normalized column contract ---------------------------------------------------
 
-SMPD_SECTIONS_COLUMNS: list[str] = [
+SMPC_SECTIONS_COLUMNS: list[str] = [
     "source_record_id",
     "ema_product_number",
     "medicine_name",
@@ -62,7 +62,7 @@ SMPD_SECTIONS_COLUMNS: list[str] = [
     "last_updated_date",
     "pdf_path",
 ]
-SMPD_WARNINGS_COLUMNS: list[str] = ["ema_product_number", "code", "message", "count"]
+SMPC_WARNINGS_COLUMNS: list[str] = ["ema_product_number", "code", "message", "count"]
 
 #: section_kind -> the QRD number and the title prefix that confirms it. The prefix check keeps a
 #: stray "4.3" line (a cross-reference, a table row) from being read as a section heading.
@@ -114,14 +114,14 @@ class EmaSmpcExtractor:
         operation = OperationBlock(name=_EVENT)
         input_ids = [ref.blake3 for ref in inputs]
         interim_dir = wd.interim / "ema"
-        sections_fp = schemas.schema_fingerprint(SMPD_SECTIONS_COLUMNS)
-        warnings_fp = schemas.schema_fingerprint(SMPD_WARNINGS_COLUMNS)
+        sections_fp = schemas.schema_fingerprint(SMPC_SECTIONS_COLUMNS)
+        warnings_fp = schemas.schema_fingerprint(SMPC_WARNINGS_COLUMNS)
         refs = [
             _write_parquet(
-                rows, SMPD_SECTIONS_COLUMNS, interim_dir / "smpc_sections.parquet", store, operation, sections_fp, len(warnings), input_ids
+                rows, SMPC_SECTIONS_COLUMNS, interim_dir / "smpc_sections.parquet", store, operation, sections_fp, len(warnings), input_ids
             ),
             _write_parquet(
-                warnings, SMPD_WARNINGS_COLUMNS, interim_dir / "smpc_warnings.parquet", store, operation, warnings_fp, len(warnings), input_ids
+                warnings, SMPC_WARNINGS_COLUMNS, interim_dir / "smpc_warnings.parquet", store, operation, warnings_fp, len(warnings), input_ids
             ),
         ]
         stats(log, _EVENT, pdfs=len(pdf_refs), rows=len(rows), warnings=len(warnings), outputs=len(refs), sections=",".join(_SECTION_ORDER))
@@ -315,4 +315,4 @@ def _write_parquet(
 
 extract = EmaSmpcExtractor().extract
 
-__all__ = ["SMPD_SECTIONS_COLUMNS", "SMPD_WARNINGS_COLUMNS", "EmaSmpcExtractor", "cut_sections", "extract", "parse_documents", "read_pdf_text"]
+__all__ = ["SMPC_SECTIONS_COLUMNS", "SMPC_WARNINGS_COLUMNS", "EmaSmpcExtractor", "cut_sections", "extract", "parse_documents", "read_pdf_text"]

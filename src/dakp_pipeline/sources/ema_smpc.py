@@ -54,7 +54,7 @@ from dakp_pipeline.sources.ema_documents import EparDocument, load_documents, pr
 
 #: Fan-out source alias. Member aliases are ``<this>::<document stem>.pdf`` (the store's
 #: fan-out convention, which also lets it prune members that left the selection).
-SMPD_FANOUT_ALIAS = "ema/smpc/product_information_en"
+SMPC_FANOUT_ALIAS = "ema/smpc/product_information_en"
 PDF_MEDIA_TYPE = "application/pdf"
 _DEFAULT_CONCURRENCY = 8
 _DEFAULT_MAX_AGE_DAYS = 30.0
@@ -75,7 +75,7 @@ class _CrawlFailure:
 
 def member_alias(doc: EparDocument) -> str:
     """The content-address alias for one product-information PDF."""
-    return f"{SMPD_FANOUT_ALIAS}::{doc.stem}.pdf"
+    return f"{SMPC_FANOUT_ALIAS}::{doc.stem}.pdf"
 
 
 def crawl_fingerprint(documents: list[EparDocument]) -> str:
@@ -109,11 +109,11 @@ class EmaSmpcFetcher:
             fingerprint = crawl_fingerprint(documents)
             stats(logger, _EVENT, documents=len(documents), force=force, concurrency=concurrency, max_age_days=max_age, fingerprint=fingerprint)
             if not force:
-                cached_all = store.cached_refs(SMPD_FANOUT_ALIAS, fingerprint)
+                cached_all = store.cached_refs(SMPC_FANOUT_ALIAS, fingerprint)
                 if cached_all is not None:
                     stats(logger, _EVENT, cache_hit=True, documents_ingested=len(cached_all))
                     return cached_all
-                store.invalidate_cached_refs(SMPD_FANOUT_ALIAS)
+                store.invalidate_cached_refs(SMPC_FANOUT_ALIAS)
 
             plan = [(doc, None if force else _current_ref(store, doc, max_age)) for doc in documents]
             missing = [doc for doc, ref in plan if ref is None]
@@ -158,7 +158,7 @@ class EmaSmpcFetcher:
                 raise RuntimeError(msg)
             if not failures:
                 # Published only for a complete crawl, so a partial one retries next run.
-                store.write_cached_refs(SMPD_FANOUT_ALIAS, fingerprint, [member_alias(doc) for doc, _ in plan])
+                store.write_cached_refs(SMPC_FANOUT_ALIAS, fingerprint, [member_alias(doc) for doc, _ in plan])
             return refs
 
 
@@ -273,4 +273,4 @@ def _now_iso() -> str:
 
 fetch = EmaSmpcFetcher().fetch
 
-__all__ = ["SMPD_FANOUT_ALIAS", "EmaSmpcFetcher", "crawl_fingerprint", "download_ema_smpc_pdf", "fetch", "member_alias"]
+__all__ = ["SMPC_FANOUT_ALIAS", "EmaSmpcFetcher", "crawl_fingerprint", "download_ema_smpc_pdf", "fetch", "member_alias"]
