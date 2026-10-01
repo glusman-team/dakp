@@ -36,13 +36,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from dakp_pipeline.io.content_hash import hash_tree
+from dakp_pipeline.io.content_hash import TREE_HASH_V1, TREE_HASH_V2_MT, hash_tree, hash_tree_mt
 from dakp_pipeline.logging_setup import logger, stats
 
 MANIFEST_NAME = "manifest.json"
 CONTENT_DIRNAME = "content"
 SCHEMA_VERSION = "dakp.ner.model.v1"
 DEFAULT_SOURCE = "huggingface"
+
+#: Tree-hash algorithm this module writes for NEW downloads. Old caches carry manifests
+#: without ``hash_algo``; those are verified with ``b3-tree-v1`` (``hash_tree``) so the
+#: recorded digest keeps matching and NOTHING re-downloads. Only a fresh download (or a
+#: drifted/forced re-download) adopts the multithreaded algorithm - and with it a new
+#: digest, which is why the algorithm name is persisted next to the hash. The ``b3`` of an
+#: existing cache must NEVER be silently re-computed under a different algorithm: it keys
+#: the mention cache (``mention_cache.ner_cache_material``), so changing it orphans every
+#: cached mention and costs a multi-hour re-mine.
+TREE_HASH_ALGO = TREE_HASH_V2_MT
 
 # A downloader fetches ``model_id`` into ``dest`` (the content dir). Dependency-injected so
 # tests never touch the network.
@@ -205,7 +215,7 @@ def ensure_model(
     stats(logger, event, model_id=model_id, source=source, downloading=True)
     content.mkdir(parents=True, exist_ok=True)
     (downloader or default_downloader)(model_id, content)
-    b3 = hash_tree(content)
+    b3 = hash_tree_mt(content)
     file_count, total_bytes = _content_stats(content)
     write_manifest(
         manifest,
@@ -214,6 +224,7 @@ def ensure_model(
             "model_id": model_id,
             "source": source,
             "b3": b3,
+            "hash_algo": TREE_HASH_ALGO,
             "retrieved_at": datetime.now(UTC).isoformat(),
             "file_count": file_count,
             "total_bytes": total_bytes,
@@ -245,19 +256,34 @@ def lookup_model(
     return ModelRef(model_id=model_id, source=source, path=content_dir(root), b3=str(data.get("b3", "")), manifest=manifest)
 
 
+def _tree_hasher(algo: str) -> Callable[[Path], str]:
+    """The tree-hash function named by a manifest ``hash_algo`` tag.
+
+    Unknown tags fall back to ``b3-tree-v1``: a manifest written by a NEWER pipeline than
+    this code must still verify deterministically, and v1 is the frozen legacy algorithm
+    every historical manifest means when the tag is absent.
+    """
+    return hash_tree_mt if algo == TREE_HASH_V2_MT else hash_tree
+
+
 def _verify_content(content: Path, cached_b3: str, data: dict[str, Any], manifest: Path) -> bool:
     """Verify a cached content tree against its manifest: stats first, hash on demand.
 
     Default: compare file count + total bytes against the manifest; on mismatch fall back
-    to the full :func:`hash_tree` comparison. ``DAKP_MODEL_VERIFY=full`` always hashes.
+    to the manifest's tree-hash algorithm (``hash_algo``; absent = legacy ``b3-tree-v1``).
+    ``DAKP_MODEL_VERIFY=full`` always hashes.
     Manifests written before the stats fields existed are hashed fully once, then rewritten
-    with the stats backfilled so the fast path kicks in from then on.
+    with the stats backfilled so the fast path kicks in from then on. The backfill NEVER
+    upgrades the hash algorithm: re-computing an existing cache's ``b3`` under v2 would
+    change the digest that keys the mention cache.
     """
     full = os.environ.get("DAKP_MODEL_VERIFY", "").strip().lower() == "full"
+    algo = str(data.get("hash_algo", TREE_HASH_V1))
+    tree_hash = _tree_hasher(algo)
     file_count = data.get("file_count")
     total_bytes = data.get("total_bytes")
     if full or not isinstance(file_count, int) or not isinstance(total_bytes, int):
-        if hash_tree(content) != cached_b3:
+        if tree_hash(content) != cached_b3:
             return False
         if not full:
             # Legacy manifest: backfill the stats so later hits take the fast path.
@@ -266,8 +292,8 @@ def _verify_content(content: Path, cached_b3: str, data: dict[str, Any], manifes
         return True
     if _content_stats(content) == (file_count, total_bytes):
         return True
-    # Stat mismatch: confirm with the full tree hash before declaring drift.
-    return hash_tree(content) == cached_b3
+    # Stat mismatch: confirm with the manifest's tree hash before declaring drift.
+    return tree_hash(content) == cached_b3
 
 
 __all__ = [
@@ -275,6 +301,7 @@ __all__ = [
     "DEFAULT_SOURCE",
     "MANIFEST_NAME",
     "SCHEMA_VERSION",
+    "TREE_HASH_ALGO",
     "Downloader",
     "ModelRef",
     "NERDependencyError",

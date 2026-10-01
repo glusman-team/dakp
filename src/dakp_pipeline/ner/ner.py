@@ -58,9 +58,11 @@ import bisect
 import contextlib
 import fcntl
 import itertools
+import json
 import os
 import re
 import signal
+import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -224,6 +226,11 @@ _DEFAULT_WORD_BUDGET = 384
 #: P100 inference — the most a poisoned window or an OOM can now cost, and the retry below re-runs
 #: only the failing piece.
 _INFERENCE_CHUNK_WINDOWS = 2048
+#: Maximum batch-size halvings per chunk on a device OOM before the chunk (and shard) fails.
+#: Each halving re-runs the WHOLE chunk, so an unbounded spiral re-pays full-chunk cost for a
+#: doomed window set; two attempts is the recorded sweet spot (the 4x spiral above dropped 2048
+#: windows one-by-one and still lost them all).
+_MAX_OOM_HALVINGS = 2
 
 # Curated high-precision disease/phenotype gazetteer — the offline mode's embedded vocabulary
 # (the same terms benchmarked in ner/BENCHMARK.md). Not exhaustive by design: production mode
@@ -527,6 +534,108 @@ class _ModelSpan:
     score: float
     context_model: str = ""
     context_model_score: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-safe projection for the Tier B span cache (see ``mention_cache``).
+
+        Lossless by construction: :meth:`from_dict` restores every field, so a cached span
+        round-trips byte-identically - the property the cache's fit/merge contracts ride on.
+        """
+        return {
+            "start": self.start,
+            "end": self.end,
+            "type": self.type,
+            "score": self.score,
+            "context_model": self.context_model,
+            "context_model_score": self.context_model_score,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> _ModelSpan:
+        return cls(
+            start=int(data["start"]),
+            end=int(data["end"]),
+            type=str(data["type"]),
+            score=float(data["score"]),
+            context_model=str(data.get("context_model", "")),
+            context_model_score=float(data.get("context_model_score", 0.0)),
+        )
+
+
+@dataclass(frozen=True)
+class RawTextSpans:
+    """One text's raw model output, BEFORE the deterministic post-processing merge.
+
+    This is the unit the Tier B span cache stores: everything model-side (windows, per-window
+    object-channel spans in full-text coordinates, qualifier-channel spans) is here; everything
+    config-side (hedge trim, gazetteer contest, acceptance floors, qualifier merge) happens in
+    :meth:`DiseaseNER.merge_spans` and is recomputed per run. That split is what lets a
+    gazetteer edit or an accept-threshold sweep re-merge on CPU instead of re-mining on GPU.
+
+    ``windows`` carries the (start, text) pairs so :meth:`from_cache` can verify a cached entry
+    was windowed exactly the way the requesting text resolves (same budget -> same tiling); the
+    CACHE omits the window texts (recomputable from ``text + budget``) and stores the starts
+    only, validated on read.
+    """
+
+    windows: list[tuple[int, str]]
+    objects: list[list[_ModelSpan]]  # per-window, aligned with ``windows``
+    qualifiers: list[_ModelSpan]
+
+    def to_cache(self) -> dict[str, Any]:
+        """JSON-safe projection: window starts + spans, no window texts."""
+        return {
+            "starts": [start for start, _window in self.windows],
+            "objects": [[span.to_dict() for span in per_window] for per_window in self.objects],
+            "qualifiers": [span.to_dict() for span in self.qualifiers],
+        }
+
+
+def spans_from_cache(text: str, model_dir: Path | None, chunk_words: int | None, data: Mapping[str, Any]) -> RawTextSpans | None:
+    """Rebuild :class:`RawTextSpans` from its :meth:`RawTextSpans.to_cache` form, or ``None``.
+
+    Windows are recomputed from ``(text, budget)`` and checked against the stored starts: a
+    mismatch means the entry was windowed under a different budget than the requesting text
+    resolves to (model swap, config edit), and the entry is treated as a MISS rather than merged
+    with the wrong tiling. The budget resolution mirrors :func:`_token_budget` exactly without a
+    loaded model: ``chunk_words`` override, else the checkpoint config's ``max_len``, else
+    :data:`_DEFAULT_WORD_BUDGET` - all three read from the same sources (the override kwarg and
+    the cached model's ``config.json``), so parent and worker always agree.
+    """
+    budget = _token_budget_offline(model_dir, chunk_words)
+    windows = _windows(text, budget)
+    starts = [start for start, _window in windows]
+    try:
+        stored_starts = [int(start) for start in data["starts"]]
+        objects = [[_ModelSpan.from_dict(span) for span in per_window] for per_window in data["objects"]]
+        qualifiers = [_ModelSpan.from_dict(span) for span in data["qualifiers"]]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if stored_starts != starts or len(objects) != len(windows):
+        return None
+    return RawTextSpans(windows=windows, objects=objects, qualifiers=qualifiers)
+
+
+def _token_budget_offline(model_dir: Path | None, override: int | None) -> int:
+    """Parent-side twin of :func:`_token_budget`: no loaded model, read ``config.json`` instead.
+
+    The cached model's ``config.json`` is the exact file ``AutoExtractor.from_pretrained`` loads
+    into ``model.config``, so its ``max_len`` is the value the worker's ``_token_budget`` sees.
+    Absent/invalid entries fall through exactly like the runtime path (override wins, then the
+    config value, then :data:`_DEFAULT_WORD_BUDGET`) - the shipped checkpoint carries no
+    ``max_len`` at all, so the fallback IS the production budget.
+    """
+    if isinstance(override, int) and override >= 1:
+        return override
+    if model_dir is not None:
+        try:
+            config = json.loads((Path(model_dir) / "config.json").read_text(encoding="utf-8"))
+            max_len = config.get("max_len")
+            if isinstance(max_len, int) and max_len >= 1:
+                return max_len
+        except (OSError, ValueError):  # unreadable/missing/corrupt config: use the fallback
+            pass
+    return _DEFAULT_WORD_BUDGET
 
 
 @dataclass(frozen=True)
@@ -891,6 +1000,15 @@ def _reap_orphaned_lock_competitors(path: Path, grace: float = 10.0) -> list[int
     return candidates
 
 
+_GPU_LOCK_HELD: dict[Path, int] = {}
+"""Fds this process already holds per lock path — flock is per-fd, so a second ``DiseaseNER``
+in the same process (model reload, a test constructing two backends) must reuse the held fd
+instead of blocking on the process's own lock forever (self-deadlock observed on GPU hosts:
+four remote-gate runs burned hours polling a lock their own process owned)."""
+
+_GPU_LOCK_HELD_GUARD = threading.Lock()
+
+
 def _acquire_gpu_lock(device: str, lock_dir: Path, timeout: float | None = None) -> int:
     """Acquire the exclusive flock for a CUDA device, waiting at most the configured ceiling; return the open fd.
 
@@ -913,6 +1031,10 @@ def _acquire_gpu_lock(device: str, lock_dir: Path, timeout: float | None = None)
     """
     lock_dir.mkdir(parents=True, exist_ok=True)
     path = lock_dir / f"cuda-{_cuda_index(device)}.lock"
+    with _GPU_LOCK_HELD_GUARD:
+        held = _GPU_LOCK_HELD.get(path)
+    if held is not None:
+        return held
     ceiling = _gpu_lock_timeout_seconds(timeout)
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
     try:
@@ -954,6 +1076,8 @@ def _acquire_gpu_lock(device: str, lock_dir: Path, timeout: float | None = None)
     except BaseException:
         os.close(fd)
         raise
+    with _GPU_LOCK_HELD_GUARD:
+        _GPU_LOCK_HELD[path] = fd
     return fd
 
 
@@ -1011,6 +1135,7 @@ class DiseaseNER:
         workdir: Path | str | None = None,
         device: str | None = None,
         strict_extension_threshold: float | None = None,
+        compute_dtype: str = "fp32",
     ) -> None:
         if isinstance(gazetteer, Gazetteer):
             resolved = gazetteer
@@ -1035,6 +1160,9 @@ class DiseaseNER:
         self._cache_dir = cache_dir
         self._workdir = workdir
         self._device = device
+        if compute_dtype not in ("fp32", "fp16"):
+            raise ValueError("compute_dtype must be 'fp32' or 'fp16'")
+        self._compute_dtype = compute_dtype
         self._strict_extension_threshold = strict_extension_threshold
         self._model: Any = None
         self._gpu_lock_fd: int | None = None
@@ -1090,31 +1218,25 @@ class DiseaseNER:
         emitted = self._merge_model_spans(text, object_mentions)
         return sorted(self._merge_qualifier_mentions(lexical_qualifiers, emitted), key=_sort_key)
 
-    def extract_batch(self, texts: Sequence[str]) -> list[list[Mention]]:
-        """Extract several texts with one padded GLiNER2 inference stream.
+    def extract_spans_batch(self, texts: Sequence[str]) -> list[RawTextSpans]:
+        """Run the model half of :meth:`extract_batch` and return RAW spans per text.
 
-        Each text retains its own sentence-aware windows and per-channel merge, while all windows
-        are submitted together to GLiNER2's batched ``batch_extract_entities`` API. This is the
-        hot path used by per-device workers; offline extraction remains a cheap deterministic
-        loop. Results are mixed-channel, exactly like :meth:`extract`.
+        This is the Tier B span-cache hot path (:meth:`merge_spans` is its deterministic
+        complement): one windowed inference stream per shard, per-channel span routing, and
+        NOTHING else - no hedge trim, no gazetteer contest, no acceptance floors. A spawned GPU
+        worker returns these raw spans to the parent, which caches them keyed by model-side
+        material only and re-merges per run, so config/gazetteer iteration never re-mines.
 
-        Failure is contained to the smallest unit that can fail, because this runs tens of
-        minutes per shard inside a spawned worker whose exception reaches the parent as a bare
-        pickled object: a batch that raises falls back to per-window inference
-        (:meth:`_infer_windows`), an unreadable per-window result costs that window its model
-        spans, and a text whose post-processing raises keeps its deterministic lexical mentions.
-        Every degradation is logged with a text preview and tallied in one
-        ``ner_extract_batch`` ERROR line — degraded results are what the mention cache stores for
-        those texts, so the count is what tells an operator whether a re-mine is warranted.
+        Offline backends have no model output; they return empty span sets (their mentions are
+        pure gazetteer + lexical functions, recomputed by :meth:`merge_spans` - or by
+        :meth:`extract`, which offline callers use directly since the cache never engages).
         """
         values = list(texts)
         if self._offline:
-            return [self.extract(text) for text in values]
-        gazetteer = [list(self._matcher.match(text)) if text and text.strip() else [] for text in values]
-        lexical_qualifiers = [self._gazetteer_qualifier_mentions(text) if text and text.strip() else [] for text in values]
+            return [RawTextSpans(windows=[], objects=[], qualifiers=[]) for _ in values]
         active = [(index, text) for index, text in enumerate(values) if text and text.strip()]
         if not active:
-            return [[] for _ in values]
+            return [RawTextSpans(windows=[], objects=[], qualifiers=[]) for _ in values]
         model = self._load_model()
         budget = _token_budget(model, self._chunk_words)
         windows: list[tuple[int, int, str]] = []
@@ -1145,32 +1267,81 @@ class DiseaseNER:
             objects, qualifiers = self._channel_spans(values[text_index], window_spans, window_start)
             object_spans[text_index].append(objects)
             qualifier_spans[text_index].extend(qualifiers)
+        if degraded_windows:
+            logger.error("ner_span_pass: degraded_windows = {} of {}", degraded_windows, len(windows))
+        return [
+            RawTextSpans(windows=windows_by_text.get(index, []), objects=object_spans.get(index, []), qualifiers=qualifier_spans.get(index, []))
+            for index, _text in enumerate(values)
+        ]
+
+    def extract_spans(self, text: str) -> RawTextSpans:
+        """:meth:`extract_spans_batch` for one text: the sequential production mining path."""
+        return self.extract_spans_batch([text])[0]
+
+    def merge_spans(self, text: str, spans: RawTextSpans) -> list[Mention]:
+        """Finish :meth:`extract_spans` output: the deterministic per-text merge, CPU-cheap.
+
+        The parent-side half of the Tier B split - runs per run, never cached, so gazetteer
+        growth, threshold sweeps, and merge-logic edits re-merge instead of re-mining. Byte
+        identity with :meth:`extract_batch` is by construction: this calls the same
+        :meth:`_mentions_for_text` with the same inputs the batch path assembles.
+        """
+        if not text or not text.strip() or self._offline:
+            return self.extract(text)
+        return self._mentions_for_text(
+            text, spans.windows, spans.objects, spans.qualifiers, list(self._matcher.match(text)), self._gazetteer_qualifier_mentions(text)
+        )
+
+    def extract_batch(self, texts: Sequence[str]) -> list[list[Mention]]:
+        """Extract several texts with one padded GLiNER2 inference stream.
+
+        Each text retains its own sentence-aware windows and per-channel merge, while all windows
+        are submitted together to GLiNER2's batched ``batch_extract_entities`` API. This is the
+        hot path used by per-device workers; offline extraction remains a cheap deterministic
+        loop. Results are mixed-channel, exactly like :meth:`extract`.
+
+        Implemented as :meth:`extract_spans_batch` + :meth:`merge_spans` so the raw-span and
+        mention paths cannot drift: the span pass is shared verbatim, and the per-text merge is
+        the same call the parent-side Tier B re-merge makes.
+
+        Failure is contained to the smallest unit that can fail, because this runs tens of
+        minutes per shard inside a spawned worker whose exception reaches the parent as a bare
+        pickled object: a batch that raises falls back to per-window inference
+        (:meth:`_infer_windows`), an unreadable per-window result costs that window its model
+        spans, and a text whose post-processing raises keeps its deterministic lexical mentions.
+        Every degradation is logged with a text preview and tallied in one
+        ``ner_extract_batch`` ERROR line - degraded results are what the mention cache stores for
+        those texts, so the count is what tells an operator whether a re-mine is warranted.
+        """
+        values = list(texts)
+        if self._offline:
+            return [self.extract(text) for text in values]
+        gazetteer = [list(self._matcher.match(text)) if text and text.strip() else [] for text in values]
+        lexical_qualifiers = [self._gazetteer_qualifier_mentions(text) if text and text.strip() else [] for text in values]
+        spans = self.extract_spans_batch(values)
         output: list[list[Mention]] = []
         degraded = 0
         for index, text in enumerate(values):
             if not text or not text.strip():
                 output.append([])
                 continue
-            text_windows = windows_by_text[index]
             try:
                 output.append(
                     self._mentions_for_text(
-                        text, text_windows, object_spans[index], qualifier_spans[index], gazetteer[index], lexical_qualifiers[index]
+                        text, spans[index].windows, spans[index].objects, spans[index].qualifiers, gazetteer[index], lexical_qualifiers[index]
                     )
                 )
             except Exception:
                 # Per-text isolation. A shard is tens of minutes of GPU inference and the parent
                 # only ever sees the pickled exception, so one pathological text used to discard
                 # ALL of it (and the whole DAG run with it). The affected text falls back to its
-                # deterministic lexical mentions — logged loudly, because that degraded result is
+                # deterministic lexical mentions - logged loudly, because that degraded result is
                 # what the mention cache will store for this text until it is re-mined.
                 degraded += 1
                 logger.exception("ner_extract_text: post-processing failed; kept lexical mentions only (preview={!r})", text[:200])
                 output.append(sorted(self._merge_qualifier_mentions(lexical_qualifiers[index], list(gazetteer[index])), key=_sort_key))
-        if degraded or degraded_windows:
-            logger.error(
-                "ner_extract_batch: degraded_texts = {} of {} degraded_windows = {} of {}", degraded, len(values), degraded_windows, len(windows)
-            )
+        if degraded:
+            logger.error("ner_extract_batch: degraded_texts = {} of {}", degraded, len(values))
         return output
 
     def _mentions_for_text(
@@ -1200,14 +1371,29 @@ class DiseaseNER:
 
     # -- production model (lazy) -----------------------------------------------
     def _raw_batch_extract(self, model: Any, texts: list[str], batch_size: int) -> list[Any]:
-        """One batched GLiNER2 inference call over ``texts`` (whole vocabulary, both channels)."""
-        if hasattr(model, "batch_extract"):
-            return model.batch_extract(
+        """One batched GLiNER2 inference call over ``texts`` (whole vocabulary, both channels).
+
+        With ``compute_dtype='fp16'`` on a CUDA device the forward runs under
+        ``torch.autocast('cuda', float16)``: the P100 executes fp16 at twice the fp32 rate,
+        and autocast keeps accumulation-sensitive ops (LayerNorm, softmax) in fp32. Raw output
+        bits differ from fp32 at the margin, which is exactly why ``compute_dtype`` is part of
+        the Tier B key material - a dtype change is a re-mine, never a silent cache serve.
+        """
+        call = lambda: (
+            model.batch_extract(
                 texts, self._schema_for_model(model), batch_size=batch_size, threshold=self._threshold, include_confidence=True, include_spans=True
             )
-        return model.batch_extract_entities(
-            texts, self._model_labels, batch_size=batch_size, threshold=self._threshold, include_confidence=True, include_spans=True
+            if hasattr(model, "batch_extract")
+            else model.batch_extract_entities(
+                texts, self._model_labels, batch_size=batch_size, threshold=self._threshold, include_confidence=True, include_spans=True
+            )
         )
+        if self._compute_dtype == "fp16" and str(self._device).startswith("cuda"):
+            import torch  # lazy: no torch at module load
+
+            with torch.autocast("cuda", dtype=torch.float16):
+                return call()
+        return call()
 
     def _infer_windows(self, model: Any, texts: list[str]) -> list[Any]:
         """Batched GLiNER2 inference over ``texts``, submitted in bounded chunks.
@@ -1216,39 +1402,128 @@ class DiseaseNER:
         raised exception used to discard ALL of it: the batched call is all-or-nothing, and the
         ``ProcessPoolExecutor`` parent sees only a pickled exception. Chunking
         (:data:`_INFERENCE_CHUNK_WINDOWS`) bounds the loss, and :meth:`_infer_chunk` retries the
-        failing piece instead of failing the shard.
+        failing piece instead of failing the shard. Every chunk emits a progress heartbeat so a
+        live run shows mining throughput in the task log (and an operator can tell a healthy
+        shard from a wedged one without py-spy).
         """
         raw: list[Any] = []
+        started = time.monotonic()
         for start in range(0, len(texts), _INFERENCE_CHUNK_WINDOWS):
-            raw.extend(self._infer_chunk(model, texts[start : start + _INFERENCE_CHUNK_WINDOWS], self._inference_batch_size))
+            chunk = texts[start : start + _INFERENCE_CHUNK_WINDOWS]
+            chunk_started = time.monotonic()
+            raw.extend(self._infer_chunk(model, chunk, self._inference_batch_size))
+            stats(
+                logger,
+                "ner_infer_progress",
+                windows_done=len(raw),
+                windows_total=len(texts),
+                chunk_s=round(time.monotonic() - chunk_started, 1),
+                elapsed_s=round(time.monotonic() - started, 1),
+            )
         return raw
 
-    def _infer_chunk(self, model: Any, texts: list[str], batch_size: int) -> list[Any]:
-        """Infer ``texts``, retrying a failure at half the batch size or half the window list.
+    def _run_with_stall_watchdog(self, model: Any, texts: list[str], batch_size: int) -> list[Any]:
+        """Run one batched call under a stall watchdog (CUDA only, ``DAKP_NER_STALL_SECONDS``).
+
+        A hung CUDA call never raises and never returns - the shard would sit "running" until
+        the task-level timeout hours later, having produced nothing the retry could reuse. The
+        watchdog runs the call in a companion thread and, when no result arrives within the
+        budget, hard-exits the worker (``os._exit(70)``): the parent sees the worker die, the
+        shard fails, Airflow retries the task, and the two-tier cache resumes from completed
+        work instead of a wedged process. CPU inference (and therefore the whole test suite)
+        never arms the watchdog.
+        """
+        stall_seconds = float(os.environ.get("DAKP_NER_STALL_SECONDS", "1800") or 0)
+        cuda_active = False
+        try:
+            import torch  # lazy: no torch at module load
+
+            cuda_active = torch.cuda.is_available()
+        except Exception:
+            cuda_active = False
+        if stall_seconds <= 0 or not (cuda_active and str(self._device).startswith("cuda")):
+            return self._raw_batch_extract(model, texts, batch_size)
+        import threading
+
+        outcome: dict[str, Any] = {}
+        done = threading.Event()
+
+        def _call() -> None:
+            try:
+                outcome["raw"] = self._raw_batch_extract(model, texts, batch_size)
+            except BaseException as exc:
+                outcome["error"] = exc
+            finally:
+                done.set()
+
+        worker = threading.Thread(target=_call, daemon=True)
+        worker.start()
+        if not done.wait(timeout=stall_seconds):
+            logger.error(
+                "ner_infer_stall: a batch of {} windows produced no result in {:.0f}s; aborting the worker so the task retry can resume from cache",
+                len(texts),
+                stall_seconds,
+            )
+            os._exit(70)
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["raw"]
+
+    def _infer_chunk(self, model: Any, texts: list[str], batch_size: int, _oom_attempts: int = 0) -> list[Any]:
+        """Infer ``texts`` in LENGTH-SORTED batches, retrying a failure at half the batch size or half the window list.
+
+        Batching sorts windows by length first and restores submission order on return: a shard
+        mixes 30-word and ~4k-word sections, and GLiNER2 pads every batch to its longest member,
+        so an unsorted batch sequence pads most batches to ~4096 tokens. Sorting makes each
+        batch nearly uniform - the same windows, the same per-window outputs, a fraction of the
+        pad tokens. Per-window results are independent of batch composition, so this is a pure
+        throughput change (asserted byte-identical in the unit tests).
 
         Two distinct failure modes, told apart by :func:`_is_memory_error`:
 
         * a device OOM is a property of the BATCH (16 padded 384-token windows through
           deberta-v3-large with the eager attention fallback exceeds a 16 GB P100) and of the
           fragmented reserves the failed allocation leaves behind, so the cache is released and
-          the SAME windows are retried at half the batch size — splitting the list would reduce
-          neither;
+          the SAME windows are retried at half the batch size. The halving is CAPPED at two
+          attempts per piece: each retry re-runs every window in the piece, so an unbounded
+          spiral 16→8→4→2→1 re-pays the full chunk cost for a windows set that will OOM at any
+          size (recorded: four halvings, then 2048 single-window retries, all lost). Once the
+          cap is spent the OOM is presumed to have a poisoned-window component and the piece
+          falls through to bisection below — a half that infers cleanly proves the failure was
+          one oversized window, not the batch size; a lone window that still OOMs is dropped
+          (canonical empty result) instead of failing the shard. The task-level retry then
+          resumes from the two-tier cache for anything already completed.
         * anything else is presumed one pathological window (weird SPL markup, hostile unicode),
           so the LIST is bisected until the offender stands alone.
 
         A single window that still raises is logged with its exception type, a preview and the
         traceback, and yields the canonical empty result (no spans) rather than poisoning the
-        shard. Every retry reuses the SAME loaded model — no reload cost.
+        shard. Every retry reuses the SAME loaded model — no reload cost. The sort happens
+        inside the try: retries bisect the SORTED list, and results are unsorted once, at the end.
         """
         try:
-            return self._raw_batch_extract(model, texts, batch_size)
+            order = sorted(range(len(texts)), key=lambda index: len(texts[index]))
+            raw_sorted = self._run_with_stall_watchdog(model, [texts[index] for index in order], batch_size)
+            raw: list[Any] = [None] * len(texts)
+            for position, index in enumerate(order):
+                raw[index] = raw_sorted[position]
+            return raw
         except Exception as exc:
             kind = type(exc).__name__
             if _is_memory_error(exc):
                 _release_cuda_cache()
-                if batch_size > 1:
-                    logger.warning("ner_batch_infer: {} on {} windows at batch_size = {}; retrying at half the batch", kind, len(texts), batch_size)
-                    return self._infer_chunk(model, texts, max(1, batch_size // 2))
+                if batch_size > 1 and _oom_attempts < _MAX_OOM_HALVINGS:
+                    logger.warning(
+                        "ner_batch_infer: {} on {} windows at batch_size = {}; retrying at half the batch (attempt {}/{})",
+                        kind,
+                        len(texts),
+                        batch_size,
+                        _oom_attempts + 1,
+                        _MAX_OOM_HALVINGS,
+                    )
+                    return self._infer_chunk(model, texts, max(1, batch_size // 2), _oom_attempts + 1)
+                # Cap spent (or the batch is already one window): fall through to bisection —
+                # a clean half exonerates the batch size and convicts the windows it lost.
             if len(texts) > 1:
                 middle = len(texts) // 2
                 logger.warning("ner_batch_infer: {} on {} windows; bisecting to isolate the failure", kind, len(texts))
@@ -1304,7 +1579,7 @@ class DiseaseNER:
         Returns the ``DiseaseNER`` init kwargs as plain JSON-picklable values so a
         :class:`~concurrent.futures.ProcessPoolExecutor` worker can reconstruct an
         equivalent backend pinned to a specific device via ``DiseaseNER(device=..., **config)``.
-        The ``device`` kwarg itself is deliberately excluded — the caller sets it per-worker.
+        The ``device`` kwarg itself is deliberately excluded - the caller sets it per-worker.
         """
         return {
             "offline": self._offline,
@@ -1318,6 +1593,32 @@ class DiseaseNER:
             "cache_dir": self._cache_dir,
             "workdir": self._workdir,
             "strict_extension_threshold": self._strict_extension_threshold,
+            "compute_dtype": self._compute_dtype,
+        }
+
+    def span_material(self) -> dict[str, Any]:
+        """The MODEL-SIDE config that can change raw spans (the Tier B key material).
+
+        Deliberately narrower than :meth:`_config`: everything here is capable of changing what
+        the model emits (checkpoint, prompt vocabulary, generation floor, window tiling), while
+        the rest of ``_config`` (gazetteer, acceptance/extension floors, batch size) only changes
+        how raw spans are merged or batched. Merging is recomputed per run from cached spans, so
+        those belong OUTSIDE the key - that is the whole point of the two-tier cache: editing the
+        gazetteer or sweeping ``accept_threshold`` re-merges on CPU instead of re-mining on GPU.
+
+        ``chunk_words`` is included unresolved (``None`` = the checkpoint's own budget): the
+        resolved budget is a pure function of the model content + this kwarg, both of which the
+        key already pins.
+        """
+        return {
+            "model_id": self._model_id,
+            "model_labels": self._model_labels,
+            "threshold": self._threshold,
+            "chunk_words": self._chunk_words,
+            # fp16 changes raw output BITS (not just speed): two dtypes produce different span
+            # sets at the margin, so a dtype experiment must never serve the other dtype's
+            # cached spans.
+            "compute_dtype": self._compute_dtype,
         }
 
     def _merge_model_spans(self, text: str, gazetteer_mentions: list[Mention]) -> list[Mention]:

@@ -1,6 +1,6 @@
 [project]
 name = "dakp-pipeline"
-version = "1.15.0"
+version = "1.16.0"
 description = "Drug Approvals Knowledge Provider (DAKP) rebuild: reproducible, content-addressed pipeline producing DailyMed / Drugs@FDA / FAERS / MEDI treatment and contraindication assertion tables for Tablassert."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -125,14 +125,18 @@ dependencies = [
     # so transformers 5.x + torch 2.8 cu126 stay intact. peft also pulls `accelerate`.
     "peft>=0.10,<1",
     "pendulum>=3",
-    "polars>=1.30.0",
+    # tablassert >=19.3.0 requires `polars>=2.0.0rc2` (19.2.0 was the last on polars 1.x), so the
+    # tablassert floor below forces the polars 2.0 prerelease; pinned here explicitly so the
+    # lock's prerelease is a stated choice, not a transitive surprise. Gate (wenceslaus, branch
+    # lock): unit + integration green, and the run_tablassert parity build vs the 1.15.0 manifest.
+    "polars>=2.0.0rc2,<3",
     "pydantic>=2.12.0",
     # `[cli]` and `[log]` became OPTIONAL in 19.0: the `tablassert` console script `DAKP`'s runner
     # shells out to now preflights the `[cli]` extra (cyclopts + rich) and exits before importing
     # the app without it, and logging is a silent no-op without `[log]` (loguru), so a build would
     # emit no progress or warning logs at all. Both are load-bearing for `run_tablassert`, hence
     # explicit. `[qc]` still backs the `--qc` audit.
-    "tablassert[cli,log,qc]>=19.2.0,<20",
+    "tablassert[cli,log,qc]>=19.3.0,<20",
     # torch is transitive (sentence-transformers via tablassert[qc]; gliner2 needs it too but
     # only declares it under the `[local]`/`[train]` extras we do not use) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host

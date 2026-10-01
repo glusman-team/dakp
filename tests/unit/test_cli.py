@@ -363,13 +363,27 @@ def test_up_run_failed(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: p
     assert "final=failed" in capsys.readouterr().out
 
 
-def test_up_run_times_out(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    _patch_happy(monkeypatch, run_state="running")  # never success/failed -> exhausts the poll budget
+def test_up_reattaches_past_the_old_poll_budget(monkeypatch: pytest.MonkeyPatch, sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The waiter re-attaches with NO round cap: 'running' past the old 1200-round budget is fine.
+
+    The old loop gave up at ~60 min and orphaned the still-running DAG; the replacement loops
+    until a terminal state (the DAG's dagrun_timeout is the real bound), so a multi-hour build
+    is watched to its end instead of being abandoned mid-flight.
+    """
+    polls = {"n": 0}
+
+    def late_success(db: Path, dag_id: str) -> str:
+        polls["n"] += 1
+        return "running" if polls["n"] <= 1300 else "success"  # 100 rounds past the old budget
+
+    _patch_happy(monkeypatch)
+    monkeypatch.setattr(cli, "run_state", late_success)
 
     code = cli.run_up(fullmap=None, port=8090, log_level="INFO", detach=False)
 
-    assert code == 1
-    assert "final=timeout" in capsys.readouterr().out
+    assert code == 0
+    assert "succeeded" in capsys.readouterr().out
+    assert polls["n"] == 1301
 
 
 # --- down -------------------------------------------------------------------------
@@ -438,6 +452,10 @@ def test_down_ignores_non_numeric_pidfile(monkeypatch: pytest.MonkeyPatch, sandb
 
 def test_clean_removes_expected_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(cli, "_REPO_ROOT", tmp_path)
+    # Sandbox the workdir too: run_clean probes <workdir>/cache/ner/server.json for a live
+    # dakp-nercache server. Unpatched, it found (and SIGTERMed) the REAL server of a build
+    # running on the same host, then refused to clean -> rc 1.
+    monkeypatch.setattr(cli, "_DEFAULT_WORKDIR", tmp_path / "tmp")
     # A mix of dirs, a file, and an absent target.
     (tmp_path / ".pytest_cache").mkdir()
     (tmp_path / "tmp").mkdir()
@@ -585,6 +603,7 @@ def test_clean_ner_only_refuses_when_nercache_survives_sigterm(
 
 def test_clean_command_raises_systemexit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(cli, "_REPO_ROOT", tmp_path)
+    monkeypatch.setattr(cli, "_DEFAULT_WORKDIR", tmp_path / "tmp")  # never probe a live host server
     with pytest.raises(SystemExit) as excinfo:
         cli.clean()
     assert excinfo.value.code == 0
@@ -621,6 +640,9 @@ def test_airflow_env_carries_ui_customization(sandbox: Path) -> None:
 
     assert env["AIRFLOW__API__INSTANCE_NAME"] == "DAKP"
     assert env["AIRFLOW__API__DEFAULT_WRAP"] == "True"
+    # Stall recovery: a silent task is declared zombie and failed (→ DAG retry) instead of
+    # squatting on its pool slot forever.
+    assert env["AIRFLOW__SCHEDULER__ZOMBIE_TASK_THRESHOLD"] == "10"
     # Keep the custom color palette from being reintroduced accidentally.
     assert "AIRFLOW__API__THEME" not in env
 

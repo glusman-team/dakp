@@ -462,9 +462,13 @@ def build_contraindication_rows(
     store when another shape task already built it this run
     (:func:`~dakp_pipeline.assertions.evidence.load_or_build_dailymed_evidence`).
     """
-    evidence = load_or_build_dailymed_evidence(inputs, ctx)
-    approvals = build_fda_approval_index(inputs)
-    kw = keywords or DEFAULT_CONTRA_KEYWORDS
+    # Per-phase timers (US-007): the shaper is the DAG's long pole; these separate the fixed
+    # costs (evidence index), the GPU pool (mining), and the CPU tail (merge/aggregation) so a
+    # profile targets the right phase instead of guessing from one task-level number.
+    with step(logger, "shape_contraindications.evidence"):
+        evidence = load_or_build_dailymed_evidence(inputs, ctx)
+        approvals = build_fda_approval_index(inputs)
+        kw = keywords or DEFAULT_CONTRA_KEYWORDS
 
     # Pass 1 work items: contraindication sections (all text is relevant), retaining the
     # original sentence spans for local evidence recovery.
@@ -533,81 +537,87 @@ def build_contraindication_rows(
     # SPL document contributes several sections, so (set_id, doc_id) cannot key them). All passes
     # share ONE backend profile, so their misses go to the GPUs as a single LPT-balanced pool — the
     # largest pass (full warnings text) otherwise dominated wall time alone on one GPU.
-    def mine(items: Sequence[Any]) -> dict[tuple[str, str], list[Mention]]:
+    def mine(items: Sequence[Any]) -> dict[tuple[str, str], Any]:
         if devices and len(items) > 1 and not ner._offline:
             return _mine_multi_gpu(list(items), ner, devices)
-        mined_seq: dict[tuple[str, str], list[Mention]] = {}
+        mined_seq: dict[tuple[str, str], Any] = {}
         for done, item in enumerate(items, start=1):
             set_id, doc_id, text = _work_item_parts(item)
-            mined_seq[(set_id, doc_id)] = extract_contraindication_diseases(text, ner)
+            # Production returns RAW SPANS (Tier B cacheable, merged parent-side by
+            # mine_with_cache); offline returns final mentions (never cached). Both normalize
+            # to mention lists at the cache seam, so the shaper below sees identical values
+            # regardless of dispatch mode.
+            mined_seq[(set_id, doc_id)] = ner.extract_spans(text) if not ner._offline else extract_contraindication_diseases(text, ner)
             progress(logger, "shape_contraindications", done, len(items), every=_MINING_PROGRESS_EVERY)
         return mined_seq
 
-    mined = mine_by_position(all_work_items, ner, mine, cache)
+    with step(logger, "shape_contraindications.mine"):
+        mined = mine_by_position(all_work_items, ner, mine, cache)
 
     # Aggregate mentions into assertion rows keyed by (subject, object, disease context).
     # Work items are singleton-only, so each set contributes exactly one subject ingredient;
     # the local source sentence is retained on the aggregate for the evidence column.
-    aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
-    mentions_mined = 0
-    for index, item in enumerate(all_work_items):
-        set_id, doc_id, _text = _work_item_parts(item)
-        ingredients = evidence.active_ingredients_by_set.get(set_id, [])
-        all_mentions = mined[index]
-        mentions = object_mentions(all_mentions)
-        decisions = _classify_mentions(item, mentions)
-        qualifier_fields: dict[int, dict[str, str]] = {}
-        qualifier_scores: dict[int, dict[str, tuple[float, str]]] = {}
-        localized_objects: list[tuple[int, Mention, str]] = []
-        localized_qualifiers: list[tuple[Mention, str]] = []
-        for index, mention in enumerate(mentions):
-            mapped = _mention_local_span(item, mention) if isinstance(item, ContraWorkItem) else None
-            if mapped is None:
-                localized_objects.append((index, mention, _offset_space(item)))
-            else:
-                sentence, start, end, _source_start = mapped
-                localized_objects.append((index, replace(mention, start=start, end=end, text=sentence[start:end]), sentence))
-        for mention in all_mentions:
-            if mention in mentions:
-                continue
-            mapped = _mention_local_span(item, mention) if isinstance(item, ContraWorkItem) else None
-            if mapped is None:
-                localized_qualifiers.append((mention, _offset_space(item)))
-            else:
-                sentence, start, end, _source_start = mapped
-                localized_qualifiers.append((replace(mention, start=start, end=end, text=sentence[start:end]), sentence))
-        for sentence in {value for _index, _mention, value in localized_objects}:
-            object_group = [(index, mention) for index, mention, value in localized_objects if value == sentence]
-            qualifier_group = [mention for mention, value in localized_qualifiers if value == sentence]
-            attached, scores = attach_qualifiers_with_scores(
-                [mention for _index, mention in object_group], qualifier_group, lambda _mention, value=sentence: value
-            )
-            for local_index, fields in attached.items():
-                mention_index = object_group[local_index][0]
-                qualifier_fields[mention_index] = fields
-                qualifier_scores[mention_index] = {field: scores[(local_index, field)] for field in fields}
-        for mention_index, (mention, decision) in enumerate(zip(mentions, decisions, strict=True)):
-            mentions_mined += 1
-            # Canonicalize the mined mention (lowercase / strip punctuation) so case variants
-            # (asthma / Asthma / ASTHMA) aggregate to one object instead of fragmenting the rows.
-            object_text = normalize_text(mention.text)
-            if not object_text or not decision.accepted:
-                continue
-            for ingredient_name, ingredient_unii in ingredients:
-                _accumulate(
-                    aggregated,
-                    set_id,
-                    doc_id,
-                    ingredient_name,
-                    ingredient_unii,
-                    object_text,
-                    mention,
-                    decision.evidence_text,
-                    decision.context_text,
-                    approvals.expand_all(evidence.approval_ids_for_sets([set_id])),
-                    qualifier_fields.get(mention_index, {}),
-                    qualifier_scores.get(mention_index, {}),
+    with step(logger, "shape_contraindications.aggregate"):
+        aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
+        mentions_mined = 0
+        for index, item in enumerate(all_work_items):
+            set_id, doc_id, _text = _work_item_parts(item)
+            ingredients = evidence.active_ingredients_by_set.get(set_id, [])
+            all_mentions = mined[index]
+            mentions = object_mentions(all_mentions)
+            decisions = _classify_mentions(item, mentions)
+            qualifier_fields: dict[int, dict[str, str]] = {}
+            qualifier_scores: dict[int, dict[str, tuple[float, str]]] = {}
+            localized_objects: list[tuple[int, Mention, str]] = []
+            localized_qualifiers: list[tuple[Mention, str]] = []
+            for index, mention in enumerate(mentions):
+                mapped = _mention_local_span(item, mention) if isinstance(item, ContraWorkItem) else None
+                if mapped is None:
+                    localized_objects.append((index, mention, _offset_space(item)))
+                else:
+                    sentence, start, end, _source_start = mapped
+                    localized_objects.append((index, replace(mention, start=start, end=end, text=sentence[start:end]), sentence))
+            for mention in all_mentions:
+                if mention in mentions:
+                    continue
+                mapped = _mention_local_span(item, mention) if isinstance(item, ContraWorkItem) else None
+                if mapped is None:
+                    localized_qualifiers.append((mention, _offset_space(item)))
+                else:
+                    sentence, start, end, _source_start = mapped
+                    localized_qualifiers.append((replace(mention, start=start, end=end, text=sentence[start:end]), sentence))
+            for sentence in {value for _index, _mention, value in localized_objects}:
+                object_group = [(index, mention) for index, mention, value in localized_objects if value == sentence]
+                qualifier_group = [mention for mention, value in localized_qualifiers if value == sentence]
+                attached, scores = attach_qualifiers_with_scores(
+                    [mention for _index, mention in object_group], qualifier_group, lambda _mention, value=sentence: value
                 )
+                for local_index, fields in attached.items():
+                    mention_index = object_group[local_index][0]
+                    qualifier_fields[mention_index] = fields
+                    qualifier_scores[mention_index] = {field: scores[(local_index, field)] for field in fields}
+            for mention_index, (mention, decision) in enumerate(zip(mentions, decisions, strict=True)):
+                mentions_mined += 1
+                # Canonicalize the mined mention (lowercase / strip punctuation) so case variants
+                # (asthma / Asthma / ASTHMA) aggregate to one object instead of fragmenting the rows.
+                object_text = normalize_text(mention.text)
+                if not object_text or not decision.accepted:
+                    continue
+                for ingredient_name, ingredient_unii in ingredients:
+                    _accumulate(
+                        aggregated,
+                        set_id,
+                        doc_id,
+                        ingredient_name,
+                        ingredient_unii,
+                        object_text,
+                        mention,
+                        decision.evidence_text,
+                        decision.context_text,
+                        approvals.expand_all(evidence.approval_ids_for_sets([set_id])),
+                        qualifier_fields.get(mention_index, {}),
+                        qualifier_scores.get(mention_index, {}),
+                    )
 
     stats(logger, "shape_contraindications", mentions_mined=mentions_mined, assertions=len(aggregated))
     return [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]

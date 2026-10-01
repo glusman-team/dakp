@@ -181,3 +181,80 @@ def test_lookup_model_mismatched_provenance_returns_none(tmp_path: Path) -> None
     data["model_id"] = "m/other"
     ref.manifest.write_text(json.dumps(data), encoding="utf-8")
     assert lookup_model("m/x", cache_dir=tmp_path) is None
+
+
+# --- hash_algo versioning (b3-tree-v2-mt) ----------------------------------------
+
+
+def test_ensure_model_writes_v2_tree_hash_and_algo(tmp_path: Path) -> None:
+    """New downloads adopt the multithreaded tree hash, with the algorithm recorded.
+
+    The recorded algorithm is what lets old and new caches verify correctly side by side;
+    without it a v2 digest would be compared against a v1 computation and every cache hit
+    would look like drift (multi-GB re-download).
+    """
+    from dakp_pipeline.io.content_hash import TREE_HASH_V2_MT, hash_tree_mt
+    from dakp_pipeline.ner.model_cache import TREE_HASH_ALGO
+
+    calls: list[str] = []
+    ref = ensure_model("acme/tiny-ner", cache_dir=tmp_path, downloader=_fake_downloader(calls))
+    data = read_manifest(ref.manifest)
+    assert data is not None
+    assert data["hash_algo"] == TREE_HASH_ALGO == TREE_HASH_V2_MT
+    assert ref.b3 == hash_tree_mt(ref.path)
+
+
+def test_legacy_manifest_without_hash_algo_verifies_under_v1_without_redownload(tmp_path: Path) -> None:
+    """A pre-hash_algo manifest (every cache written before v2) keeps verifying under v1.
+
+    The v1 and v2 digests differ for the same tree, so verifying a legacy cache under the
+    new algorithm would read as permanent drift and re-download the weights - and change
+    the b3 that keys the mention cache, orphaning every cached mention.
+    """
+    from dakp_pipeline.io.content_hash import hash_tree
+
+    calls: list[str] = []
+    ref1 = ensure_model("acme/tiny-ner", cache_dir=tmp_path, downloader=_fake_downloader(calls))
+    # Rewrite the manifest exactly as a pre-v2 pipeline would have: v1 digest, no hash_algo.
+    legacy = {k: v for k, v in (read_manifest(ref1.manifest) or {}).items() if k != "hash_algo"}
+    legacy["b3"] = hash_tree(ref1.path)
+    write_manifest(ref1.manifest, legacy)
+
+    ref2 = ensure_model("acme/tiny-ner", cache_dir=tmp_path, downloader=_fake_downloader(calls))
+    assert calls == ["acme/tiny-ner"]  # cache hit, no re-download
+    assert ref2.b3 == legacy["b3"]
+
+
+def test_legacy_manifest_full_verify_still_uses_v1(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """DAKP_MODEL_VERIFY=full on a legacy manifest hashes with v1, not the v2 default.
+
+    A v2 computation of the same tree yields a different digest, so using the wrong
+    algorithm here is indistinguishable from content drift - this test makes that failure
+    loud instead of silently re-downloading.
+    """
+    from dakp_pipeline.io.content_hash import hash_tree
+
+    monkeypatch.setenv("DAKP_MODEL_VERIFY", "full")
+    calls: list[str] = []
+    ref1 = ensure_model("acme/tiny-ner", cache_dir=tmp_path, downloader=_fake_downloader(calls))
+    legacy = {k: v for k, v in (read_manifest(ref1.manifest) or {}).items() if k != "hash_algo"}
+    legacy["b3"] = hash_tree(ref1.path)
+    write_manifest(ref1.manifest, legacy)
+
+    ref2 = ensure_model("acme/tiny-ner", cache_dir=tmp_path, downloader=_fake_downloader(calls))
+    assert calls == ["acme/tiny-ner"]  # full verify passed under v1 -> still a hit
+    assert ref2.b3 == legacy["b3"]
+
+
+def test_v2_manifest_detects_drift_and_redownloads(tmp_path: Path) -> None:
+    """A v2-recorded cache whose content drifted must fail verification and re-download.
+
+    The tampered file grows by one byte so the stats fast path (count + bytes) misses the
+    drift and the manifest's tree hash decides - the path the hash_algo tag controls.
+    """
+    calls: list[str] = []
+    ref1 = ensure_model("m/x", cache_dir=tmp_path, downloader=_fake_downloader(calls, payload=b"original"))
+    (ref1.path / "weights.bin").write_bytes(b"tampered!")
+    ref2 = ensure_model("m/x", cache_dir=tmp_path, downloader=_fake_downloader(calls, payload=b"restored"))
+    assert calls == ["m/x", "m/x"]
+    assert ref2.b3 != ref1.b3

@@ -177,24 +177,29 @@ def test_gpu_lock_dir_without_workdir_sits_by_the_model_cache(monkeypatch: pytes
 
 
 def test_acquire_gpu_lock_blocks_until_released(tmp_path: Path) -> None:
-    holder_fd = _acquire_gpu_lock("cuda:1", tmp_path)
-    # While held, a non-blocking acquire on the same device fails outright.
-    with pytest.raises(BlockingIOError):
-        _try_lock(tmp_path / "cuda-1.lock")
-
-    release_at = time.monotonic() + 0.25
-
-    def _release_later() -> None:
-        time.sleep(max(0.0, release_at - time.monotonic()))
-        os.close(holder_fd)
-
-    threading.Thread(target=_release_later).start()
-    started = time.monotonic()
-    waiter_fd = _acquire_gpu_lock("cuda:1", tmp_path)
+    holder = _external_lock_holder(tmp_path / "cuda-1.lock")
     try:
-        assert time.monotonic() - started >= 0.15  # blocked until the holder released
+        # While held, a non-blocking acquire on the same device fails outright.
+        with pytest.raises(BlockingIOError):
+            _try_lock(tmp_path / "cuda-1.lock")
+
+        release_at = time.monotonic() + 0.25
+
+        def _release_later() -> None:
+            time.sleep(max(0.0, release_at - time.monotonic()))
+            holder.kill()
+            holder.wait()
+
+        threading.Thread(target=_release_later).start()
+        started = time.monotonic()
+        waiter_fd = _acquire_gpu_lock("cuda:1", tmp_path)
+        try:
+            assert time.monotonic() - started >= 0.15  # blocked until the holder released
+        finally:
+            os.close(waiter_fd)
     finally:
-        os.close(waiter_fd)
+        holder.kill()
+        holder.wait()
 
 
 def test_acquire_gpu_lock_is_per_device(tmp_path: Path) -> None:
@@ -223,49 +228,75 @@ def test_acquire_gpu_lock_closes_fd_when_flock_fails(monkeypatch: pytest.MonkeyP
 def test_gpu_lock_timeout_raises_naming_the_holder_pid(tmp_path: Path) -> None:
     """A permanently held lock raises after the ceiling, and the message names the holder PID.
 
-    The holder here is THIS process (flock conflicts across separately-opened fds even within
-    one process), so the holder PID is known exactly: ``os.getpid()``.
+    The holder is an external process so the PID is known exactly; a same-process re-acquire
+    is the deliberate ``_GPU_LOCK_HELD`` reentrancy, not a timeout case.
     """
-    holder_fd = _acquire_gpu_lock("cuda:0", tmp_path)
+    holder = _external_lock_holder(tmp_path / "cuda-0.lock")
     try:
         started = time.monotonic()
-        with pytest.raises(GpuLockTimeoutError, match=str(os.getpid())):
+        with pytest.raises(GpuLockTimeoutError, match=str(holder.pid)):
             _acquire_gpu_lock("cuda:0", tmp_path, timeout=0.3)
         assert time.monotonic() - started >= 0.3
     finally:
-        os.close(holder_fd)
+        holder.kill()
+        holder.wait()
 
 
 def test_gpu_lock_timeout_reports_unknown_holder_when_proc_locks_hides_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    holder_fd = _acquire_gpu_lock("cuda:0", tmp_path)
+    holder = _external_lock_holder(tmp_path / "cuda-0.lock")
     try:
         monkeypatch.setattr(ner_module, "_lock_holder_pids", lambda _path: [])
         with pytest.raises(GpuLockTimeoutError, match="unknown"):
             _acquire_gpu_lock("cuda:0", tmp_path, timeout=0.2)
     finally:
-        os.close(holder_fd)
+        holder.kill()
+        holder.wait()
 
 
 def test_gpu_lock_timeout_zero_restores_the_unbounded_wait(tmp_path: Path) -> None:
-    holder_fd = _acquire_gpu_lock("cuda:0", tmp_path)
+    holder = _external_lock_holder(tmp_path / "cuda-0.lock")
 
     def _release_later() -> None:
         time.sleep(0.2)
-        os.close(holder_fd)
+        holder.kill()
+        holder.wait()
 
     threading.Thread(target=_release_later).start()
     waiter_fd = _acquire_gpu_lock("cuda:0", tmp_path, timeout=0)  # no ceiling: waits for release
     os.close(waiter_fd)
 
 
+def _external_lock_holder(lock_path: Path) -> subprocess.Popen[bytes]:
+    """Spawn a live child that holds a real kernel flock on ``lock_path`` and wait until visible."""
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import fcntl, os, time\n"
+            f"fd = os.open({str(lock_path)!r}, os.O_CREAT | os.O_RDWR, 0o644)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "print('locked', flush=True)\n"
+            "time.sleep(60)\n",
+        ],
+        stdout=subprocess.PIPE,
+    )
+    assert holder.stdout is not None
+    assert holder.stdout.readline().strip() == b"locked"
+    return holder
+
+
 def test_gpu_lock_timeout_comes_from_the_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    holder_fd = _acquire_gpu_lock("cuda:0", tmp_path)
+    """A lock held by ANOTHER process (flock is per-fd; a same-process re-acquire reuses the
+    held fd — that is the deliberate reentrancy, see ``_GPU_LOCK_HELD``) blocks until the env
+    ceiling, then raises ``GpuLockTimeoutError``."""
+    holder = _external_lock_holder(tmp_path / "cuda-0.lock")
     try:
         monkeypatch.setenv(_GPU_LOCK_TIMEOUT_ENV, "0.2")
-        with pytest.raises(GpuLockTimeoutError):
+        with pytest.raises(GpuLockTimeoutError, match=str(holder.pid)):
             _acquire_gpu_lock("cuda:0", tmp_path)  # no explicit timeout: env wins over the default
     finally:
-        os.close(holder_fd)
+        holder.kill()
+        holder.wait()
 
 
 # --- _lock_competitor_pids: holders AND kernel-blocked waiters ------------------
@@ -446,17 +477,18 @@ def test_acquire_gpu_lock_timeout_reaps_orphaned_holder_and_succeeds(monkeypatch
 
 def test_acquire_gpu_lock_timeout_still_raises_when_no_orphan_holds(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A LIVE (non-orphan) holder is never killed: the timeout still raises, naming the holder."""
-    holder_fd = _acquire_gpu_lock("cuda:0", tmp_path)
+    holder = _external_lock_holder(tmp_path / "cuda-0.lock")
     reaper: list[int] = []
     monkeypatch.setattr(ner_module, "_reap_orphaned_lock_competitors", lambda _p, **_k: reaper)
     try:
-        with pytest.raises(GpuLockTimeoutError, match=str(os.getpid())):
+        with pytest.raises(GpuLockTimeoutError, match=str(holder.pid)):
             _acquire_gpu_lock("cuda:0", tmp_path, timeout=0.2)
-        assert reaper == []  # self is filtered out before any kill
+        assert reaper == []  # a live child with a live parent is never a reap candidate
         with pytest.raises(BlockingIOError):  # and the live holder's lock is untouched
             _try_lock(tmp_path / "cuda-0.lock")
     finally:
-        os.close(holder_fd)
+        holder.kill()
+        holder.wait()
 
 
 def test_acquire_gpu_lock_timeout_raises_when_the_reap_does_not_free_the_lock(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -466,15 +498,16 @@ def test_acquire_gpu_lock_timeout_raises_when_the_reap_does_not_free_the_lock(mo
     (a live process kept or grabbed it), so the non-blocking retry raises ``BlockingIOError`` and
     the ceiling error reports the remaining holder instead of looping or silently proceeding.
     """
-    holder_fd = _acquire_gpu_lock("cuda:0", tmp_path)
+    holder = _external_lock_holder(tmp_path / "cuda-0.lock")
     monkeypatch.setattr(ner_module, "_reap_orphaned_lock_competitors", lambda _path, **_kwargs: [4242])  # "reaped" an orphan
     try:
-        with pytest.raises(GpuLockTimeoutError, match=str(os.getpid())):
+        with pytest.raises(GpuLockTimeoutError, match=str(holder.pid)):
             _acquire_gpu_lock("cuda:0", tmp_path, timeout=0.2)
         with pytest.raises(BlockingIOError):  # the surviving holder's lock is untouched
             _try_lock(tmp_path / "cuda-0.lock")
     finally:
-        os.close(holder_fd)
+        holder.kill()
+        holder.wait()
 
 
 # --- extract_batch: poisoned-window isolation -----------------------------------
@@ -721,3 +754,33 @@ def test_offline_backend_never_locks(tmp_path: Path) -> None:
     assert backend.extract("asthma")
     assert backend._gpu_lock_fd is None
     assert not (tmp_path / "cache" / "gpu-locks").exists()
+
+
+def test_second_loader_in_the_same_process_reuses_the_held_lock(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """flock is per-fd: a second ``DiseaseNER`` in ONE process (model reload, a test building
+    two backends) must reuse the already-held fd, not poll the process's own lock until the
+    ceiling — the self-deadlock that burned hours on every remote GPU-host gate run."""
+    from dakp_pipeline.ner.ner import _GPU_LOCK_HELD
+
+    _install_fake_gliner2(monkeypatch, tmp_path)
+    monkeypatch.setenv("DAKP_GPU_LOCK_DIR", str(tmp_path / "locks"))
+    first = DiseaseNER(offline=False, device="cuda:1", workdir=tmp_path)
+    first.extract("some text")
+    second = DiseaseNER(offline=False, device="cuda:1", workdir=tmp_path)
+    second.extract("other text")  # must not raise GpuLockTimeoutError
+    assert first._gpu_lock_fd is not None
+    assert second._gpu_lock_fd == first._gpu_lock_fd
+    lock_path = tmp_path / "locks" / "cuda-1.lock"
+    assert _GPU_LOCK_HELD[lock_path] == first._gpu_lock_fd
+    with pytest.raises(BlockingIOError):  # ANOTHER process still sees the lock held
+        _try_lock(lock_path)
+
+
+def test_same_device_different_index_takes_independent_locks(tmp_path: Path) -> None:
+    from dakp_pipeline.ner.ner import _GPU_LOCK_HELD, _acquire_gpu_lock
+
+    fd0 = _acquire_gpu_lock("cuda:0", tmp_path, timeout=1)
+    fd1 = _acquire_gpu_lock("cuda:1", tmp_path, timeout=1)
+    assert fd0 != fd1
+    assert _GPU_LOCK_HELD[tmp_path / "cuda-0.lock"] == fd0
+    assert _GPU_LOCK_HELD[tmp_path / "cuda-1.lock"] == fd1

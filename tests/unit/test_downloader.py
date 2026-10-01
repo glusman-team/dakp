@@ -51,9 +51,11 @@ def test_resolve_returns_none_when_nothing_available(monkeypatch: pytest.MonkeyP
     assert downloader.resolve_aria2c() is None
 
 
-def test_resolve_ignores_bundled_path_that_does_not_exist(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_ignores_bundled_path_that_does_not_exist(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("DAKP_ARIA2", "1")
-    monkeypatch.setattr(downloader, "_bundled_aria2c", lambda: Path("/nonexistent/aria2c"))
+    # A guaranteed-missing path UNDER tmp_path: literal /nonexistent exists as a root-owned
+    # non-traversable dir on some hosts (wenceslaus), where stat raises EACCES instead of ENOENT.
+    monkeypatch.setattr(downloader, "_bundled_aria2c", lambda: tmp_path / "missing" / "aria2c")
     monkeypatch.setattr(downloader.shutil, "which", lambda name: None)
     assert downloader.resolve_aria2c() is None
 

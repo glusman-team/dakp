@@ -60,7 +60,7 @@ from dakp_pipeline.assertions.contraindications import (
 from dakp_pipeline.assertions.evidence import build_dailymed_evidence
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.ner.ner import DiseaseNER, Mention
+from dakp_pipeline.ner.ner import DiseaseNER, Mention, RawTextSpans
 from dakp_pipeline.paths import Workdir
 
 CONTRA_LOINC = "34070-3"
@@ -421,8 +421,13 @@ def test_shard_by_text_length_preserves_all_items() -> None:
 # --- multi-GPU dispatch: _mine_shard worker -------------------------------------
 
 
-def test_mine_shard_extracts_mentions_from_each_text() -> None:
-    """_mine_shard reconstructs a DiseaseNER from config and extracts mentions for each text."""
+def test_mine_shard_extracts_spans_from_each_text() -> None:
+    """_mine_shard reconstructs a DiseaseNER from config and returns RAW SPANS per text.
+
+    The shard contract is raw model output, not mentions: the parent re-merges (so the Tier B
+    span cache stays merge-config-independent). An OFFLINE backend has no model output, so its
+    spans are empty - the offline mention path lives entirely parent-side (merge_spans/extract).
+    """
     ner = DiseaseNER(gazetteer={"asthma": "disease"})
     config = ner._config()
     shard = [("SET-A", "DOC-A", "patient has asthma"), ("SET-B", "DOC-B", "no disease here")]
@@ -430,8 +435,10 @@ def test_mine_shard_extracts_mentions_from_each_text() -> None:
     assert len(results) == 2
     assert results[0][0] == "SET-A"  # set_id preserved
     assert results[0][1] == "DOC-A"  # doc_id preserved
-    assert [m.text for m in results[0][2]] == ["asthma"]
-    assert results[1][2] == []  # no mentions
+    assert isinstance(results[0][2], RawTextSpans)
+    assert results[0][2].objects == []  # offline: no model spans
+    assert results[0][2].qualifiers == []
+    assert results[1][2].objects == []
 
 
 def test_mine_shard_empty_shard_returns_empty_list() -> None:
@@ -443,14 +450,18 @@ def test_mine_shard_empty_shard_returns_empty_list() -> None:
 # --- multi-GPU dispatch: _mine_multi_gpu orchestrator --------------------------
 
 
-def test_mine_multi_gpu_collects_mentions_from_all_workers() -> None:
-    """_mine_multi_gpu shards work and collects mentions from every worker into one map."""
+def test_mine_multi_gpu_collects_spans_from_all_workers() -> None:
+    """_mine_multi_gpu shards work and collects RAW SPANS from every worker into one map.
+
+    Offline backends contribute empty span sets (no model); the map is what matters - one
+    entry per work item, ready for the parent-side merge.
+    """
     ner = DiseaseNER(gazetteer={"asthma": "disease", "diabetes": "disease"})
     items = [("SET-A", "DOC-A", "asthma"), ("SET-B", "DOC-B", "diabetes")]
     results = _mine_multi_gpu(items, ner, ("cpu", "cpu"))
     assert set(results.keys()) == {("SET-A", "DOC-A"), ("SET-B", "DOC-B")}
-    assert [m.text for m in results[("SET-A", "DOC-A")]] == ["asthma"]
-    assert [m.text for m in results[("SET-B", "DOC-B")]] == ["diabetes"]
+    assert all(isinstance(spans, RawTextSpans) for spans in results.values())
+    assert all(spans.objects == [] for spans in results.values())  # offline: no model spans
 
 
 # --- multi-GPU dispatch: build_contraindication_rows devices param ---------------

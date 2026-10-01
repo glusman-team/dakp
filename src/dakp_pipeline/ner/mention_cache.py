@@ -32,7 +32,6 @@ from typing import Any
 
 from dakp_pipeline.io.content_hash import digest_dirname, hash_bytes
 from dakp_pipeline.logging_setup import logger, stats
-from dakp_pipeline.ner.lexical import Mention
 from dakp_pipeline.ner.ner import DiseaseNER
 
 #: Environment variable overriding the server binary location (wins over all defaults).
@@ -92,9 +91,26 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+#: ``DiseaseNER._config`` keys that locate files but never change mentions (not key material).
+_LOCATION_CONFIG_KEYS = frozenset({"workdir", "cache_dir"})
+
+
 def config_fingerprint(ner: DiseaseNER) -> str:
-    """64-hex BLAKE3 fingerprint of the backend's serializable construction config."""
-    canonical = json.dumps(_jsonable(ner._config()), sort_keys=True, separators=(",", ":"))
+    """64-hex BLAKE3 fingerprint of the backend's serializable construction config.
+
+    Location fields (``workdir``, ``cache_dir``) are excluded: they say where files live, not
+    what the model emits, and keying on them orphaned the whole store whenever a build ran from
+    a different checkout or a migrated workdir (observed: a warm rebuild from a second checkout
+    re-mined all 62,512 treatment texts cold).
+
+    ``compute_dtype`` is omitted at its ``fp32`` default so adding the field did not change the
+    key of a default backend; non-default dtypes are keyed, so an fp16 run never serves or
+    overwrites fp32 mentions.
+    """
+    config = {key: value for key, value in ner._config().items() if key not in _LOCATION_CONFIG_KEYS}
+    if config.get("compute_dtype") == "fp32":
+        del config["compute_dtype"]
+    canonical = json.dumps(_jsonable(config), sort_keys=True, separators=(",", ":"))
     return digest_dirname(hash_bytes(canonical.encode("utf-8")))
 
 
@@ -123,6 +139,54 @@ def ner_cache_material(ner: DiseaseNER) -> tuple[str, str, str] | None:
         # of building a cache key.
         return None
     return ner._model_id, digest_dirname(ref.b3), config_fingerprint(ner)
+
+
+def span_fingerprint(ner: DiseaseNER) -> str:
+    """64-hex BLAKE3 fingerprint of the MODEL-SIDE span material (the Tier B key half).
+
+    Deliberately narrower than :func:`config_fingerprint`: only what can change the raw model
+    output (checkpoint vocabulary, generation floor, window budget). Gazetteer, acceptance and
+    extension floors, and batch size all live in :func:`config_fingerprint` instead - they shape
+    the merge, which is recomputed per run from cached spans, so touching them must not orphan
+    the span store (that is the two-tier design: merge-side iteration is CPU-cheap).
+    """
+    canonical = json.dumps(_jsonable(ner.span_material()), sort_keys=True, separators=(",", ":"))
+    return digest_dirname(hash_bytes(canonical.encode("utf-8")))
+
+
+def span_cache_material(ner: DiseaseNER) -> tuple[str, str, str, Path | None] | None:
+    """The ``(model_id, model_b3, span_fingerprint, model_content_dir)`` Tier B key material.
+
+    Mirrors :func:`ner_cache_material` (same manifest read, no model load, never downloads) and
+    returns ``None`` under the same conditions (offline backend, unreadable manifest, cold model
+    cache) plus the content dir, which :func:`spans_from_cache` needs to resolve the window
+    budget exactly like the worker's loaded model does.
+    """
+    if ner._offline:
+        return None
+    from dakp_pipeline.ner.model_cache import lookup_model
+
+    try:
+        ref = lookup_model(ner._model_id, cache_dir=ner._cache_dir, workdir=ner._workdir)
+    except Exception as exc:  # never let cache key material break mining
+        logger.warning("span_cache: model ref for {} unavailable ({}); span caching disabled", ner._model_id, type(exc).__name__)
+        return None
+    if ref is None:
+        return None
+    return ner._model_id, digest_dirname(ref.b3), span_fingerprint(ner), ref.path
+
+
+def span_key(model_id: str, model_b3: str, span_fingerprint_value: str, text: str) -> str:
+    """The 64-char hex BLAKE3 cache key for one ``(model, span-material, text)`` triple.
+
+    Same canonical shape as :func:`mention_key` (including the trailing raw-text length that
+    disambiguates whitespace variants) so both tiers share one key discipline; the fingerprints
+    differ, which is what keeps the two tiers' namespaces apart. Model identity enters via the
+    SAME content digest the mention key uses, so a re-downloaded checkpoint invalidates both
+    tiers together.
+    """
+    canonical = f"spans|{model_id}|{digest_dirname(model_b3)}|{span_fingerprint_value}|{normalize_key_text(text)}|{len(text)}"
+    return digest_dirname(hash_bytes(canonical.encode("utf-8")))
 
 
 class MentionCache:
@@ -241,8 +305,15 @@ class MentionCache:
         return body if isinstance(body, dict) else None
 
     # -- public API -----------------------------------------------------------------
-    def get_many(self, keys: list[str]) -> dict[str, list[Mention]]:
-        """Cached mentions for ``keys`` that hit; missing/failed keys are simply absent."""
+    def get_many(self, keys: list[str]) -> dict[str, Any]:
+        """Raw decoded values for ``keys`` that hit; missing/failed keys are simply absent.
+
+        Values are returned VERBATIM (the server stores them losslessly): a Tier A entry is a
+        JSON list of mention dicts, a Tier B entry a JSON object of raw span material. Callers
+        decode their own tier - mention lists via ``Mention.from_dict``, spans via
+        :func:`dakp_pipeline.ner.ner.spans_from_cache` - because the server is tier-agnostic by
+        design.
+        """
         if not keys:
             return {}
         body = self._post("/batch_get", {"keys": keys})
@@ -251,20 +322,16 @@ class MentionCache:
         hits = body.get("hits")
         if not isinstance(hits, dict):
             return {}
-        out: dict[str, list[Mention]] = {}
-        for key, value in hits.items():
-            if isinstance(value, list):
-                out[str(key)] = [Mention.from_dict(item) for item in value]
-        return out
+        return {str(key): value for key, value in hits.items() if isinstance(value, (list, dict))}
 
-    def put_many(self, items: dict[str, list[Mention]]) -> None:
-        """Store ``{key: mentions}`` in bounded chunks; a no-op when the cache is unavailable."""
+    def put_many(self, items: dict[str, Any]) -> None:
+        """Store ``{key: value}`` verbatim in bounded chunks; a no-op when the cache is unavailable."""
         if not items:
             return
         keys = sorted(items)
         for start in range(0, len(keys), _PUT_CHUNK_SIZE):
             chunk = keys[start : start + _PUT_CHUNK_SIZE]
-            payload = {key: [mention.to_dict() for mention in items[key]] for key in chunk}
+            payload = {key: items[key] for key in chunk}
             if self._post("/batch_put", {"items": payload}) is None:
                 return  # fail-soft: stop on first failed chunk (warned once in _post)
 

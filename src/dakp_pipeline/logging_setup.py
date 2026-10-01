@@ -298,12 +298,14 @@ def _elapsed_s(started: float) -> float:
 
 
 @contextmanager
-def step(log: Any, event: str) -> Iterator[None]:
+def step(log: Any, event: str, /, **context: Any) -> Iterator[None]:
     """Narrate a pipeline phase: ``event: started`` on entry, finish/fail stats on exit.
 
     On success emits ``event: finished = true`` and ``event: elapsed_s = <N>`` (one line
     each). On exception emits ``event: failed = true``, ``event: error = <ExcType>`` and the
-    elapsed time, then re-raises. Usage::
+    elapsed time, then re-raises. Extra keyword arguments become plain stat lines on the
+    finish/fail records (identity fields such as the table name), so nested phases stay
+    attributable when several run inside one task. Usage::
 
         with step(log, "acquire_faers"):
             refs = faers.fetch(ctx)
@@ -313,9 +315,9 @@ def step(log: Any, event: str) -> Iterator[None]:
     try:
         yield
     except BaseException as exc:
-        stats(log, event, _depth=2, failed=True, error=type(exc).__name__, elapsed_s=_elapsed_s(started))
+        stats(log, event, _depth=2, failed=True, error=type(exc).__name__, elapsed_s=_elapsed_s(started), **context)
         raise
-    stats(log, event, _depth=2, finished=True, elapsed_s=_elapsed_s(started))
+    stats(log, event, _depth=2, finished=True, elapsed_s=_elapsed_s(started), **context)
 
 
 def progress(log: Any, event: str, done: int, total: int, *, every: int) -> None:
