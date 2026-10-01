@@ -92,8 +92,17 @@ def _jsonable(value: Any) -> Any:
 
 
 def config_fingerprint(ner: DiseaseNER) -> str:
-    """64-hex BLAKE3 fingerprint of the backend's serializable construction config."""
-    canonical = json.dumps(_jsonable(ner._config()), sort_keys=True, separators=(",", ":"))
+    """64-hex BLAKE3 fingerprint of the backend's serializable construction config.
+
+    ``compute_dtype`` is omitted at its ``fp32`` default so the Tier A key of a default backend
+    is byte-identical to the pre-dtype key: adding the field must not orphan every mention
+    already cached (it did once - a warm rebuild re-mined 62,512 texts cold). Non-default dtypes
+    are keyed, so an fp16 run never serves or overwrites fp32 mentions.
+    """
+    config = ner._config()
+    if config.get("compute_dtype") == "fp32":
+        del config["compute_dtype"]
+    canonical = json.dumps(_jsonable(config), sort_keys=True, separators=(",", ":"))
     return digest_dirname(hash_bytes(canonical.encode("utf-8")))
 
 

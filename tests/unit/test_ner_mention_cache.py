@@ -117,6 +117,27 @@ def test_config_fingerprint_is_stable_and_config_sensitive(tmp_path: Path) -> No
     assert config_fingerprint(other) != config_fingerprint(ner)
 
 
+def test_default_fp32_tier_a_fingerprint_equals_the_pre_dtype_fingerprint(tmp_path: Path) -> None:
+    """Adding ``compute_dtype`` to ``_config`` must not orphan the existing Tier A store.
+
+    A default (fp32) backend's fingerprint is pinned to the hash of the config WITHOUT the
+    dtype field - exactly what pre-dtype releases wrote. Regression: the first warm rebuild
+    after the field landed missed every cached mention and re-mined 62,512 texts cold.
+    fp16 must still key differently so it never serves or overwrites fp32 mentions.
+    """
+    import json as _json
+
+    from dakp_pipeline.io.content_hash import digest_dirname, hash_bytes
+    from dakp_pipeline.ner.mention_cache import _jsonable
+
+    ner = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path)
+    legacy = {key: value for key, value in ner._config().items() if key != "compute_dtype"}
+    legacy_fp = digest_dirname(hash_bytes(_json.dumps(_jsonable(legacy), sort_keys=True, separators=(",", ":")).encode("utf-8")))
+    assert config_fingerprint(ner) == legacy_fp
+    fp16 = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path, compute_dtype="fp16")
+    assert config_fingerprint(fp16) != config_fingerprint(ner)
+
+
 def test_ner_cache_material_offline_backend_is_never_cached() -> None:
     assert ner_cache_material(DiseaseNER()) is None
 
