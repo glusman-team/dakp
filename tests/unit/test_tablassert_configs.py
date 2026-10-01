@@ -112,11 +112,15 @@ EXPECTED_SOURCES = {
 
 # assertion table -> {qualifier slot: assertion column backing it}. Only tables whose writers
 # actually populate the backing columns get entries (see ``_TABLE_QUALIFIERS`` for the per-table
-# justification). The contraindication context qualifier rides Tablassert 15.1's
-# ``CLASS_FIELD_OVERRIDES`` grant (SkyeAv/Tablassert#120) and the five sparse-qualifier slots ride
-# 19.0's grant (SkyeAv/Tablassert#188): the association classes ``OBJECT_CATEGORY_OVERRIDE`` pins
-# for ``regulatory_approvals`` do not natively declare any of them — the grants keep them on the
-# edge anyway.
+# justification). How each slot reaches the edge on the classes ``OBJECT_CATEGORY_OVERRIDE`` pins
+# moves with the pinned model: biolink-model 4.4.5 (Tablassert >= 19.5.1) declares
+# ``disease_context_qualifier``, ``anatomical_context_qualifier``, and ``frequency_qualifier`` there
+# natively, where 15.1's ``CLASS_FIELD_OVERRIDES`` grant (SkyeAv/Tablassert#120) and 19.0's (#188)
+# had carried all six, and Tablassert still grants ``population_context_qualifier`` and
+# ``temporal_context_qualifier`` to both pinned classes plus ``sex_qualifier`` to
+# ``EntityToDiseaseAssociation``. Either path keeps the slot on the edge instead of nulling it into
+# the pruned column, which is what
+# ``test_qualifier_stack_survives_prune_to_class_on_the_pinned_classes`` asserts.
 EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
     "approved_treats_assertions": {
         "anatomical_context_qualifier": "anatomical_context_text",
@@ -150,9 +154,10 @@ EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
 # from renaming it onto ``Study.study_size`` (DAKP used the ``evidence_count`` alias before that).
 # ``split_by: "|"``
 # makes the pipe-joined cells emit as real JSON arrays. ``regulatory_approvals`` is the CANONICAL
-# multivalued slot for FDA application numbers that Tablassert 18 grants to
-# ``EntityToDiseaseAssociation`` / ``EntityToPhenotypicFeatureAssociation`` ahead of the pinned
-# Biolink model (4.4.4 still declares the value as ``FDA_regulatory_approvals``), so the TSV column
+# multivalued slot for FDA application numbers, declared natively on
+# ``EntityToDiseaseAssociation`` / ``EntityToPhenotypicFeatureAssociation`` by biolink-model 4.4.5
+# (Tablassert >= 19.5.1), which renamed the model's FDA-specific ``FDA_regulatory_approvals`` to it;
+# Tablassert 18 had granted the slot to those classes ahead of the model. The TSV column
 # keeps its FDA-prefixed name while the annotation renames it onto the canonical edge slot; DAKP
 # splits it with ``split_by`` so the edge carries the legacy ``approvals`` JSON-ARRAY shape;
 # ``ner_confidence_score`` still folds into ``supporting_text``. ``case_ids`` maps to
@@ -534,10 +539,11 @@ def test_annotation_slots_survive_dakp_association_class(table: str) -> None:
     junk drawer this contract exists to keep DAKP out of. ``supporting_documents`` used to land
     there, and ``number_of_cases`` did until ``category_override`` pinned the classes that
     declare it; this fails loudly if either (or a newly added annotation) comes back.
-    ``regulatory_approvals`` rides Tablassert 18's class-scoped ``CLASS_FIELD_OVERRIDES`` grant —
-    deliberately ahead of the pinned Biolink model — so the granted name is pinned here: a
-    Tablassert release that drops the grant fails at TEST time rather than silently pruning the
-    approvals off every edge at build time.
+    ``regulatory_approvals`` is declared natively on both pinned classes by biolink-model 4.4.5
+    (Tablassert >= 19.5.1 retired the class-scoped ``CLASS_FIELD_OVERRIDES`` grant Tablassert 18 used
+    to carry it ahead of the model), so this contract now walks the declared-slot path for it. The
+    grant branch stays because Tablassert still grants the two context qualifiers, and a release that
+    dropped either path would prune the field off every edge at build time instead of failing here.
     """
     from tablassert.biolink import ALLOWED_EDGE_FIELDS, CLASS_FIELD_OVERRIDES, KNOWN_PENDING_EDGE_FIELDS, class_fields
 
@@ -550,11 +556,11 @@ def test_annotation_slots_survive_dakp_association_class(table: str) -> None:
             if name in KNOWN_PENDING_EDGE_FIELDS:
                 continue  # curated Tablassert pass-through; no association class declares it
             if name in granted:
-                # class-scoped Tablassert grant (``regulatory_approvals``), ahead of the pinned
+                # class-scoped Tablassert grant (the context qualifiers), ahead of the pinned
                 # model: ``prune_to_class`` keeps granted fields on the class, so assert the grant
                 # itself rather than a declared slot.
                 assert name in CLASS_FIELD_OVERRIDES.get(cls.__name__, frozenset()), (
-                    f"{cls.__name__} lost the {name} grant — the approvals edge field requires tablassert>=18"
+                    f"{cls.__name__} lost the {name} grant; prune_to_class would null it off every DAKP edge"
                 )
                 continue
             assert name in slots, f"{name} is not a slot of {cls.__name__}; it would be relocated onto the supporting study"
@@ -564,8 +570,9 @@ def test_category_override_pins_every_allowed_object_category() -> None:
     """Every object category DAKP allows is pinned, and pinned to a class that holds its slots.
 
     A category absent from ``category_override`` falls back to the derived (subject role, object
-    role) pair — ``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``, which neither declares
-    ``number_of_cases`` nor receives the ``regulatory_approvals`` grant — so a widened
+    role) pair, ``ChemicalEntityToDiseaseOrPhenotypicFeatureAssociation``, which declares neither
+    ``number_of_cases`` nor ``regulatory_approvals`` and receives no ``CLASS_FIELD_OVERRIDES``
+    grant, so a widened
     :data:`OBJECT_PRIORITIZE` must widen the override with it or those rows silently lose both
     slots to ``prune_to_class``.
     """
@@ -587,7 +594,7 @@ def test_category_override_pins_every_allowed_object_category() -> None:
                 if name in KNOWN_PENDING_EDGE_FIELDS:
                     continue  # curated Tablassert pass-through (``supporting_case_ids``); no class declares it
                 if name in CLASS_FIELD_OVERRIDES.get(pinned, frozenset()):
-                    continue  # class-scoped Tablassert grant (``regulatory_approvals``); ahead of the pinned model
+                    continue  # class-scoped Tablassert grant (the context qualifiers); ahead of the pinned model
                 assert name in class_fields(cls), f"{name} is not a slot of {pinned}"
 
 

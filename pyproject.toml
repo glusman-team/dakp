@@ -58,32 +58,45 @@ classifiers = [
 # required: the emitted configs use
 # `statement.category_override` (SkyeAv/Tablassert#118, 15.0) to pin
 # `EntityToDiseaseAssociation` / `EntityToPhenotypicFeatureAssociation` per object category, and
-# 18.0's class-scoped `regulatory_approvals` grant (`CLASS_FIELD_OVERRIDES`) keeps the canonical
-# approvals edge slot on those pinned classes ahead of the pinned Biolink model (4.4.4 still
-# declares the value only as `FDA_regulatory_approvals`), so it survives `prune_to_class`
-# instead of being nulled and rescued into the pruned column. Both are emitted UNCONDITIONALLY — no
-# compat probe. 15.1's
-# `CLASS_FIELD_OVERRIDES` (#120) grants `disease_context_qualifier` to those pinned classes
-# (Biolink declares it only on the chemical-to-disease lineage), so the contraindication table's
-# nullable qualifier survives `prune_to_class` on the edge instead of being nulled and rescued
-# into the pruned column. 16.0's `uuid_fields` (#122) pins edge identity to the resolved
+# the canonical `regulatory_approvals` edge slot is declared NATIVELY on those pinned classes by
+# biolink-model 4.4.5, which renamed the FDA-specific `FDA_regulatory_approvals` to it, so it
+# survives `prune_to_class` instead of being nulled and rescued into the pruned column. Tablassert
+# 18.0 had carried the slot there ahead of the model through a class-scoped `CLASS_FIELD_OVERRIDES`
+# grant and retired that grant when 4.4.5 landed. Both are emitted UNCONDITIONALLY, with no compat
+# probe. The contraindication table's nullable `disease_context_qualifier` survives the same way:
+# 4.4.5's mixin consolidation attaches it to the whole disease/phenotype association family, where
+# 15.1's `CLASS_FIELD_OVERRIDES` (#120) had granted it to the pinned classes while Biolink declared
+# it only on the chemical-to-disease lineage. 16.0's `uuid_fields` (#122) pins edge identity to the resolved
 # statement; the generated config declares it UNCONDITIONALLY (see
 # `dakp_pipeline.tablassert.UUID_FIELDS`). The generated
 # provenance override likewise emits `ManualProvenance.upstream_source_record_urls`
 # (SkyeAv/Tablassert#104, added in 12.1), and the generated
-# `avoid:`/`prioritize:` lists assume the biolink-model 4.4.4 category names (13.0 renames
+# `avoid:`/`prioritize:` lists assume the biolink-model 4.4.5 category names (13.0 renames
 # `AffinityMeasurement` -> `ProteinLigandAssayResult`; regenerate tables/*.yaml on any Biolink
 # churn, never hand-edit). 13.0 also reworks the inlined supporting study (Study.id is the
 # publication CURIE or config stem, no `#` composition; study metadata lands as typed
 # `Study.study_*` fields) and makes `effect_size` a real float Association slot — neither
-# touches DAKP's emitted config, only KG content. 19.0's `CLASS_FIELD_OVERRIDES` (#188) grants the
+# touches DAKP's emitted config, only KG content. 19.0's `CLASS_FIELD_OVERRIDES` (#188) granted the
 # sparse qualifier stack (`anatomical_context_qualifier`, `sex_qualifier`,
 # `population_context_qualifier`, `frequency_qualifier`, `temporal_context_qualifier`) to the two
-# pinned classes, so those qualifiers survive `prune_to_class` on the edge. Fullmaps must be
-# `tablassert.fullmap.v6` redb files — 19.0 rebased level-one normalization onto stemmed,
+# pinned classes so those qualifiers survive `prune_to_class` on the edge; 19.5.1's biolink-model
+# 4.4.5 then attached `anatomical_context_qualifier` and `frequency_qualifier` to the whole
+# disease/phenotype family natively (as it did `disease_context_qualifier`, noted above) and added
+# `sex_qualifier` to `EntityToPhenotypicFeatureAssociation`, so Tablassert dropped those four
+# grants. Still granted, still deliberately ahead of the model: `population_context_qualifier` and
+# `temporal_context_qualifier` on both pinned classes, `sex_qualifier` on
+# `EntityToDiseaseAssociation`. Fullmaps must be
+# `tablassert.fullmap.v6` redb files: 19.0 rebased level-one normalization onto stemmed,
 # deduped, byte-sorted tokens, which changed the RECORDS key SPACE, so a v5 database is not an
 # older layout of the same data and its keys can never be hit by a normalized query; v1-v5 are
-# rejected on read (rebuild with `tablassert build-fullmap`).
+# rejected on read (rebuild with `tablassert build-fullmap`). 19.3.0 moves the whole pipeline onto
+# the polars 2.0 streaming engine and makes `pyarrow` a Tablassert core dependency, output parity
+# preserved; that is what forces the polars floor below. 19.4.0 audits every enum-ranged qualifier
+# column against its closed Biolink vocabulary during the build and fails the build with
+# `qualifier-vocabulary-violation`. None of DAKP's six qualifier slots is enum-ranged (they are
+# CURIE-ranged and entity-resolved through the fullmap), so the audit cannot fire on a DAKP build,
+# and `tests/unit/test_tablassert_configs.py::test_dakp_qualifiers_are_not_enum_ranged` keeps it
+# that way. 19.5.0 adds `parquet` as a table source kind; DAKP ships TSV.
 dependencies = [
     # Bundles a statically-linked aria2c binary (PyPI dist `aria2`, import name `aria2c`) so the
     # FAERS + Drugs@FDA fetchers get multi-connection downloads with no separate system install.
