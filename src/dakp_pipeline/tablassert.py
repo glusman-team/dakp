@@ -154,6 +154,7 @@ from dakp_pipeline.paths import Workdir
 from dakp_pipeline.sources import dailymed as dailymed_source
 from dakp_pipeline.sources import drugsfda as drugsfda_source
 from dakp_pipeline.sources import ema as ema_source
+from dakp_pipeline.sources import ema_documents as ema_documents_source
 from dakp_pipeline.sources import faers as faers_source
 
 # --- Translator provenance constants (match dakp_pipeline.assertions + ../DINGO) ----
@@ -236,12 +237,14 @@ UUID_DOMAIN = INFORES_DAKP
 #: AEMS URL (:data:`FAERS_SOURCE_RECORD_URL`) on the FAERS supporting entry as a dataset-level
 #: exception. Each value is a TUPLE because a table can aggregate several upstream datasets:
 #: approved-treats rows come from DailyMed SPL releases (the DailyMed full-release index) AND the
-#: EMA medicines registry (the fixed-name xlsx bulk export); contraindication rows from DailyMed;
-#: FAERS observed-use rows from the FAERS quarterly ASCII extracts (the FDA quarterly-data listing).
+#: EMA medicines registry (the fixed-name xlsx bulk export); contraindication rows from DailyMed
+#: AND the EMA SmPC product-information corpus (the EPAR documents JSON report that manifests the
+#: SmPC crawl); FAERS observed-use rows from the FAERS quarterly ASCII extracts (the FDA
+#: quarterly-data listing).
 _TABLE_SOURCE_URLS: dict[str, tuple[str, ...]] = {
     "approved_treats_assertions": (dailymed_source.FULL_RELEASE_INDEX_URL, ema_source.EMA_MEDICINES_URL),
     "faers_applied_to_treat_assertions": (faers_source.FDA_FAERS_INDEX_URL,),
-    "contraindication_assertions": (dailymed_source.FULL_RELEASE_INDEX_URL,),
+    "contraindication_assertions": (dailymed_source.FULL_RELEASE_INDEX_URL, ema_documents_source.EMA_DOCUMENTS_URL),
 }
 GRAPH_DESCRIPTION = (
     "Drug Approvals Knowledge Provider: FDA/EMA-approved treatment relationships, "
@@ -568,6 +571,11 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
             "location": ema_source.EMA_MEDICINES_URL,
             "description": "EMA centrally-authorised medicines bulk export; MeSH therapeutic areas and EPAR indication text.",
         },
+        {
+            "file_name": "EMA EPAR documents report (json)",
+            "location": ema_documents_source.EMA_DOCUMENTS_URL,
+            "description": "EMA EPAR documents bulk export; manifests the SmPC product-information PDFs mined for contraindication edges.",
+        },
         # No Drugs@FDA entry: no assertion table declares it as a section source (it is joined
         # in upstream, at assertion-build time), so the RIG audit would reject it.
         # REJECTED from the upstream ``NCATSTranslator/translator-ingests`` DAKP RIG: its legacy
@@ -597,6 +605,7 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
                 f"FAERS quarterly ASCII extracts - {faers_source.FDA_FAERS_INDEX_URL}",
                 f"Drugs@FDA data files - {drugsfda_source.DRUGSFDA_DATA_FILES_URL}",
                 f"EMA medicines report - {ema_source.EMA_MEDICINES_URL}",
+                f"EMA EPAR documents report - {ema_documents_source.EMA_DOCUMENTS_URL}",
             ],
             "data_provision_mechanisms": ["file_download"],
             "data_formats": ["kgx"],
@@ -616,7 +625,8 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
                 "Approved-treats edges (DailyMed SPL indications joined to Drugs@FDA applications and "
                 "FAERS cases, plus EMA centrally-authorised medicines' MeSH therapeutic areas and mined "
                 "EPAR indication text), FAERS observed-use edges, and contraindication edges text-mined from "
-                "DailyMed SPL sections; all other content of the upstream feeds is out of scope."
+                "DailyMed SPL sections and EMA SmPC product-information sections; all other content of the "
+                "upstream feeds is out of scope."
             ),
             "relevant_files": [entry for entry in relevant_files if entry["location"] in included_urls],
             "included_content": [copy.deepcopy(entry) for entry in RIG_INCLUDED_CONTENT],
@@ -865,8 +875,9 @@ _TABLE_SOURCES: dict[str, tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]
         ("infores:dailymed", "supporting_data_source", (), ()),
     ),
     "contraindication_assertions": (
-        (INFORES_DAKP, "primary_knowledge_source", ("infores:dailymed",), ()),
+        (INFORES_DAKP, "primary_knowledge_source", ("infores:dailymed", "infores:epar"), ()),
         ("infores:dailymed", "supporting_data_source", (), ()),
+        ("infores:epar", "supporting_data_source", (), ()),
     ),
 }
 

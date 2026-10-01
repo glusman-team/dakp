@@ -103,10 +103,14 @@ EXPECTED_SOURCES = {
         {
             "resource_id": INFORES_DAKP,
             "resource_role": "primary_knowledge_source",
-            "upstream_resource_ids": ["infores:dailymed"],
+            "upstream_resource_ids": ["infores:dailymed", "infores:epar"],
             "source_record_urls": [GESTALT_URL_TEMPLATE],
         },
         {"resource_id": "infores:dailymed", "resource_role": "supporting_data_source"},
+        # The EU SmPC supporting entry carries NO source_record_urls (like DailyMed/EMA above):
+        # the dataset URL lives on the section source.url + the RIG, and per-medicine SmPC URLs
+        # stay in the TSV's supporting_spl_documents debug column.
+        {"resource_id": "infores:epar", "resource_role": "supporting_data_source"},
     ],
 }
 
@@ -185,12 +189,14 @@ EXPECTED_ANNOTATIONS = {
 # RIG/audit record only — edge provenance comes from the explicit ``override.sources`` template,
 # which carries no dataset-level URLs).
 EMA_MEDICINES_XLSX_URL = "https://www.ema.europa.eu/en/documents/report/medicines-output-medicines-report_en.xlsx"
+EMA_EPAR_DOCUMENTS_JSON_URL = "https://www.ema.europa.eu/en/documents/report/documents-output-epar_documents_json-report_en.json"
 # Each table's ``source.url`` list: approved-treats aggregates TWO upstream datasets (the DailyMed
-# full-release index and the EMA medicines xlsx), the others exactly one.
+# full-release index and the EMA medicines xlsx), and contraindications two as well (the DailyMed
+# full-release index and the EMA EPAR documents report manifesting the SmPC crawl); the rest one.
 EXPECTED_SOURCE_URLS = {
     "approved_treats_assertions": ["https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm", EMA_MEDICINES_XLSX_URL],
     "faers_applied_to_treat_assertions": ["https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"],
-    "contraindication_assertions": ["https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"],
+    "contraindication_assertions": ["https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm", EMA_EPAR_DOCUMENTS_JSON_URL],
 }
 
 

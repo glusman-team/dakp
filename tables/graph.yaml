@@ -80,6 +80,7 @@ rig:
       - "FAERS quarterly ASCII extracts - https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
       - "Drugs@FDA data files - https://www.fda.gov/media/89850/download"
       - "EMA medicines report - https://www.ema.europa.eu/en/documents/report/medicines-output-medicines-report_en.xlsx"
+      - "EMA EPAR documents report - https://www.ema.europa.eu/en/documents/report/documents-output-epar_documents_json-report_en.json"
     data_provision_mechanisms:
       - file_download
     data_formats:
@@ -105,8 +106,8 @@ rig:
       applications and FAERS cases, plus EMA centrally-authorised medicines'
       MeSH therapeutic areas and mined EPAR indication text), FAERS
       observed-use edges, and contraindication edges text-mined from
-      DailyMed SPL sections; all other content of the upstream feeds is out
-      of scope.
+      DailyMed SPL sections and EMA SmPC product-information sections; all
+      other content of the upstream feeds is out of scope.
     relevant_files:
       - file_name: "DailyMed full-release SPL zips"
         location: "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
@@ -123,6 +124,11 @@ rig:
         description: >-
           EMA centrally-authorised medicines bulk export; MeSH therapeutic areas
           and EPAR indication text.
+      - file_name: "EMA EPAR documents report (json)"
+        location: "https://www.ema.europa.eu/en/documents/report/documents-output-epar_documents_json-report_en.json"
+        description: >-
+          EMA EPAR documents bulk export; manifests the SmPC product-information
+          PDFs mined for contraindication edges.
     included_content:
       - file_name: "DailyMed SPL sections"
         included_records: >-
