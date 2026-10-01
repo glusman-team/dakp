@@ -38,6 +38,7 @@ Two families of mangling reach the lexical/fullmap resolvers through these helpe
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 import polars as pl
 
@@ -233,6 +234,30 @@ def _combo_canonical(value: str) -> str:
     return value.strip(_EDGE_JUNK) or value.strip()
 
 
+def _map_distinct_where(expr: pl.Expr, pattern: str, function: Callable[[str], str]) -> pl.Expr:
+    """Apply a Python ``str -> str`` ``function`` to the DISTINCT values matching ``pattern`` only.
+
+    Replaces ``pl.when(guard).then(col.map_elements(fn))``: polars evaluates BOTH branches over
+    every row, so that form called ``fn`` 49M times on the production FAERS case table even
+    though ~1% of rows matched (US-007 profiling: the whole 5 h ``shape_faers_use_tables`` phase
+    on polars 1.x). Here the filter happens in the lazy plan (so non-matching rows never reach
+    Python), ``function`` runs once per distinct matching value, and the results are mapped back
+    with a vectorized replace. Non-matching values and nulls pass through untouched, exactly as
+    the guarded form produced.
+    """
+
+    def _replace_matches(series: pl.Series) -> pl.Series:
+        distinct = series.drop_nulls().unique()
+        hits = distinct.filter(distinct.str.contains(pattern).fill_null(False))
+        if hits.is_empty():
+            return series
+        mapping = {value: function(value) for value in hits.to_list()}
+        return series.replace(mapping)
+
+    column = expr.cast(pl.Utf8)
+    return column.map_batches(_replace_matches, return_dtype=pl.Utf8)
+
+
 def defaersify(expr: pl.Expr) -> pl.Expr:
     """Normalize a FAERS-mangled text column (polars twin of :func:`defaers_text`).
 
@@ -240,19 +265,14 @@ def defaersify(expr: pl.Expr) -> pl.Expr:
     (``extract.faers_ascii`` row shaping) and at assertion shaping (the
     approved-treats / observed-uses consumers).
     """
-    has_combo = expr.cast(pl.Utf8).str.contains(r"[\\;]")
-    expr = pl.when(has_combo).then(expr.cast(pl.Utf8).map_elements(_combo_canonical, return_dtype=pl.Utf8)).otherwise(expr.cast(pl.Utf8))
+    expr = _map_distinct_where(expr, r"[\\;]", _combo_canonical)
     expr = expr.str.replace_all("?", "-", literal=True)
     expr = expr.str.replace_all(r"-{2,}", "-")
     expr = expr.str.replace_all(_POLARS_LEADING_HASH, "")
     expr = expr.str.replace_all("()", "", literal=True)
     # Unterminated ``( ...`` tails (FAERS ASCII truncation): parity with the str twin via the
     # same helper, guarded to rows that actually contain one (29M-row extraction path).
-    expr = (
-        pl.when(expr.cast(pl.Utf8).str.contains(r"\([^()]*$"))
-        .then(expr.cast(pl.Utf8).map_elements(_strip_unclosed_paren_tail, return_dtype=pl.Utf8))
-        .otherwise(expr.cast(pl.Utf8))
-    )
+    expr = _map_distinct_where(expr, r"\([^()]*$", _strip_unclosed_paren_tail)
     expr = expr.str.replace_all(_POLARS_DOSAGE_TAIL, "${1}")
     expr = expr.str.replace_all(_POLARS_WRAPPED_PARENS, "${1}")
     expr = expr.str.replace_all(_POLARS_TRAILING_PERIOD, "${1}")

@@ -230,3 +230,30 @@ def test_defaersify_expr_matches_str_twin_on_audit_junk() -> None:
     ]
     out = pl.DataFrame({"t": cases}).select(defaersify(pl.col("t")).alias("t"))["t"].to_list()
     assert out == [defaers_text(case) for case in cases]
+
+
+def test_defaersify_maps_distinct_values_once_and_passes_nulls_and_clean_rows_through() -> None:
+    """The vectorized guard path: Python helpers run once per DISTINCT matching value.
+
+    Regression for the 5 h ``shape_faers_use_tables`` phase: ``pl.when(guard).then(
+    col.map_elements(fn))`` evaluated ``fn`` on all 49M FAERS rows, not the ~1% that matched.
+    Output must stay identical to the str twin, including repeated, null, and clean rows.
+    """
+    from dakp_pipeline import textnorm
+
+    values = ["A\\B 5 MG", "A\\B 5 MG", "CARBIDOPA (LEVO", "CARBIDOPA (LEVO", "ASPIRIN", None, "X;Y", ""]
+    calls: list[str] = []
+    original = textnorm._combo_canonical
+
+    def counting(value: str) -> str:
+        calls.append(value)
+        return original(value)
+
+    textnorm._combo_canonical = counting
+    try:
+        frame = pl.DataFrame({"v": values}, schema={"v": pl.Utf8}).select(defaersify(pl.col("v")).alias("v"))
+    finally:
+        textnorm._combo_canonical = original
+    got = frame.get_column("v").to_list()
+    assert got == [None if value is None else defaers_text(value) for value in values]
+    assert sorted(calls) == ["A\\B 5 MG", "X;Y"]  # once per distinct match, never per row
