@@ -117,25 +117,19 @@ def test_config_fingerprint_is_stable_and_config_sensitive(tmp_path: Path) -> No
     assert config_fingerprint(other) != config_fingerprint(ner)
 
 
-def test_default_fp32_tier_a_fingerprint_equals_the_pre_dtype_fingerprint(tmp_path: Path) -> None:
-    """Adding ``compute_dtype`` to ``_config`` must not orphan the existing Tier A store.
+def test_tier_a_fingerprint_ignores_file_locations_and_the_fp32_default(tmp_path: Path) -> None:
+    """The Tier A key must depend only on what changes mentions.
 
-    A default (fp32) backend's fingerprint is pinned to the hash of the config WITHOUT the
-    dtype field - exactly what pre-dtype releases wrote. Regression: the first warm rebuild
-    after the field landed missed every cached mention and re-mined 62,512 texts cold.
-    fp16 must still key differently so it never serves or overwrites fp32 mentions.
+    Regression: a warm rebuild launched from a second checkout (different ``workdir`` string)
+    missed every cached mention and re-mined 62,512 texts cold for 3.6 h. Location fields
+    (``workdir``/``cache_dir``) and the fp32 dtype default are not key material; fp16 still is,
+    so it never serves or overwrites fp32 mentions.
     """
-    import json as _json
-
-    from dakp_pipeline.io.content_hash import digest_dirname, hash_bytes
-    from dakp_pipeline.ner.mention_cache import _jsonable
-
-    ner = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path)
-    legacy = {key: value for key, value in ner._config().items() if key != "compute_dtype"}
-    legacy_fp = digest_dirname(hash_bytes(_json.dumps(_jsonable(legacy), sort_keys=True, separators=(",", ":")).encode("utf-8")))
-    assert config_fingerprint(ner) == legacy_fp
-    fp16 = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path, compute_dtype="fp16")
-    assert config_fingerprint(fp16) != config_fingerprint(ner)
+    here = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "a", workdir=tmp_path / "wa")
+    there = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "b", workdir=tmp_path / "wb")
+    assert config_fingerprint(here) == config_fingerprint(there)
+    fp16 = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "a", workdir=tmp_path / "wa", compute_dtype="fp16")
+    assert config_fingerprint(fp16) != config_fingerprint(here)
 
 
 def test_ner_cache_material_offline_backend_is_never_cached() -> None:

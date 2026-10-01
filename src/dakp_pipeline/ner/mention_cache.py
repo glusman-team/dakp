@@ -91,15 +91,23 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+#: ``DiseaseNER._config`` keys that locate files but never change mentions (not key material).
+_LOCATION_CONFIG_KEYS = frozenset({"workdir", "cache_dir"})
+
+
 def config_fingerprint(ner: DiseaseNER) -> str:
     """64-hex BLAKE3 fingerprint of the backend's serializable construction config.
 
-    ``compute_dtype`` is omitted at its ``fp32`` default so the Tier A key of a default backend
-    is byte-identical to the pre-dtype key: adding the field must not orphan every mention
-    already cached (it did once - a warm rebuild re-mined 62,512 texts cold). Non-default dtypes
-    are keyed, so an fp16 run never serves or overwrites fp32 mentions.
+    Location fields (``workdir``, ``cache_dir``) are excluded: they say where files live, not
+    what the model emits, and keying on them orphaned the whole store whenever a build ran from
+    a different checkout or a migrated workdir (observed: a warm rebuild from a second checkout
+    re-mined all 62,512 treatment texts cold).
+
+    ``compute_dtype`` is omitted at its ``fp32`` default so adding the field did not change the
+    key of a default backend; non-default dtypes are keyed, so an fp16 run never serves or
+    overwrites fp32 mentions.
     """
-    config = ner._config()
+    config = {key: value for key, value in ner._config().items() if key not in _LOCATION_CONFIG_KEYS}
     if config.get("compute_dtype") == "fp32":
         del config["compute_dtype"]
     canonical = json.dumps(_jsonable(config), sort_keys=True, separators=(",", ":"))
