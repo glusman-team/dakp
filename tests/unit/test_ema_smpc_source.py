@@ -49,28 +49,34 @@ def _store_for(workdir: Path) -> ArtifactStore:
     return ArtifactStore(Workdir(workdir))
 
 
-def _serve_manifest(monkeypatch: pytest.MonkeyPatch, *, payloads: list[Path] | None = None) -> list[str]:
-    """Serve the documents report; ``payloads`` cycles through alternative manifests per call."""
-    calls: list[str] = []
+def _serve_manifest(monkeypatch: pytest.MonkeyPatch, *, payloads: list[Path] | None = None, calls: list[str] | None = None) -> list[str]:
+    """Serve the documents report; ``payloads`` cycles through alternative manifests per call.
+
+    ``calls`` lets a test keep ONE recorder across a re-installed seam, so a second manifest
+    revision still lands in the list the assertions read.
+    """
+    recorded = calls if calls is not None else []
     sources = payloads or [_MANIFEST]
 
     def fake(url: str, dest: Path, *, timeout: float = 180.0) -> Path:
-        calls.append(url)
-        shutil.copyfile(sources[min(len(calls) - 1, len(sources) - 1)], dest)
+        recorded.append(url)
+        shutil.copyfile(sources[min(len(recorded) - 1, len(sources) - 1)], dest)
         return dest
 
     monkeypatch.setattr(ema_documents, "download_ema_documents", fake)
-    return calls
+    return recorded
 
 
-def _serve_pdfs(monkeypatch: pytest.MonkeyPatch, *, failing: set[str] | None = None, empty: set[str] | None = None) -> list[str]:
+def _serve_pdfs(
+    monkeypatch: pytest.MonkeyPatch, *, failing: set[str] | None = None, empty: set[str] | None = None, calls: list[str] | None = None
+) -> list[str]:
     """Serve every SmPC PDF from the one committed fixture; optionally fail or empty chosen URLs."""
-    calls: list[str] = []
+    recorded = calls if calls is not None else []
     bad = failing or set()
     blank = empty or set()
 
     def fake(url: str, dest: Path, *, timeout: float = 180.0) -> Path:
-        calls.append(url)
+        recorded.append(url)
         if url in bad:
             msg = f"503 Service Unavailable: {url}"
             raise OSError(msg)
@@ -81,7 +87,7 @@ def _serve_pdfs(monkeypatch: pytest.MonkeyPatch, *, failing: set[str] | None = N
         return dest
 
     monkeypatch.setattr(ema_smpc, "download_ema_smpc_pdf", fake)
-    return calls
+    return recorded
 
 
 def _record_edit(manifest: Path, tmp_path: Path, record_id: str, **fields: object) -> Path:
@@ -206,7 +212,7 @@ def test_only_a_republished_document_is_refetched(monkeypatch: pytest.MonkeyPatc
     future = (datetime.now(UTC) + timedelta(days=1)).isoformat()
     revised = _record_edit(_MANIFEST, tmp_path, "2441", last_updated_date=future)
     _age_manifest(store, days=8)
-    _serve_manifest(monkeypatch, payloads=[revised])
+    _serve_manifest(monkeypatch, payloads=[revised], calls=manifest_calls)
 
     ema_smpc.fetch(_ctx(workdir))
 
@@ -217,7 +223,7 @@ def test_only_a_republished_document_is_refetched(monkeypatch: pytest.MonkeyPatc
 
 def test_undated_document_falls_back_to_the_age_window(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """No usable ``last_updated_date`` => the crawl-level window decides, never 'always fresh'."""
-    _serve_manifest(monkeypatch)
+    manifest_calls = _serve_manifest(monkeypatch)
     pdf_calls = _serve_pdfs(monkeypatch)
     workdir = tmp_path / "work"
     refs = ema_smpc.fetch(_ctx(workdir))
@@ -225,18 +231,22 @@ def test_undated_document_falls_back_to_the_age_window(monkeypatch: pytest.Monke
 
     revised = _record_edit(_MANIFEST, tmp_path, "2441", last_updated_date="")
     _age_manifest(store, days=8)
-    _serve_manifest(monkeypatch, payloads=[revised])
+    _serve_manifest(monkeypatch, payloads=[revised], calls=manifest_calls)
     for ref in refs:
         _age_member(store, ref, days=40)  # older than the 30-day default window
     store.invalidate_cached_refs(_FANOUT_ALIAS)  # the selection changed, so the record is stale
 
     ema_smpc.fetch(_ctx(workdir))
 
-    assert len(pdf_calls) == 10  # every undated/expired member was re-fetched
+    # Only the undated document is refetched: the other four still carry a usable
+    # last_updated_date that predates our (now 40-day-old) fetch, so per-document currency keeps
+    # them. The age window is the FALLBACK for undated rows, not a blanket expiry.
+    assert len(pdf_calls) == 6
+    assert pdf_calls[-1].endswith("ceplene-epar-product-information_en.pdf")
 
 
 def test_a_fresh_undated_document_is_not_refetched(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _serve_manifest(monkeypatch)
+    manifest_calls = _serve_manifest(monkeypatch)
     pdf_calls = _serve_pdfs(monkeypatch)
     workdir = tmp_path / "work"
     ema_smpc.fetch(_ctx(workdir))
@@ -244,7 +254,7 @@ def test_a_fresh_undated_document_is_not_refetched(monkeypatch: pytest.MonkeyPat
 
     revised = _record_edit(_MANIFEST, tmp_path, "2441", last_updated_date="")
     _age_manifest(store, days=8)
-    _serve_manifest(monkeypatch, payloads=[revised])
+    _serve_manifest(monkeypatch, payloads=[revised], calls=manifest_calls)
     store.invalidate_cached_refs(_FANOUT_ALIAS)
 
     ema_smpc.fetch(_ctx(workdir))
@@ -285,9 +295,8 @@ def test_a_partial_crawl_retries_only_the_missing_document(monkeypatch: pytest.M
     ctx = _ctx(workdir)
     assert len(ema_smpc.fetch(ctx)) == 4
 
-    _serve_pdfs(monkeypatch)  # the outage is over
+    _serve_pdfs(monkeypatch, calls=pdf_calls)  # the outage is over
     refs = ema_smpc.fetch(ctx)
-
     assert len(refs) == 5
     assert pdf_calls.count(bad_url) == ema_smpc._DOWNLOAD_ATTEMPTS + 1
 

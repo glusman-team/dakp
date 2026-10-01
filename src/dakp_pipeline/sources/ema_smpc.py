@@ -81,10 +81,11 @@ def member_alias(doc: EparDocument) -> str:
 def crawl_fingerprint(documents: list[EparDocument]) -> str:
     """Stable key for the fan-out cache: what is in the selection, at which revision.
 
-    Deliberately excludes the manifest's own regeneration timestamp so a nightly report that
+    Sorted so the key depends only on the selection's CONTENT, not on report order, and
+    deliberately excludes the manifest's own regeneration timestamp so a nightly report that
     changes nothing does not invalidate 1,945 cached PDFs.
     """
-    payload = json.dumps([[doc.stem, doc.document_url, doc.last_updated_date] for doc in documents], ensure_ascii=True, separators=(",", ":"))
+    payload = json.dumps(sorted([doc.stem, doc.document_url, doc.last_updated_date] for doc in documents), ensure_ascii=True, separators=(",", ":"))
     return hash_bytes(payload.encode("utf-8"))
 
 
