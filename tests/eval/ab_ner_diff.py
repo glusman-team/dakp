@@ -68,10 +68,15 @@ def _mention_multiset(mentions: list[dict[str, Any]]) -> Counter[tuple[str, int,
     return Counter((m["text"], int(m["start"]), int(m["end"]), m["type"]) for m in mentions)
 
 
-def _extract(ner: DiseaseNER, texts: list[str]) -> dict[tuple[str, str], Any]:
-    """Mine items the way the shaper's sequential closure does, but in ONE batched call."""
-    mined = ner.extract_batch(texts)
-    return {("ab", f"doc{i}"): mentions for i, mentions in enumerate(mined)}
+def _extract(ner: DiseaseNER, items: Sequence[Any]) -> dict[tuple[str, str], Any]:
+    """Mine the given items in one batched call, keyed by the items' own ids.
+
+    Keys MUST come from the items (``mine_with_cache`` calls this closure per chunk, so a
+    local ``doc{i}`` counter would collide across chunks and silently keep only the last
+    chunk's mentions - the off-by-one the first sweep reported as 89% "differing").
+    """
+    mined = ner.extract_batch([item[2] for item in items])
+    return {(item[0], item[1]): mentions for item, mentions in zip(items, mined)}
 
 
 def main() -> int:
@@ -115,13 +120,13 @@ def main() -> int:
 
         items = [("ab", f"doc{i}", text) for i, text in enumerate(texts)]
         started = time.monotonic()
-        baseline_mentions = mine_with_cache(items, baseline, lambda it: _extract(baseline, [x[2] for x in it]), cache)
+        baseline_mentions = mine_with_cache(items, baseline, lambda it: _extract(baseline, it), cache)
         baseline_seconds = time.monotonic() - started
         started = time.monotonic()
         experiment_mentions = mine_with_cache(
             items,
             experiment,
-            lambda it: _extract(experiment, [x[2] for x in it]),
+            lambda it: _extract(experiment, it),
             None,  # the experiment config must not write sweep entries into the production cache
         )
         experiment_seconds = time.monotonic() - started
