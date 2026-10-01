@@ -384,27 +384,89 @@ def test_qualifier_slots_are_valid_biolink_qualifiers() -> None:
             assert qualifier != "species_context_qualifier"
 
 
-def test_qualifier_grants_survive_the_pinned_association_classes() -> None:
-    # The pinned classes are EntityToDiseaseAssociation / EntityToPhenotypicFeatureAssociation
-    # (pinned for the ``regulatory_approvals`` grant), and Biolink attaches every DAKP qualifier
-    # slot only to OTHER association classes — ``disease_context_qualifier`` rides Tablassert
-    # 15.1's ``CLASS_FIELD_OVERRIDES`` grant (SkyeAv/Tablassert#120) and the five sparse-qualifier
-    # slots ride 19.0's grant (SkyeAv/Tablassert#188) instead. Pin every grant here so a
-    # Tablassert downgrade fails at TEST time rather than silently pruning the qualifier stack
-    # off every edge at build time (prune_to_class would null each slot into the pruned column).
-    from tablassert.biolink import CLASS_FIELD_OVERRIDES
+#: One plausible resolved value per DAKP qualifier slot. Every slot here is CURIE-ranged (the
+#: ``test_dakp_qualifiers_are_not_enum_ranged`` tripwire below pins that), so ``prune_to_class``
+#: passes the value through without a vocabulary check; the exact CURIE is irrelevant to the
+#: contract, only its survival on the edge is.
+_QUALIFIER_PROBES: dict[str, str] = {
+    "anatomical_context_qualifier": "UBERON:0001557",
+    "disease_context_qualifier": "MONDO:0005148",
+    "frequency_qualifier": "HP:0040283",
+    "population_context_qualifier": "NCIT:C25667",
+    "sex_qualifier": "PATO:0000383",
+    "temporal_context_qualifier": "UBERON:0000000",
+}
 
-    granted = {
-        "disease_context_qualifier",
-        "anatomical_context_qualifier",
-        "sex_qualifier",
-        "population_context_qualifier",
-        "frequency_qualifier",
-        "temporal_context_qualifier",
-    }
-    for pinned in ("EntityToDiseaseAssociation", "EntityToPhenotypicFeatureAssociation"):
-        missing = granted - CLASS_FIELD_OVERRIDES.get(pinned, frozenset())
-        assert not missing, f"{pinned} lost grant(s) {sorted(missing)} — the qualifier stack requires tablassert>=19.0.0"
+
+def test_dakp_qualifier_stack_is_the_expected_slot_set() -> None:
+    """The qualifier slots DAKP emits are exactly the six-slot sparse stack.
+
+    Why: every other qualifier contract in this file iterates the emitted config, so a slot added
+    to (or dropped from) ``_TABLE_QUALIFIERS`` would otherwise change what those contracts cover
+    without any test saying so. Pinning the set makes the change deliberate.
+    """
+    emitted = {slot for table in TABLES for slot in EXPECTED_QUALIFIERS[table]}
+    assert emitted == set(_QUALIFIER_PROBES), f"DAKP's qualifier stack changed: {sorted(emitted ^ set(_QUALIFIER_PROBES))}"
+    for table in TABLES:
+        configured = {slot for slot, _column in tablassert_configs._TABLE_QUALIFIERS[table]}
+        assert configured == set(EXPECTED_QUALIFIERS[table]), f"{table} emits {sorted(configured)}"
+
+
+def test_dakp_qualifiers_are_not_enum_ranged() -> None:
+    """No DAKP qualifier is ranged over a closed Biolink vocabulary.
+
+    Why: DAKP encodes each qualifier from a mined TEXT column and lets Tablassert entity-resolve it
+    through the fullmap, so the value reaching the edge is a CURIE. Tablassert >= 19.4 audits every
+    enum-ranged qualifier column against its closed vocabulary and FAILS the build with
+    ``qualifier-vocabulary-violation``, and ``prune_to_class`` nulls a value outside that vocabulary
+    even on a class that declares the slot. A Biolink release that turned any of these slots
+    enum-ranged would therefore break the production build, not just this test, so the tripwire
+    names the slot and the two options (emit vocabulary tokens, or stop emitting the slot).
+    """
+    from tablassert.biolink import ENUM_RANGED_QUALIFIERS
+
+    enum_ranged = sorted(slot for slot in _QUALIFIER_PROBES if slot in ENUM_RANGED_QUALIFIERS)
+    assert not enum_ranged, (
+        f"{enum_ranged} became enum-ranged: DAKP resolves these through the fullmap into CURIEs, which "
+        "tablassert>=19.4 rejects with qualifier-vocabulary-violation. Emit permitted vocabulary tokens "
+        "for the slot or drop it from _TABLE_QUALIFIERS."
+    )
+
+
+def test_qualifier_stack_survives_prune_to_class_on_the_pinned_classes() -> None:
+    """Tablassert's real pruner keeps every DAKP qualifier on both pinned association classes.
+
+    Why behavioral rather than a grant-list check: the slots DAKP emits are attached to OTHER
+    association classes by Biolink, so they used to reach the edge only through Tablassert's
+    ``CLASS_FIELD_OVERRIDES`` grants (``disease_context_qualifier`` via 15.1 / SkyeAv/Tablassert#120,
+    the five sparse slots via 19.0 / #188). biolink-model 4.4.5 (Tablassert 19.5.1) then attached
+    ``disease_context_qualifier``, ``anatomical_context_qualifier``, and ``frequency_qualifier`` to
+    the whole disease/phenotype family natively, and Tablassert's own tripwire dropped those grants
+    the day the release landed. What DAKP depends on never changed: ``prune_to_class`` must KEEP the
+    value on the edge instead of nulling it into ``_pruned_by_class``, where it would be rescued as
+    free text onto the inlined supporting study. Running the real pruner holds whether a slot is
+    native or granted, and still fails loudly on a downgrade (tablassert < 15.1 / < 19.0) that loses
+    coverage, which a grant-set assertion no longer distinguishes from an upstream improvement.
+    """
+    import polars as pl
+    from tablassert.lib import PRUNED_COLUMN, prune_to_class
+
+    pinned = {cls.__name__ for table in TABLES for cls in _dakp_association_classes(table)}
+    assert pinned == set(tablassert_configs.OBJECT_CATEGORY_OVERRIDE.values()), f"pinned classes drifted: {sorted(pinned)}"
+    for name in sorted(pinned):
+        frame = pl.LazyFrame({"category": [[f"biolink:{name}"]], **{slot: [value] for slot, value in _QUALIFIER_PROBES.items()}})
+        row = prune_to_class(frame).collect().row(0, named=True)
+        rescued = row.get(PRUNED_COLUMN) or []
+        for slot, value in _QUALIFIER_PROBES.items():
+            kept = row[slot]
+            # A slot multivalued on every class that declares it comes back wrapped in a list.
+            kept_values = list(kept) if isinstance(kept, list) else [kept]
+            assert kept is not None, (
+                f"{name} nulled {slot}: prune_to_class returned {kept!r} (rescued: {rescued}); the qualifier stack "
+                "requires tablassert>=19.0.0 (sparse stack) / >=15.1 (disease_context_qualifier) or a Biolink model that declares it"
+            )
+            assert value in kept_values, f"{name} rewrote {slot}: expected {value!r} in {kept!r}"
+            assert not any(str(entry).startswith(f"{slot}=") for entry in rescued), f"{name} rescued {slot} into {PRUNED_COLUMN}: {rescued}"
 
 
 @pytest.mark.parametrize("table", TABLES)
