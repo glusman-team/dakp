@@ -52,6 +52,7 @@ baseline; subjects carry no CURIE (FAERS gives no drug id here). Canonical mappi
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Mapping
 
@@ -161,12 +162,14 @@ def _approved_pair_index(approved: pl.DataFrame) -> set[tuple[str, str]]:
     return pairs
 
 
+@functools.lru_cache(maxsize=1 << 20)
 def _pair_key(text: str) -> str:
     """Canonical (drug, condition) lookup key: textnorm chain, then gazetteer normalization.
 
     Single source of truth for both the approved-pair index and the observed-uses status
     lookup; keeping it identical on both sides is what makes the derived status canonical
-    across spelling variants.
+    across spelling variants. Pure and memoized: the 1.7M production rows repeat each drug
+    and object text many times (US-007 profiling: ~17% of the FAERS shaping wall time).
     """
     return normalize_text(defaers_text(text))
 
@@ -302,6 +305,7 @@ def build_observed_use_rows(
         .sort("drugname", "object_text")
     )
 
+    quarter_urls = dict(faers_quarter_urls or {})  # once, not per case row (was 49M dict copies)
     rows: list[dict[str, str]] = []
     for rec in pairs.iter_rows(named=True):
         drug = str(rec["drugname"])
@@ -321,7 +325,7 @@ def build_observed_use_rows(
             q = str(row.get("quarter") or "").strip()
             pid = str(row.get("primaryid") or "").strip()
             if q and pid:
-                evidence_urls.add(faers_record_url(q, dict(faers_quarter_urls or {})))
+                evidence_urls.add(faers_record_url(q, quarter_urls))
             source_id = str(row.get("source_record_id") or "").strip()
             if source_id:
                 source_records.add(source_id)
