@@ -125,7 +125,12 @@ dependencies = [
     # so transformers 5.x + torch 2.8 cu126 stay intact. peft also pulls `accelerate`.
     "peft>=0.10,<1",
     "pendulum>=3",
-    "polars>=1.30.0",
+    # Tablassert >= 19.3.0 runs on the polars 2.0 streaming engine (`polars>=2.0.0rc2`; 19.2.0 was the
+    # last release on polars 1.x), so the Tablassert floor below forces the 2.0 prerelease. Stated
+    # explicitly here so the lock's prerelease is a declared choice, not a transitive surprise, and
+    # capped below 3 because DAKP builds frames directly (`assertions/*`, `legacy_tsv`, `runtime`,
+    # `extract/ema_registry`'s `pl.read_excel`). No stable polars 2.0 is published yet.
+    "polars>=2.0.0rc2,<3",
     "pydantic>=2.12.0",
     # `[cli]` and `[log]` became OPTIONAL in 19.0: the `tablassert` console script `DAKP`'s runner
     # shells out to now preflights the `[cli]` extra (cyclopts + rich) and exits before importing
@@ -146,7 +151,9 @@ dependencies = [
     # a CUDA 12.6 runtime runs fine on the 12.8 driver. Hence torch 2.8.x from the cu126 index.
     # See [tool.uv.sources] / [[tool.uv.index]] below.
     "torch>=2.8,<2.9",
-    "fastexcel>=0.20.2",
+    # Calamine engine behind `pl.read_excel` (the EMA medicines XLSX). Tablassert >= 19.3.0 requires
+    # >= 0.21.0, so a lower DAKP floor would only ever be resolved away.
+    "fastexcel>=0.21.0",
 ]
 
 [dependency-groups]
