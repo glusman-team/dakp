@@ -452,6 +452,10 @@ def test_down_ignores_non_numeric_pidfile(monkeypatch: pytest.MonkeyPatch, sandb
 
 def test_clean_removes_expected_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(cli, "_REPO_ROOT", tmp_path)
+    # Sandbox the workdir too: run_clean probes <workdir>/cache/ner/server.json for a live
+    # dakp-nercache server. Unpatched, it found (and SIGTERMed) the REAL server of a build
+    # running on the same host, then refused to clean -> rc 1.
+    monkeypatch.setattr(cli, "_DEFAULT_WORKDIR", tmp_path / "tmp")
     # A mix of dirs, a file, and an absent target.
     (tmp_path / ".pytest_cache").mkdir()
     (tmp_path / "tmp").mkdir()
@@ -599,6 +603,7 @@ def test_clean_ner_only_refuses_when_nercache_survives_sigterm(
 
 def test_clean_command_raises_systemexit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(cli, "_REPO_ROOT", tmp_path)
+    monkeypatch.setattr(cli, "_DEFAULT_WORKDIR", tmp_path / "tmp")  # never probe a live host server
     with pytest.raises(SystemExit) as excinfo:
         cli.clean()
     assert excinfo.value.code == 0
