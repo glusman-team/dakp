@@ -16,6 +16,8 @@ generates Tablassert configs and hands canonical resolution and KGX compilation 
 ```mermaid
 flowchart TD
     acquire --> extract --> NER --> aggregate --> tablassert["Tablassert KGX handoff"]
+    tablassert --> legacy["legacy TSV export"]
+    aggregate --> nerexport["NER export"]
 ```
 
 ## Quick start
@@ -40,12 +42,14 @@ DAG, waits, and reports the final run state. Without `--fullmap` the Tablassert 
 deferred (a manifest is written), never an error. Acquisition is always real; "offline" is
 only a test concern.
 
-To export the MEDliNER training-data bundle without running Airflow:
+To export the NER training-data bundle without running Airflow:
 
 ```bash
-uv run dakp export-medliner --out /path/to/bundle                 # from a materialized workdir
-uv run dakp export-medliner --fixtures --out tmp/medliner-bundle  # offline, from committed fixtures
+uv run dakp export-ner --out /path/to/bundle   # from a materialized workdir (after `dakp up`); never downloads
 ```
+
+The export mines every row with the production GLiNER2 backend (GPU), so the model must
+be cached under the workdir; there is no offline fixtures mode.
 
 `dakp clean` removes caches, `tmp/`, and the Go worker binary when you want a fresh slate;
 `dakp clean --ner-only` (`-no`) removes only the NER mention cache (the Pebble store of
@@ -71,8 +75,9 @@ BLAKE3-keyed mentions under `tmp/cache/ner/`), e.g. to force re-mining without l
   values relocated into `has_supporting_studies` fail the build before export/publish.
 - **legacy TSV export**: retrofits the KGX pair into the pre-rewrite DAKP TSV schema for the
   internal service that still consumes it.
-- **MEDliNER export**: hands the annotation corpus to MEDliNER as a deterministic,
-  self-describing `dakp.medliner.export.v1` bundle under `<workdir>/store/medliner-export`.
+- **NER export**: emits a deterministic, self-describing `dakp.ner.export.v1` bundle
+  under `<workdir>/store/ner-export`: GLiNER2 training examples as Avro records plus
+  their gliner2 NDJSON projection, and the NER gold benchmark.
 
 ## Text normalization
 
