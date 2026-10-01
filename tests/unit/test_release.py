@@ -53,7 +53,7 @@ def _scaffold(workdir: Path, *, mode: str = "real") -> tuple[list[ArtifactRef], 
     return kgx_refs, legacy_refs
 
 
-def test_legacy_name_schema() -> None:
+def test_legacy_name_schema(tmp_path: Path) -> None:
     assert LEGACY_STEM == "drug_approvals_kg"
     data_names = {
         f"drug_approvals_kg_nodes_v{__version__}.ndjson",
@@ -62,7 +62,7 @@ def test_legacy_name_schema() -> None:
         f"drug_approvals_kg_edges_v{__version__}.tsv",
         f"drug_approvals_kg_v{__version__}.RIG.yaml",
     }
-    workdir = Path("/nonexistent")
+    workdir = tmp_path / "absent"
     assert data_names  # documented here; the publish test below asserts them on disk
     assert not workdir.exists()
 

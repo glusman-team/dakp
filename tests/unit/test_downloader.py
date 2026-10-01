@@ -51,9 +51,12 @@ def test_resolve_returns_none_when_nothing_available(monkeypatch: pytest.MonkeyP
     assert downloader.resolve_aria2c() is None
 
 
-def test_resolve_ignores_bundled_path_that_does_not_exist(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_ignores_bundled_path_that_does_not_exist(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # tmp_path, not a hardcoded /nonexistent: that directory exists on some hosts (it is the
+    # Debian/Ubuntu `nobody` home, mode 0700), where `Path.exists()` re-raises PermissionError
+    # instead of returning False and this test fails for a reason that has nothing to do with DAKP.
     monkeypatch.setenv("DAKP_ARIA2", "1")
-    monkeypatch.setattr(downloader, "_bundled_aria2c", lambda: Path("/nonexistent/aria2c"))
+    monkeypatch.setattr(downloader, "_bundled_aria2c", lambda: tmp_path / "missing" / "aria2c")
     monkeypatch.setattr(downloader.shutil, "which", lambda name: None)
     assert downloader.resolve_aria2c() is None
 
