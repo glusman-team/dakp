@@ -21,6 +21,29 @@ part of the span while temporal/evidential hedges are not.
 
 ## Results (strict span-level micro P/R/F1; a TP needs exact `(start, end, type)`)
 
+### v1.16.0 build-speed work (2026-10-01, wenceslaus 4x P100)
+
+Composite stays **1.000 / 1.000 / 1.000** on branch HEAD defaults
+(`benchmark_1.16.0.json`). Inference-config sweep over 2,000 real SPL section texts
+(`tests/eval/ab_ner_diff.py`, per-config diff vs the cache-served production config):
+
+- **Control (defaults vs defaults): 0/2000 texts differ** - run-to-run deterministic, and the
+  Tier B span cache reproduces production mentions via CPU re-merge (1,829/2,000 served).
+- **`compute_dtype=fp16`: 28/2000 texts differ (1.4%)** - span-boundary extensions
+  ("edema" -> "generalized edema") and extra qualifier mentions, i.e. threshold knife-edge
+  flips from fp16 numerics; wall time unchanged (eager attention dominates on sm_60).
+  NOT adopted as the default; available as an explicit option, keyed into Tier B material so
+  fp16 never serves or overwrites fp32 spans/mentions.
+- **`chunk_words=1024` (+ batch 32/64): REJECTED.** Halving the window budget doubles the
+  window count and OOM-thrashes 16 GB P100s (129k CUDA-OOM retries in the sweep log; no run
+  finished in over an hour). The 4096-word budget stays.
+- **Batching note for the +87 delta:** length-bucketed batching (v1.16.0) changes batch
+  composition, which flips a few knife-edge mentions: the warm full build produced 19,634
+  contraindication assertions vs 19,547 at v1.15.0 (+87 KGX edges, 1 removed, +2 nodes).
+  Accuracy gate (this benchmark) unchanged at 1.000; delta accepted as documented.
+- xformers/flash-deberta remain infeasible on P100 (sm_60, no flash kernels); the encoder
+  still falls back from `sdpa` to `eager` (transformers DebertaV2 limitation).
+
 ### Current-model local run
 
 The then-default checkpoint (`SkyeAv/drug-approvals-gliner-small-v2.1`) was available in

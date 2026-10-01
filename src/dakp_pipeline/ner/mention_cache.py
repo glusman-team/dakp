@@ -42,7 +42,11 @@ CACHE_DIRNAME = ("cache", "ner")
 _REQUEST_TIMEOUT_SECONDS = 30.0
 _HEALTH_TIMEOUT_SECONDS = 1.0
 #: Startup budget waiting for a spawned server to publish server.json and answer /health.
-_START_WAIT_SECONDS = 5.0
+#: How long to wait for a freshly spawned dakp-nercache to write server.json before giving up.
+#: Startup includes Pebble recovery of the mention store, which after an unclean server death
+#: can take far longer than the original fixed 5 s (observed: the whole build mined uncached
+#: because recovery exceeded the deadline). Override with DAKP_NERCACHE_STARTUP_TIMEOUT.
+_START_WAIT_SECONDS = float(os.environ.get("DAKP_NERCACHE_STARTUP_TIMEOUT", "30"))
 _START_POLL_SECONDS = 0.1
 #: How long close() waits for SIGTERM to stop a server this instance started.
 _STOP_WAIT_SECONDS = 3.0
