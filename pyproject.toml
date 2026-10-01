@@ -125,7 +125,11 @@ dependencies = [
     # so transformers 5.x + torch 2.8 cu126 stay intact. peft also pulls `accelerate`.
     "peft>=0.10,<1",
     "pendulum>=3",
-    "polars>=1.44.0",
+    # tablassert >=19.3.0 requires `polars>=2.0.0rc2` (19.2.0 was the last on polars 1.x), so the
+    # tablassert floor below forces the polars 2.0 prerelease; pinned here explicitly so the
+    # lock's prerelease is a stated choice, not a transitive surprise. Gate (wenceslaus, branch
+    # lock): unit + integration green, and the run_tablassert parity build vs the 1.15.0 manifest.
+    "polars>=2.0.0rc2,<3",
     "pydantic>=2.12.0",
     # `[cli]` and `[log]` became OPTIONAL in 19.0: the `tablassert` console script `DAKP`'s runner
     # shells out to now preflights the `[cli]` extra (cyclopts + rich) and exits before importing

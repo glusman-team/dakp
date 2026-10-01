@@ -993,7 +993,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "peft", specifier = ">=0.10,<1" },
     { name = "pendulum", specifier = ">=3" },
-    { name = "polars", specifier = ">=1.44.0" },
+    { name = "polars", specifier = ">=2.0.0rc2,<3" },
     { name = "pydantic", specifier = ">=2.12.0" },
     { name = "tablassert", extras = ["cli", "log", "qc"], specifier = ">=19.3.0,<20" },
     { name = "torch", specifier = ">=2.8,<2.9", index = "https://download.pytorch.org/whl/cu126" },
