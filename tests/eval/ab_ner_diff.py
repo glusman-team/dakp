@@ -77,7 +77,7 @@ def _extract(ner: DiseaseNER, items: Sequence[Any]) -> dict[tuple[str, str], Any
     chunk's mentions - the off-by-one the first sweep reported as 89% "differing").
     """
     mined = ner.extract_batch([item[2] for item in items])
-    return {(item[0], item[1]): mentions for item, mentions in zip(items, mined)}
+    return {(item[0], item[1]): mentions for item, mentions in zip(items, mined, strict=True)}
 
 
 def main() -> int:
