@@ -32,8 +32,7 @@ Composite stays **1.000 / 1.000 / 1.000** on branch HEAD defaults
 - **`compute_dtype=fp16`: 28/2000 texts differ (1.4%)** - span-boundary extensions
   ("edema" -> "generalized edema") and extra qualifier mentions, i.e. threshold knife-edge
   flips from fp16 numerics; wall time unchanged (eager attention dominates on sm_60).
-  NOT adopted as the default; available as an explicit option, keyed into Tier B material so
-  fp16 never serves or overwrites fp32 spans/mentions.
+  Left opt-in at the time; ADOPTED as the production default in v1.19.0 (see below).
 - **`chunk_words=1024` (+ batch 32/64): REJECTED.** Halving the window budget doubles the
   window count and OOM-thrashes 16 GB P100s (129k CUDA-OOM retries in the sweep log; no run
   finished in over an hour). The 4096-word budget stays.
@@ -43,6 +42,16 @@ Composite stays **1.000 / 1.000 / 1.000** on branch HEAD defaults
   Accuracy gate (this benchmark) unchanged at 1.000; delta accepted as documented.
 - xformers/flash-deberta remain infeasible on P100 (sm_60, no flash kernels); the encoder
   still falls back from `sdpa` to `eager` (transformers DebertaV2 limitation).
+
+### fp16 inference default (v1.19.0)
+
+`compute_dtype` now defaults to `fp16`: every GLiNER run (DAG mining workers, the CLI, the
+multi-GPU dispatch) executes the forward under `torch.autocast("cuda", float16)`, so
+accumulation-sensitive ops (LayerNorm, softmax) stay fp32 while the rest runs at the
+device's fp16 rate. The 28/2000 knife-edge flips recorded above remain the documented
+accuracy delta. Both cache tiers key `compute_dtype` (`span_material` / `config_fingerprint`),
+so fp32-mined stores are never served to an fp16 run: the first fp16 build re-mines once.
+CPU inference and the test suite are unaffected (autocast arms only on CUDA).
 
 ### Current-model local run
 

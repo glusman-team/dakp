@@ -1257,13 +1257,15 @@ def test_stall_watchdog_is_inert_without_cuda(monkeypatch: pytest.MonkeyPatch, t
     assert [result["text"] for result in results] == texts
 
 
-# --- compute_dtype (fp16 experiments) -----------------------------------------------
+# --- compute dtype (fp16 production default) ----------------------------------------
 
 
 def test_compute_dtype_is_model_side_key_material(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A dtype change moves the Tier B fingerprint (fp16 output bits differ from fp32)."""
     _install_fake_gliner2(monkeypatch, tmp_path, [])
-    fp32 = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path)
+    default = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path)
+    assert default.span_material()["compute_dtype"] == "fp16"  # production default: autocast fp16 on CUDA
+    fp32 = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path, compute_dtype="fp32")
     fp16 = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path, compute_dtype="fp16")
     assert fp32.span_material() != fp16.span_material()
     assert fp32.span_material()["compute_dtype"] == "fp32"
@@ -1284,6 +1286,28 @@ def test_fp16_autocast_arms_only_on_cuda(monkeypatch: pytest.MonkeyPatch, tmp_pa
     model = _BatchRecordingModel()
     results = backend._raw_batch_extract(model, ["a", "bb"], 2)
     assert [r["text"] for r in results] == ["a", "bb"]  # inert on CPU, no autocast error
-    # Sanity: the fp32 default path shares the non-autocast branch.
-    fp32_backend = DiseaseNER(offline=False, gazetteer={}, device="cpu", workdir=tmp_path)
-    assert fp32_backend._raw_batch_extract(model, ["a"], 1)[0]["text"] == "a"
+    # Sanity: the default backend (now fp16) takes the same non-autocast branch on CPU.
+    default_backend = DiseaseNER(offline=False, gazetteer={}, device="cpu", workdir=tmp_path)
+    assert default_backend._raw_batch_extract(model, ["a"], 1)[0]["text"] == "a"
+
+
+def test_fp16_default_autocast_arms_on_cuda(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """On a CUDA-pinned backend the fp16 default runs the forward under ``torch.autocast``.
+
+    Real torch, no GPU needed: entering a ``cuda`` autocast context only flips thread-local
+    dispatch flags, so the recording fake can observe ``torch.is_autocast_enabled('cuda')``
+    from a CPU-only host. This is the branch every production GLiNER run now takes.
+    """
+    import torch
+
+    _install_fake_gliner2(monkeypatch, tmp_path, [])
+    seen: dict[str, bool] = {}
+
+    class _AutocastRecordingModel(_BatchRecordingModel):
+        def batch_extract_entities(self, texts: list[str], entity_types: Any, batch_size: int = 8, **_kwargs: Any) -> list[dict[str, Any]]:
+            seen["cuda_autocast"] = torch.is_autocast_enabled("cuda")
+            return super().batch_extract_entities(texts, entity_types, batch_size)
+
+    backend = DiseaseNER(offline=False, gazetteer={}, device="cuda", workdir=tmp_path)
+    backend._raw_batch_extract(_AutocastRecordingModel(), ["a"], 1)
+    assert seen["cuda_autocast"] is True  # the fp16 default arms autocast on a cuda device
