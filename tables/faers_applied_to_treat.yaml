@@ -4,6 +4,7 @@ template:
     local: tabular/faers_applied_to_treat_assertions.tsv
     url:
       - "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
+      - "https://www.canada.ca/en/health-canada/services/drugs-health-products/medeffect-canada/adverse-reaction-database/canada-vigilance-online-database-data-extract.html"
     delimiter: "\t"
     reindex:
       - column: A
@@ -1020,6 +1021,7 @@ template:
           upstream_resource_ids:
             - "infores:dailymed"
             - "infores:faers"
+            - "infores:canada-vigilance"
           source_record_urls:
             - "https://db.systemsbiology.net/gestalt/cgi-pub/KGinfo.pl?id={edge_id}"
         - resource_id: "infores:faers"
@@ -1027,6 +1029,8 @@ template:
           source_record_urls:
             - "https://www.fda.gov/safety/fda-adverse-event-monitoring-system-aems"
         - resource_id: "infores:dailymed"
+          resource_role: supporting_data_source
+        - resource_id: "infores:canada-vigilance"
           resource_role: supporting_data_source
       knowledge_level: observation
       agent_type: manual_validation_of_automated_agent

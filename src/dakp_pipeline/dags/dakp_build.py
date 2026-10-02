@@ -5,8 +5,8 @@ parsing/extraction runs as **native Airflow Go SDK
 bundle workers** (``go/cmd/dakp-bundle``): the DailyMed/FAERS/Drugs@FDA ``extract_*`` tasks are
 ``@task.stub(queue="golang")`` declarations whose Go implementations the ExecutableCoordinator
 forks per task instance; the EMA tasks (``extract_ema`` for the medicines xlsx,
-``extract_ema_smpc`` for the product-information PDFs) are plain Python ``@task``s (polars +
-pypdf parse in-process). Every other stage (acquisition, assertion shaping, Tablassert handoff,
+``extract_ema_smpc`` for the product-information PDFs) and the Canada Vigilance parse
+(``extract_canada_vigilance``) are plain Python ``@task``s (polars / pypdf parse in-process). Every other stage (acquisition, assertion shaping, Tablassert handoff,
 legacy TSV export, release publishing, GLiNER2 NER export) is a real Python TaskFlow task
 reusing the existing stage modules.
 
@@ -97,6 +97,7 @@ class AcquireOutputs:
     drugsfda: Any
     ema: Any
     smpc: Any
+    canada_vigilance: Any
     ner_models: Any
 
 
@@ -109,6 +110,7 @@ class ExtractOutputs:
     drugsfda: Any
     ema: Any
     smpc: Any
+    canada_vigilance: Any
 
 
 @dataclass(frozen=True)
@@ -239,6 +241,20 @@ def _build_acquire_stage() -> AcquireOutputs:
         @task(
             pool=DOWNLOAD_POOL,
             execution_timeout=_ACQUIRE_TIMEOUT,
+            doc_md=("Download/cache Health Canada's Canada Vigilance data-extract ZIP (monthly full dump); returns `ArtifactRef` manifests only."),
+        )
+        def acquire_canada_vigilance() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+            from dakp_pipeline import acquire
+
+            ctx = _ctx()
+            with step(logger, "task acquire_canada_vigilance"):
+                refs = acquire.acquire_canada_vigilance(ctx)
+                stats(logger, "task acquire_canada_vigilance", output_refs=len(refs))
+                return _refs_to_xcom(refs)
+
+        @task(
+            pool=DOWNLOAD_POOL,
+            execution_timeout=_ACQUIRE_TIMEOUT,
             doc_md="Ensure the production GLiNER checkpoint is cached before contraindication mining.",
         )
         def acquire_ner_models() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
@@ -256,6 +272,7 @@ def _build_acquire_stage() -> AcquireOutputs:
             drugsfda=acquire_drugsfda(),
             ema=acquire_ema(),
             smpc=acquire_ema_smpc(),
+            canada_vigilance=acquire_canada_vigilance(),
             ner_models=acquire_ner_models(),
         )
 
@@ -297,12 +314,23 @@ def _build_extract_stage(raw: AcquireOutputs) -> ExtractOutputs:
                 stats(logger, "task extract_ema_smpc", output_refs=len(refs))
                 return _refs_to_xcom(refs)
 
+        @task(pool=EXTRACT_POOL, doc_md="Parse the Canada Vigilance extract into the interim `cv_indications.parquet` (polars).")
+        def extract_canada_vigilance(raw_refs: Any) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+            from dakp_pipeline.extract import canada_vigilance
+
+            ctx = _ctx()
+            with step(logger, "task extract_canada_vigilance"):
+                refs = canada_vigilance.extract(_refs_from_xcom(raw_refs), ctx)
+                stats(logger, "task extract_canada_vigilance", output_refs=len(refs))
+                return _refs_to_xcom(refs)
+
         return ExtractOutputs(
             dailymed=extract_dailymed(raw.dailymed),
             faers=extract_faers(raw.faers),
             drugsfda=extract_drugsfda(raw.drugsfda),
             ema=extract_ema(raw.ema),
             smpc=extract_ema_smpc(raw.smpc),
+            canada_vigilance=extract_canada_vigilance(raw.canada_vigilance),
         )
 
 
@@ -360,7 +388,7 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
             doc_md="Shape FAERS observed-use assertions from FAERS cases + DailyMed/Drugs@FDA refs, cross-referenced with the approved-treats table for the approval status. FAERS text bypasses NER and goes directly to intervention mapping.",
         )
         def shape_faers_use_tables(
-            faers_ext: Any, dm_ext: Any, drugsfda_ext: Any, approved: Any
+            faers_ext: Any, dm_ext: Any, drugsfda_ext: Any, approved: Any, cv_ext: Any = None
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             from dakp_pipeline.assertions import observed_uses
             from dakp_pipeline.assertions.evidence import cached_shape_outputs
@@ -369,6 +397,7 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
             with step(logger, "task shape_faers_use_tables"):
                 faers_refs, dailymed_refs = _refs_from_xcom(faers_ext), _refs_from_xcom(dm_ext)
                 drugsfda_refs, approved_refs = _refs_from_xcom(drugsfda_ext), _refs_from_xcom(approved)
+                cv_refs = _refs_from_xcom(cv_ext) if cv_ext is not None else []
                 stats(
                     logger,
                     "task shape_faers_use_tables",
@@ -376,12 +405,13 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                     dailymed_refs=len(dailymed_refs),
                     drugsfda_refs=len(drugsfda_refs),
                     approved_refs=len(approved_refs),
+                    cv_refs=len(cv_refs),
                 )
                 # FAERS indications are intentionally not sent through NER: their compact values
                 # are retained as raw condition text for downstream mapping. Drugs@FDA is the
                 # authoritative FDA application register: it expands the
                 # prefix-stripped FAERS application numbers back to their FDA form (BLA125514).
-                in_refs = [*faers_refs, *dailymed_refs, *drugsfda_refs, *approved_refs]
+                in_refs = [*faers_refs, *dailymed_refs, *drugsfda_refs, *approved_refs, *cv_refs]
                 # Already-done skip: identical inputs + config fingerprint => cached outputs.
                 cached = cached_shape_outputs("shape_faers_applied_to_treat", in_refs, ctx)
                 if cached is not None:
@@ -449,7 +479,7 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
         approved = shape_treatment_tables(extracts.dailymed, extracts.drugsfda, extracts.faers, extracts.ema, extracts.smpc, ner_models)
         return AssertionOutputs(
             approved=approved,
-            uses=shape_faers_use_tables(extracts.faers, extracts.dailymed, extracts.drugsfda, approved),
+            uses=shape_faers_use_tables(extracts.faers, extracts.dailymed, extracts.drugsfda, approved, extracts.canada_vigilance),
             contraindications=shape_contraindication_tables(extracts.dailymed, extracts.drugsfda, extracts.smpc, extracts.ema, ner_models),
         )
 

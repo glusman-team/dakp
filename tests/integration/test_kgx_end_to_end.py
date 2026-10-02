@@ -230,10 +230,14 @@ EXPECTED_SOURCES_BY_PREDICATE: dict[str, list[tuple[str, str, list[str] | None]]
         ("infores:ema", "supporting_data_source", None),
         ("infores:epar", "supporting_data_source", None),
     ],
+    # The observed-use table unions FAERS quarterly ASCII extracts and Health Canada Vigilance
+    # reports, so its TABLE-level template names all three upstreams on every applied_to_treat
+    # edge; per-row attribution lives in the assertion TSV provenance, not in `sources`.
     _APPLIED: [
-        (INFORES_DAKP, "primary_knowledge_source", ["infores:dailymed", "infores:faers"]),
+        (INFORES_DAKP, "primary_knowledge_source", ["infores:dailymed", "infores:faers", "infores:canada-vigilance"]),
         ("infores:faers", "supporting_data_source", None),
         ("infores:dailymed", "supporting_data_source", None),
+        ("infores:canada-vigilance", "supporting_data_source", None),
     ],
     # The contraindication table unions DailyMed (US SPL contraindication sections) and EMA SmPC
     # (EU section 4.2/4.3 mined rows), so its TABLE-level template names both upstreams on the

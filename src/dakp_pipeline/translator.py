@@ -72,6 +72,7 @@ INFORES_DAILYMED = "infores:dailymed"
 INFORES_EMA = "infores:ema"
 INFORES_EPAR = "infores:epar"
 INFORES_FAERS = "infores:faers"
+INFORES_CANADA_VIGILANCE = "infores:canada-vigilance"
 
 BIOLINK_PREFIX = "biolink:"
 
@@ -130,7 +131,13 @@ EDGE_FAMILIES: dict[str, EdgeFamily] = {
     PREDICATE_TREATS: EdgeFamily(
         PREDICATE_TREATS, frozenset({INFORES_DAILYMED, INFORES_FAERS}), alternative_upstream=(frozenset({INFORES_EMA}), frozenset({INFORES_EPAR}))
     ),
-    PREDICATE_APPLIED_TO_TREAT: EdgeFamily(PREDICATE_APPLIED_TO_TREAT, frozenset({INFORES_FAERS, INFORES_DAILYMED})),
+    PREDICATE_APPLIED_TO_TREAT: EdgeFamily(
+        PREDICATE_APPLIED_TO_TREAT,
+        frozenset({INFORES_FAERS, INFORES_DAILYMED}),
+        # Canada Vigilance observed-use rows carry the Health Canada + DailyMed chain (the
+        # corroboration-derived clinical_approval_status is DailyMed-backed, exactly like FAERS).
+        alternative_upstream=(frozenset({INFORES_CANADA_VIGILANCE, INFORES_DAILYMED}),),
+    ),
     PREDICATE_CONTRAINDICATED_IN: EdgeFamily(
         PREDICATE_CONTRAINDICATED_IN, frozenset({INFORES_DAILYMED}), alternative_upstream=(frozenset({INFORES_EPAR}),)
     ),
@@ -488,6 +495,7 @@ FAMILY_INVARIANTS: dict[str, FamilyInvariant] = {
         frozenset({INFORES_FAERS}),
         frozenset({"approved_for_condition", "off_label_use", "not_provided"}),
         "statistical_association",
+        alternative_upstream=(frozenset({INFORES_CANADA_VIGILANCE, INFORES_DAILYMED}),),
     ),
     PREDICATE_CONTRAINDICATED_IN: FamilyInvariant(
         PREDICATE_CONTRAINDICATED_IN,
