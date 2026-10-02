@@ -992,7 +992,12 @@ def test_rig_section_validates_directly_against_tablassert_rig_config() -> None:
     # Supporting upstreams validate as real RIGSupportingDataSourceInfo entries (infores CURIE +
     # relevant-file URL checks included) and stay exactly the two edge-backed sources.
     assert rig.supporting_data_source_info is not None
-    assert [entry.infores_id for entry in rig.supporting_data_source_info] == ["infores:dailymed", "infores:faers", "infores:ema", "infores:canada-vigilance"]
+    assert [entry.infores_id for entry in rig.supporting_data_source_info] == [
+        "infores:dailymed",
+        "infores:faers",
+        "infores:ema",
+        "infores:canada-vigilance",
+    ]
     assert source.name == "Drug Approvals Knowledge Provider (DAKP)"
     assert source.citations is not None
     assert any("https://pmc.ncbi.nlm.nih.gov/articles/PMC11601480/" in citation for citation in source.citations)
