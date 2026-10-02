@@ -107,10 +107,11 @@ def config_fingerprint(ner: DiseaseNER) -> str:
     a different checkout or a migrated workdir (observed: a warm rebuild from a second checkout
     re-mined all 62,512 treatment texts cold).
 
-    ``compute_dtype`` is omitted at ``fp32`` (the value it shipped with, so keys written
-    before the field existed -- and explicit-fp32 backends -- keep matching); every other
-    value, including the ``fp16`` production default, is keyed: a dtype change is a re-mine,
-    never a silent cache serve, so an fp16 run never serves or overwrites fp32 mentions.
+    ``compute_dtype`` is omitted at ``fp32`` (the production default, and the value the store
+    shipped with, so default and explicit-fp32 backends keep matching keys written before the
+    field existed); every other value -- e.g. the opt-in ``fp16`` -- is keyed: a dtype change is
+    a re-mine, never a silent cache serve, so an fp16 run never serves or overwrites fp32
+    mentions.
     """
     config = {key: value for key, value in ner._config().items() if key not in _LOCATION_CONFIG_KEYS}
     if config.get("compute_dtype") == "fp32":

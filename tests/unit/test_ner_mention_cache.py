@@ -122,16 +122,18 @@ def test_tier_a_fingerprint_ignores_file_locations_and_keys_the_dtype(tmp_path: 
 
     Regression: a warm rebuild launched from a second checkout (different ``workdir`` string)
     missed every cached mention and re-mined 62,512 texts cold for 3.6 h. Location fields
-    (``workdir``/``cache_dir``) are not key material. The dtype IS: since fp16 became the
-    production default it is keyed, so an fp16 run never serves or overwrites fp32-mined
-    mentions (the first fp16 build re-mines once); explicit-fp32 backends keep matching the
-    pre-fp16 store keys because ``config_fingerprint`` omits ``fp32``.
+    (``workdir``/``cache_dir``) are not key material. The dtype IS: any non-fp32 value is keyed,
+    so an opt-in fp16 run never serves or overwrites fp32-mined mentions (its first build re-mines
+    once); the fp32 default keeps matching the pre-fp16 store keys because ``config_fingerprint``
+    omits ``fp32`` -- that is what makes a default run warm.
     """
     here = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "a", workdir=tmp_path / "wa")
     there = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "b", workdir=tmp_path / "wb")
     assert config_fingerprint(here) == config_fingerprint(there)
+    fp16 = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "a", workdir=tmp_path / "wa", compute_dtype="fp16")
+    assert config_fingerprint(fp16) != config_fingerprint(here)
     fp32 = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "a", workdir=tmp_path / "wa", compute_dtype="fp32")
-    assert config_fingerprint(fp32) != config_fingerprint(here)
+    assert config_fingerprint(fp32) == config_fingerprint(here)  # the default IS fp32: warm store
 
 
 def test_ner_cache_material_offline_backend_is_never_cached() -> None:
