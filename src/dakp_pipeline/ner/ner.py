@@ -1118,6 +1118,11 @@ class DiseaseNER:
         strict_extension_threshold: minimum score for a model span that extends exactly one
             gazetteer span. ``None`` preserves the historical merge; production profiles use
             :data:`STRICT_GAZETTEER_EXTENSION_THRESHOLD`.
+        compute_dtype: ``"fp16"`` (default) runs the GLiNER2 forward on CUDA devices under
+            ``torch.autocast("cuda", float16)``; CPU inference ignores it. ``"fp32"`` restores
+            full-precision inference. The dtype is keyed in both cache tiers (see
+            :func:`dakp_pipeline.ner.mention_cache.config_fingerprint` and
+            :meth:`span_material`), so switching is a re-mine, never a silent cache serve.
     """
 
     def __init__(
@@ -1135,7 +1140,7 @@ class DiseaseNER:
         workdir: Path | str | None = None,
         device: str | None = None,
         strict_extension_threshold: float | None = None,
-        compute_dtype: str = "fp32",
+        compute_dtype: str = "fp16",
     ) -> None:
         if isinstance(gazetteer, Gazetteer):
             resolved = gazetteer
@@ -1373,8 +1378,8 @@ class DiseaseNER:
     def _raw_batch_extract(self, model: Any, texts: list[str], batch_size: int) -> list[Any]:
         """One batched GLiNER2 inference call over ``texts`` (whole vocabulary, both channels).
 
-        With ``compute_dtype='fp16'`` on a CUDA device the forward runs under
-        ``torch.autocast('cuda', float16)``: the P100 executes fp16 at twice the fp32 rate,
+        By default (``compute_dtype='fp16'``) the forward on a CUDA device runs under
+        ``torch.autocast('cuda', float16)``: the GPU executes fp16 math at its fp16 rate,
         and autocast keeps accumulation-sensitive ops (LayerNorm, softmax) in fp32. Raw output
         bits differ from fp32 at the margin, which is exactly why ``compute_dtype`` is part of
         the Tier B key material - a dtype change is a re-mine, never a silent cache serve.
