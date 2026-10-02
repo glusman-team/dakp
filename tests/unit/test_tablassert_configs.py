@@ -1006,7 +1006,12 @@ def test_graph_config_structure() -> None:
     assert rig["ingest_info"]["utility"]
     assert rig["ingest_info"]["scope"]
     assert rig["provenance_info"]["contributions"]
+    # The generated-artifact location is the Hugging Face dataset release for THIS version:
+    # pinned literally so a silent edit of the deployment pattern (dataset or layout) fails here.
     assert rig["artifact_base_url"] == tablassert_configs.RIG_ARTIFACT_BASE_URL
+    from dakp_pipeline import __version__
+
+    assert rig["artifact_base_url"] == f"https://huggingface.co/datasets/SkyeAv/drug-approvals-kp/resolve/main/{__version__}"
     assert rig["artifact_base_path"] == tablassert_configs.RIG_ARTIFACT_BASE_PATH
 
 
@@ -1201,6 +1206,7 @@ def test_rig_provenance_info_credits_named_contributors_and_artifacts() -> None:
     assert "Skye Lane Goetz - code author, pipeline engineering, Tablassert integration" in contributions
     assert provenance["artifacts"] == [
         "DAKP pipeline repository: https://github.com/glusman-team/dakp",
+        "Published KGX releases (Hugging Face dataset): https://huggingface.co/datasets/SkyeAv/drug-approvals-kp",
         (
             "Upstream DINGO-reviewed DAKP RIG: https://github.com/NCATSTranslator/translator-ingests/blob/main/src/"
             "translator_ingest/ingests/dakp/dakp_rig.yaml"

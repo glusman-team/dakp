@@ -291,9 +291,13 @@ GRAPH_DESCRIPTION = (
 #   :data:`RIG_TARGET_FUTURE_CONSIDERATIONS`).
 
 #: Public URL prefix the generated KGX artifacts are published under; Tablassert appends each
-#: ``.nodes.ndjson`` / ``.edges.ndjson`` name to build RIG file locations. The GitHub repo URL
-#: stands in until a dedicated public artifact location exists.
-RIG_ARTIFACT_BASE_URL = "https://github.com/glusman-team/dakp"
+#: ``.nodes.ndjson`` / ``.edges.ndjson`` name to build RIG file locations. Every version is
+#: published to the Hugging Face dataset ``SkyeAv/drug-approvals-kp`` under a version directory —
+#: ``<version>/DRUG_APPROVALS_KP_<version>.{nodes,edges}.ndjson`` plus the generated ``.RIG.yaml`` —
+#: so the prefix is version-interpolated exactly like the graph config's ``version`` field and a
+#: v<next> build advertises v<next> artifact locations while every earlier version's URLs stay
+#: resolvable on the same dataset.
+RIG_ARTIFACT_BASE_URL = f"https://huggingface.co/datasets/SkyeAv/drug-approvals-kp/resolve/main/{__version__}"
 #: Workdir-relative directory ``build-kg`` writes the KGX + RIG artifacts into (the runner's cwd
 #: is the workdir root, so outputs land in ``./kgx``).
 RIG_ARTIFACT_BASE_PATH = "kgx"
@@ -317,7 +321,10 @@ RIG_DATA_VERSIONING_AND_RELEASES = (
     "the upstream cadence: FAERS quarterly ASCII extracts, DailyMed SPL releases, and the "
     "nightly-regenerated EMA medicines export. DailyMed, Drugs@FDA, and EMA re-downloads are "
     "freshness-gated to a 7-day cache window; FAERS downloads "
-    "are content-addressed and cache-first, with no age gate."
+    "are content-addressed and cache-first, with no age gate. Each version's generated KGX pair "
+    "and RIG are published to the Hugging Face dataset SkyeAv/drug-approvals-kp under a "
+    "per-version directory (<version>/DRUG_APPROVALS_KP_<version>.{nodes,edges}.ndjson), and "
+    "every earlier version remains available there."
 )
 #: RIG ``supporting_data_source_info``: the upstream data sources a DAKP graph derives its
 #: knowledge from. Exactly the TWO edge-backed upstreams, adapted from the DINGO-reviewed
@@ -499,6 +506,7 @@ RIG_CONTRIBUTIONS: tuple[str, ...] = (
 #: review ticket.
 RIG_PROVENANCE_ARTIFACTS: tuple[str, ...] = (
     "DAKP pipeline repository: https://github.com/glusman-team/dakp",
+    "Published KGX releases (Hugging Face dataset): https://huggingface.co/datasets/SkyeAv/drug-approvals-kp",
     "Upstream DINGO-reviewed DAKP RIG: https://github.com/NCATSTranslator/translator-ingests/blob/main/src/translator_ingest/ingests/dakp/dakp_rig.yaml",
     "RIG review issue: https://github.com/NCATSTranslator/translator-ingests/issues/416",
 )
