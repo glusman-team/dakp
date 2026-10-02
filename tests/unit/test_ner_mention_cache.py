@@ -117,19 +117,21 @@ def test_config_fingerprint_is_stable_and_config_sensitive(tmp_path: Path) -> No
     assert config_fingerprint(other) != config_fingerprint(ner)
 
 
-def test_tier_a_fingerprint_ignores_file_locations_and_the_fp32_default(tmp_path: Path) -> None:
+def test_tier_a_fingerprint_ignores_file_locations_and_keys_the_dtype(tmp_path: Path) -> None:
     """The Tier A key must depend only on what changes mentions.
 
     Regression: a warm rebuild launched from a second checkout (different ``workdir`` string)
     missed every cached mention and re-mined 62,512 texts cold for 3.6 h. Location fields
-    (``workdir``/``cache_dir``) and the fp32 dtype default are not key material; fp16 still is,
-    so it never serves or overwrites fp32 mentions.
+    (``workdir``/``cache_dir``) are not key material. The dtype IS: since fp16 became the
+    production default it is keyed, so an fp16 run never serves or overwrites fp32-mined
+    mentions (the first fp16 build re-mines once); explicit-fp32 backends keep matching the
+    pre-fp16 store keys because ``config_fingerprint`` omits ``fp32``.
     """
     here = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "a", workdir=tmp_path / "wa")
     there = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "b", workdir=tmp_path / "wb")
     assert config_fingerprint(here) == config_fingerprint(there)
-    fp16 = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "a", workdir=tmp_path / "wa", compute_dtype="fp16")
-    assert config_fingerprint(fp16) != config_fingerprint(here)
+    fp32 = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "a", workdir=tmp_path / "wa", compute_dtype="fp32")
+    assert config_fingerprint(fp32) != config_fingerprint(here)
 
 
 def test_ner_cache_material_offline_backend_is_never_cached() -> None:
