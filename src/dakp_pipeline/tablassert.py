@@ -178,8 +178,9 @@ FULLMAP_DEFAULT = ".fullmap"
 #: change (``supporting_text``, ``sources``) no longer mints a new edge.
 #: Identity is the SEMANTIC STATEMENT ONLY — the resolved triple plus the nullable
 #: ``disease_context_qualifier``. A declared field ABSENT from an edge record contributes
-#: nothing at all to the hash, so the qualifier — emitted only on the contraindication edges
-#: that carry one — discriminates those edges without forcing the key onto the other tables:
+#: nothing at all to the hash, so the qualifier — emitted only on the contraindication and
+#: approved-treats edges that carry one — discriminates those edges without forcing the key
+#: onto the other tables:
 #: rows with UNIQUE qualifier values are distinct statements and must never merge, while the
 #: treatment/observed-use tables are effectively subject/predicate/object-only.
 #: The pre-resolution mentions (``original_subject`` / ``original_object``) are deliberately
@@ -499,7 +500,7 @@ RIG_TARGET_FUTURE_CONSIDERATIONS: tuple[dict[str, str], ...] = (
         "consideration": (
             "DAKP's sparse qualifier stack (anatomical_context_qualifier, sex_qualifier, "
             "population_context_qualifier, frequency_qualifier, temporal_context_qualifier) and the "
-            "contraindication disease_context_qualifier ride Tablassert's CLASS_FIELD_OVERRIDES grants "
+            "contraindication/approved-treats disease_context_qualifier ride Tablassert's CLASS_FIELD_OVERRIDES grants "
             "(SkyeAv/Tablassert#120, #188), which are deliberately ahead of the pinned Biolink model: Biolink "
             "attaches these slots only to other association classes, while these edges pin "
             "EntityToDisease/EntityToPhenotypicFeature for the regulatory_approvals grant. Drop reliance on the "
@@ -1181,11 +1182,15 @@ _TABLE_QUALIFIERS: dict[str, tuple[tuple[str, str], ...]] = {
     # ``population_context_text`` / ``frequency_text`` / ``temporal_context_text`` are populated
     # by the sentence-hosted qualifier attachment (``assertions/approved_treats.py`` via
     # ``contexts.attach_qualifiers_with_scores``) — sparse, blank when a sentence carries no
-    # qualifier span. ``clinical_approval_status`` ("approved_for_condition") stays an
-    # annotation: it is the Biolink ClinicalApprovalStatusEnum ASSOCIATION slot, not a
-    # qualifier slot — no ``Qualifiers`` member expresses approval status — and FDA application
-    # numbers / SPL ids are provenance strings, not entities.
+    # qualifier span. ``disease_context_text`` is populated by the explicit patient-clause
+    # template classifier (``contexts.patient_clause_contexts``): an indication sentence
+    # "for treatment of A in patients with B" carries B as the disease context of the A edge —
+    # the same slot, guard, and grant the contraindication table rides. ``clinical_approval_status``
+    # ("approved_for_condition") stays an annotation: it is the Biolink ClinicalApprovalStatusEnum
+    # ASSOCIATION slot, not a qualifier slot — no ``Qualifiers`` member expresses approval status —
+    # and FDA application numbers / SPL ids are provenance strings, not entities.
     "approved_treats_assertions": (
+        ("disease_context_qualifier", "disease_context_text"),
         ("anatomical_context_qualifier", "anatomical_context_text"),
         ("sex_qualifier", "sex_text"),
         ("population_context_qualifier", "population_context_text"),
