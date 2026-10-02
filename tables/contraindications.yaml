@@ -4,6 +4,7 @@ template:
     local: tabular/contraindication_assertions.tsv
     url:
       - "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
+      - "https://www.ema.europa.eu/en/documents/report/documents-output-epar_documents_json-report_en.json"
     delimiter: "\t"
     reindex:
       - column: F
@@ -2033,9 +2034,12 @@ template:
           resource_role: primary_knowledge_source
           upstream_resource_ids:
             - "infores:dailymed"
+            - "infores:epar"
           source_record_urls:
             - "https://db.systemsbiology.net/gestalt/cgi-pub/KGinfo.pl?id={edge_id}"
         - resource_id: "infores:dailymed"
+          resource_role: supporting_data_source
+        - resource_id: "infores:epar"
           resource_role: supporting_data_source
       knowledge_level: knowledge_assertion
       agent_type: manual_validation_of_automated_agent

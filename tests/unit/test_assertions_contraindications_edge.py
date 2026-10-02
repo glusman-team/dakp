@@ -1240,7 +1240,7 @@ def test_context_not_attached_to_rejected_object(tmp_path: Path) -> None:
 def test_accumulate_skips_blank_evidence_text() -> None:
     """Blank evidence must not enter the evidence union — the sorted-pipe evidence column may
     only contain real sentences, while support/scores still accumulate."""
-    aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
+    aggregated: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     mention = Mention(text="asthma", start=0, end=6, type="Disease", score=0.9)
     _accumulate(aggregated, "SET-A", "DOC-A", "DrugX", "UNII:X", "asthma", mention, evidence_text="   ")
     agg = next(iter(aggregated.values()))
@@ -1250,7 +1250,7 @@ def test_accumulate_skips_blank_evidence_text() -> None:
 
 
 def test_accumulate_qualifier_merge_keeps_highest_score_and_deterministic_tie() -> None:
-    aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
+    aggregated: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     mention = Mention(text="asthma", start=0, end=6, type="Disease", score=0.9)
     _accumulate(
         aggregated,
@@ -1294,7 +1294,7 @@ def test_accumulate_sanitizes_pipe_delimiters_in_label_prose() -> None:
     """Regression: mined label sentences legitimately contain ``|`` bullets and line breaks (real
     DailyMed warnings prose crashed ``shape_contraindication_tables`` when the pipe reached the
     sorted-pipe evidence encoder). Free-form text is sanitized, not rejected."""
-    aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
+    aggregated: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     mention = Mention(text="asthma", start=0, end=6, type="Disease", score=0.9)
     _accumulate(
         aggregated,

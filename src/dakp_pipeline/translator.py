@@ -131,7 +131,9 @@ EDGE_FAMILIES: dict[str, EdgeFamily] = {
         PREDICATE_TREATS, frozenset({INFORES_DAILYMED, INFORES_FAERS}), alternative_upstream=(frozenset({INFORES_EMA}), frozenset({INFORES_EPAR}))
     ),
     PREDICATE_APPLIED_TO_TREAT: EdgeFamily(PREDICATE_APPLIED_TO_TREAT, frozenset({INFORES_FAERS, INFORES_DAILYMED})),
-    PREDICATE_CONTRAINDICATED_IN: EdgeFamily(PREDICATE_CONTRAINDICATED_IN, frozenset({INFORES_DAILYMED})),
+    PREDICATE_CONTRAINDICATED_IN: EdgeFamily(
+        PREDICATE_CONTRAINDICATED_IN, frozenset({INFORES_DAILYMED}), alternative_upstream=(frozenset({INFORES_EPAR}),)
+    ),
 }
 
 # --- required KGX fields -----------------------------------------------------------
@@ -459,7 +461,8 @@ class FamilyInvariant:
     ``alternative_upstream`` lists acceptable per-row upstream chains BEYOND the canonical
     ``required_upstream``: the treats family unions EMA centrally-authorised rows, which carry
     ``infores:ema`` (MeSH-area rows) or ``infores:epar`` (EPAR indication-mined rows) instead of
-    the FDA ``dailymed|faers`` chain.
+    the FDA ``dailymed|faers`` chain; the contraindicated-in family unions EU SmPC rows, which
+    carry ``infores:epar`` (SmPC section-mined rows) instead of the DailyMed chain.
     """
 
     predicate: str
@@ -486,7 +489,14 @@ FAMILY_INVARIANTS: dict[str, FamilyInvariant] = {
         frozenset({"approved_for_condition", "off_label_use", "not_provided"}),
         "statistical_association",
     ),
-    PREDICATE_CONTRAINDICATED_IN: FamilyInvariant(PREDICATE_CONTRAINDICATED_IN, frozenset({INFORES_DAILYMED}), None, "knowledge_assertion"),
+    PREDICATE_CONTRAINDICATED_IN: FamilyInvariant(
+        PREDICATE_CONTRAINDICATED_IN,
+        frozenset({INFORES_DAILYMED}),
+        None,
+        "knowledge_assertion",
+        # EU SmPC rows carry the infores:epar chain (approved_treats' EMA conventions).
+        alternative_upstream=(frozenset({INFORES_EPAR}),),
+    ),
 }
 
 EXPECTED_FAMILIES: tuple[str, ...] = tuple(FAMILY_INVARIANTS)

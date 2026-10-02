@@ -151,6 +151,10 @@ dependencies = [
     # See [tool.uv.sources] / [[tool.uv.index]] below.
     "torch>=2.8,<2.9",
     "fastexcel>=0.20.2",
+    # Text layer of the EMA product-information (SmPC) PDFs (`extract.ema_smpc`). Pure Python, no
+    # system libraries, BSD-3-Clause (Apache-2.0 compatible). Verified on a live EMA document:
+    # pypdf 6.19.0 recovers the QRD headings (`4.1 Therapeutic indications`, `4.3 Contraindications`).
+    "pypdf>=6.19,<7",
 ]
 
 [dependency-groups]

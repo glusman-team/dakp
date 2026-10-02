@@ -73,7 +73,9 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
-from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, KL_ASSERTION, object_mentions, row_for
+import polars as pl
+
+from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_EPAR, KL_ASSERTION, object_mentions, row_for
 from dakp_pipeline.assertions.contexts import MEDICATION_CONTEXT as _MEDICATION_CONTEXT
 from dakp_pipeline.assertions.contexts import PATIENT_WITH_MARKER as _PATIENT_WITH_MARKER
 from dakp_pipeline.assertions.contexts import attach_qualifiers_with_scores, patient_clause_contexts
@@ -82,6 +84,7 @@ from dakp_pipeline.assertions.evidence import (
     dailymed_document_url,
     dailymed_set_url,
     edge_evidence_pipe,
+    find_table,
     load_or_build_dailymed_evidence,
     pipe_safe_text,
     sorted_pipe,
@@ -103,6 +106,20 @@ _TABLE = "contraindication_assertions"
 _PREDICATE = "biolink:contraindicated_in"
 #: One INFO progress line per this many mined contraindication sections (GLiNER is the slow step).
 _MINING_PROGRESS_EVERY = 500
+
+#: Interim tables the EU SmPC pass reads: the mined section text (extract.ema_smpc) and the
+#: medicines registry that resolves a product number to its active substance(s).
+_SMPC_SECTIONS_FILENAME = "smpc_sections.parquet"
+_EMA_REGISTRY_FILENAME = "ema_registry.parquet"
+#: Provenance discriminators. A SmPC row and a DailyMed row for the same (subject, object,
+#: context) must NOT merge: their upstream chains differ (``infores:epar`` vs
+#: ``infores:dailymed``), and one row can only carry one honest chain.
+_SOURCE_DAILYMED = "dailymed"
+_SOURCE_SMPC = "epar"
+#: SmPC section_kind -> the DailyMed-shaped ``section_kind`` the acceptance rules are written
+#: against (the SPL evidence index spells the indication pass singular).
+_SMPC_SECTION_KINDS: dict[str, str] = {"contraindications": "contraindications", "warnings": "warnings", "indications": "indication"}
+_SMPC_SET_PREFIX = "smpc:"
 
 #: Broad sentence filter used only to avoid sending ordinary indication prose to NER. The
 #: stricter positive-trigger classifier below decides whether a mention becomes a hard edge.
@@ -395,6 +412,84 @@ def _contraindication_sentences(text: str, keywords: re.Pattern[str]) -> str:
     return filtered
 
 
+def _split_semicolons(cell: str) -> list[str]:
+    """Split a semicolon-joined EMA cell into its stripped, non-empty values."""
+    return [part.strip() for part in cell.split(";") if part.strip()]
+
+
+def _smpc_subjects(registry: pl.DataFrame) -> dict[str, str]:
+    """Map ``ema_product_number`` -> its EMA active substance (INN fallback), registry order kept."""
+    subjects: dict[str, str] = {}
+    for rec in registry.iter_rows(named=True):
+        product = str(rec.get("ema_product_number") or "").strip()
+        substance = str(rec.get("active_substance") or "").strip() or str(rec.get("inn") or "").strip()
+        if product and substance:
+            subjects.setdefault(product, substance)
+    return subjects
+
+
+def _smpc_work_items(
+    inputs: Iterable[ArtifactRef], keywords: re.Pattern[str]
+) -> tuple[list[ContraWorkItem], dict[str, tuple[str, str]], dict[str, int]]:
+    """Build the EU SmPC work items from the EMA interim tables among ``inputs``.
+
+    Sections (``smpc_sections.parquet``, :mod:`dakp_pipeline.extract.ema_smpc`) join the
+    medicines registry (``ema_registry.parquet``) on ``ema_product_number`` to resolve the
+    subject active substance. The DailyMed singleton rule carries over: a combination
+    product's contraindication cannot be attributed to one component, so multi-substance
+    products are skipped, as are products absent from the registry (withdrawn or not human —
+    no resolvable subject). Indication sections are filtered to contraindication-context
+    sentences exactly like DailyMed Pass 2; contraindication and warnings sections are mined
+    in full (Pass 1 / Pass 3 semantics — warnings acceptance stays hard-trigger-only at
+    classification time).
+
+    Returns ``(work_items, subjects, counters)``: ``subjects`` maps each ``smpc:``-prefixed
+    set id to its single ``(substance, "")`` subject; ``counters`` feeds the stats line.
+    """
+    items: list[ContraWorkItem] = []
+    subjects: dict[str, tuple[str, str]] = {}
+    counters = {"sections": 0, "skipped_multi_substance": 0, "skipped_unmapped": 0}
+    sections = find_table(inputs, _SMPC_SECTIONS_FILENAME)
+    registry = find_table(inputs, _EMA_REGISTRY_FILENAME)
+    if sections is None or registry is None or sections.is_empty():
+        return items, subjects, counters
+
+    substance_by_product = _smpc_subjects(registry)
+    seen: set[tuple[str, str, str]] = set()
+    for rec in sections.iter_rows(named=True):
+        product = str(rec.get("ema_product_number") or "").strip()
+        kind = _SMPC_SECTION_KINDS.get(str(rec.get("section_kind") or "").strip())
+        text = str(rec.get("section_text") or "")
+        url = str(rec.get("document_url") or "").strip()
+        if not product or kind is None or not text.strip() or not url:
+            continue
+        dedup_key = (product, url, kind)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        substance = substance_by_product.get(product)
+        if substance is None:
+            counters["skipped_unmapped"] += 1
+            continue  # not in the authorised-medicines registry: no resolvable subject
+        substances = _split_semicolons(substance)
+        if len(substances) != 1:
+            counters["skipped_multi_substance"] += 1
+            continue  # combination product: no single attributable subject (singleton rule)
+        set_id = f"{_SMPC_SET_PREFIX}{product}"
+        subjects.setdefault(set_id, (substances[0], ""))
+        if kind == "indication":
+            item_text, mappings = _filtered_evidence(text, keywords)
+            if not item_text.strip():
+                continue
+        else:
+            item_text = text
+            source_spans = _sentence_spans(text)
+            mappings = tuple(EvidenceSpan(span.start, span.end, span.start, span.end, span.text) for span in source_spans)
+        items.append(ContraWorkItem(set_id, url, item_text, text, mappings, kind))
+        counters["sections"] += 1
+    return items, subjects, counters
+
+
 def _resolve_keywords(ctx: TaskContext) -> re.Pattern[str]:
     """The contraindication keyword pattern: ``ctx.params["contraindication_keywords"]`` or default.
 
@@ -469,6 +564,7 @@ def build_contraindication_rows(
         evidence = load_or_build_dailymed_evidence(inputs, ctx)
         approvals = build_fda_approval_index(inputs)
         kw = keywords or DEFAULT_CONTRA_KEYWORDS
+        smpc_items, smpc_subjects, smpc_counters = _smpc_work_items(inputs, kw)
 
     # Pass 1 work items: contraindication sections (all text is relevant), retaining the
     # original sentence spans for local evidence recovery.
@@ -517,7 +613,9 @@ def build_contraindication_rows(
                 mappings = tuple(EvidenceSpan(span.start, span.end, span.start, span.end, span.text) for span in source_spans)
                 work_items_p3.append(ContraWorkItem(set_id, doc_id, text, text, mappings, section_kind))
 
-    all_work_items = work_items_p1 + work_items_p2 + work_items_p3
+    # Pass 4 (EU SmPC) work items join the same pool: one LPT-balanced dispatch covers FDA and
+    # EMA sections alike, and the mention cache deduplicates across both label worlds.
+    all_work_items = [*work_items_p1, *work_items_p2, *work_items_p3, *smpc_items]
     stats(
         logger,
         "shape_contraindications",
@@ -527,6 +625,9 @@ def build_contraindication_rows(
         pass1_sections=len(work_items_p1),
         pass2_sections=len(work_items_p2),
         pass3_sections=len(work_items_p3),
+        smpc_sections=smpc_counters["sections"],
+        smpc_skipped_multi_substance=smpc_counters["skipped_multi_substance"],
+        smpc_skipped_unmapped=smpc_counters["skipped_unmapped"],
         sections_to_mine=len(all_work_items),
     )
 
@@ -558,11 +659,23 @@ def build_contraindication_rows(
     # Work items are singleton-only, so each set contributes exactly one subject ingredient;
     # the local source sentence is retained on the aggregate for the evidence column.
     with step(logger, "shape_contraindications.aggregate"):
-        aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
+        aggregated: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         mentions_mined = 0
         for index, item in enumerate(all_work_items):
             set_id, doc_id, _text = _work_item_parts(item)
-            ingredients = evidence.active_ingredients_by_set.get(set_id, [])
+            ingredients: list[tuple[str, str]]
+            row_approvals: list[str]
+            source: str
+            if set_id.startswith(_SMPC_SET_PREFIX):
+                # EMA row: subject from the registry join, the product number doubles as the
+                # regulatory-approval id, and provenance rides the infores:epar chain.
+                ingredients = [smpc_subjects[set_id]]
+                row_approvals = [set_id[len(_SMPC_SET_PREFIX) :]]
+                source = _SOURCE_SMPC
+            else:
+                ingredients = evidence.active_ingredients_by_set.get(set_id, [])
+                row_approvals = approvals.expand_all(evidence.approval_ids_for_sets([set_id]))
+                source = _SOURCE_DAILYMED
             all_mentions = mined[index]
             mentions = object_mentions(all_mentions)
             decisions = _classify_mentions(item, mentions)
@@ -614,9 +727,10 @@ def build_contraindication_rows(
                         mention,
                         decision.evidence_text,
                         decision.context_text,
-                        approvals.expand_all(evidence.approval_ids_for_sets([set_id])),
+                        row_approvals,
                         qualifier_fields.get(mention_index, {}),
                         qualifier_scores.get(mention_index, {}),
+                        source,
                     )
 
     stats(logger, "shape_contraindications", mentions_mined=mentions_mined, assertions=len(aggregated))
@@ -624,7 +738,7 @@ def build_contraindication_rows(
 
 
 def _accumulate(
-    aggregated: dict[tuple[str, str, str], dict[str, Any]],
+    aggregated: dict[tuple[str, str, str, str], dict[str, Any]],
     set_id: str,
     doc_id: str,
     ingredient_name: str,
@@ -636,11 +750,16 @@ def _accumulate(
     approvals: Iterable[str] = (),
     qualifier_fields: Mapping[str, str] | None = None,
     qualifier_scores: Mapping[str, tuple[float, str]] | None = None,
+    source: str = _SOURCE_DAILYMED,
 ) -> None:
-    """Add one observation to the ``(subject, object, disease-context)`` aggregate.
+    """Add one observation to the ``(source, subject, object, disease-context)`` aggregate.
 
-    The subject carries the SPL-provided ingredient text + UNII; the object and optional context
-    are mined mention text with CURIE/name/category left empty for Tablassert/fullmap to resolve.
+    The subject carries the label-provided ingredient text + UNII ("" for EMA rows); the object
+    and optional context are mined mention text with CURIE/name/category left empty for
+    Tablassert/fullmap to resolve. ``source`` partitions DailyMed rows from EU SmPC rows: the
+    two carry different upstream chains (``infores:dailymed`` vs ``infores:epar``), so the same
+    (subject, object, context) observed in both must aggregate into two honest rows, not one
+    mixed-provenance row.
     """
     # Context is part of the semantic identity: unconditional evidence must never inherit a
     # conditional qualifier (or vice versa) merely because subject/object are equal. Context and
@@ -648,10 +767,11 @@ def _accumulate(
     # they enter pipe-encoded TSV cells — and before keying, so delimiter-only variants aggregate
     # together instead of fragmenting rows.
     context = pipe_safe_text(context_text)
-    key = (ingredient_name, object_text, context)
+    key = (source, ingredient_name, object_text, context)
     agg = aggregated.setdefault(
         key,
         {
+            "source": source,
             "subject_text": ingredient_name,
             "subject_curie": ingredient_unii,
             "subject_name": ingredient_name,
@@ -685,6 +805,8 @@ def _accumulate(
 
 
 def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
+    if agg.get("source", _SOURCE_DAILYMED) == _SOURCE_SMPC:
+        return _finalize_smpc_row(agg)
     return row_for(
         _TABLE,
         subject_text=agg["subject_text"],
@@ -712,6 +834,40 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         agent_type=AT_MANUAL,
         primary_knowledge_source=INFORES_DAKP,
         upstream_resource_ids=INFORES_DAILYMED,
+    )
+
+
+def _finalize_smpc_row(agg: dict[str, Any]) -> dict[str, str]:
+    """EMA SmPC aggregate -> assertion row, following the approved-treats EMA conventions.
+
+    The EMA product number rides ``FDA_regulatory_approvals`` and the SmPC document URL stays
+    in ``supporting_spl_documents``; there is no SPL set, so the DailyMed-shaped set/evidence
+    columns stay empty — including ``edge_evidence``, whose ``dailymed:`` CURIE prefix would
+    mislabel an EU document. Upstream provenance is ``infores:epar`` (the centralised
+    product-information corpus the SmPCs belong to).
+    """
+    return row_for(
+        _TABLE,
+        subject_text=agg["subject_text"],
+        subject_curie=agg["subject_curie"],
+        subject_name=agg["subject_name"],
+        subject_category="ChemicalEntity",
+        predicate=_PREDICATE,
+        object_text=agg["object_text"],
+        object_curie=agg["object_curie"],
+        object_name=agg["object_name"],
+        object_category=agg["object_category"],
+        disease_context_text=agg.get("disease_context_text", ""),
+        assertion_context="contraindication",
+        evidence_text=sorted_pipe(agg.get("evidence_texts", [])),
+        **agg.get("qualifiers", {}),
+        supporting_spl_documents=sorted_pipe(agg["docs"]),
+        FDA_regulatory_approvals=sorted_pipe(agg.get("FDA_regulatory_approvals", [])),
+        ner_confidence_score=_max_score(agg["scores"]),
+        knowledge_level=KL_ASSERTION,
+        agent_type=AT_MANUAL,
+        primary_knowledge_source=INFORES_DAKP,
+        upstream_resource_ids=INFORES_EPAR,
     )
 
 
