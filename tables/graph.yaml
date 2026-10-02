@@ -1,5 +1,5 @@
 name: DRUG_APPROVALS_KP
-version: "1.19.0"
+version: "1.20.0"
 fullmap: ".fullmap"
 rig:
   supporting_data_source_info:
@@ -86,7 +86,7 @@ rig:
       - kgx
     data_versioning_and_releases: >-
       DAKP versions follow the Python package version (pyproject.toml,
-      currently 1.19.0); every build embeds it in the graph config via
+      currently 1.20.0); every build embeds it in the graph config via
       graph_config(version=...). Re-ingests track the upstream cadence:
       FAERS quarterly ASCII extracts, DailyMed SPL releases, and the
       nightly-regenerated EMA medicines export. DailyMed, Drugs@FDA, and EMA
@@ -226,7 +226,7 @@ rig:
       - "Published KGX releases (Hugging Face dataset): https://huggingface.co/datasets/SkyeAv/drug-approvals-kp"
       - "Upstream DINGO-reviewed DAKP RIG: https://github.com/NCATSTranslator/translator-ingests/blob/main/src/translator_ingest/ingests/dakp/dakp_rig.yaml"
       - "RIG review issue: https://github.com/NCATSTranslator/translator-ingests/issues/416"
-  artifact_base_url: "https://huggingface.co/datasets/SkyeAv/drug-approvals-kp/resolve/main/1.19.0"
+  artifact_base_url: "https://huggingface.co/datasets/SkyeAv/drug-approvals-kp/resolve/main/1.20.0"
   artifact_base_path: kgx
 uuid_fields:
   - subject
