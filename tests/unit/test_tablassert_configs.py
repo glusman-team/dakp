@@ -93,11 +93,15 @@ EXPECTED_SOURCES = {
         {
             "resource_id": INFORES_DAKP,
             "resource_role": "primary_knowledge_source",
-            "upstream_resource_ids": ["infores:dailymed", "infores:faers"],
+            "upstream_resource_ids": ["infores:dailymed", "infores:faers", "infores:canada-vigilance"],
             "source_record_urls": [GESTALT_URL_TEMPLATE],
         },
         {"resource_id": "infores:faers", "resource_role": "supporting_data_source", "source_record_urls": [FAERS_AEMS_URL]},
         {"resource_id": "infores:dailymed", "resource_role": "supporting_data_source"},
+        # The Canada Vigilance supporting entry carries NO source_record_urls (like DailyMed):
+        # the dataset URL lives on the section source.url + the RIG, and per-report record ids
+        # stay in the TSV's supporting_faers_records debug column.
+        {"resource_id": "infores:canada-vigilance", "resource_role": "supporting_data_source"},
     ],
     "contraindication_assertions": [
         {
@@ -190,6 +194,10 @@ EXPECTED_ANNOTATIONS = {
 # which carries no dataset-level URLs).
 EMA_MEDICINES_XLSX_URL = "https://www.ema.europa.eu/en/documents/report/medicines-output-medicines-report_en.xlsx"
 EMA_EPAR_DOCUMENTS_JSON_URL = "https://www.ema.europa.eu/en/documents/report/documents-output-epar_documents_json-report_en.json"
+CANADA_VIGILANCE_EXTRACTS_URL = (
+    "https://www.canada.ca/en/health-canada/services/drugs-health-products/medeffect-canada/"
+    "adverse-reaction-database/canada-vigilance-online-database-data-extract.html"
+)
 # Each table's ``source.url`` list: approved-treats aggregates THREE upstream datasets (the
 # DailyMed full-release index, the EMA medicines xlsx, and the EMA EPAR documents report that
 # manifests the SmPC crawl), contraindications two (the DailyMed index and the same SmPC
@@ -200,7 +208,7 @@ EXPECTED_SOURCE_URLS = {
         EMA_MEDICINES_XLSX_URL,
         EMA_EPAR_DOCUMENTS_JSON_URL,
     ],
-    "faers_applied_to_treat_assertions": ["https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"],
+    "faers_applied_to_treat_assertions": ["https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html", CANADA_VIGILANCE_EXTRACTS_URL],
     "contraindication_assertions": ["https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm", EMA_EPAR_DOCUMENTS_JSON_URL],
 }
 
@@ -940,7 +948,7 @@ def test_graph_config_structure() -> None:
     # Supporting data sources: exactly the two edge-backed upstreams (no infores:medi — this
     # rebuild text-mines contraindications from DailyMed SPL; no Drugs@FDA — it backs no edge).
     supporting = rig["supporting_data_source_info"]
-    assert [entry["infores_id"] for entry in supporting] == ["infores:dailymed", "infores:faers", "infores:ema"]
+    assert [entry["infores_id"] for entry in supporting] == ["infores:dailymed", "infores:faers", "infores:ema", "infores:canada-vigilance"]
     # Each entry's file location is the URL constant the acquisition layer actually downloads.
     assert supporting[0]["relevant_files"][0]["location"] == tablassert_configs.dailymed_source.FULL_RELEASE_INDEX_URL
     assert supporting[1]["relevant_files"][0]["location"] == tablassert_configs.faers_source.FDA_FAERS_INDEX_URL
@@ -984,7 +992,7 @@ def test_rig_section_validates_directly_against_tablassert_rig_config() -> None:
     # Supporting upstreams validate as real RIGSupportingDataSourceInfo entries (infores CURIE +
     # relevant-file URL checks included) and stay exactly the two edge-backed sources.
     assert rig.supporting_data_source_info is not None
-    assert [entry.infores_id for entry in rig.supporting_data_source_info] == ["infores:dailymed", "infores:faers", "infores:ema"]
+    assert [entry.infores_id for entry in rig.supporting_data_source_info] == ["infores:dailymed", "infores:faers", "infores:ema", "infores:canada-vigilance"]
     assert source.name == "Drug Approvals Knowledge Provider (DAKP)"
     assert source.citations is not None
     assert any("https://pmc.ncbi.nlm.nih.gov/articles/PMC11601480/" in citation for citation in source.citations)
@@ -1040,7 +1048,7 @@ def test_rig_supporting_data_source_info_lists_only_edge_backed_upstreams() -> N
     from tablassert.models import Graph
 
     ids = [entry["infores_id"] for entry in tablassert_configs.graph_config()["rig"]["supporting_data_source_info"]]
-    assert ids == ["infores:dailymed", "infores:faers", "infores:ema"]
+    assert ids == ["infores:dailymed", "infores:faers", "infores:ema", "infores:canada-vigilance"]
     assert "infores:medi" not in ids  # legacy-pipeline source; no MEDI module backs it in this rebuild
 
     graph = Graph.model_validate(yaml.safe_load(tablassert_configs.graph_yaml()))

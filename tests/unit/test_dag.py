@@ -21,12 +21,14 @@ _EXPECTED_TASK_IDS = {
     "acquire_drugsfda",
     "acquire_ema",
     "acquire_ema_smpc",
+    "acquire_canada_vigilance",
     "acquire_ner_models",
     "extract_dailymed",
     "extract_faers",
     "extract_drugsfda",
     "extract_ema",
     "extract_ema_smpc",
+    "extract_canada_vigilance",
     "shape_treatment_tables",
     "shape_faers_use_tables",
     "shape_contraindication_tables",
@@ -38,10 +40,18 @@ _EXPECTED_TASK_IDS = {
 }
 
 _GO_STUB_IDS = {"extract_dailymed", "extract_faers", "extract_drugsfda"}
-_ACQUIRE_IDS = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ema", "acquire_ema_smpc", "acquire_ner_models"}
+_ACQUIRE_IDS = {
+    "acquire_dailymed",
+    "acquire_faers",
+    "acquire_drugsfda",
+    "acquire_ema",
+    "acquire_ema_smpc",
+    "acquire_canada_vigilance",
+    "acquire_ner_models",
+}
 _EXPECTED_GROUP_MEMBERS = {
     "acquire": _ACQUIRE_IDS,
-    "extract": _GO_STUB_IDS | {"extract_ema", "extract_ema_smpc"},
+    "extract": _GO_STUB_IDS | {"extract_ema", "extract_ema_smpc", "extract_canada_vigilance"},
     "shape": {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"},
     "tablassert": {"generate_tablassert_configs", "run_tablassert"},
     "export": {"export_legacy_tsv", "publish_release_artifacts"},
@@ -133,6 +143,7 @@ def test_dag_task_graph(dakp_build) -> None:
     assert upstream("extract_drugsfda") == {"acquire_drugsfda"}
     assert upstream("extract_ema") == {"acquire_ema"}
     assert upstream("extract_ema_smpc") == {"acquire_ema_smpc"}
+    assert upstream("extract_canada_vigilance") == {"acquire_canada_vigilance"}
 
     # Shapers join the extracts (treatment: dm+drugsfda+faers+ema + NER models; uses: faers+dm+drugsfda
     # + the produced approved-treats table + NER models; contraindication: dm+drugsfda+smpc+ema + NER
@@ -146,7 +157,13 @@ def test_dag_task_graph(dakp_build) -> None:
         "extract_ema_smpc",
         "acquire_ner_models",
     }
-    assert upstream("shape_faers_use_tables") == {"extract_faers", "extract_dailymed", "extract_drugsfda", "shape_treatment_tables"}
+    assert upstream("shape_faers_use_tables") == {
+        "extract_faers",
+        "extract_dailymed",
+        "extract_drugsfda",
+        "extract_canada_vigilance",
+        "shape_treatment_tables",
+    }
     assert upstream("shape_contraindication_tables") == {
         "extract_dailymed",
         "extract_drugsfda",

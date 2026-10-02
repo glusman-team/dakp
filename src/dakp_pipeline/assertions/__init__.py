@@ -21,6 +21,8 @@ INFORES_DAILYMED = "infores:dailymed"
 INFORES_EMA = "infores:ema"
 INFORES_EPAR = "infores:epar"
 INFORES_FAERS = "infores:faers"
+#: Health Canada's Canada Vigilance Adverse Reaction Online Database (observed-use extract).
+INFORES_CANADA_VIGILANCE = "infores:canada-vigilance"
 
 KL_ASSERTION = "knowledge_assertion"
 AT_MANUAL = "manual_validation_of_automated_agent"
@@ -72,6 +74,7 @@ def object_mentions(mentions: Iterable[Mention]) -> list[Mention]:
 
 __all__ = [
     "AT_MANUAL",
+    "INFORES_CANADA_VIGILANCE",
     "INFORES_DAILYMED",
     "INFORES_DAKP",
     "INFORES_EMA",

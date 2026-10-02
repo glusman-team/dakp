@@ -54,6 +54,28 @@ rig:
           description: >-
             Bulk export of centrally reviewed medicines; MeSH therapeutic areas
             and EPAR indication text
+    - infores_id: "infores:canada-vigilance"
+      name: >-
+        Health Canada Canada Vigilance Adverse Reaction Online Database
+      description: >-
+        Health Canada's Canada Vigilance database collects adverse reaction
+        reports submitted for drugs and health products marketed in Canada.
+        DAKP uses the suspect drug-indication pairs in its monthly data
+        extract to derive observed drug-disease usage relationships and case
+        counts, including on-label and off-label use
+        (infores:canada-vigilance).
+      terms_of_use_info:
+        terms_of_use_url: "https://open.canada.ca/en/open-government-licence-canada"
+        terms_of_use_description: >-
+          The extract is released under the Open Government Licence - Canada:
+          reproduction for commercial and non-commercial purposes is permitted
+          with attribution to Health Canada.
+      relevant_files:
+        - file_name: "Canada Vigilance data extract (zip)"
+          location: "https://www.canada.ca/en/health-canada/services/drugs-health-products/medeffect-canada/adverse-reaction-database/canada-vigilance-online-database-data-extract.html"
+          description: >-
+            Monthly full extract of the Canada Vigilance Adverse Reaction Online
+            Database; suspect drug-indication pairs
   source_info:
     infores_id: "infores:drugapprovals-kp"
     name: "Drug Approvals Knowledge Provider (DAKP)"
@@ -78,6 +100,7 @@ rig:
     data_access_locations:
       - "DailyMed SPL releases - https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
       - "FAERS quarterly ASCII extracts - https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
+      - "Canada Vigilance data extract - https://www.canada.ca/en/health-canada/services/drugs-health-products/medeffect-canada/adverse-reaction-database/canada-vigilance-online-database-data-extract.html"
       - "Drugs@FDA data files - https://www.fda.gov/media/89850/download"
       - "EMA medicines report - https://www.ema.europa.eu/en/documents/report/medicines-output-medicines-report_en.xlsx"
       - "EMA EPAR documents report - https://www.ema.europa.eu/en/documents/report/documents-output-epar_documents_json-report_en.json"
@@ -99,16 +122,16 @@ rig:
       - translator_knowledge_creator
     utility: >-
       Provides FDA- and EMA-approved drug-disease treatment relationships,
-      FAERS-observed applied-to-treat uses, and SPL-mined contraindications
-      for Translator querying.
+      FAERS- and Canada Vigilance-observed applied-to-treat uses, and
+      SPL-mined contraindications for Translator querying.
     scope: >-
       Approved-treats edges (DailyMed SPL indications joined to Drugs@FDA
       applications and FAERS cases, plus EMA centrally-authorised medicines'
       MeSH therapeutic areas, mined EPAR indication text, and mined EMA SmPC
-      product-information indications), FAERS observed-use edges, and
-      contraindication edges text-mined from DailyMed SPL sections and EMA
-      SmPC product-information sections; all other content of the upstream
-      feeds is out of scope.
+      product-information indications), FAERS and Canada Vigilance
+      observed-use edges, and contraindication edges text-mined from
+      DailyMed SPL sections and EMA SmPC product-information sections; all
+      other content of the upstream feeds is out of scope.
     relevant_files:
       - file_name: "DailyMed full-release SPL zips"
         location: "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
@@ -120,6 +143,11 @@ rig:
         description: >-
           FDA Adverse Event Reporting System quarterly extracts; drug/indication
           case pairs.
+      - file_name: "Canada Vigilance data extract (zip)"
+        location: "https://www.canada.ca/en/health-canada/services/drugs-health-products/medeffect-canada/adverse-reaction-database/canada-vigilance-online-database-data-extract.html"
+        description: >-
+          Health Canada's Canada Vigilance Adverse Reaction Online Database
+          monthly extract; suspect drug-indication pairs.
       - file_name: "EMA medicines report (xlsx)"
         location: "https://www.ema.europa.eu/en/documents/report/medicines-output-medicines-report_en.xlsx"
         description: >-
