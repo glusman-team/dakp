@@ -3,9 +3,10 @@
 Covers: evidence indexing of the boxed-warning (LOINC ``34066-1``) and warnings/precautions
 (``43685-7``, ``34071-1``, ``42232-9``) sections; hard-trigger-only acceptance for
 warning-section mentions (soft caution language and explicit negation rejected); the
-singleton-ingredient discipline applied to Pass 3 sets; and production multi-GPU dispatch
-flattening all three passes into one pool when a third pass has work. Inputs are tiny parquet
-tables built in tmp so no heavy NER deps are needed.
+singleton-ingredient discipline applied to Pass 3 sets; production dispatch flattening all three
+passes into one pool when a third pass has work; and the run-scoped pool being reused across cache-put
+batches instead of being rebuilt per batch. Inputs are tiny parquet tables built in tmp so no heavy
+NER deps are needed.
 """
 
 from __future__ import annotations
@@ -158,8 +159,8 @@ def test_pass3_set_without_ingredients_skipped(tmp_path: Path) -> None:
 # --- production dispatch -------------------------------------------------------
 
 
-def test_build_rows_dispatches_flattened_when_pass3_present(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Production NER + devices + work in all three passes: every pass's items reach _mine_multi_gpu."""
+def test_build_rows_dispatches_flattened_when_pass3_present(fake_dispatch_pool: Any, tmp_path: Path) -> None:
+    """Production NER + devices + work in all three passes: every pass's items reach the pool once."""
     sections = _sections(
         tmp_path,
         [
@@ -173,17 +174,65 @@ def test_build_rows_dispatches_flattened_when_pass3_present(monkeypatch: pytest.
     )
     ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease", "diabetes": "disease", "epilepsy": "disease"})
 
-    called: list[dict[str, Any]] = []
-
-    def fake_multi_gpu(work_items, ner_arg, devs):
-        called.append({"items": len(work_items), "devices": tuple(devs)})
-        offline = DiseaseNER(gazetteer=ner_arg._gazetteer)
+    def fake_mine(work_items: Any, pool_ner: Any) -> dict[tuple[str, str], Any]:
+        offline = DiseaseNER(gazetteer=pool_ner._gazetteer)
         return {(s, d): offline.extract(t) for s, d, t in work_items}
 
     import dakp_pipeline.assertions.contraindications as contra_mod
 
-    monkeypatch.setattr(contra_mod, "_mine_multi_gpu", fake_multi_gpu)
+    calls = fake_dispatch_pool(contra_mod, fake_mine)
 
     rows = build_contraindication_rows([sections, ingredients], ner, devices=("cuda:0", "cuda:1", "cuda:2", "cuda:3"))
-    assert called == [{"items": 3, "devices": ("cuda:0", "cuda:1", "cuda:2", "cuda:3")}]
+    assert calls == [(3, ("cuda:0", "cuda:1", "cuda:2", "cuda:3"))]  # all three passes, one dispatch
     assert {r["subject_text"] for r in rows} == {"DrugX", "DrugY", "DrugZ"}
+
+
+class _StoringCache:
+    """In-memory MentionCache stand-in: stores payloads, so a first run misses and re-reads hit."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, Any] = {}
+        self.put_calls = 0
+
+    def get_many(self, keys: list[str]) -> dict[str, Any]:
+        return {key: self.store[key] for key in keys if key in self.store}
+
+    def put_many(self, items: dict[str, Any]) -> None:
+        self.put_calls += 1
+        self.store.update(items)
+
+    def delete_many(self, keys: list[str]) -> None:
+        for key in keys:
+            self.store.pop(key, None)
+
+
+def test_build_rows_uses_one_pool_across_cache_put_batches(fake_dispatch_pool: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Several cache-put batches, ONE pool: each device loads its model once per RUN.
+
+    ``mine_with_cache`` slices the cache misses into batches of ``DAKP_NERCACHE_PUT_BATCH`` and calls
+    the shaper's ``mine`` closure once per batch. When that closure built its own executor, a 62k-text
+    build spawned ~123 pools, and every worker of every pool re-imported torch, re-acquired the
+    per-device flock and re-read the weights from the BLAKE3 model cache. With the batch size forced
+    to 2 over 4 distinct sections this issues two batches, and both must go through the SAME pool.
+    """
+    monkeypatch.setenv("DAKP_NERCACHE_PUT_BATCH", "2")
+    # Four DISTINCT texts (identical texts dedupe to one work item at the cache seam) and a batch
+    # size of 2 give exactly two pool calls and no singleton batch, so the sequential fallback -
+    # which would load the real GLiNER model - is never reached.
+    letters = "ABCD"
+    sections = _sections(tmp_path, [(f"SET-{c}", f"SET-{c}#34070-3", "34070-3", f"asthma variant {c}") for c in letters])
+    ingredients = _ingredients(tmp_path, [("active", f"SET-{c}", f"Drug{c}", f"UNII:{c}") for c in letters])
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"})
+
+    def fake_mine(work_items: Any, pool_ner: DiseaseNER) -> dict[tuple[str, str], Any]:
+        offline = DiseaseNER(gazetteer=pool_ner._gazetteer)
+        return {(s, d): offline.extract(t) for s, d, t in work_items}
+
+    import dakp_pipeline.assertions.contraindications as contra_mod
+
+    calls = fake_dispatch_pool(contra_mod, fake_mine)
+
+    rows = build_contraindication_rows([sections, ingredients], ner, devices=("cuda:0", "cuda:1"), cache=_StoringCache())  # type: ignore[arg-type]
+    assert calls.pools == 1  # ONE pool for the whole run, not one per cache-put batch
+    assert [count for count, _slots in calls.mined] == [2, 2]  # both batches went through it
+    assert len(rows) == 4

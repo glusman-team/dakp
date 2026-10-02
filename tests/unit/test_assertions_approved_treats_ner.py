@@ -399,8 +399,8 @@ def test_mine_indication_mentions_sequential_offline() -> None:
     assert ema_mentions == {}
 
 
-def test_production_ner_dispatches_multi_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Production NER + devices + >1 section: mining goes through _mine_multi_gpu."""
+def test_production_ner_dispatches_through_the_pool(fake_dispatch_pool: Any) -> None:
+    """Production NER + devices + >1 section: mining goes through the run-scoped MiningPool."""
     ev = DailyMedEvidence(
         approval_sets={"12345": {"SET-A"}},
         approval_display={"12345": "012345"},
@@ -410,23 +410,20 @@ def test_production_ner_dispatches_multi_gpu(monkeypatch: pytest.MonkeyPatch) ->
     )
     ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"})
 
-    called: list[dict[str, Any]] = []
-
-    def fake_multi_gpu(work_items: Any, ner_arg: Any, devs: Any) -> dict[tuple[str, str], Any]:
-        called.append({"items": len(work_items), "devices": tuple(devs)})
-        offline = DiseaseNER(gazetteer=ner_arg._gazetteer)
+    def fake_mine(work_items: Any, pool_ner: Any) -> dict[tuple[str, str], Any]:
+        offline = DiseaseNER(gazetteer=pool_ner._gazetteer)
         return {(s, d): offline.extract(t) for s, d, t in work_items}
 
-    monkeypatch.setattr(approved_treats, "_mine_multi_gpu", fake_multi_gpu)
+    calls = fake_dispatch_pool(approved_treats, fake_mine)
 
     cases = pl.DataFrame({"nda": ["012345"], "indication": ["asthma"], "drugname": ["Examplestatin"], "ingredient": ["Examplestatin"]})
     rows = build_approved_treats_rows(cases, ev, _MAPPING, {}, ner=ner, devices=("cuda:0", "cuda:1"))
-    assert called == [{"items": 2, "devices": ("cuda:0", "cuda:1")}]
+    assert calls == [(2, ("cuda:0", "cuda:1"))]  # both sections in ONE pool call, both devices offered
     assert [row["object_text"] for row in rows] == ["asthma"]
 
 
-def test_production_ner_single_section_stays_sequential(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A single section is mined inline even with devices available (no pool for one item)."""
+def test_production_ner_single_section_stays_sequential(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_dispatch_pool: Any) -> None:
+    """A single section is mined inline even with a pool available (no dispatch for one item)."""
     # Keep the inline production extract hermetic (no torch/model download): a fake gliner2
     # module plus a stubbed ensure_model, the same seam test_ner_edge.py uses.
     fake_model = types.SimpleNamespace(extract_entities=lambda text, entity_types, threshold=0.5, **_kwargs: {"entities": {}})
@@ -442,9 +439,10 @@ def test_production_ner_single_section_stays_sequential(monkeypatch: pytest.Monk
     )
     ev = _supported_evidence("indicated for asthma")
     ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"})
-    monkeypatch.setattr(approved_treats, "_mine_multi_gpu", lambda *args: (_ for _ in ()).throw(AssertionError("must not dispatch")))
+    calls = fake_dispatch_pool(approved_treats, lambda *_args: (_ for _ in ()).throw(AssertionError("must not dispatch a single item")))
     cases = pl.DataFrame({"nda": ["012345"], "indication": ["asthma"], "drugname": ["Examplestatin"], "ingredient": ["Examplestatin"]})
     rows = build_approved_treats_rows(cases, ev, _MAPPING, {}, ner=ner, devices=("cuda:0", "cuda:1"))
+    assert calls == []  # one item never reaches the pool
     assert [row["object_text"] for row in rows] == ["asthma"]
 
 

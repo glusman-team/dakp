@@ -117,7 +117,7 @@ from dakp_pipeline.assertions.evidence import (
     spl_evidence_pipe,
     write_assertion_table,
 )
-from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu, _resolve_devices, default_ner, mine_with_cache
+from dakp_pipeline.assertions.ner_dispatch import _resolve_devices, default_ner, dispatch_pool, mine_with_cache
 from dakp_pipeline.assertions.observed_uses import is_non_disease_indication
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
@@ -337,9 +337,10 @@ def _mine_indication_mentions(
     Sections are mined per document section — keyed by :func:`_doc_key`, because one SPL document
     can contribute several indication sections and ``(set_id, doc_id)`` alone would collide — and
     shared by both candidate paths (FAERS corroboration + DailyMed fallback), never re-mined per
-    candidate. Production runs dispatch across GPUs
-    (:func:`~dakp_pipeline.assertions.ner_dispatch._mine_multi_gpu`); the offline gazetteer backend
-    runs sequentially with periodic progress narration. When ``cache`` is given, previously mined
+    candidate. Production runs dispatch through ONE run-scoped
+    :class:`~dakp_pipeline.assertions.ner_dispatch.MiningPool` across the visible devices, so each
+    device loads its model once per run rather than once per cache-put batch; the offline gazetteer
+    backend runs sequentially with periodic progress narration. When ``cache`` is given, previously mined
     texts are served from the persistent mention cache
     (:func:`~dakp_pipeline.assertions.ner_dispatch.mine_with_cache`). Output is identical
     regardless of dispatch mode or cache state.
@@ -360,19 +361,26 @@ def _mine_indication_mentions(
     if not work_items and not ema_items:
         return {}, {}
 
-    def mine(items: Sequence[Any]) -> dict[tuple[str, str], Any]:
-        if devices and len(items) > 1 and not ner._offline:
-            return _mine_multi_gpu(items, ner, devices)
-        mined: dict[tuple[str, str], Any] = {}
-        for done, (key_id, doc_id, text) in enumerate(items, start=1):
-            # Production returns RAW SPANS (Tier B cacheable, merged parent-side by
-            # mine_with_cache); offline returns final mentions (never cached). Both normalize
-            # to mention lists at the cache seam.
-            mined[(key_id, doc_id)] = ner.extract_spans(text) if not ner._offline else ner.extract(text)
-            progress(logger, "shape_approved_treats", done, len(items), every=_MINING_PROGRESS_EVERY)
-        return mined
+    # ONE pool for the whole mining region: mine_with_cache slices the misses into batches of
+    # DAKP_NERCACHE_PUT_BATCH (512 by default) and calls `mine` once per batch, so a pool built per
+    # call would re-import torch, re-acquire the per-device flock and re-read the weights that many
+    # times. dispatch_pool yields None for an offline backend or no usable device, which is exactly
+    # the sequential condition below.
+    with dispatch_pool(ner, devices) as pool:
 
-    mined = mine_with_cache([*work_items, *ema_items], ner, mine, cache)
+        def mine(items: Sequence[Any]) -> dict[tuple[str, str], Any]:
+            if pool is not None and len(items) > 1:
+                return pool.mine(items)
+            mined: dict[tuple[str, str], Any] = {}
+            for done, (key_id, doc_id, text) in enumerate(items, start=1):
+                # Production returns RAW SPANS (Tier B cacheable, merged parent-side by
+                # mine_with_cache); offline returns final mentions (never cached). Both normalize
+                # to mention lists at the cache seam.
+                mined[(key_id, doc_id)] = ner.extract_spans(text) if not ner._offline else ner.extract(text)
+                progress(logger, "shape_approved_treats", done, len(items), every=_MINING_PROGRESS_EVERY)
+            return mined
+
+        mined = mine_with_cache([*work_items, *ema_items], ner, mine, cache)
     spl_mentions = {key: mentions for key, mentions in mined.items() if not key[0].startswith(_EMA_KEY_PREFIX)}
     ema_mentions = {key: mentions for key, mentions in mined.items() if key[0].startswith(_EMA_KEY_PREFIX)}
     return spl_mentions, ema_mentions
