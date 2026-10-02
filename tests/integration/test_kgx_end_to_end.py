@@ -235,7 +235,15 @@ EXPECTED_SOURCES_BY_PREDICATE: dict[str, list[tuple[str, str, list[str] | None]]
         ("infores:faers", "supporting_data_source", None),
         ("infores:dailymed", "supporting_data_source", None),
     ],
-    _CONTRA: [(INFORES_DAKP, "primary_knowledge_source", ["infores:dailymed"]), ("infores:dailymed", "supporting_data_source", None)],
+    # The contraindication table unions DailyMed (US SPL contraindication sections) and EMA SmPC
+    # (EU section 4.2/4.3 mined rows), so its TABLE-level template names both upstreams on the
+    # primary entry and carries both supporting entries; per-row attribution lives in the
+    # assertion TSV provenance, not in `sources`.
+    _CONTRA: [
+        (INFORES_DAKP, "primary_knowledge_source", ["infores:dailymed", "infores:epar"]),
+        ("infores:dailymed", "supporting_data_source", None),
+        ("infores:epar", "supporting_data_source", None),
+    ],
 }
 
 
