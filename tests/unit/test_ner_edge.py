@@ -1292,22 +1292,25 @@ def test_fp16_autocast_arms_only_on_cuda(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 
 def test_fp16_default_autocast_arms_on_cuda(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """On a CUDA-pinned backend the fp16 default runs the forward under ``torch.autocast``.
+    """A CUDA-pinned fp16-default backend wraps the forward in ``torch.autocast('cuda', float16)``.
 
-    Real torch, no GPU needed: entering a ``cuda`` autocast context only flips thread-local
-    dispatch flags, so the recording fake can observe ``torch.is_autocast_enabled('cuda')``
-    from a CPU-only host. This is the branch every production GLiNER run now takes.
+    ``torch.autocast`` itself is replaced with a recording fake so the assertion is exact and
+    GPU-independent: real cuda autocast silently disables itself on a host with no device
+    (observed: this test green locally on a GPU host, red on the GPU-less CI runner), and what
+    DAKP owns is the arming decision in ``_raw_batch_extract``, not torch's autocast internals.
+    The CPU test above already proves the non-cuda path never enters the context.
     """
     import torch
 
     _install_fake_gliner2(monkeypatch, tmp_path, [])
-    seen: dict[str, bool] = {}
+    entered: list[tuple[str, Any]] = []
 
-    class _AutocastRecordingModel(_BatchRecordingModel):
-        def batch_extract_entities(self, texts: list[str], entity_types: Any, batch_size: int = 8, **_kwargs: Any) -> list[dict[str, Any]]:
-            seen["cuda_autocast"] = torch.is_autocast_enabled("cuda")
-            return super().batch_extract_entities(texts, entity_types, batch_size)
+    @contextmanager
+    def _recording_autocast(device_type: str, **kwargs: Any) -> Iterator[None]:
+        entered.append((device_type, kwargs.get("dtype")))
+        yield
 
+    monkeypatch.setattr(torch, "autocast", _recording_autocast)
     backend = DiseaseNER(offline=False, gazetteer={}, device="cuda", workdir=tmp_path)
-    backend._raw_batch_extract(_AutocastRecordingModel(), ["a"], 1)
-    assert seen["cuda_autocast"] is True  # the fp16 default arms autocast on a cuda device
+    backend._raw_batch_extract(_BatchRecordingModel(), ["a"], 1)
+    assert entered == [("cuda", torch.float16)]  # the fp16 default arms autocast on a cuda device
