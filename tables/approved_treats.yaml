@@ -5,6 +5,7 @@ template:
     url:
       - "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
       - "https://www.ema.europa.eu/en/documents/report/medicines-output-medicines-report_en.xlsx"
+      - "https://www.ema.europa.eu/en/documents/report/documents-output-epar_documents_json-report_en.json"
     delimiter: "\t"
     reindex:
       - column: F

@@ -316,7 +316,7 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
             doc_md="Shape FDA/EMA-approved treatment assertions from DailyMed, Drugs@FDA, FAERS, and the EMA registry refs.",
         )
         def shape_treatment_tables(
-            dm_ext: Any, drugsfda_ext: Any, faers_ext: Any, ema_ext: Any, ner_models_ref: Any
+            dm_ext: Any, drugsfda_ext: Any, faers_ext: Any, ema_ext: Any, smpc_ext: Any, ner_models_ref: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             # ``ner_models_ref`` is an ordering dependency: the production NER lazily loads the
             # GLiNER weights cached by acquire_ner_models, so corroboration mining runs after
@@ -330,7 +330,7 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
             ctx = _ctx()
             with step(logger, "task shape_treatment_tables"):
                 dailymed_refs, drugsfda_refs, faers_refs = _refs_from_xcom(dm_ext), _refs_from_xcom(drugsfda_ext), _refs_from_xcom(faers_ext)
-                ema_refs = _refs_from_xcom(ema_ext)
+                ema_refs, smpc_refs = _refs_from_xcom(ema_ext), _refs_from_xcom(smpc_ext)
                 stats(
                     logger,
                     "task shape_treatment_tables",
@@ -338,12 +338,13 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
                     drugsfda_refs=len(drugsfda_refs),
                     faers_refs=len(faers_refs),
                     ema_refs=len(ema_refs),
+                    smpc_refs=len(smpc_refs),
                 )
                 # Indications are precision-first: false-positive treatment edges are more
                 # harmful than missed weak corroboration.
                 ner = DiseaseNER.for_indications(offline=False, workdir=ctx.workdir)
                 ctx = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={**ctx.params, "ner": ner})
-                in_refs = [*dailymed_refs, *drugsfda_refs, *faers_refs, *ema_refs]
+                in_refs = [*dailymed_refs, *drugsfda_refs, *faers_refs, *ema_refs, *smpc_refs]
                 # Already-done skip: identical inputs + config fingerprint => return the
                 # previously registered outputs without re-running the shaper.
                 cached = cached_shape_outputs("shape_approved_treats", in_refs, ctx)
@@ -445,7 +446,7 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
 
         # The observed-uses task consumes the produced approved-treats table (approval-status
         # cross-reference), so it runs after shape_treatment_tables.
-        approved = shape_treatment_tables(extracts.dailymed, extracts.drugsfda, extracts.faers, extracts.ema, ner_models)
+        approved = shape_treatment_tables(extracts.dailymed, extracts.drugsfda, extracts.faers, extracts.ema, extracts.smpc, ner_models)
         return AssertionOutputs(
             approved=approved,
             uses=shape_faers_use_tables(extracts.faers, extracts.dailymed, extracts.drugsfda, approved),

@@ -236,13 +236,13 @@ UUID_DOMAIN = INFORES_DAKP
 #: explicit ``override.sources`` template (:data:`_TABLE_SOURCES`), which carries the static
 #: AEMS URL (:data:`FAERS_SOURCE_RECORD_URL`) on the FAERS supporting entry as a dataset-level
 #: exception. Each value is a TUPLE because a table can aggregate several upstream datasets:
-#: approved-treats rows come from DailyMed SPL releases (the DailyMed full-release index) AND the
-#: EMA medicines registry (the fixed-name xlsx bulk export); contraindication rows from DailyMed
-#: AND the EMA SmPC product-information corpus (the EPAR documents JSON report that manifests the
-#: SmPC crawl); FAERS observed-use rows from the FAERS quarterly ASCII extracts (the FDA
-#: quarterly-data listing).
+#: approved-treats rows come from DailyMed SPL releases (the DailyMed full-release index), the
+#: EMA medicines registry (the fixed-name xlsx bulk export), and the EMA SmPC product-information
+#: corpus (the EPAR documents JSON report that manifests the SmPC crawl); contraindication rows
+#: from DailyMed AND that same SmPC corpus; FAERS observed-use rows from the FAERS quarterly
+#: ASCII extracts (the FDA quarterly-data listing).
 _TABLE_SOURCE_URLS: dict[str, tuple[str, ...]] = {
-    "approved_treats_assertions": (dailymed_source.FULL_RELEASE_INDEX_URL, ema_source.EMA_MEDICINES_URL),
+    "approved_treats_assertions": (dailymed_source.FULL_RELEASE_INDEX_URL, ema_source.EMA_MEDICINES_URL, ema_documents_source.EMA_DOCUMENTS_URL),
     "faers_applied_to_treat_assertions": (faers_source.FDA_FAERS_INDEX_URL,),
     "contraindication_assertions": (dailymed_source.FULL_RELEASE_INDEX_URL, ema_documents_source.EMA_DOCUMENTS_URL),
 }
@@ -623,10 +623,11 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
             ),
             "scope": (
                 "Approved-treats edges (DailyMed SPL indications joined to Drugs@FDA applications and "
-                "FAERS cases, plus EMA centrally-authorised medicines' MeSH therapeutic areas and mined "
-                "EPAR indication text), FAERS observed-use edges, and contraindication edges text-mined from "
-                "DailyMed SPL sections and EMA SmPC product-information sections; all other content of the "
-                "upstream feeds is out of scope."
+                "FAERS cases, plus EMA centrally-authorised medicines' MeSH therapeutic areas, mined "
+                "EPAR indication text, and mined EMA SmPC product-information indications), FAERS "
+                "observed-use edges, and contraindication edges text-mined from DailyMed SPL sections "
+                "and EMA SmPC product-information sections; all other content of the upstream feeds is "
+                "out of scope."
             ),
             "relevant_files": [entry for entry in relevant_files if entry["location"] in included_urls],
             "included_content": [copy.deepcopy(entry) for entry in RIG_INCLUDED_CONTENT],
