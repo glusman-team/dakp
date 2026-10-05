@@ -376,7 +376,8 @@ def test_regulatory_approvals_ride_the_edge_as_a_top_level_json_array(kgx_build:
     """``regulatory_approvals`` reaches the edge as its own top-level JSON array.
 
     The canonical multivalued slot for FDA application numbers ("numbers that identify specific
-    drug applications"), granted to the classes DAKP pins. DAKP annotates it with
+    drug applications"), declared natively on the classes DAKP pins by biolink-model 4.4.5. DAKP
+    annotates it with
     ``split_by: "|"`` so the pipe-joined cell is emitted as a real JSON array — the legacy
     ``approvals`` list shape — instead of a joined scalar, and never as a folded
     ``"<name>: <value>"`` ``supporting_text`` string.

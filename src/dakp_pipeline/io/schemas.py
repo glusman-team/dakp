@@ -39,6 +39,7 @@ APPROVED_TREATS_COLUMNS = [
     "object_curie",
     "object_name",
     "object_category",
+    "disease_context_text",
     "FDA_regulatory_approvals",
     "supporting_spl_sets",
     "supporting_spl_documents",

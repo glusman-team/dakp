@@ -19,10 +19,12 @@ from dakp_pipeline.assertions.evidence import (
     build_dailymed_evidence,
     build_drugsfda_ingredient_map,
     build_fda_approval_index,
+    canonical_application_number,
     faers_quarter_url,
     faers_quarter_urls,
     find_faers_cases,
     find_table,
+    is_fda_application_number,
     pipe_safe_text,
     sorted_pipe,
     source_manifest_url,
@@ -367,9 +369,15 @@ def test_fda_approval_index_expands_faers_numbers_from_drugsfda(tmp_path: Path) 
     assert index.expand("0125514") == ["BLA125514"]  # any FAERS spelling normalizes to one entry
     assert index.expand("17977") == ["NDA017977"]  # padding restored from the register
     assert index.expand_all(["17977", "125514", "125514"]) == ["BLA125514", "NDA017977"]
-    # Numbers in no register keep their own recorded form rather than being dropped.
-    assert index.expand("099999") == ["099999"]
+    # A well-formed number no register knows is still a resolvable identifier, so it rides through.
     assert index.expand("ANDA065432") == ["ANDA065432"]
+    # A BARE number no register knows is not: without its application type it resolves to nothing,
+    # so it is dropped rather than shipped as a ``regulatory_approvals`` value. FAERS ``nda_num``
+    # is reporter free text, and its placeholders are the commonest values in a real build.
+    assert index.expand("099999") == []
+    assert index.expand("999999") == []
+    assert index.expand("99") == []
+    assert index.expand("501930535019305") == []  # two NDCs run together
     assert index.expand("") == []
     assert index.expand("not a number") == []
 
@@ -426,21 +434,69 @@ def test_dailymed_display_never_concatenates_the_nci_application_code(tmp_path: 
 
 def test_fda_approval_index_dedupes_repeated_labels_and_skips_unusable_rows(tmp_path: Path) -> None:
     # An application number appears on every label that bears it, so the same display form
-    # arrives many times; and a row with no number, or with a number no source types, contributes
-    # nothing rather than a prefix-less entry.
+    # arrives many times; and a row with no number, a number no source types, or a number typed
+    # with something that is not a drug application (a 510(k) device clearance) contributes
+    # nothing rather than a prefix-less or non-drug entry.
     approvals = _parquet(
         tmp_path,
         "spl_approvals.parquet",
         {
-            "approval_id": ["NDA012345", "NDA012345", "022329", "", "no digits"],
-            "approval_code": ["NDA012345", "NDA012345", "022329", "", "no digits"],
-            "approval_type": ["C73594", "C73594", "", "C73594", "C73594"],
-            "spl_set_id": ["SET-A", "SET-B", "SET-C", "SET-D", "SET-E"],
+            "approval_id": ["NDA012345", "NDA012345", "022329", "", "no digits", "K001608"],
+            "approval_code": ["NDA012345", "NDA012345", "022329", "", "no digits", "K001608"],
+            "approval_type": ["C73594", "C73594", "", "C73594", "C73594", ""],
+            "spl_set_id": ["SET-A", "SET-B", "SET-C", "SET-D", "SET-E", "SET-F"],
         },
     )
     index = build_fda_approval_index([approvals])
 
     assert index.displays["12345"] == ("NDA012345",)  # the repeat adds nothing
     assert "22329" not in index.displays  # no prefix anywhere: not an expansion, left alone
-    assert index.expand("022329") == ["022329"]
+    assert "1608" not in index.displays  # a device clearance is not a drug application number
+    assert index.expand("022329") == []
+    assert index.expand("K001608") == []
     assert len(index.displays) == 1
+
+
+def test_fda_approval_index_restores_the_padding_a_typed_number_lost(tmp_path: Path) -> None:
+    # Drugs@FDA stores ``ApplNo`` in a ``char(6)`` column, so a five-digit application arrives
+    # space-padded and the extractor's ``strip()`` leaves ``19019``; the 2026-10-02 register has
+    # exactly two such rows (NDA19019, NDA21939). labels.fda.gov asks for "the 6 digit application
+    # number, including the leading zero", so the index restores the padding rather than refusing a
+    # real application for a formatting artifact of the source file.
+    products = _parquet(tmp_path, "products.parquet", {"appl_no": ["19019", "21939"], "appl_type": ["NDA", "NDA"]})
+    index = build_fda_approval_index([products])
+
+    assert index.displays["19019"] == ("NDA019019",)
+    assert index.expand("19019") == ["NDA019019"]
+    assert index.expand("NDA19019") == ["NDA019019"]  # an unpadded label id canonicalizes too
+    assert index.expand("021939") == ["NDA021939"]  # and the padded spelling hits the same entry
+    # A prefix-less number is NEVER padded: that would invent an application type it never claimed,
+    # which is how the reporter placeholder ``99`` would become a fictional ``NDA000099``.
+    assert canonical_application_number("", "99") == "99"
+    assert canonical_application_number("NDA", "19019") == "NDA019019"
+    assert canonical_application_number("K", "1608") == "K1608"  # not a drug type: left alone
+    assert index.expand("99") == []
+
+
+def test_is_fda_application_number_gates_the_regulatory_approvals_slot() -> None:
+    # The shapes a real build actually produces, in the order they dominate the value counts.
+    assert is_fda_application_number("NDA017977")
+    assert is_fda_application_number("ANDA040056")
+    assert is_fda_application_number("BLA125514")
+    assert is_fda_application_number("ANADA200536")
+    assert is_fda_application_number("NADA140993")
+    assert is_fda_application_number("BA010228")  # legacy biologics form openFDA still resolves
+    assert is_fda_application_number("  NDA017977  ")  # surrounding whitespace is not a defect
+    assert not is_fda_application_number("nda017977")  # case-sensitive: every producer uppercases
+    # Reporter placeholders: the two most common FAERS ``nda_num`` values ship on thousands of
+    # edges when nothing gates them (v1.16.0: ``99`` on 6,091, ``999999`` on 2,748).
+    for junk in ("999999", "99", "99999999", "000000", "666666", ""):
+        assert not is_fda_application_number(junk), junk
+    # Concatenated free text, wrong digit counts, and non-drug numbers.
+    for junk in ("501930535019305", "1145103000", "017977", "17977", "NDA17977", "NDA0017977"):
+        assert not is_fda_application_number(junk), junk
+    for junk in ("K001608", "EUA000122", "BN125552", "MIF000123", "P000123", "KGX123456"):
+        assert not is_fda_application_number(junk), junk
+    assert not is_fda_application_number(None)
+    assert not is_fda_application_number("not a number")
+    assert not is_fda_application_number("EMEA/H/C/000123")  # an EMA number, not an FDA one

@@ -20,8 +20,9 @@ resolves the CURIEs.
 - `assertions/observed_uses.py` — aggregates FAERS indication strings using the lexical disease
   baseline and passes raw FAERS drug names through for downstream intervention mapping; it does
   not invoke NER.
-- `assertions/ner_dispatch.py` — the shared plumbing for these consumers: `default_ner`, GPU
-  device resolution, and LPT-balanced multi-GPU dispatch (`_mine_multi_gpu`).
+- `assertions/ner_dispatch.py` — the shared plumbing for these consumers: `default_ner`, device
+  resolution, and the run-scoped device-pinned mining pool (`MiningPool`, entered through
+  `dispatch_pool`), which LPT-balances work items across one persistent worker per device.
 
 ## The settled composite (see `BENCHMARK.md`)
 
