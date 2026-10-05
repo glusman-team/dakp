@@ -37,7 +37,7 @@ def _supported_evidence(section_text: str) -> DailyMedEvidence:
     """NDA 12345 approved on SET-A with one indication section."""
     return DailyMedEvidence(
         approval_sets={"12345": {"SET-A"}},
-        approval_display={"12345": "012345"},
+        approval_display={"12345": "NDA012345"},
         set_ingredient={"SET-A": ("Examplestatin", "UNII:QFX8B1R4QF")},
         active_ingredients_by_set={"SET-A": [("Examplestatin", "UNII:QFX8B1R4QF")]},
         indication_docs={"SET-A": [("SET-A#34067-9", section_text)]},
@@ -403,7 +403,7 @@ def test_production_ner_dispatches_multi_gpu(monkeypatch: pytest.MonkeyPatch) ->
     """Production NER + devices + >1 section: mining goes through _mine_multi_gpu."""
     ev = DailyMedEvidence(
         approval_sets={"12345": {"SET-A"}},
-        approval_display={"12345": "012345"},
+        approval_display={"12345": "NDA012345"},
         set_ingredient={"SET-A": ("Examplestatin", "UNII:QFX8B1R4QF")},
         active_ingredients_by_set={"SET-A": [("Examplestatin", "UNII:QFX8B1R4QF")]},
         indication_docs={"SET-A": [("SET-A#a", "indicated for asthma"), ("SET-A#b", "indicated for asthma")]},
