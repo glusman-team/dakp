@@ -537,9 +537,10 @@ def test_proper_spans_cover_every_contiguous_subphrase_but_not_the_whole_key() -
 def test_all_digit_application_keys_are_not_identities() -> None:
     """A reporter typo must not become a product identity.
 
-    ``FDAApprovalIndex.expand`` falls back to ``<prefix><digits>`` for a number no register
-    knows, and FAERS numbers carry no prefix, so tokens like ``99`` reach both tables. Indexing
-    them would let two unrelated products that happened to report the same typo cross-approve.
+    ``ApprovedTreatsIndex.from_frame`` skips all-digit keys, and ``FDAApprovalIndex.expand`` drops a
+    bare number (no application type) instead of publishing it, so typos like ``99`` reach NEITHER
+    table as identities. Two unrelated products reporting the same typo therefore cannot
+    cross-approve, and the typo-citing edge keeps its off-label status with NO approval value.
     """
     approved = ApprovedTreatsIndex.from_frame(
         pl.DataFrame({"subject_text": ["Leuprolide"], "object_text": ["Prostate cancer"], "FDA_regulatory_approvals": ["99|02248240|NDA021343"]})
@@ -563,7 +564,10 @@ def test_all_digit_application_keys_are_not_identities() -> None:
     index = FDAApprovalIndex({"21343": ("NDA021343",)})
     rows = build_observed_use_rows(cases, {}, approved, approvals=index)
     by_approvals = {r["FDA_regulatory_approvals"]: r["clinical_approval_status"] for r in rows}
-    assert by_approvals == {"99": "off_label_use", "NDA021343": "approved_for_condition"}
+    # The bare typo is dropped by ``expand`` (PR #52), so the row carries NO approval value and
+    # stays off-label; the resolvable application approves the other edge.
+    assert by_approvals == {"": "off_label_use", "NDA021343": "approved_for_condition"}
+    assert "99" not in {v for row_values in (r["FDA_regulatory_approvals"] for r in rows) for v in row_values.split("|")}
 
 
 def test_the_application_index_is_read_only() -> None:
