@@ -96,6 +96,7 @@ def _resolve_devices(ner: DiseaseNER, gpus: Sequence[str] | None = None) -> Sequ
         return None
     candidates = tuple(gpus) if gpus is not None else tuple(f"cuda:{index}" for index in range(visible))
     supported = tuple(candidates[index] for index in range(min(visible, len(candidates))) if _cuda_device_supported(torch, index))
+    _warn_on_mixed_arch(torch, supported)
     if not supported:
         logger.warning(
             "contraindication_gpus_unsupported: no visible CUDA device arch is in the torch build arch list = {}; falling back to sequential CPU mining",
@@ -103,6 +104,32 @@ def _resolve_devices(ner: DiseaseNER, gpus: Sequence[str] | None = None) -> Sequ
         )
         return None
     return supported
+
+
+def _warn_on_mixed_arch(torch_mod: Any, devices: Sequence[str]) -> None:
+    """Warn when the surviving ordinals are not all the same compute capability.
+
+    Tier B keys raw spans by device CLASS, never by ordinal (:meth:`DiseaseNER.numerics_material`):
+    ``cuda:0`` and ``cuda:3`` share one key because identical archs run identical deterministic
+    kernels and emit identical bits. A heterogeneous host breaks that premise, and since the
+    executor's call queue decides which card runs a chunk, one text's spans would then depend on run
+    timing. Mixed-arch hosts are not a supported pooled-dispatch target; this makes the assumption
+    observable in the task log instead of silently non-reproducible.
+    """
+    if len(devices) < 2:
+        return
+    capabilities: set[Any] = set()
+    for index in range(len(devices)):
+        try:
+            capabilities.add(tuple(torch_mod.cuda.get_device_capability(index)))
+        except Exception:
+            return
+    if len(capabilities) > 1:
+        logger.warning(
+            "ner_mixed_gpu_arch: pooled dispatch assumes one compute capability across devices, found {}; "
+            "Tier B spans are keyed by device class, not ordinal, so a mixed host would make them run-dependent",
+            sorted(capabilities),
+        )
 
 
 def _item_parts(item: Any) -> tuple[str, str, str]:
@@ -310,6 +337,7 @@ class MiningPool:
         self._slots: tuple[str, ...] = tuple(slots)
         self._stack = ExitStack()
         self._executor: ProcessPoolExecutor | None = None
+        self._closed = False
 
     @property
     def slots(self) -> tuple[str, ...]:
@@ -333,6 +361,11 @@ class MiningPool:
         """
         if self._executor is not None:
             return self._executor
+        if self._closed:
+            # An ExitStack stays usable after close(), so restarting would push a fresh spawn shim,
+            # slot queue and executor onto a stack nothing will ever unwind: leaked children holding
+            # per-device GPU flocks for the rest of the task, and __main__.__spec__ left mutated.
+            raise RuntimeError("MiningPool.mine() after close(): the pool would leak workers holding GPU flocks")
         _announce_worker_logs(self._ner_config.get("workdir"))
         ctx = mp.get_context("spawn")
         self._stack.enter_context(_spawn_safe_main())
@@ -378,6 +411,7 @@ class MiningPool:
 
     def close(self) -> None:
         """Shut the pool down, releasing every worker's flock. Safe twice over, or never started."""
+        self._closed = True
         self._executor = None
         self._stack.close()
 
@@ -404,7 +438,13 @@ def dispatch_pool(ner: DiseaseNER, devices: Sequence[str] | None) -> Iterator[Mi
     try:
         yield pool
     finally:
-        pool.close()
+        try:
+            pool.close()
+        except BaseException:
+            # A raising close (executor shutdown, queue teardown) would otherwise REPLACE the in-flight
+            # exception, discarding the device attribution this module exists to provide. The evidence
+            # still lands in the task log.
+            logger.exception("ner_pool_close_failed: device slots = {}", pool.slots)
 
 
 #: A shaper's existing mining path (multi-GPU dispatch or sequential loop) over the given

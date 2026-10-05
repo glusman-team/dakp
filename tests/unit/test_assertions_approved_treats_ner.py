@@ -8,9 +8,6 @@ shaper's injected-vs-default NER resolution.
 
 from __future__ import annotations
 
-import sys
-import types
-from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -28,8 +25,6 @@ from dakp_pipeline.assertions.approved_treats import (
 )
 from dakp_pipeline.assertions.evidence import DailyMedEvidence
 from dakp_pipeline.io.contracts import TaskContext
-from dakp_pipeline.ner import ner as ner_module
-from dakp_pipeline.ner.model_cache import ModelRef
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
 
 
@@ -422,27 +417,27 @@ def test_production_ner_dispatches_through_the_pool(fake_dispatch_pool: Any) -> 
     assert [row["object_text"] for row in rows] == ["asthma"]
 
 
-def test_production_ner_single_section_stays_sequential(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_dispatch_pool: Any) -> None:
-    """A single section is mined inline even with a pool available (no dispatch for one item)."""
-    # Keep the inline production extract hermetic (no torch/model download): a fake gliner2
-    # module plus a stubbed ensure_model, the same seam test_ner_edge.py uses.
-    fake_model = types.SimpleNamespace(extract_entities=lambda text, entity_types, threshold=0.5, **_kwargs: {"entities": {}})
-    module = types.ModuleType("gliner2")
-    module.AutoExtractor = type("AutoExtractor", (), {"from_pretrained": staticmethod(lambda *a, **kw: fake_model)})  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "gliner2", module)
-    monkeypatch.setattr(
-        ner_module,
-        "ensure_model",
-        lambda model_id, **kw: ModelRef(
-            model_id=model_id, source="huggingface", path=tmp_path, b3="b3:deadbeef", manifest=tmp_path / "manifest.json"
-        ),
-    )
+def test_production_ner_single_section_still_uses_the_open_pool(fake_dispatch_pool: Any) -> None:
+    """A single section mines through the OPEN pool, never in the parent.
+
+    Regression guard for a deadlock the run-scoped pool introduced. In-parent mining loads a second
+    model onto a 16 GB card a live worker already holds, without the expandable-segments allocator env
+    that only the worker initializer sets, and then blocks on that worker's flock: the parent resolves
+    ``device=None`` to bare ``"cuda"``, whose lock file is the same ``cuda-0.lock`` that slot
+    ``cuda:0`` holds for its whole process life. The per-process self-reuse guard cannot see a child's
+    fd, so the parent would poll for an hour and die with GpuLockTimeoutError.
+    """
     ev = _supported_evidence("indicated for asthma")
     ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"})
-    calls = fake_dispatch_pool(approved_treats, lambda *_args: (_ for _ in ()).throw(AssertionError("must not dispatch a single item")))
+
+    def fake_mine(work_items: Any, pool_ner: Any) -> dict[tuple[str, str], Any]:
+        offline = DiseaseNER(gazetteer=pool_ner._gazetteer)
+        return {(s, d): offline.extract(t) for s, d, t in work_items}
+
+    calls = fake_dispatch_pool(approved_treats, fake_mine)
     cases = pl.DataFrame({"nda": ["012345"], "indication": ["asthma"], "drugname": ["Examplestatin"], "ingredient": ["Examplestatin"]})
     rows = build_approved_treats_rows(cases, ev, _MAPPING, {}, ner=ner, devices=("cuda:0", "cuda:1"))
-    assert calls == []  # one item never reaches the pool
+    assert calls == [(1, ("cuda:0", "cuda:1"))]  # the singleton went to the pool, not the parent
     assert [row["object_text"] for row in rows] == ["asthma"]
 
 

@@ -495,6 +495,108 @@ def test_dispatch_pool_closes_even_when_mining_raises(monkeypatch: pytest.Monkey
     assert not pool.started
 
 
+def test_pool_refuses_to_restart_after_close(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Restarting a closed pool would leak children holding GPU flocks.
+
+    An ``ExitStack`` stays usable after ``close()``, so a second ``start()`` would push a fresh spawn
+    shim, slot queue and executor onto a stack nothing will ever unwind: spawned children holding
+    per-device flocks for the rest of the task, and ``__main__.__spec__`` left mutated for the life of
+    the process. Not reachable from either shaper today (both mine synchronously inside the ``with``),
+    but ``MiningPool`` is a public name, so the failure has to be loud rather than silent.
+    """
+    _install_stub_pool(monkeypatch)
+    monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 0)
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    pool = MiningPool(ner, ("cuda:0",))
+    pool.mine([("S1", "D1", "asthma")])
+    pool.close()
+    with pytest.raises(RuntimeError, match="after close"):
+        pool.mine([("S2", "D2", "asthma")])
+
+
+def test_dispatch_pool_close_failure_does_not_mask_the_mining_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A raising ``close`` must not replace the exception carrying the device attribution.
+
+    ``dispatch_pool`` closes in a ``finally``, so a teardown failure (executor shutdown, queue
+    teardown) would otherwise become the propagated error and discard the whole point of
+    ``NerWorkerError``: naming the device that died. The teardown failure is still logged, so the
+    evidence is in the task log even though it is not what propagates.
+    """
+    _install_stub_pool(monkeypatch, error=NerWorkerError("cuda:0", 1, "boom"))
+    monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 0)
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    with _captured_logs() as lines, dispatch.dispatch_pool(ner, ("cuda:0",)) as pool:
+        assert pool is not None  # narrowed for the type checker before use
+        original_close = pool.close
+
+        def _raising_close() -> None:
+            original_close()
+            raise OSError("queue teardown failed")
+
+        pool.close = _raising_close  # type: ignore[method-assign]
+        with pytest.raises(NerWorkerError) as info:
+            pool.mine([("S1", "D1", "asthma")])
+    assert info.value.device == "cuda:0"  # the mining error is what propagated, not the teardown one
+    assert any("ner_pool_close_failed" in line for line in lines)
+
+
+# --- _resolve_devices: the single-arch premise of ordinal-free keying ---------------
+
+
+def test_resolve_devices_warns_when_surviving_devices_are_mixed_arch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tier B keys spans by device CLASS, so a mixed-arch host would make them run-dependent.
+
+    ``cuda:0`` and ``cuda:3`` share one Tier B key because identical archs run identical
+    deterministic kernels and emit identical bits. The executor's call queue decides which card runs
+    a chunk, so on a heterogeneous host one text's cached spans would depend on timing. Mixed archs
+    are not a supported pooled-dispatch target; the warning makes that observable instead of silent.
+    """
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (8, 6) if index == 0 else (8, 0))
+    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_80", "sm_86"])
+    with _captured_logs() as lines:
+        assert dispatch._resolve_devices(DiseaseNER(offline=False)) == ("cuda:0", "cuda:1")
+    assert any("ner_mixed_gpu_arch" in line for line in lines)
+
+
+def test_resolve_devices_is_quiet_for_a_uniform_fleet(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The build host's four identical P100s must not warn: that is the supported configuration."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 4)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (6, 0))
+    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_60"])
+    with _captured_logs() as lines:
+        assert dispatch._resolve_devices(DiseaseNER(offline=False)) == ("cuda:0", "cuda:1", "cuda:2", "cuda:3")
+    assert not any("ner_mixed_gpu_arch" in line for line in lines)
+
+
+def test_mixed_arch_probe_failure_is_not_reported_as_mixing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A capability query that raises is not evidence of a mixed fleet, so it stays quiet.
+
+    ``_cuda_device_supported`` already gated those devices; warning here would blame the host for a
+    probe error and send the next debugger after a problem that does not exist.
+    """
+    import torch
+
+    def capability(index: int) -> tuple[int, int]:
+        if index == 1:
+            raise RuntimeError("CUDA error")
+        return (8, 6)
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", capability)
+    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_86"])
+    with _captured_logs() as lines:
+        dispatch._resolve_devices(DiseaseNER(offline=False))
+    assert not any("ner_mixed_gpu_arch" in line for line in lines)
+
+
 def test_announce_worker_logs_without_a_workdir_says_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     """No workdir: there is no worker-log directory to name or prune (the None branch)."""
     announced: list[Any] = []

@@ -369,7 +369,10 @@ def _mine_indication_mentions(
     with dispatch_pool(ner, devices) as pool:
 
         def mine(items: Sequence[Any]) -> dict[tuple[str, str], Any]:
-            if pool is not None and len(items) > 1:
+            # EVERY batch goes through the open pool, singletons included: mining one text in the
+            # parent would load a second model onto a card a live worker holds and then block on that
+            # worker's flock (see the same guard in contraindications.build_contraindication_rows).
+            if pool is not None and items:
                 return pool.mine(items)
             mined: dict[tuple[str, str], Any] = {}
             for done, (key_id, doc_id, text) in enumerate(items, start=1):

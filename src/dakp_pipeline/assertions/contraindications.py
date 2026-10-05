@@ -546,7 +546,13 @@ def build_contraindication_rows(
     with dispatch_pool(ner, devices) as pool:
 
         def mine(items: Sequence[Any]) -> dict[tuple[str, str], Any]:
-            if pool is not None and len(items) > 1:
+            # EVERY batch goes through the open pool, singletons included. Mining one text in the
+            # parent instead would load a second model on a 16 GB card that a live worker already
+            # holds, without the expandable-segments allocator env only the worker sets, and then
+            # block on cuda-0.lock: the parent resolves device=None to bare "cuda", whose lock file
+            # is the same one slot cuda:0 holds for its whole process life, and the per-process
+            # self-reuse guard cannot see a child's fd. It would poll for an hour and die.
+            if pool is not None and items:
                 return pool.mine(list(items))
             mined_seq: dict[tuple[str, str], Any] = {}
             for done, item in enumerate(items, start=1):
