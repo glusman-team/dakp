@@ -1,8 +1,11 @@
 """Pure assertion-context derivation and sparse qualifier attachment.
 
 The model's context attribute is provenance only. Source/section rules remain authoritative;
-prevention predicates are deliberately deferred because the pinned Biolink 4.4.4 vocabulary does
-not contain ``prevents`` or ``applied_to_prevent``. Rows therefore retain the prevention context
+prevention predicates are deliberately deferred: biolink-model 4.4.5 still does not attach
+``prevents`` or ``applied_to_prevent`` to the ``related to`` hierarchy, so emitting them would put
+DAKP's predicates outside the pinned model. Tablassert >= 19.1 exposes exactly this family as local
+``PREDICATE_OVERRIDES``, so a build validates them today; adopting them is therefore a DAKP modeling
+decision, not a dependency wait. Rows retain the prevention context
 while their existing treats predicates remain unchanged.
 """
 
@@ -66,8 +69,9 @@ def context_predicate(context: str, source: str) -> str:
     """Map a context to the currently emittable predicate.
 
     Prevention contexts are recorded but use the producing shaper's existing predicate: the
-    anticipated ``biolink:prevents`` and ``biolink:applied_to_prevent`` slots are absent from the
-    pinned Biolink-model 4.4.4 and are therefore not emitted or tested here.
+    anticipated ``biolink:prevents`` and ``biolink:applied_to_prevent`` slots are still absent from
+    the pinned Biolink-model 4.4.5 (only Tablassert's local ``PREDICATE_OVERRIDES`` carry them), so
+    they are not emitted or tested here.
     """
     source_key = source.strip().lower()
     if source_key not in {"dailymed", "faers", "ema"}:

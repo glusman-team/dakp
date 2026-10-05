@@ -56,7 +56,8 @@ The real runner (:class:`TablassertRunner`) shells out to the installed ``tablas
 (a CORE dependency installed by the single ``uv sync``) and captures stdout / exit code into
 a handoff report; the deferred runner (:class:`DeferredTablassertRunner`) writes a
 deferred-handoff report without ever touching Tablassert (used when no fullmap triggers the
-real handoff, and in tests). DAKP requires Tablassert >= 16.1: the graph config carries the
+real handoff, and in tests). DAKP requires Tablassert >= 19.5.1, the floor ``pyproject.toml`` pins;
+the releases that built it, oldest first: the graph config carries the
 fullmap path (the ``build-kg --fullmap`` flag was removed in Tablassert 8.1), the 8.2
 Biolink-valid KGX modeling (``sources[]`` retrieval provenance, first-class evidence slots)
 is what the emitted configs target, 9.1's per-row ``split_by`` (made the ONLY multivalued
@@ -99,15 +100,29 @@ unnameable categories when ``avoid`` is set, and ``--qc`` fails on any edge demo
 edge fields and deterministically aggregates distinct values across collision merges as sorted
 pipe-delimited strings while removing ``--no-original``; nothing else in the emitted config
 changes, only resolved KG content.
-19.0.0 grants DAKP's sparse qualifier stack
+19.0.0 granted DAKP's sparse qualifier stack
 (``anatomical_context_qualifier``, ``sex_qualifier``, ``population_context_qualifier``,
 ``frequency_qualifier``, ``temporal_context_qualifier``) to the pinned classes via
-``CLASS_FIELD_OVERRIDES`` (SkyeAv/Tablassert#188) and moves the ``tablassert`` console script
+``CLASS_FIELD_OVERRIDES`` (SkyeAv/Tablassert#188) and moved the ``tablassert`` console script
 behind the optional ``[cli]`` extra with logging behind ``[log]``.
 Fullmaps must
-be ``tablassert.fullmap.v6`` redb files — 19.0.0 rebased level-one normalization onto stemmed,
-deduped, byte-sorted tokens, changing the RECORDS key space; older ones (v1-v5) are rejected on
+be ``tablassert.fullmap.v6`` redb files: 19.0.0 rebased level-one normalization onto stemmed,
+deduped, byte-sorted tokens, changing the RECORDS key space, so older ones (v1-v5) are rejected on
 read.
+19.3.0 moved the pipeline onto the polars 2.0 streaming engine (``pyarrow`` became a Tablassert core
+dependency) with output parity preserved, 19.4.0 started auditing enum-ranged qualifier columns
+against their closed Biolink vocabulary and failing the build with ``qualifier-vocabulary-violation``
+(none of DAKP's six qualifier slots is enum-ranged, so that audit cannot fire on a DAKP build), and
+19.5.0 added ``parquet`` as a table source kind, which DAKP does not use (it ships TSV). 19.5.1 is
+the current floor: its biolink-model 4.4.5 attaches ``disease_context_qualifier``,
+``anatomical_context_qualifier``, and ``frequency_qualifier`` to the whole disease/phenotype
+association family, renames the FDA-specific ``FDA_regulatory_approvals`` to the canonical
+``regulatory_approvals`` on both pinned classes, and adds ``sex_qualifier`` to
+``EntityToPhenotypicFeatureAssociation``, so Tablassert retired those four ``CLASS_FIELD_OVERRIDES``
+grants and kept only ``population_context_qualifier`` and ``temporal_context_qualifier`` (both pinned
+classes) plus ``sex_qualifier`` (``EntityToDiseaseAssociation``). The effective edge field set, and
+every KGX byte DAKP emits, is unchanged; that is why the qualifier contract in
+``tests/unit/test_tablassert_configs.py`` runs ``prune_to_class`` rather than asserting the grant set.
 
 The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it is
 on ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout override (the
@@ -277,9 +292,13 @@ GRAPH_DESCRIPTION = (
 #   :data:`RIG_TARGET_FUTURE_CONSIDERATIONS`).
 
 #: Public URL prefix the generated KGX artifacts are published under; Tablassert appends each
-#: ``.nodes.ndjson`` / ``.edges.ndjson`` name to build RIG file locations. The GitHub repo URL
-#: stands in until a dedicated public artifact location exists.
-RIG_ARTIFACT_BASE_URL = "https://github.com/glusman-team/dakp"
+#: ``.nodes.ndjson`` / ``.edges.ndjson`` name to build RIG file locations. Every version is
+#: published to the Hugging Face dataset ``SkyeAv/drug-approvals-kp`` under a version directory —
+#: ``<version>/DRUG_APPROVALS_KP_<version>.{nodes,edges}.ndjson`` plus the generated ``.RIG.yaml`` —
+#: so the prefix is version-interpolated exactly like the graph config's ``version`` field and a
+#: v<next> build advertises v<next> artifact locations while every earlier version's URLs stay
+#: resolvable on the same dataset.
+RIG_ARTIFACT_BASE_URL = f"https://huggingface.co/datasets/SkyeAv/drug-approvals-kp/resolve/main/{__version__}"
 #: Workdir-relative directory ``build-kg`` writes the KGX + RIG artifacts into (the runner's cwd
 #: is the workdir root, so outputs land in ``./kgx``).
 RIG_ARTIFACT_BASE_PATH = "kgx"
@@ -303,7 +322,10 @@ RIG_DATA_VERSIONING_AND_RELEASES = (
     "the upstream cadence: FAERS quarterly ASCII extracts, DailyMed SPL releases, and the "
     "nightly-regenerated EMA medicines export. DailyMed, Drugs@FDA, and EMA re-downloads are "
     "freshness-gated to a 7-day cache window; FAERS downloads "
-    "are content-addressed and cache-first, with no age gate."
+    "are content-addressed and cache-first, with no age gate. Each version's generated KGX pair "
+    "and RIG are published to the Hugging Face dataset SkyeAv/drug-approvals-kp under a "
+    "per-version directory (<version>/DRUG_APPROVALS_KP_<version>.{nodes,edges}.ndjson), and "
+    "every earlier version remains available there."
 )
 #: RIG ``supporting_data_source_info``: the upstream data sources a DAKP graph derives its
 #: knowledge from. Exactly the TWO edge-backed upstreams, adapted from the DINGO-reviewed
@@ -485,6 +507,7 @@ RIG_CONTRIBUTIONS: tuple[str, ...] = (
 #: review ticket.
 RIG_PROVENANCE_ARTIFACTS: tuple[str, ...] = (
     "DAKP pipeline repository: https://github.com/glusman-team/dakp",
+    "Published KGX releases (Hugging Face dataset): https://huggingface.co/datasets/SkyeAv/drug-approvals-kp",
     "Upstream DINGO-reviewed DAKP RIG: https://github.com/NCATSTranslator/translator-ingests/blob/main/src/translator_ingest/ingests/dakp/dakp_rig.yaml",
     "RIG review issue: https://github.com/NCATSTranslator/translator-ingests/issues/416",
 )
@@ -500,21 +523,27 @@ RIG_TARGET_FUTURE_CONSIDERATIONS: tuple[dict[str, str], ...] = (
         "consideration": (
             "DAKP's sparse qualifier stack (anatomical_context_qualifier, sex_qualifier, "
             "population_context_qualifier, frequency_qualifier, temporal_context_qualifier) and the "
-            "contraindication/approved-treats disease_context_qualifier ride Tablassert's CLASS_FIELD_OVERRIDES grants "
-            "(SkyeAv/Tablassert#120, #188), which are deliberately ahead of the pinned Biolink model: Biolink "
-            "attaches these slots only to other association classes, while these edges pin "
-            "EntityToDisease/EntityToPhenotypicFeature for the regulatory_approvals grant. Drop reliance on the "
-            "grants once upstream Biolink widens the slots to the entity-to-disease classes"
+            "contraindication/approved-treats disease_context_qualifier now ride the pinned Biolink model itself: the 4.4.5 mixin "
+            "consolidation (Tablassert >= 19.5.1) attached disease_context_qualifier, anatomical_context_qualifier, "
+            "and frequency_qualifier to the whole disease/phenotype association family and sex_qualifier to "
+            "EntityToPhenotypicFeatureAssociation, so Tablassert retired those CLASS_FIELD_OVERRIDES grants "
+            "(SkyeAv/Tablassert#120, #188). population_context_qualifier and temporal_context_qualifier on both "
+            "pinned classes, and sex_qualifier on EntityToDiseaseAssociation, remain granted ahead of the model, "
+            "which still attaches them only to the environmental-exposure and likelihood families. Drop reliance "
+            "on those grants once upstream Biolink widens them to the entity-to-disease classes"
         ),
     },
     {
         "category": "edge_properties",
         "consideration": (
-            "FDA application numbers are emitted on the canonical regulatory_approvals edge slot, which Tablassert 18's "
-            "CLASS_FIELD_OVERRIDES grants to EntityToDiseaseAssociation and EntityToPhenotypicFeatureAssociation ahead of the "
-            "pinned Biolink model (4.4.4 still declares the value as FDA_regulatory_approvals on those classes), so every edge pins "
-            "one of those classes by object category; monitor whether upstream Biolink attaches regulatory_approvals so the grant "
-            "can be retired"
+            "FDA application numbers are emitted on the canonical regulatory_approvals edge slot, which "
+            "biolink-model 4.4.5 (Tablassert >= 19.5.1) declares natively on EntityToDiseaseAssociation and "
+            "EntityToPhenotypicFeatureAssociation after renaming the FDA-specific FDA_regulatory_approvals to it; "
+            "the Tablassert 18 CLASS_FIELD_OVERRIDES grant that had carried the slot ahead of the model was "
+            "retired when that release landed. Every edge still pins one of those classes by object category, so "
+            "the slot survives prune_to_class. ner_confidence_score remains the one emitted column with no Biolink "
+            "slot and no Tablassert carve-out, so it folds into supporting_text until a dedicated "
+            "mention-recognition-confidence slot exists"
         ),
     },
 )
@@ -928,15 +957,15 @@ def _sources_template(table: str) -> list[dict[str, Any]]:
 #   it and the count landed on the inlined supporting study as ``Study.study_size``. 15.1's
 #   ``STUDY_SIZE_EXEMPT_PATTERN`` (SkyeAv/Tablassert#119) exempts the exact slot, so the column
 #   reaches the edge as ``number_of_cases`` — DAKP used the ``evidence_count`` alias before that;
-# * ``regulatory_approvals`` (FDA application numbers) is the CANONICAL multivalued slot —
-#   "numbers that identify specific drug applications" — Tablassert 18 grants to
+# * ``regulatory_approvals`` (FDA application numbers) is the CANONICAL multivalued slot,
+#   "numbers that identify specific drug applications", declared NATIVELY on
 #   ``EntityToDiseaseAssociation`` and ``EntityToPhenotypicFeatureAssociation``, the classes
-#   :data:`OBJECT_CATEGORY_OVERRIDE` pins, ahead of the pinned Biolink model (4.4.4 still
-#   declares the value as ``FDA_regulatory_approvals`` on those classes; the grant rides
-#   Tablassert's ``CLASS_FIELD_OVERRIDES`` so ``prune_to_class`` keeps the field on the pinned
-#   classes instead of nulling it). The assertion TSV column keeps its
+#   :data:`OBJECT_CATEGORY_OVERRIDE` pins, by biolink-model 4.4.5 (Tablassert >= 19.5.1), which
+#   renamed the FDA-specific ``FDA_regulatory_approvals`` to it on those classes. Tablassert 18 had
+#   carried the slot there ahead of the model through ``CLASS_FIELD_OVERRIDES`` and dropped that
+#   grant when 4.4.5 landed; ``prune_to_class`` keeps the field either way. The assertion TSV column keeps its
 #   ``FDA_regulatory_approvals`` name (the FDA-specific provenance contract) and the
-#   annotation renames it onto the canonical edge slot — the same column-to-slot mapping
+#   annotation renames it onto the canonical edge slot, the same column-to-slot mapping
 #   pattern as ``edge_evidence`` -> ``publications``. DAKP annotates it with
 #   ``split_by: "|"`` so the pipe-joined cell reaches the final KGX edge as its own top-level
 #   JSON ARRAY (the legacy ``approvals`` list shape) instead of a joined scalar.
@@ -1169,14 +1198,16 @@ _QUALIFIER_EXCLUDE_REGEX: dict[str, tuple[str, ...]] = {
 # ``nullable: true``: an absent or unresolved cell keeps the edge and omits only the qualifier
 # rather than dropping the row. Validity is two-layered: the slot must be a member of the
 # installed Tablassert's Biolink ``Qualifiers`` enum and survive ``prune_to_class`` on the pinned
-# classes. The second layer is met by Tablassert's ``CLASS_FIELD_OVERRIDES`` grants: 15.1
-# (#120) granted ``disease_context_qualifier`` (Biolink declares it only on the
-# chemical-to-disease lineage), and 19.0 (#188) granted the rest of DAKP's sparse qualifier
-# stack — ``anatomical_context_qualifier``, ``sex_qualifier``, ``population_context_qualifier``,
-# ``frequency_qualifier``, ``temporal_context_qualifier`` — to exactly the classes
-# :data:`OBJECT_CATEGORY_OVERRIDE` pins. Without those grants ``prune_to_class`` would null
-# each qualifier off the edge into the pruned column; with them the qualifier rides the edge on
-# the two pinned classes ahead of the pinned Biolink model.
+# classes. The second layer is met natively or by grant, depending on the pinned model: biolink-model
+# 4.4.5 (Tablassert >= 19.5.1) attaches ``disease_context_qualifier``,
+# ``anatomical_context_qualifier``, and ``frequency_qualifier`` to the whole disease/phenotype
+# association family and ``sex_qualifier`` to ``EntityToPhenotypicFeatureAssociation``, while
+# Tablassert's ``CLASS_FIELD_OVERRIDES`` still grants ``population_context_qualifier`` and
+# ``temporal_context_qualifier`` to both pinned classes plus ``sex_qualifier`` to
+# ``EntityToDiseaseAssociation`` (15.1/#120 and 19.0/#188 had granted all six before 4.4.5 absorbed
+# four of them). Either way the qualifier rides the edge; a downgrade that loses coverage nulls it
+# into the pruned column, which
+# ``test_qualifier_stack_survives_prune_to_class_on_the_pinned_classes`` fails on.
 _TABLE_QUALIFIERS: dict[str, tuple[tuple[str, str], ...]] = {
     # DailyMed approved-treats rows: ``anatomical_context_text`` / ``sex_text`` /
     # ``population_context_text`` / ``frequency_text`` / ``temporal_context_text`` are populated

@@ -88,11 +88,14 @@ from dakp_pipeline.assertions.evidence import (
     spl_evidence_pipe,
     write_assertion_table,
 )
-from dakp_pipeline.assertions.ner_dispatch import BUILD_HOST_GPUS, _resolve_devices, default_ner, mine_by_position
-from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu as _mine_multi_gpu
-from dakp_pipeline.assertions.ner_dispatch import _mine_shard as _mine_shard
+from dakp_pipeline.assertions.ner_dispatch import BUILD_HOST_GPUS, _resolve_devices, default_ner, dispatch_pool, mine_by_position
+from dakp_pipeline.assertions.ner_dispatch import MiningPool as MiningPool
+from dakp_pipeline.assertions.ner_dispatch import NerWorkerError as NerWorkerError
+from dakp_pipeline.assertions.ner_dispatch import _init_worker as _init_worker
+from dakp_pipeline.assertions.ner_dispatch import _mine_chunk as _mine_chunk
 from dakp_pipeline.assertions.ner_dispatch import _shard_by_text_length as _shard_by_text_length
 from dakp_pipeline.assertions.ner_dispatch import _spawn_safe_main as _spawn_safe_main
+from dakp_pipeline.assertions.ner_dispatch import _worker_backend as _worker_backend
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
@@ -451,8 +454,8 @@ def build_contraindication_rows(
 
     Mentions from all passes are paired with the set's single active ingredient and aggregated by
     ``(subject_text, object_text, disease_context_text)``. When ``devices`` is provided
-    (production multi-GPU), work items from ALL passes are dispatched as one LPT-balanced pool
-    across the GPUs (:func:`~dakp_pipeline.assertions.ner_dispatch._mine_multi_gpu`) — every pass
+    (production multi-device), work items from ALL passes are dispatched through ONE run-scoped
+    :class:`~dakp_pipeline.assertions.ner_dispatch.MiningPool` across those devices - every pass
     shares this backend profile, and a per-pass device split would pin the dominant warnings
     pass to a single GPU while the other GPUs idle. When ``cache`` (a
     persistent mention cache) is given, previously mined section texts are served from it via
@@ -530,29 +533,40 @@ def build_contraindication_rows(
         sections_to_mine=len(all_work_items),
     )
 
-    # Extract mentions: multi-GPU when devices given + production NER + >1 item; else sequential
-    # (with periodic progress narration — GLiNER mining is the slow step). mine_by_position fronts
-    # the whole block with the persistent mention cache: hits never reach the miners, only misses
-    # are dispatched, and results come back ALIGNED WITH all_work_items (see its docstring — one
-    # SPL document contributes several sections, so (set_id, doc_id) cannot key them). All passes
-    # share ONE backend profile, so their misses go to the GPUs as a single LPT-balanced pool — the
-    # largest pass (full warnings text) otherwise dominated wall time alone on one GPU.
-    def mine(items: Sequence[Any]) -> dict[tuple[str, str], Any]:
-        if devices and len(items) > 1 and not ner._offline:
-            return _mine_multi_gpu(list(items), ner, devices)
-        mined_seq: dict[tuple[str, str], Any] = {}
-        for done, item in enumerate(items, start=1):
-            set_id, doc_id, text = _work_item_parts(item)
-            # Production returns RAW SPANS (Tier B cacheable, merged parent-side by
-            # mine_with_cache); offline returns final mentions (never cached). Both normalize
-            # to mention lists at the cache seam, so the shaper below sees identical values
-            # regardless of dispatch mode.
-            mined_seq[(set_id, doc_id)] = ner.extract_spans(text) if not ner._offline else extract_contraindication_diseases(text, ner)
-            progress(logger, "shape_contraindications", done, len(items), every=_MINING_PROGRESS_EVERY)
-        return mined_seq
+    # Extract mentions: pooled multi-device dispatch when devices given + production NER + >1 item;
+    # else sequential (with periodic progress narration - GLiNER mining is the slow step). ONE pool
+    # spans the whole mining region: each device loads its model once per RUN instead of once per
+    # cache-put batch, which is how many times mine_with_cache calls `mine` (it slices the misses into
+    # batches of DAKP_NERCACHE_PUT_BATCH, 512 by default). mine_by_position fronts the block with the
+    # persistent mention cache: hits never reach the miners, only misses are dispatched, and results
+    # come back ALIGNED WITH all_work_items (see its docstring - one SPL document contributes several
+    # sections, so (set_id, doc_id) cannot key them). All passes share ONE backend profile, so their
+    # misses go to the devices as a single LPT-balanced pool - the largest pass (full warnings text)
+    # otherwise dominated wall time alone on one GPU.
+    with dispatch_pool(ner, devices) as pool:
 
-    with step(logger, "shape_contraindications.mine"):
-        mined = mine_by_position(all_work_items, ner, mine, cache)
+        def mine(items: Sequence[Any]) -> dict[tuple[str, str], Any]:
+            # EVERY batch goes through the open pool, singletons included. Mining one text in the
+            # parent instead would load a second model on a 16 GB card that a live worker already
+            # holds, without the expandable-segments allocator env only the worker sets, and then
+            # block on cuda-0.lock: the parent resolves device=None to bare "cuda", whose lock file
+            # is the same one slot cuda:0 holds for its whole process life, and the per-process
+            # self-reuse guard cannot see a child's fd. It would poll for an hour and die.
+            if pool is not None and items:
+                return pool.mine(list(items))
+            mined_seq: dict[tuple[str, str], Any] = {}
+            for done, item in enumerate(items, start=1):
+                set_id, doc_id, text = _work_item_parts(item)
+                # Production returns RAW SPANS (Tier B cacheable, merged parent-side by
+                # mine_with_cache); offline returns final mentions (never cached). Both normalize
+                # to mention lists at the cache seam, so the shaper below sees identical values
+                # regardless of dispatch mode.
+                mined_seq[(set_id, doc_id)] = ner.extract_spans(text) if not ner._offline else extract_contraindication_diseases(text, ner)
+                progress(logger, "shape_contraindications", done, len(items), every=_MINING_PROGRESS_EVERY)
+            return mined_seq
+
+        with step(logger, "shape_contraindications.mine"):
+            mined = mine_by_position(all_work_items, ner, mine, cache)
 
     # Aggregate mentions into assertion rows keyed by (subject, object, disease context).
     # Work items are singleton-only, so each set contributes exactly one subject ingredient;
