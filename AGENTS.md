@@ -88,3 +88,10 @@ wenceslaus over SSH, never locally:
   matching-version KGX artifacts to the Hugging Face dataset
   `SkyeAv/drug-approvals-kp`. Use `.pi/skills/dakp-release/SKILL.md`; GitHub
   `v<version>` tags are created by CI (`tag-version.yml`), never by hand.
+- On the dataset card, the LATEST release is what visitors see first: its
+  `<version>_edges` config carries `default: true` (the HF viewer orders subsets
+  "default first, then alphabetical"; card YAML order does not control this),
+  and `configs:` entries plus the Releases/checksums tables are kept newest
+  first. When adding a version, insert its configs at the TOP of the list and
+  MOVE `default: true` from the previous latest's `_edges` config to the new
+  one; older subsets stay one click away in the subset picker.

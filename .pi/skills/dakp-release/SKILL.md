@@ -90,12 +90,24 @@ whole dataset to the laptop.
    `hf upload SkyeAv/drug-approvals-kp <staging>/<version> <version> --repo-type dataset --commit-message "Add DAKP <version> KGX (<biolink>, <N> nodes / <M> edges)"`
    with real counts, matching the established per-release commit message style.
 3. Update the dataset README card from its CURRENT content (download it first):
-   add `configs:` entries named `<version>_nodes` and `<version>_edges`
-   reusing the existing `&node_features` / `*edge_features` YAML anchors, add
-   the `<version>` row to the Releases table, and extend Schema/Loading only if
-   the schema actually changed. Match the card's existing structure and ASCII
-   style; keep all historical releases and their URLs intact. Then upload it:
+   - Insert the new `configs:` entries named `<version>_nodes` and
+     `<version>_edges` at the TOP of the `configs:` list (newest first), reusing
+     the existing `&node_features` / `*edge_features` YAML anchors.
+   - MOVE the `default: true` flag from the previous latest's `_edges` config to
+     the new `<version>_edges`. The HF viewer orders subsets "default first, then
+     alphabetical" (per HF's data-files-config docs); card YAML order alone does
+     NOT put the latest first. With no default, the viewer opens the
+     alphabetically first config, which is always an OLDER release. `default:`
+     also makes plain `load_dataset` load that config. Exactly one config carries
+     the flag at any time.
+   - Update the "Latest release" line, and add the `<version>` row at the TOP of
+     the Releases table and the checksums table. Extend Schema/Loading only if
+     the schema actually changed. Match the card's existing structure and ASCII
+     style; keep all historical releases and their URLs intact. Then upload it:
    `hf upload SkyeAv/drug-approvals-kp <staging>/README.md README.md --repo-type dataset --commit-message "..."`
+   Verify afterwards that the viewer opens `<version>_edges` (open the dataset
+   page; the first shown subset must be the new release, older ones behind the
+   subset picker click).
 4. Tag last, pinning the completed release, via the Python API (the `hf` CLI
    has no tag command):
    `HfApi().create_tag(repo_id="SkyeAv/drug-approvals-kp", tag="v<version>", repo_type="dataset", tag_message=...)`.
