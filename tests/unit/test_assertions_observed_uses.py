@@ -53,13 +53,14 @@ def test_observed_use_retains_faers_report_and_nda_provenance(disease_map: dict[
         cases,
         disease_map,
         approved_pairs=set(),
+        approvals=FDAApprovalIndex({"17977": ("NDA017977",)}),
         faers_quarter_urls={"24Q3": "https://example.test/faers-24q3.zip", "24Q2": "https://example.test/faers-24q2.zip"},
     )
     assert len(rows) == 1
     row = rows[0]
     assert row["number_of_cases"] == "2"
-    # No approval index supplied: the number is emitted exactly as FAERS recorded it.
-    assert row["FDA_regulatory_approvals"] == "017977"
+    # Both FAERS spellings of the number resolve to the one FDA display form.
+    assert row["FDA_regulatory_approvals"] == "NDA017977"
     assert row["edge_evidence"] == ""  # faers: report ids no longer ride publications
     assert row["supporting_faers_records"] == "24Q2:1002:2:headache|24Q3:1001:1:headache"
     assert row["supporting_faers_urls"] == "https://example.test/faers-24q2.zip|https://example.test/faers-24q3.zip"
@@ -88,6 +89,38 @@ def test_observed_use_expands_faers_numbers_to_the_fda_display_form(disease_map:
     assert len(rows) == 1
     # Both FAERS spellings of 125514 collapse to the single FDA form, sorted with the other.
     assert rows[0]["FDA_regulatory_approvals"] == "BLA125514|NDA017977"
+
+
+def test_observed_use_drops_faers_application_numbers_no_register_knows(disease_map: dict[str, dict[str, str]]) -> None:
+    """FAERS ``nda_num`` is reporter free text, so its junk must not ride ``regulatory_approvals``.
+
+    The reported bug: the v1.16.0 release shipped ``regulatory_approvals: ["999999"]`` on 2,748
+    edges (BENADRYL -> Somnolence among them) and ``["99"]`` on 6,091 more, alongside concatenated
+    free text like ``501930535019305``. ``999999``/``99`` are placeholder spellings of "unknown",
+    and a bare number with no application type resolves to nothing. Dropping the VALUE keeps the
+    edge and its FAERS provenance intact, which is what the legacy pipeline threw away.
+    """
+    cases = pl.DataFrame(
+        {
+            "drugname": ["BENADRYL"] * 5,
+            "indication": ["Somnolence"] * 5,
+            "primaryid": ["1", "2", "3", "4", "5"],
+            "nda": ["999999", "99", "501930535019305", "17977", "17977"],
+            "nda_raw": ["999999", "0099", "501930535019305", "017977", "17977"],
+            "quarter": ["24Q3"] * 5,
+            "source_record_id": ["a", "b", "c", "d", "e"],
+        }
+    )
+    index = FDAApprovalIndex({"17977": ("NDA017977",)})
+    rows = build_observed_use_rows(
+        cases, disease_map, approved_pairs=set(), approvals=index, faers_quarter_urls={"24Q3": "https://example.test/faers-24q3.zip"}
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["FDA_regulatory_approvals"] == "NDA017977"  # only the resolvable number survives
+    assert row["number_of_cases"] == "5"  # dropping a value never drops a case or the edge
+    assert row["supporting_faers_urls"] == "https://example.test/faers-24q3.zip"
 
 
 def test_number_of_cases_falls_back_to_rows_without_primaryid(disease_map: dict[str, dict[str, str]]) -> None:

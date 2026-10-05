@@ -17,7 +17,8 @@ Pure, testable building blocks used by every assertion shaper:
   this approval?" without re-scanning frames.
 * **FDA application-number expansion** — :class:`FDAApprovalIndex` turns the prefix-stripped
   number a source records (FAERS ``125514``) back into the FDA form every consumer expects
-  (``BLA125514``), the ``regulatory_approvals`` edge values.
+  (``BLA125514``), the ``regulatory_approvals`` edge values. :func:`is_fda_application_number`
+  gates what may ride that slot, so reporter placeholders and non-drug numbers are dropped.
 * **Table resolution + output writing** — find interim parquet tables among
   ``inputs`` and register the uncompressed assertion TSV.
 
@@ -31,6 +32,7 @@ from __future__ import annotations
 import json
 import pickle
 import re
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -123,6 +125,71 @@ def split_application_number(value: Any) -> tuple[str, str]:
 # --- FDA application-number display forms ---------------------------------------
 
 
+#: FDA application types that identify a DRUG application. Each is verified against the register
+#: or API that mints it: ``NDA`` / ``ANDA`` / ``BLA`` are the only ``ApplType`` values Drugs@FDA
+#: ships (22,994 / 5,898 / 485 rows in the 2026-10-02 file); ``NADA`` / ``ANADA`` are the Animal
+#: Drugs@FDA counterparts DailyMed writes on animal labels; ``BA`` is the biologics form Drugs@FDA
+#: does not carry but openFDA does resolve in ``openfda.application_number`` (``BA010228`` = ACD A,
+#: ``BA720562`` = LMD in Dextrose), which is where DailyMed picks it up.
+FDA_APPLICATION_TYPES = ("NDA", "ANDA", "ANADA", "BLA", "NADA", "BA")
+#: FDA application numbers are six digits, zero-padded in the display form (``NDA005845``).
+FDA_APPLICATION_NUMBER_DIGITS = 6
+
+_FDA_APPLICATION_NUMBER_RE = re.compile(rf"^(?:{'|'.join(FDA_APPLICATION_TYPES)})\d{{{FDA_APPLICATION_NUMBER_DIGITS}}}$")
+
+
+def is_fda_application_number(value: Any) -> bool:
+    """True when ``value`` is a well-formed FDA drug application number (``BLA125514``).
+
+    The gate on every FDA-SOURCED value that rides the ``regulatory_approvals`` edge slot, whose
+    Biolink definition is "numbers that identify specific drug applications". Two exemptions are
+    deliberate, not gaps:
+
+    * EMA/EPAR treats rows put the EMA product number (``EMEA/H/C/000123``) in the same column
+      without passing through here — see
+      :func:`~dakp_pipeline.assertions.approved_treats.build_ema_treats_rows` and the EPAR shape
+      beside it. That is another regulator's identifier scheme, and
+      :func:`~dakp_pipeline.translator.check_rows` exempts those rows the same way it exempts them
+      from the FDA upstream chain.
+    * The match is case-SENSITIVE on purpose: every producer in this module uppercases the prefix
+      via :func:`split_application_number`, so a lowercase value is a defect worth surfacing, not a
+      spelling to forgive.
+
+    It rejects the three junk shapes the sources actually produce:
+
+    * **Reporter placeholders** — FAERS ``nda_num`` is free text, and in a real build its most
+      common values are ``999999`` (131,947 case rows) and ``99``; the v1.16.0 release shipped
+      ``99`` on 6,091 edges and ``999999`` on 2,748 of them.
+    * **Concatenated free text** — ``501930535019305`` (two NDCs run together), ``1145103000``,
+      ``200750109``.
+    * **Non-drug numbers** — DailyMed writes 510(k) device clearances (``K001608``), emergency-use
+      authorizations (``EUA000122``) and label typos (``BN``, ``MIF``, ``OEZ``, ``P``) into the
+      same ``approval/id/@extension`` element it writes application numbers into.
+
+    A bare number is rejected too: without its application type it resolves to nothing, which is
+    exactly the truncated-approval defect :class:`FDAApprovalIndex` exists to repair.
+    """
+    return bool(_FDA_APPLICATION_NUMBER_RE.fullmatch("" if value is None else str(value).strip()))
+
+
+def canonical_application_number(prefix: str, digits: str) -> str:
+    """Zero-pad a TYPED number to the FDA's six-digit display form (``NDA`` + ``19019`` -> ``NDA019019``).
+
+    Drugs@FDA stores ``ApplNo`` in a ``char(6)`` column, so a five-digit application arrives
+    space-padded (``19019 ``) and the extractor's ``strip()`` leaves ``19019``; labels.fda.gov asks
+    for "the 6 digit application number, including the leading zero". Two rows in the 2026-10-02
+    register are exactly that case (``NDA19019``, ``NDA21939``), and refusing them would lose a real
+    application, so the padding is restored instead.
+
+    A prefix-less number is returned unchanged: padding it would manufacture an application type it
+    never claimed (``99`` -> ``NDA000099``), which is the junk :func:`is_fda_application_number`
+    exists to drop.
+    """
+    if prefix in FDA_APPLICATION_TYPES and 0 < len(digits) < FDA_APPLICATION_NUMBER_DIGITS:
+        return f"{prefix}{digits.zfill(FDA_APPLICATION_NUMBER_DIGITS)}"
+    return f"{prefix}{digits}"
+
+
 @dataclass(frozen=True)
 class FDAApprovalIndex:
     """Normalized application number -> the display forms ``<type><number>`` it is known by.
@@ -140,41 +207,57 @@ class FDAApprovalIndex:
     def expand(self, value: Any) -> list[str]:
         """Return the FDA display forms for one raw application number.
 
-        Falls back to the value's own ``<prefix><digits>`` when the number is in no FDA
-        register — an unexpandable number is still real provenance, so it is emitted as it was
-        recorded rather than dropped (legacy dropped the whole edge instead).
+        Every returned form passes :func:`is_fda_application_number`; anything else contributes
+        nothing, so the caller's edge simply carries no approval for that number. Dropping the
+        VALUE does not drop the evidence: the edge keeps its ``number_of_cases`` count and its
+        FAERS quarter URLs, which ship as ``sources[].source_record_urls`` (the per-case
+        ``supporting_case_ids`` carrier is stripped before the NDJSON is written), where the legacy
+        pipeline dropped the whole edge. The fallback keeps a number no register knows only when the
+        value itself is already a well-formed ``<type><number>`` form (a curated source, or a
+        register snapshot that lags the label); it never resurrects a bare or malformed one.
         """
         norm = normalize_nda(value)
         if not norm:
             return []
-        known = self.displays.get(norm)
+        known = [form for form in self.displays.get(norm, ()) if is_fda_application_number(form)]
         if known:
-            return list(known)
+            return known
         prefix, digits = split_application_number(value)
-        return [f"{prefix}{digits}"] if digits else []
+        form = canonical_application_number(prefix, digits)
+        return [form] if is_fda_application_number(form) else []
 
     def expand_all(self, values: Iterable[Any]) -> list[str]:
         """Sorted unique display forms for many raw application numbers."""
         return merge_unique(display for value in values for display in self.expand(value))
 
 
-def _index_display(displays: dict[str, list[str]], number: Any, prefix: str, *, authoritative: bool) -> None:
+def _index_display(displays: dict[str, list[str]], number: Any, prefix: str, *, authoritative: bool) -> str:
     """Record one ``<prefix><number>`` display form under its normalized join key.
 
     Drugs@FDA is authoritative: its entry replaces anything DailyMed contributed for that
     number. DailyMed entries accumulate, because a number genuinely can carry more than one
     prefix across labels (Biolink's own example: ranitidine's ``ANADA200536``/``ANDA200536``);
-    legacy emitted every prefix it saw, and so does this.
+    legacy emitted every prefix it saw, and this emits every prefix that names a drug application.
+
+    Returns ``""`` when the display form was recorded, else the reason it was refused —
+    ``no_number`` (no digits at all), ``untyped`` (digits but no application-type prefix), or
+    ``not_a_drug_application`` (a prefix outside :data:`FDA_APPLICATION_TYPES`, or a digit count
+    that is not six). Splitting the reasons is what makes the counts diagnostic: a missing
+    Drugs@FDA feed reads as ``untyped``, a feed full of device clearances reads as
+    ``not_a_drug_application``.
     """
     norm = normalize_nda(number)
+    if not norm:
+        return "no_number"
     _prefix, digits = split_application_number(number)
-    if not norm or not digits or not prefix:
-        return
-    display = f"{prefix}{digits}"
+    display = canonical_application_number(prefix, digits)
+    if not is_fda_application_number(display):
+        return "untyped" if not prefix else "not_a_drug_application"
     if authoritative:
         displays[norm] = [display]
     elif display not in displays.setdefault(norm, []):
         displays[norm].append(display)
+    return ""
 
 
 def build_fda_approval_index(inputs: Iterable[ArtifactRef]) -> FDAApprovalIndex:
@@ -194,21 +277,35 @@ def build_fda_approval_index(inputs: Iterable[ArtifactRef]) -> FDAApprovalIndex:
       label whose id has no prefix of its own.
     """
     displays: dict[str, list[str]] = {}
+    refusals: Counter[str] = Counter()
     approvals = find_table(inputs, "spl_approvals.parquet")
     if approvals is not None:
         for rec in approvals.iter_rows(named=True):
             raw = rec.get("approval_id") or rec.get("approval_code")
             prefix, _digits = split_application_number(raw)
-            _index_display(displays, raw, prefix or application_type_prefix(rec.get("approval_type")), authoritative=False)
+            refusals[_index_display(displays, raw, prefix or application_type_prefix(rec.get("approval_type")), authoritative=False)] += 1
     for table in ("applications.parquet", "products.parquet"):
         frame = find_table(inputs, table)
         if frame is None or "appl_type" not in frame.columns:
             continue
         for rec in frame.iter_rows(named=True):
             number = rec.get("appl_no") or rec.get("appl_no_raw") or rec.get("appl_no_stripped")
-            _index_display(displays, number, str(rec.get("appl_type") or "").strip().upper(), authoritative=True)
+            refusals[_index_display(displays, number, str(rec.get("appl_type") or "").strip().upper(), authoritative=True)] += 1
     index = FDAApprovalIndex({norm: tuple(sorted(set(forms))) for norm, forms in displays.items()})
-    stats(logger, "fda_approval_index", application_numbers=len(index.displays))
+    # The refusal counts are the observability half of the drop: a missing or truncated Drugs@FDA
+    # feed shows up here as a collapse of ``application_numbers`` rather than as silently
+    # approval-less edges. ``refused_untyped`` has a structural floor — Drugs@FDA ``Products.txt``
+    # ships no ``ApplType`` column, so all 51,839 of its rows in the 2026-10-02 file reach the index
+    # untyped and contribute nothing by construction. The count that moves when a label feed goes
+    # device-heavy is ``refused_not_a_drug_application`` (284 in that same build).
+    stats(
+        logger,
+        "fda_approval_index",
+        application_numbers=len(index.displays),
+        refused_no_number=refusals["no_number"],
+        refused_untyped=refusals["untyped"],
+        refused_not_a_drug_application=refusals["not_a_drug_application"],
+    )
     return index
 
 

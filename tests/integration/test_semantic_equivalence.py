@@ -33,6 +33,7 @@ import pytest
 from harness import install_fixture_fetchers, run_stages
 
 from dakp_pipeline import translator
+from dakp_pipeline.assertions.evidence import is_fda_application_number
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -90,6 +91,11 @@ def _family_rows(tables: dict[str, pl.DataFrame], predicate: str) -> list[dict[s
     for frame in tables.values():
         rows.extend(rec for rec in frame.iter_rows(named=True) if rec.get("predicate") == predicate)
     return rows
+
+
+def _approval_values(rec: dict[str, str]) -> list[str]:
+    """The row's ``FDA_regulatory_approvals`` cell as a list (empty when it carries none)."""
+    return [value for value in str(rec.get("FDA_regulatory_approvals") or "").split("|") if value]
 
 
 # --- 1. the three edge families are all produced ----------------------------------
@@ -230,16 +236,21 @@ def test_contraindications_are_knowledge_assertions_text_mined(built: dict[str, 
 
 def test_treats_carries_fda_approval_and_spl_evidence(built: dict[str, Any]) -> None:
     """Legacy ``approval`` (NDA) + ``supporting_spls`` survive as FDA_regulatory_approvals + supporting_spl_*."""
+    fda_approvals: list[list[str]] = []
     for rec in _family_rows(built["tables"], TREATS):
-        assert str(rec.get("FDA_regulatory_approvals")).strip() or str(rec.get("upstream_resource_ids")) in {"infores:ema", "infores:epar"}, (
-            "treats row missing FDA approval/NDA id"
-        )
-        assert str(rec.get("supporting_spl_sets")).strip() or str(rec.get("upstream_resource_ids")) in {"infores:ema", "infores:epar"}, (
-            "treats row missing supporting SPL set"
-        )
-        assert str(rec.get("supporting_spl_documents")).strip() or str(rec.get("upstream_resource_ids")) in {"infores:ema", "infores:epar"}, (
-            "treats row missing supporting SPL document"
-        )
+        is_ema = str(rec.get("upstream_resource_ids")) in {"infores:ema", "infores:epar"}
+        approvals = _approval_values(rec)
+        # An EMA row carries an EMA product number in the same column; an FDA row carries only real
+        # FDA application numbers. A row may legitimately carry NONE: a DailyMed approval id no
+        # register resolves is dropped rather than shipped as a value nobody can resolve.
+        if is_ema:
+            assert all(value.startswith("EMEA/") for value in approvals), (rec["subject_text"], approvals)
+        else:
+            assert all(is_fda_application_number(value) for value in approvals), (rec["subject_text"], approvals)
+            fda_approvals.append(approvals)
+        assert str(rec.get("supporting_spl_sets")).strip() or is_ema, "treats row missing supporting SPL set"
+        assert str(rec.get("supporting_spl_documents")).strip() or is_ema, "treats row missing supporting SPL doc"
+    assert any(fda_approvals), "no FDA-sourced treats row carried an application number"
 
 
 def test_all_edge_families_carry_identifier_provenance(built: dict[str, Any]) -> None:
@@ -258,14 +269,27 @@ def test_all_edge_families_carry_identifier_provenance(built: dict[str, Any]) ->
         assert "faers:" not in evidence
         assert str(rec.get("supporting_faers_records") or "").strip()
         assert str(rec.get("supporting_faers_urls") or "").startswith("https://")
+    approvals_by_subject: dict[str, set[str]] = {}
     for rec in _family_rows(built["tables"], APPLIED_TO_TREAT):
         assert not str(rec.get("edge_evidence") or "").strip()
-        assert str(rec.get("FDA_regulatory_approvals") or "").strip()
+        # ``regulatory_approvals`` carries ONLY real FDA application numbers. FAERS ``nda_num`` is
+        # reporter free text, so a number no register resolves contributes nothing instead of an
+        # unresolvable value: the fixtures exercise both outcomes (Aspirin's 020000 is in no
+        # Drugs@FDA fixture, exactly as the production placeholders ``999999``/``99`` are in no
+        # real register). The row keeps its FAERS case and URL provenance either way.
+        approvals = _approval_values(rec)
+        assert all(is_fda_application_number(value) for value in approvals), (rec["subject_text"], approvals)
+        approvals_by_subject.setdefault(str(rec["subject_text"]), set()).update(approvals)
         assert str(rec.get("supporting_faers_records") or "").strip()
         assert str(rec.get("supporting_faers_urls") or "").startswith("https://")
+    assert approvals_by_subject["Examplestatin"] == {"NDA012345"}  # resolved from Drugs@FDA applications
+    assert approvals_by_subject["Advil"] == {"NDA017977"}  # resolved from Drugs@FDA products
+    assert approvals_by_subject["Aspirin"] == set()  # unresolvable: dropped, edge kept
     for rec in _family_rows(built["tables"], CONTRAINDICATED_IN):
         assert str(rec.get("edge_evidence") or "").startswith("dailymed:")
-        assert str(rec.get("FDA_regulatory_approvals") or "").strip()
+        approvals = _approval_values(rec)
+        assert approvals, f"contraindication row carries no FDA application number: {rec['subject_text']}"
+        assert all(is_fda_application_number(value) for value in approvals), (rec["subject_text"], approvals)
 
 
 def test_applied_to_treat_carries_faers_case_counts(built: dict[str, Any]) -> None:

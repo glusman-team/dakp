@@ -67,6 +67,7 @@ from dakp_pipeline.assertions.evidence import (
     faers_record_url,
     find_faers_cases,
     find_table,
+    merge_unique,
     normalize_nda,
     sorted_pipe,
     write_assertion_table,
@@ -220,7 +221,13 @@ def build_observed_use_rows(
 
     ``approvals`` expands the FAERS application numbers, which FAERS records with both the
     application-type prefix and the leading zeros stripped (``125514``), back to the FDA form
-    every other source uses (``BLA125514``). Without it the bare FAERS number is emitted.
+    every other source uses (``BLA125514``). A number no FDA register knows contributes NOTHING:
+    ``nda_num`` is reporter free text, and its placeholders (``999999``, ``99``) and concatenated
+    junk are not application numbers, so they must not ride ``regulatory_approvals``
+    (:func:`~dakp_pipeline.assertions.evidence.is_fda_application_number`). The drops are reported
+    as ``unresolved_application_numbers``, counted per ``(assertion row, distinct number)`` pair
+    rather than as distinct numbers, so one placeholder reported across a thousand groups counts a
+    thousand times; a missing register then reads as a collapse instead of silence.
     """
     if faers_cases is None:
         return []
@@ -319,6 +326,7 @@ def build_observed_use_rows(
 
     quarter_urls = dict(faers_quarter_urls or {})  # once, not per case row (was 49M dict copies)
     rows: list[dict[str, str]] = []
+    unresolved_numbers = 0
     for rec in pairs.iter_rows(named=True):
         drug = str(rec["drugname"])
         obj = {
@@ -338,8 +346,15 @@ def build_observed_use_rows(
                 approval_values_by_norm.setdefault(norm_nda, set()).add(raw_nda)
         # One expansion per DISTINCT application number: the FAERS spellings of a number
         # (``125514``/``0125514``) all normalize to the same key, and the index answers with the
-        # FDA display form(s) for that key.
-        approval_values = approvals.expand_all(min(values) for values in approval_values_by_norm.values())
+        # FDA display form(s) for that key. A number that expands to nothing is reporter junk, not
+        # an application; the edge keeps its case-id and URL provenance either way.
+        approval_values: list[str] = []
+        for raw_values in approval_values_by_norm.values():
+            if displays := approvals.expand(min(raw_values)):
+                approval_values.extend(displays)
+            else:
+                unresolved_numbers += 1
+        approval_values = merge_unique(approval_values)
         # ``anon_rows`` counts RAW primaryid-less rows while ``anon_records`` dedups their
         # source_record_ids (and an id-less row leaves no token at all), so pad with per-group
         # synthetic tokens — unique across rows that could merge downstream because the group
@@ -382,7 +397,14 @@ def build_observed_use_rows(
                 upstream_resource_ids=join_pipe(INFORES_FAERS, INFORES_DAILYMED),
             )
         )
-    stats(logger, "shape_faers_applied_to_treat", indications=len(indications), stoplist_drops=stoplist_drops, assertions=len(rows))
+    stats(
+        logger,
+        "shape_faers_applied_to_treat",
+        indications=len(indications),
+        stoplist_drops=stoplist_drops,
+        assertions=len(rows),
+        unresolved_application_numbers=unresolved_numbers,
+    )
     return rows
 
 
