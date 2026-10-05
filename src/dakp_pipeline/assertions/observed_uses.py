@@ -27,15 +27,58 @@ one — the DINGO ingest already coerced it to ``not_provided`` — and would em
 edges now that Tablassert >= 8.2 emits the field first-class). The observed-use meaning stays on
 the edge via ``predicate = applied_to_treat`` + ``knowledge_level = observation`` (config override).
 
-Pair matching runs both sides through the same normalization chain
-(:func:`_pair_key`: the textnorm chain then gazetteer normalization), so dosage/form junk,
-brand aliases (:data:`~dakp_pipeline.textnorm.BRAND_ALIASES`), punctuation, and casing
-cannot make ONE pair answer asymmetrically: every spelling variant of one real pair derives
-ONE ``clinical_approval_status``, and Tablassert's ``uuid_on_collision`` first-wins merge
-never sees a conflicting scalar (v1.13.0's foldreport recorded 3,283 such conflicts, driven
-by pre-textnorm drugname junk). Residual free-text spelling variants beyond the alias table
-(non-English INN spellings, typos) can still miss and read as ``off_label_use`` for
-actually-approved pairs — the same caveat the legacy pipeline carried.
+The cross-reference itself is :class:`ApprovedTreatsIndex`, and a row is approved when ANY of
+three keys hits (see that class for the detail and the measured effect):
+
+1. **FDA application identity.** The row's expanded application display forms (``NDA021343``,
+   the values already written to its ``FDA_regulatory_approvals`` cell) name the exact product,
+   and the approved table says which objects each application approves. This is the key that
+   survives the brand/ingredient spelling gap: FAERS reports ``ELIGARD`` while the approved
+   row's subject is the DailyMed ingredient ``LEUPROLIDE``, and no alias table can be expected
+   to carry every brand.
+2. **Object granularity, within one application.** An approved object occurring whole-word
+   inside the observed object approves it, because the label naming the general condition
+   (``prostate cancer``) covers the more specific report (``prostate cancer stage iv``). Same
+   direction :func:`~dakp_pipeline.assertions.approved_treats._section_mentions_condition`
+   already accepts when corroborating a candidate against a label; the reverse never approves.
+   Scoped to one application on purpose: across drugs it would let any general approval cover
+   any other drug's specific report.
+3. **Normalized text pair.** ``(subject, object)`` equality, the legacy rule and the only one
+   that can answer for a report carrying no application number (64% of production off-label
+   rows).
+
+Rules 1 and 2 only ever ADD approvals, so the change is monotone: no pair that read as
+``approved_for_condition`` can read as ``off_label_use``.
+
+Every text key on both sides runs through the same normalization chain (:func:`_pair_key`: the
+textnorm chain then gazetteer normalization), so dosage/form junk, brand aliases
+(:data:`~dakp_pipeline.textnorm.BRAND_ALIASES`), punctuation, and casing cannot make ONE pair
+answer asymmetrically: every spelling variant of one real pair derives ONE
+``clinical_approval_status``, and Tablassert's ``uuid_on_collision`` first-wins merge never sees
+a conflicting scalar (v1.13.0's foldreport recorded 3,283 such conflicts, driven by pre-textnorm
+drugname junk).
+
+Residual limits, all inherited from the inputs rather than introduced here:
+
+- A report with NO application number and a brand spelling the alias table lacks still reads as
+  ``off_label_use`` (rule 3 is all that is left). ``ELIGARD`` is one such brand.
+- An approved object can be MORE general than the label's own indication, because approved-treats
+  objects come from FAERS wordings corroborated against the label: NDA021343 is indicated for
+  *advanced* prostate cancer, its approved object is ``prostate cancer``, so rule 2 also promotes
+  ``Prostate cancer stage I`` (2 cases in v1.16.0). Rule 3 already asserted the general pair.
+- An approved object that is not a condition at all (``blood pressure``, ``surgery``,
+  ``magnetic resonance imaging``; these are FAERS ``indi_pt`` values the non-disease stoplist does not
+  catch) propagates to its specific variants under rule 2. Measured over v1.16.0, 1,837 of the
+  26,307 rule-2 promotions (100,827 of 1,686,572 cases) carry such a residual, and on inspection
+  most are still clinically right (amlodipine for ``blood pressure abnormal``, atorvastatin for
+  ``low density lipoprotein increased``, everolimus for ``astrocytoma, low grade``). A
+  residual-token denylist was measured and rejected: it also rejects correct specificity
+  wordings such as ``astrocytoma, low grade``. The root fix is the stoplist, not this rule.
+- A reporter-supplied application number that does not belong to the reported drug would approve
+  on the wrong product; that mismatch is already published in the edge's own
+  ``FDA_regulatory_approvals``, so it is visible rather than hidden. All-digit keys (the
+  unknown-number fallback) are never indexed, so a shared reporter typo cannot cross-approve two
+  products.
 
 FAERS text handling
 -------------------
@@ -54,7 +97,9 @@ from __future__ import annotations
 
 import functools
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
 
 import polars as pl
 
@@ -129,37 +174,150 @@ class ObservedUsesShaper:
                     inputs, columns=("drugname", "indication", "primaryid", "nda", "nda_raw", "quarter", "source_record_id")
                 )
                 approved = find_table(inputs, "approved_treats_assertions.tsv")
-                approved_pairs = _approved_pair_index(approved) if approved is not None else None
+                approved_index = ApprovedTreatsIndex.from_frame(approved) if approved is not None else None
                 approvals = build_fda_approval_index(inputs)
             rows = build_observed_use_rows(
-                faers_cases, disease_map, approved_pairs, approvals=approvals, faers_quarter_urls=faers_quarter_urls(inputs)
+                faers_cases, disease_map, approved_index, approvals=approvals, faers_quarter_urls=faers_quarter_urls(inputs)
             )
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_faers_applied_to_treat")
 
 
-def _approved_pair_index(approved: pl.DataFrame) -> set[tuple[str, str]]:
-    """Normalized ``(subject_text, object_text)`` pairs of the approved-treats table.
+@functools.lru_cache(maxsize=1 << 20)
+def _proper_spans(object_key: str) -> tuple[str, ...]:
+    """Every contiguous token span of a normalized object key, excluding the key itself.
 
-    Matching is normalized text on both sides because the two tables spell drugs differently
-    (observed-uses subjects are raw FAERS drugnames; approved-treats subjects are DailyMed
-    ingredient text). Both sides run through :func:`_pair_key` — the SAME chain the
-    observed-uses lookup uses (:func:`~dakp_pipeline.textnorm.defaers_text` followed by the
-    gazetteer :func:`~dakp_pipeline.ner.dictionary.normalize_text`) — so dosage/form junk,
-    brand aliases, and punctuation differences cannot make ONE pair asymmetric: every
-    spelling variant of one real pair derives ONE status, and Tablassert's
-    ``uuid_on_collision`` first-wins merge then never sees a conflicting
-    ``clinical_approval_status`` scalar (v1.13.0 foldreport recorded 3,283 such conflicts,
-    driven by pre-textnorm drugname junk). Residual free-text spelling variants beyond the
-    alias table (e.g. non-English INN spellings, typos) can still asymmetrically miss and
-    read as ``off_label_use`` — the same caveat the legacy pipeline carried.
+    :func:`~dakp_pipeline.ner.dictionary.normalize_text` folds each non-alphanumeric run into a
+    single space, so a normalized key is ``[a-z0-9 ]`` only and a whole-word occurrence of one
+    key inside another is EXACTLY a contiguous token span (``prostate cancer`` inside
+    ``hormone refractory prostate cancer``). Enumerating the spans turns "does any approved
+    object occur inside this object?" into hash lookups instead of a substring scan per
+    candidate, which is what keeps the rule affordable over the 1.6M-row production table.
     """
-    pairs: set[tuple[str, str]] = set()
-    for rec in approved.iter_rows(named=True):
-        subject = _pair_key(str(rec.get("subject_text") or ""))
-        obj = _pair_key(str(rec.get("object_text") or ""))
-        if subject and obj:
-            pairs.add((subject, obj))
-    return pairs
+    tokens = object_key.split(" ")
+    return tuple(
+        " ".join(tokens[start:end]) for start in range(len(tokens)) for end in range(start + 1, len(tokens) + 1) if end - start < len(tokens)
+    )
+
+
+def _split_pipe(value: object) -> list[str]:
+    """The non-empty members of a pipe-joined assertion-table cell."""
+    return [member for member in str(value or "").split("|") if member]
+
+
+def _no_objects() -> Mapping[str, frozenset[str]]:
+    """The empty read-only application index (the dataclass default)."""
+    return MappingProxyType({})
+
+
+@dataclass(frozen=True)
+class ApprovedTreatsIndex:
+    """Cross-reference index over ``approved_treats_assertions.tsv`` for the status rule.
+
+    Two independent keys answer "is this observed (drug, condition) use label-approved?", and a
+    row is approved when EITHER hits:
+
+    ``objects_by_approval``
+        FDA application display form (``NDA021343``) -> the normalized object keys that
+        application approves. The application number is the exact product identity BOTH tables
+        already carry, so it bridges the drug spellings the text key cannot: a FAERS report of
+        the brand ``ELIGARD`` and the approved row for the DailyMed ingredient ``LEUPROLIDE``
+        share ``NDA021343``. On the v1.16.0 production tables this alone reclassifies 38,044
+        rows (6,678,203 cases) that read as off-label, including ``ELIGARD | Prostate cancer``
+        (35,977 cases) whose approved counterpart is ``LEUPROLIDE | Prostate cancer``.
+
+        Within one application the object match also spans granularity: an approved object
+        occurring whole-word INSIDE the observed object approves it, because the label naming
+        the general condition covers the more specific report (``prostate cancer`` covers
+        ``prostate cancer stage iv``). That is the same direction
+        :func:`~dakp_pipeline.assertions.approved_treats._section_mentions_condition` already
+        accepts when it corroborates a FAERS candidate against a label; the reverse (an
+        approved object MORE specific than the observation) never approves, and cannot: a
+        longer key is not a span of a shorter one.
+
+    ``pairs``
+        Normalized ``(subject_text, object_text)`` keys: the text rule, and the only rule that
+        can answer for a FAERS report carrying no application number (64% of production
+        off-label rows). Matching is normalized text on both sides because the two tables spell
+        drugs differently (observed-uses subjects are raw FAERS drugnames; approved-treats
+        subjects are DailyMed ingredient text).
+
+    Both keys run through :func:`_pair_key`, the SAME chain the observed-uses lookup uses
+    (:func:`~dakp_pipeline.textnorm.defaers_text` followed by the gazetteer
+    :func:`~dakp_pipeline.ner.dictionary.normalize_text`), so dosage/form junk, brand aliases,
+    and punctuation differences cannot make ONE pair asymmetric: every spelling variant of one
+    real pair derives ONE status, and Tablassert's ``uuid_on_collision`` first-wins merge then
+    never sees a conflicting ``clinical_approval_status`` scalar (v1.13.0 foldreport recorded
+    3,283 such conflicts, driven by pre-textnorm drugname junk). Residual free-text spelling
+    variants beyond the alias table (non-English INN spellings, typos) on a report with NO
+    application number can still miss and read as ``off_label_use``.
+    """
+
+    #: Normalized ``(subject_key, object_key)`` text pairs of the approved-treats table.
+    pairs: frozenset[tuple[str, str]] = frozenset()
+    #: FDA application display form -> the normalized object keys that application approves.
+    #: A read-only view: the index is built once and shared by every row of a 1.6M-row table.
+    objects_by_approval: Mapping[str, frozenset[str]] = field(default_factory=_no_objects)
+
+    @classmethod
+    def from_frame(cls, approved: pl.DataFrame) -> ApprovedTreatsIndex:
+        """Build both keys from the approved-treats table (one pass, no copies).
+
+        Rows with an empty subject or object contribute nothing to ``pairs``; a row with an
+        empty object contributes nothing to ``objects_by_approval`` either, because an
+        application with no condition approves nothing to cross-reference. ``FDA_regulatory_approvals``
+        cells hold the FDA display forms :class:`~dakp_pipeline.assertions.evidence.FDAApprovalIndex`
+        produced for that table, and the observed-uses rows carry display forms from the SAME
+        index, so the two sides are directly comparable strings.
+
+        A key that is ALL DIGITS is skipped. :meth:`FDAApprovalIndex.expand` falls back to the
+        bare ``<prefix><digits>`` of a number no register knows, and with an empty prefix that
+        publishes reporter typos (``99``, ``999999``, ``02248240``) as if they were identities.
+        Two unrelated products sharing a typo would then cross-approve. On the v1.16.0 tables no
+        promotion rests on such a key, so this removes a vector rather than a behavior.
+        """
+        pairs: set[tuple[str, str]] = set()
+        objects: dict[str, set[str]] = {}
+        for rec in approved.iter_rows(named=True):
+            subject = _pair_key(str(rec.get("subject_text") or ""))
+            obj = _pair_key(str(rec.get("object_text") or ""))
+            if subject and obj:
+                pairs.add((subject, obj))
+            if not obj:
+                continue
+            for approval in _split_pipe(rec.get("FDA_regulatory_approvals")):
+                if approval.isdigit():
+                    continue  # a bare number is the unknown-application fallback, not an identity
+                objects.setdefault(approval, set()).add(obj)
+        return cls(pairs=frozenset(pairs), objects_by_approval=MappingProxyType({key: frozenset(value) for key, value in objects.items()}))
+
+    def is_approved(self, subject_key: str, object_key: str, approvals: Iterable[str]) -> bool:
+        """True when the approved-treats table already asserts this (drug, condition) pair.
+
+        ``approvals`` are the row's expanded FDA display forms (the same values written to its
+        ``FDA_regulatory_approvals`` cell); an empty iterable leaves only the text rule. Every
+        branch is an existence test over deterministic keys, so the verdict never depends on
+        set iteration order.
+
+        ``approvals`` is the UNION of every case merged into the observed row, exactly as the
+        row's own ``FDA_regulatory_approvals`` cell is, so one application approving the pair
+        approves the merged edge. That is the same aggregation the published provenance already
+        uses: the edge claims every application its cases cited, and the status agrees with the
+        claim rather than contradicting it.
+        """
+        if (subject_key, object_key) in self.pairs:
+            return True
+        spans: tuple[str, ...] | None = None
+        for approval in approvals:
+            approved_objects = self.objects_by_approval.get(approval)
+            if not approved_objects:
+                continue
+            if object_key in approved_objects:
+                return True
+            if spans is None:
+                spans = _proper_spans(object_key)
+            if any(span in approved_objects for span in spans):
+                return True  # the general approved object covers this more specific report
+        return False
 
 
 @functools.lru_cache(maxsize=1 << 20)
@@ -177,7 +335,7 @@ def _pair_key(text: str) -> str:
 def build_observed_use_rows(
     faers_cases: pl.DataFrame | None,
     disease_map: Mapping[str, Mapping[str, str]],
-    approved_pairs: set[tuple[str, str]] | None = None,
+    approved_pairs: ApprovedTreatsIndex | Iterable[tuple[str, str]] | None = None,
     *,
     approvals: FDAApprovalIndex | None = None,
     faers_quarter_urls: Mapping[str, str] | None = None,
@@ -214,9 +372,10 @@ def build_observed_use_rows(
     with per-group synthetic ``anon:row:`` tokens so ``len(case_ids) == number_of_cases`` exactly —
     and is pipe-joined like every other multivalued cell.
 
-    ``approved_pairs`` is the normalized (subject, object) pair set of the approved-treats table
-    (:func:`_approved_pair_index`), or ``None`` when that table is unavailable — in which case
-    every row degrades to ``clinical_approval_status = not_provided``.
+    ``approved_pairs`` is the approved-treats cross-reference
+    (:class:`ApprovedTreatsIndex`, or a bare iterable of normalized ``(subject, object)`` text
+    pairs when the caller only wants the text rule), or ``None`` when that table is unavailable,
+    in which case every row degrades to ``clinical_approval_status = not_provided``.
 
     ``approvals`` expands the FAERS application numbers, which FAERS records with both the
     application-type prefix and the leading zeros stripped (``125514``), back to the FDA form
@@ -226,6 +385,7 @@ def build_observed_use_rows(
         return []
     del ner, devices, cache
     approvals = approvals if approvals is not None else FDAApprovalIndex()
+    approved_index = _coerce_approved_index(approved_pairs)
 
     def _text_column(name: str) -> pl.Expr:
         return pl.col(name).fill_null("").cast(pl.Utf8) if name in faers_cases.columns else pl.lit("")
@@ -350,9 +510,9 @@ def build_observed_use_rows(
         anon_tokens.update(f"anon:row:{drug}:{obj['text']}:{index}" for index in range(max(pad, 0)))
         # Identified case ids: distinct non-empty primaryids of the group.
         case_ids = {str(value) for value in rec.get("case_ids") or () if value}
-        if approved_pairs is None:
+        if approved_index is None:
             status = _STATUS_NOT_PROVIDED
-        elif (_pair_key(drug), _pair_key(obj["text"])) in approved_pairs:
+        elif approved_index.is_approved(_pair_key(drug), _pair_key(obj["text"]), approval_values):
             status = _STATUS_APPROVED
         else:
             status = _STATUS_OFF_LABEL
@@ -386,6 +546,19 @@ def build_observed_use_rows(
     return rows
 
 
+def _coerce_approved_index(approved_pairs: ApprovedTreatsIndex | Iterable[tuple[str, str]] | None) -> ApprovedTreatsIndex | None:
+    """Accept either the full index or a bare iterable of text pairs (``None`` stays ``None``).
+
+    A bare pair iterable carries no application numbers, so it exercises the text rule alone:
+    the pre-approval-identity contract, kept so callers and tests can pin that rule in isolation.
+    Pairs with an empty member are dropped, matching :meth:`ApprovedTreatsIndex.from_frame`: an
+    empty key could otherwise approve every row whose subject or object normalizes to nothing.
+    """
+    if approved_pairs is None or isinstance(approved_pairs, ApprovedTreatsIndex):
+        return approved_pairs
+    return ApprovedTreatsIndex(pairs=frozenset((subject, obj) for subject, obj in approved_pairs if subject and obj))
+
+
 transform = ObservedUsesShaper().transform
 
-__all__ = ["ObservedUsesShaper", "build_observed_use_rows", "is_non_disease_indication", "transform"]
+__all__ = ["ApprovedTreatsIndex", "ObservedUsesShaper", "build_observed_use_rows", "is_non_disease_indication", "transform"]
