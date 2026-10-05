@@ -84,10 +84,11 @@ jobs:
 
   python-test:
     runs-on: ubuntu-latest
-    # The two-phase suite is a ~1 min baseline; a wedged run should fail loudly at 15 min
+    # The two-phase suite is a ~1 min baseline; a wedged run should fail loudly at 30 min
     # (faulthandler_timeout dumps the stuck test's stack at 10 min) instead of silently
-    # burning runner time.
-    timeout-minutes: 15
+    # burning runner time. The 15 min cap used to cancel healthy jobs on slow-runner days:
+    # checkout + uv sync alone can eat 6+ min, leaving no headroom for the ~1-2 min suite.
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
