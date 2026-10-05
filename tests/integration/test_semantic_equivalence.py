@@ -209,10 +209,20 @@ def test_applied_to_treat_carries_the_off_label_signal(built: dict[str, Any]) ->
 
     The legacy postprocess (``dakp-postprocess2jsonlBL.py``) marked each applied_to_treat pair by
     its treats counterpart: ``approved_for_condition`` when the pair is label-approved, else
-    ``off_label_use`` — both biolink-valid ``ClinicalApprovalStatusEnum`` members (the legacy
-    ``observed_use`` label never was one). Matching is normalized text, so the Advil brand name
-    misses the DailyMed ingredient subject and reads as off-label (the documented name-variant
-    caveat the legacy pipeline carried too).
+    ``off_label_use`` -- both biolink-valid ``ClinicalApprovalStatusEnum`` members (the legacy
+    ``observed_use`` label never was one).
+
+    The rebuild answers with two keys, and this fixture exercises both plus the miss:
+
+    * ``Examplestatin`` matches the approved subject by normalized TEXT (the legacy rule).
+    * ``Advil`` does NOT: the approved row's subject is the DailyMed ingredient text, and
+      ``BRAND_ALIASES`` carries no Advil entry. It is approved anyway through the FDA
+      APPLICATION IDENTITY key -- the FAERS record cites ``017977`` and the approved row for
+      that application covers ``headache``. That is the point of the second key: the legacy
+      name-variant caveat (a brand subject reading off-label for an on-label use) is exactly the
+      bug that shipped ``ELIGARD applied_to_treat Prostate cancer stage IV`` as ``off_label_use``.
+    * ``Aspirin`` (``arthritis``) has no treats counterpart under its application, so it stays
+      ``off_label_use``: the application key must not approve everything.
     """
     rows = _family_rows(built["tables"], APPLIED_TO_TREAT)
     assert rows
@@ -221,7 +231,10 @@ def test_applied_to_treat_carries_the_off_label_signal(built: dict[str, Any]) ->
         assert str(rec.get("agent_type")) == "manual_validation_of_automated_agent"
     statuses = {(str(rec.get("subject_text")), str(rec.get("object_text"))): str(rec.get("clinical_approval_status")) for rec in rows}
     assert statuses[("Examplestatin", "hypercholesterolemia")] == "approved_for_condition"
-    assert statuses[("Advil", "headache")] == "off_label_use"  # brand name vs DailyMed ingredient text
+    assert statuses[("Advil", "headache")] == "approved_for_condition"  # via NDA017977, not the brand text
+    # Aspirin has no treats counterpart under NDA020000, so it stays off-label: the application
+    # key must not approve everything.
+    assert statuses[("Aspirin", "arthritis")] == "off_label_use"
 
 
 def test_contraindications_are_knowledge_assertions_text_mined(built: dict[str, Any]) -> None:

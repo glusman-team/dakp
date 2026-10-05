@@ -122,6 +122,28 @@ category allow-list.
 | observed-use | `biolink:applied_to_treat` | drug → disease/phenotype | FAERS |
 | contraindication | `biolink:contraindicated_in` | drug → disease/phenotype | DailyMed |
 
+### Observed-use approval status
+
+Every `applied_to_treat` row carries `clinical_approval_status`: `approved_for_condition` when
+the same (drug, condition) pair is label-approved, else `off_label_use` (`not_provided` only when
+no approved-treats table was available). The cross-reference answers on three keys, first hit
+wins, and the last two only ever add approvals:
+
+1. **FDA application identity**: the row's own application display forms (`NDA021343`) name the
+   exact product, and the approved table says which conditions each application covers. This is
+   what survives the brand/ingredient spelling gap: FAERS reports `ELIGARD`, the approved row's
+   subject is the DailyMed ingredient `LEUPROLIDE`.
+2. **Object granularity within one application**: an approved condition occurring whole-word
+   inside the observed condition approves it (`prostate cancer` covers `prostate cancer stage
+   iv`), the same direction `approved_treats` already accepts when corroborating a report
+   against a label. Never across applications, and never in reverse.
+3. **Normalized text pair**: the legacy rule, and the only one that answers for a report with
+   no application number (64% of production off-label rows).
+
+`tests/eval/approval_status_audit.py` re-derives the status over a real build with the shipped
+rule and exits non-zero on any demotion; on the v1.16.0 tables it reports 64,351 rows
+(8,364,775 cases) promoted and 0 demoted.
+
 ## Resource Ingest Guide
 
 The graph config carries a Translator Resource Ingest Guide (RIG) adapted from the
