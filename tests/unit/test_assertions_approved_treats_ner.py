@@ -8,9 +8,6 @@ shaper's injected-vs-default NER resolution.
 
 from __future__ import annotations
 
-import sys
-import types
-from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -28,8 +25,6 @@ from dakp_pipeline.assertions.approved_treats import (
 )
 from dakp_pipeline.assertions.evidence import DailyMedEvidence
 from dakp_pipeline.io.contracts import TaskContext
-from dakp_pipeline.ner import ner as ner_module
-from dakp_pipeline.ner.model_cache import ModelRef
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
 
 
@@ -37,7 +32,7 @@ def _supported_evidence(section_text: str) -> DailyMedEvidence:
     """NDA 12345 approved on SET-A with one indication section."""
     return DailyMedEvidence(
         approval_sets={"12345": {"SET-A"}},
-        approval_display={"12345": "012345"},
+        approval_display={"12345": "NDA012345"},
         set_ingredient={"SET-A": ("Examplestatin", "UNII:QFX8B1R4QF")},
         active_ingredients_by_set={"SET-A": [("Examplestatin", "UNII:QFX8B1R4QF")]},
         indication_docs={"SET-A": [("SET-A#34067-9", section_text)]},
@@ -272,6 +267,83 @@ def test_indication_observation_merges_duplicate_host_qualifiers_by_score(monkey
     assert observations[0]["qualifiers"] == {"sex_text": "women"}
 
 
+def test_patient_clause_disease_context_attaches_to_the_indication_host() -> None:
+    """ "for treatment of A in patients with B" must qualify the A edge with disease context B.
+
+    The comorbidity B is a Disease mention, and Disease mentions are deliberately NOT generic
+    qualifiers (attach_qualifiers_with_scores withholds them), so without the explicit
+    patient-clause classifier B is mined and then silently dropped: the treated-population
+    restriction never reaches the edge. The contraindication shaper and the NER training
+    export already classify this template; the approved-treats path must agree with them.
+    """
+    sentence = "Examplestatin is indicated for the treatment of asthma in patients with diabetes."
+    mentions = {
+        ("SET-A", "SET-A#34067-9"): [
+            Mention("asthma", sentence.index("asthma"), sentence.index("asthma") + 6, "Disease", 1.0),
+            Mention("diabetes", sentence.index("diabetes"), sentence.index("diabetes") + 8, "Disease", 1.0),
+        ]
+    }
+    observations = _indication_observations(
+        DailyMedEvidence(indication_docs={"SET-A": [("SET-A#34067-9", sentence)]}),
+        ["SET-A"],
+        {"object_text": "asthma", "object_category": "Disease"},
+        {},
+        mentions,
+    )
+    assert observations[0]["qualifiers"]["disease_context_text"] == "diabetes"
+    assert observations[0]["qualifier_scores"]["disease_context_text"] == (1.0, "diabetes")
+
+
+def test_indication_without_patient_clause_leaves_disease_context_blank() -> None:
+    """Negative guard: a bare indication sentence must not fabricate a disease context.
+
+    The qualifier is sparse by contract (nullable on the edge); a second Disease mention
+    outside the explicit template is NOT context and must stay unattached, or unrelated
+    comorbidity prose would mint spurious qualifier-distinct edges (UUID_FIELDS includes
+    disease_context_qualifier, so a fabricated value splits edge identity).
+    """
+    sentence = "Examplestatin is indicated for the treatment of asthma."
+    mentions = {("SET-A", "SET-A#34067-9"): [Mention("asthma", sentence.index("asthma"), sentence.index("asthma") + 6, "Disease", 1.0)]}
+    observations = _indication_observations(
+        DailyMedEvidence(indication_docs={"SET-A": [("SET-A#34067-9", sentence)]}),
+        ["SET-A"],
+        {"object_text": "asthma", "object_category": "Disease"},
+        {},
+        mentions,
+    )
+    assert "disease_context_text" not in observations[0]["qualifiers"]
+
+
+def test_patient_clause_context_does_not_attach_to_a_non_host_disease() -> None:
+    """The context belongs to the after-marker host only, never to the before-marker disease.
+
+    Guards the object-index mapping: ``patient_clause_contexts`` keys contexts by index into
+    the sentence's object mentions, and the FDA path filters those to candidate-matching
+    hosts. A wrong index would attach B's context to B itself (restating the object) or to
+    an unrelated co-mentioned disease. Here two asthma mentions match the candidate, so the
+    template's "exactly one after-marker object" guard abstains: no context rather than a
+    guessed one.
+    """
+    sentence = "Not for asthma alone; indicated for the treatment of asthma in patients with diabetes."
+    first = sentence.index("asthma")
+    second = sentence.index("asthma", first + 1)
+    mentions = {
+        ("SET-A", "SET-A#34067-9"): [
+            Mention("asthma", first, first + 6, "Disease", 1.0),
+            Mention("asthma", second, second + 6, "Disease", 1.0),
+            Mention("diabetes", sentence.index("diabetes"), sentence.index("diabetes") + 8, "Disease", 1.0),
+        ]
+    }
+    observations = _indication_observations(
+        DailyMedEvidence(indication_docs={"SET-A": [("SET-A#34067-9", sentence)]}),
+        ["SET-A"],
+        {"object_text": "asthma", "object_category": "Disease"},
+        {},
+        mentions,
+    )
+    assert "disease_context_text" not in observations[0]["qualifiers"]
+
+
 def test_dailymed_context_and_qualifiers_aggregate_model_metadata() -> None:
     """DailyMed sentence context and qualifiers must survive aggregation, with the best model vote.
 
@@ -402,52 +474,50 @@ def test_mine_indication_mentions_sequential_offline() -> None:
     assert smpc_mentions == {}
 
 
-def test_production_ner_dispatches_multi_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Production NER + devices + >1 section: mining goes through _mine_multi_gpu."""
+def test_production_ner_dispatches_through_the_pool(fake_dispatch_pool: Any) -> None:
+    """Production NER + devices + >1 section: mining goes through the run-scoped MiningPool."""
     ev = DailyMedEvidence(
         approval_sets={"12345": {"SET-A"}},
-        approval_display={"12345": "012345"},
+        approval_display={"12345": "NDA012345"},
         set_ingredient={"SET-A": ("Examplestatin", "UNII:QFX8B1R4QF")},
         active_ingredients_by_set={"SET-A": [("Examplestatin", "UNII:QFX8B1R4QF")]},
         indication_docs={"SET-A": [("SET-A#a", "indicated for asthma"), ("SET-A#b", "indicated for asthma")]},
     )
     ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"})
 
-    called: list[dict[str, Any]] = []
-
-    def fake_multi_gpu(work_items: Any, ner_arg: Any, devs: Any) -> dict[tuple[str, str], Any]:
-        called.append({"items": len(work_items), "devices": tuple(devs)})
-        offline = DiseaseNER(gazetteer=ner_arg._gazetteer)
+    def fake_mine(work_items: Any, pool_ner: Any) -> dict[tuple[str, str], Any]:
+        offline = DiseaseNER(gazetteer=pool_ner._gazetteer)
         return {(s, d): offline.extract(t) for s, d, t in work_items}
 
-    monkeypatch.setattr(approved_treats, "_mine_multi_gpu", fake_multi_gpu)
+    calls = fake_dispatch_pool(approved_treats, fake_mine)
 
     cases = pl.DataFrame({"nda": ["012345"], "indication": ["asthma"], "drugname": ["Examplestatin"], "ingredient": ["Examplestatin"]})
     rows = build_approved_treats_rows(cases, ev, _MAPPING, {}, ner=ner, devices=("cuda:0", "cuda:1"))
-    assert called == [{"items": 2, "devices": ("cuda:0", "cuda:1")}]
+    assert calls == [(2, ("cuda:0", "cuda:1"))]  # both sections in ONE pool call, both devices offered
     assert [row["object_text"] for row in rows] == ["asthma"]
 
 
-def test_production_ner_single_section_stays_sequential(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A single section is mined inline even with devices available (no pool for one item)."""
-    # Keep the inline production extract hermetic (no torch/model download): a fake gliner2
-    # module plus a stubbed ensure_model, the same seam test_ner_edge.py uses.
-    fake_model = types.SimpleNamespace(extract_entities=lambda text, entity_types, threshold=0.5, **_kwargs: {"entities": {}})
-    module = types.ModuleType("gliner2")
-    module.AutoExtractor = type("AutoExtractor", (), {"from_pretrained": staticmethod(lambda *a, **kw: fake_model)})  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "gliner2", module)
-    monkeypatch.setattr(
-        ner_module,
-        "ensure_model",
-        lambda model_id, **kw: ModelRef(
-            model_id=model_id, source="huggingface", path=tmp_path, b3="b3:deadbeef", manifest=tmp_path / "manifest.json"
-        ),
-    )
+def test_production_ner_single_section_still_uses_the_open_pool(fake_dispatch_pool: Any) -> None:
+    """A single section mines through the OPEN pool, never in the parent.
+
+    Regression guard for a deadlock the run-scoped pool introduced. In-parent mining loads a second
+    model onto a 16 GB card a live worker already holds, without the expandable-segments allocator env
+    that only the worker initializer sets, and then blocks on that worker's flock: the parent resolves
+    ``device=None`` to bare ``"cuda"``, whose lock file is the same ``cuda-0.lock`` that slot
+    ``cuda:0`` holds for its whole process life. The per-process self-reuse guard cannot see a child's
+    fd, so the parent would poll for an hour and die with GpuLockTimeoutError.
+    """
     ev = _supported_evidence("indicated for asthma")
     ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"})
-    monkeypatch.setattr(approved_treats, "_mine_multi_gpu", lambda *args: (_ for _ in ()).throw(AssertionError("must not dispatch")))
+
+    def fake_mine(work_items: Any, pool_ner: Any) -> dict[tuple[str, str], Any]:
+        offline = DiseaseNER(gazetteer=pool_ner._gazetteer)
+        return {(s, d): offline.extract(t) for s, d, t in work_items}
+
+    calls = fake_dispatch_pool(approved_treats, fake_mine)
     cases = pl.DataFrame({"nda": ["012345"], "indication": ["asthma"], "drugname": ["Examplestatin"], "ingredient": ["Examplestatin"]})
     rows = build_approved_treats_rows(cases, ev, _MAPPING, {}, ner=ner, devices=("cuda:0", "cuda:1"))
+    assert calls == [(1, ("cuda:0", "cuda:1"))]  # the singleton went to the pool, not the parent
     assert [row["object_text"] for row in rows] == ["asthma"]
 
 

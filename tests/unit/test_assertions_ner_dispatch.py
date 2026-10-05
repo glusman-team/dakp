@@ -1,23 +1,29 @@
 """Unit tests for the shared NER dispatch plumbing (assertions/ner_dispatch.py).
 
-Covers the per-GPU dispatch primitives (``_mine_shard`` worker, ``_mine_multi_gpu`` LPT
-orchestrator, device resolution) plus the persistent mention-cache seam (``mine_with_cache``). All tests run offline with gazetteer-only
-DiseaseNERs on "cpu" devices (the spawn pool is real); cache tests use a fake in-memory
-cache and a production-mode backend whose ``extract`` is monkeypatched — GLiNER never loads.
+Covers the device-pinned dispatch primitives (the ``_init_worker`` slot claim, the ``_mine_chunk``
+worker, the run-scoped ``MiningPool`` orchestrator, device resolution) plus the persistent
+mention-cache seam (``mine_with_cache``). All tests run offline with gazetteer-only DiseaseNERs on
+"cpu" devices; the executor and its slot queue are stubbed except where a test says it spawns for
+real. Cache tests use a fake in-memory cache and a production-mode backend whose ``extract`` is
+monkeypatched, so GLiNER never loads.
 """
 
 from __future__ import annotations
 
+import os
+import pickle
+import queue
 from collections.abc import Iterator, Sequence
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from loguru import logger
 
 import dakp_pipeline.assertions.ner_dispatch as dispatch
-from dakp_pipeline.assertions.ner_dispatch import _mentions_fit, default_ner, mine_by_position, mine_with_cache
+from dakp_pipeline.assertions.ner_dispatch import MiningPool, NerWorkerError, _mentions_fit, default_ner, mine_by_position, mine_with_cache
 from dakp_pipeline.logging_setup import WORKER_LOG_SUBDIR
 from dakp_pipeline.ner import model_cache
 from dakp_pipeline.ner.ner import DiseaseNER, Mention
@@ -38,79 +44,122 @@ def _captured_logs() -> Iterator[list[str]]:
         logger.remove(sink_id)
 
 
-# --- _mine_shard worker ---------------------------------------------------------
+# --- _init_worker: the device-slot claim ----------------------------------------
 
 
-def test_shard_uses_one_batch_per_gpu_worker(monkeypatch: pytest.MonkeyPatch) -> None:
-    ner = _ner("asthma")
+class _StubSlots:
+    """Stand-in for the parent's slot queue: FIFO pop, no multiprocessing machinery."""
+
+    def __init__(self, *slots: str) -> None:
+        self._slots = list(slots)
+
+    def get(self, timeout: float | None = None) -> str:
+        if not self._slots:
+            raise queue.Empty
+        return self._slots.pop(0)
+
+
+def test_init_worker_claims_a_slot_then_redirects_logging_then_arms_the_death_signal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, as_worker: Any
+) -> None:
+    """The initializer's ORDER is the point: the logging redirect happens before anything can emit.
+
+    A spawned child inherits no sinks, so loguru's default stderr sink plus the torch/transformers
+    stderr handlers would reach Airflow as ERROR-level ``task.stderr`` noise for perfectly healthy
+    records. The model load comes later (lazily, inside the first chunk), so configuring here is
+    early enough, and the death signal must be armed before a GPU plus a flock are ever held.
+    """
+    calls: list[Any] = []
+    monkeypatch.setattr(dispatch, "configure_worker_logging", lambda workdir, name: calls.append(("logging", workdir, name)))
+    monkeypatch.setattr(dispatch, "_set_parent_death_signal", lambda: calls.append("pdeathsig"))
+    as_worker(None, None)  # reset the globals so the assertions below read what THIS call set
+    dispatch._init_worker(_StubSlots("cuda:2"), {"workdir": tmp_path, "gazetteer": {"asthma": "disease"}})
+    assert calls == [("logging", tmp_path, "cuda:2"), "pdeathsig"]
+    assert dispatch._WORKER_SLOT == "cuda:2"
+    assert dispatch._WORKER_CONFIG["workdir"] == tmp_path
+
+
+def test_init_worker_sets_the_allocator_env_only_for_a_cuda_slot(monkeypatch: pytest.MonkeyPatch, as_worker: Any) -> None:
+    """``expandable_segments`` is a CUDA-allocator remedy; a CPU slot must not inherit it.
+
+    The env var is read once, when torch initializes CUDA in this process, so it has to be set here
+    rather than at model-load time. ``setdefault`` keeps an explicit operator setting in charge.
+    """
+    monkeypatch.setattr(dispatch, "configure_worker_logging", lambda *_args: None)
+    monkeypatch.setattr(dispatch, "_set_parent_death_signal", lambda: None)
+    monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
+    as_worker(None, None)
+    dispatch._init_worker(_StubSlots("cpu"), {})
+    assert "PYTORCH_CUDA_ALLOC_CONF" not in os.environ
+    dispatch._init_worker(_StubSlots("cuda:0"), {})
+    assert os.environ["PYTORCH_CUDA_ALLOC_CONF"] == "expandable_segments:True"
+
+
+def test_init_worker_respects_an_operator_set_allocator_env(monkeypatch: pytest.MonkeyPatch, as_worker: Any) -> None:
+    monkeypatch.setattr(dispatch, "configure_worker_logging", lambda *_args: None)
+    monkeypatch.setattr(dispatch, "_set_parent_death_signal", lambda: None)
+    monkeypatch.setenv("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
+    as_worker(None, None)
+    dispatch._init_worker(_StubSlots("cuda:0"), {})
+    assert os.environ["PYTORCH_CUDA_ALLOC_CONF"] == "backend:cudaMallocAsync"
+
+
+def test_init_worker_fails_loudly_when_no_slot_is_available(monkeypatch: pytest.MonkeyPatch, as_worker: Any) -> None:
+    """A mis-sized pool raises here instead of hanging a multi-hour DAG task on an empty queue."""
+    as_worker(None, None)
+    with pytest.raises(RuntimeError, match="could not claim a device slot"):
+        dispatch._init_worker(_StubSlots(), {})
+    with pytest.raises(RuntimeError, match="could not claim a device slot"):
+        dispatch._init_worker(object(), {})  # not a queue at all: AttributeError branch
+
+
+# --- _mine_chunk: the worker's unit of work ---------------------------------------
+
+
+def test_chunk_uses_one_batch_call_per_worker(monkeypatch: pytest.MonkeyPatch, as_worker: Any) -> None:
+    """One chunk is ONE batched span pass, and every item comes back aligned to its key."""
     calls: list[list[str]] = []
-
-    def extract_spans_batch(texts: Sequence[str]) -> list[Any]:
-        calls.append(list(texts))
-        # Raw spans of an OFFLINE backend are empty (no model); the shard contract only cares
-        # that ONE batched span pass ran per worker and every item came back aligned.
-        return [dispatch.RawTextSpans(windows=[], objects=[], qualifiers=[]) for _ in texts]
 
     class WorkerNER:
         def __init__(self, **_kwargs: Any) -> None:
             pass
 
         def extract_spans_batch(self, texts: Sequence[str]) -> list[Any]:
-            return extract_spans_batch(texts)
+            calls.append(list(texts))
+            # Raw spans of an OFFLINE backend are empty (no model); the chunk contract only cares
+            # that ONE batched span pass ran and every item came back aligned.
+            return [dispatch.RawTextSpans(windows=[], objects=[], qualifiers=[]) for _ in texts]
 
     monkeypatch.setattr(dispatch, "DiseaseNER", WorkerNER)
-    result = dispatch._mine_shard([("S1", "D1", "asthma"), ("S2", "D2", "asthma")], ner._config(), "cpu")
+    as_worker("cpu", {})
+    result = dispatch._mine_chunk([("S1", "D1", "asthma"), ("S2", "D2", "asthma")])
     assert calls == [["asthma", "asthma"]]
     assert {(set_id, doc_id) for set_id, doc_id, _spans in result} == {("S1", "D1"), ("S2", "D2")}
 
 
-def test_mine_shard_defaults_to_leaving_process_logging_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Without ``in_worker`` the process-global logging reconfiguration never runs.
+def test_mine_chunk_leaves_process_logging_untouched(monkeypatch: pytest.MonkeyPatch, as_worker: Any) -> None:
+    """Mining a chunk in the PARENT process must not wipe the task's own sinks.
 
-    This default is what protects the Airflow TASK process: ``configure_worker_logging`` calls
-    ``logger.remove()`` and ``basicConfig(force=True)``, which would wipe the task's own sinks.
-    An inferred guard could not do this safely -- ``multiprocessing.parent_process()`` is
-    non-None in the Airflow task process itself under LocalExecutor.
+    This is why the logging redirect lives in the executor initializer and not in the chunk worker:
+    ``configure_worker_logging`` calls ``logger.remove()`` and ``basicConfig(force=True)``, and
+    ``multiprocessing.parent_process()`` cannot discriminate (Airflow's LocalExecutor runs the task
+    itself under a ``multiprocessing.Process``), so the old explicit ``in_worker`` flag had to guard
+    it. An initializer only ever runs in a child, so the guard is now structural rather than a
+    convention a future caller could forget.
     """
-    reconfigured: list[tuple[Any, str]] = []
+    reconfigured: list[Any] = []
     monkeypatch.setattr(dispatch, "configure_worker_logging", lambda workdir, name: reconfigured.append((workdir, name)))
-    dispatch._mine_shard([("S1", "D1", "asthma")], _ner("asthma")._config(), "cpu")
+    as_worker("cpu", _ner("asthma")._config())
+    dispatch._mine_chunk([("S1", "D1", "asthma")])
     assert reconfigured == []
 
 
-def test_mine_shard_in_worker_configures_logging_before_loading_the_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """``in_worker=True`` configures logging FIRST, before the backend (and its imports) load.
-
-    Ordering is the point: ``DiseaseNER`` construction pulls in transformers/torch, which write
-    to stderr as they initialize. Configuring afterwards would let exactly the noise this fixes
-    escape, so both steps record into one list and the ORDER is asserted.
-    """
-    calls: list[Any] = []
-
-    class WorkerNER:
-        def __init__(self, **kwargs: Any) -> None:
-            calls.append(("construct_ner", kwargs["device"]))
-
-        def extract_spans_batch(self, texts: Sequence[str]) -> list[Any]:
-            return [dispatch.RawTextSpans(windows=[], objects=[], qualifiers=[]) for _ in texts]
-
-    monkeypatch.setattr(dispatch, "configure_worker_logging", lambda workdir, name: calls.append(("configure_logging", workdir, name)))
-    monkeypatch.setattr(dispatch, "_set_parent_death_signal", lambda: calls.append("pdeathsig"))
-    monkeypatch.setattr(dispatch, "DiseaseNER", WorkerNER)
-    ner = DiseaseNER(gazetteer={"asthma": "disease"}, workdir=tmp_path)
-    dispatch._mine_shard([("S1", "D1", "asthma")], ner._config(), "cuda:2", in_worker=True)
-    assert calls == [("configure_logging", tmp_path, "cuda:2"), "pdeathsig", ("construct_ner", "cuda:2")]
-
-
-# --- _set_parent_death_signal ---------------------------------------------------
-
-
-def test_mine_shard_logs_the_traceback_before_propagating(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A shard failure leaves its traceback in the WORKER log, not only a pickled exception.
+def test_mine_chunk_wraps_a_failure_with_its_device_and_keeps_the_traceback(monkeypatch: pytest.MonkeyPatch, as_worker: Any) -> None:
+    """A chunk failure leaves its traceback in the WORKER log and names the device for the parent.
 
     The parent sees nothing but ``future.result()`` re-raising, so without this the worker file
-    simply stops mid-shard: DAG runs 8 and 9 both died on ``IndexError: string index out of
-    range`` with no traceback anywhere on disk to name the frame.
+    simply stops mid-chunk: DAG runs 8 and 9 both died on ``IndexError: string index out of range``
+    with no traceback anywhere on disk to name the frame.
     """
 
     class BoomNER:
@@ -121,39 +170,55 @@ def test_mine_shard_logs_the_traceback_before_propagating(monkeypatch: pytest.Mo
             raise IndexError("string index out of range")
 
     monkeypatch.setattr(dispatch, "DiseaseNER", BoomNER)
-    with _captured_logs() as lines, pytest.raises(IndexError):
-        dispatch._mine_shard([("S1", "D1", "asthma"), ("S2", "D2", "hives")], _ner("asthma")._config(), "cuda:1")
+    as_worker("cuda:1", {})
+    with _captured_logs() as lines, pytest.raises(NerWorkerError) as info:
+        dispatch._mine_chunk([("S1", "D1", "asthma"), ("S2", "D2", "hives")])
     assert any("ner_shard_failed: device = cuda:1 items = 2" in line for line in lines)
+    assert any("ner_shard_failed_traceback" in line for line in lines)
+    assert (info.value.device, info.value.items) == ("cuda:1", 2)
+    assert isinstance(info.value.__cause__, IndexError)  # chained, so the original traceback survives
+    assert str(info.value) == "cuda:1: IndexError: string index out of range"
 
 
-def test_mine_multi_gpu_names_the_device_whose_shard_failed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The task log attributes a shard failure to its device and points at the worker-log dir."""
+def test_worker_error_survives_the_pickle_trip_back_to_the_parent() -> None:
+    """The exception's ``args`` must match its signature, or the parent gets a broken object.
 
-    class FakeFuture:
-        def __init__(self, device: str) -> None:
-            self._device = device
+    ``BaseException.__reduce__`` replays ``self.args`` through the constructor on unpickle, which is
+    why ``NerWorkerError.__init__`` takes exactly ``(device, items, message)`` and passes all three
+    to ``super().__init__``. A narrower ``super().__init__(message)`` would raise on the way back.
+    """
+    err = NerWorkerError("cuda:3", 7, "RuntimeError: CUDA out of memory")
+    restored = pickle.loads(pickle.dumps(err))
+    assert (restored.device, restored.items, restored.message) == ("cuda:3", 7, "RuntimeError: CUDA out of memory")
+    assert str(restored) == str(err)
 
-        def result(self) -> list[tuple[str, str, list[Mention]]]:
-            if self._device == "cuda:1":
-                raise IndexError("string index out of range")
-            return []
 
-    class FakePool:
-        def __enter__(self) -> FakePool:
-            return self
+# --- _set_parent_death_signal ---------------------------------------------------
 
-        def __exit__(self, *_args: Any) -> None:
-            return None
 
-        def submit(self, _function: Any, _shard: list[Any], _config: dict[str, Any], device: str, **_kwargs: Any) -> FakeFuture:
-            return FakeFuture(device)
-
-    monkeypatch.setattr(dispatch, "ProcessPoolExecutor", lambda **_kwargs: FakePool())
-    ner = DiseaseNER(gazetteer={"asthma": "disease"}, workdir=tmp_path)
-    with _captured_logs() as lines, pytest.raises(IndexError):
-        dispatch._mine_multi_gpu([("S1", "D1", "asthma"), ("S2", "D2", "diabetes")], ner, ("cuda:0", "cuda:1"))
+def test_pool_names_the_device_whose_chunk_failed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The task log attributes a chunk failure to its device and points at the worker-log dir."""
+    _install_stub_pool(monkeypatch, error=NerWorkerError("cuda:1", 1, "IndexError: string index out of range"))
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    with _captured_logs() as lines, pytest.raises(NerWorkerError):
+        MiningPool(ner, ("cuda:0", "cuda:1")).mine([("S1", "D1", "asthma"), ("S2", "D2", "diabetes")])
     assert any("ner_dispatch_failed: device = cuda:1 items = 1" in line for line in lines)
     assert any(str(tmp_path / WORKER_LOG_SUBDIR) in line for line in lines)
+
+
+def test_pool_reports_a_broken_process_pool_without_a_device(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A worker killed outright (OOM kill, SIGKILL from the death signal) returns no result to name.
+
+    ``BrokenProcessPool`` carries no device, so the honest attribution is "unknown" plus a pointer at
+    the per-process worker logs, which is the only place the cause was written. Silently blaming the
+    first device would send the next debugger to the wrong file.
+    """
+    _install_stub_pool(monkeypatch, error=BrokenProcessPool("A worker died"))
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    with _captured_logs() as lines, pytest.raises(BrokenProcessPool):
+        MiningPool(ner, ("cuda:0",)).mine([("S1", "D1", "asthma")])
+    assert any("ner_dispatch_failed: device = unknown" in line for line in lines)
+    assert any("A worker died" in line for line in lines)
 
 
 def test_pdeathsig_is_a_noop_off_linux(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -216,59 +281,320 @@ def test_pdeathsig_exits_when_parent_already_dead(monkeypatch: pytest.MonkeyPatc
     assert exited == [1]
 
 
-def test_dispatch_announces_the_worker_log_directory_and_prunes_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The parent names the worker-log dir in the task log and prunes stale files before spawning.
+# --- MiningPool lifecycle: one pool per run ----------------------------------------
 
-    Worker narration lives in files the Airflow task log never shows, so without this line there
-    is no pointer to it, and nothing else ever retires those per-process files.
+
+def _install_stub_pool(monkeypatch: pytest.MonkeyPatch, *, error: Exception | None = None) -> tuple[list[list[Any]], list[dict[str, Any]]]:
+    """Stub the spawn context and the executor; return (submitted chunks, constructed executors).
+
+    Keeps the lifecycle tests in-process and instant: a real ``spawn`` pool costs an interpreter per
+    worker, and the one test that needs real children says so explicitly.
+    """
+    submitted: list[list[Any]] = []
+    constructed: list[dict[str, Any]] = []
+
+    class _StubQueue:
+        def __init__(self) -> None:
+            self.items: list[str] = []
+
+        def put(self, item: str) -> None:
+            self.items.append(item)
+
+        def get(self, timeout: float | None = None) -> str:
+            return self.items.pop(0)
+
+        def close(self) -> None:
+            self.items.clear()
+
+    class _StubCtx:
+        def Queue(self) -> _StubQueue:
+            return _StubQueue()
+
+    monkeypatch.setattr(dispatch.mp, "get_context", lambda _method: _StubCtx())
+
+    class _Future:
+        def __init__(self, chunk: Sequence[Any]) -> None:
+            self._chunk = chunk
+
+        def result(self) -> list[tuple[str, str, Any]]:
+            if error is not None:
+                raise error
+            return [(s, d, dispatch.RawTextSpans(windows=[], objects=[], qualifiers=[])) for s, d, _t in self._chunk]
+
+    class _Executor:
+        def __init__(self, **kwargs: Any) -> None:
+            constructed.append(kwargs)
+
+        def __enter__(self) -> _Executor:
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def submit(self, _function: Any, chunk: Sequence[Any]) -> _Future:
+            submitted.append(list(chunk))
+            return _Future(chunk)
+
+    monkeypatch.setattr(dispatch, "ProcessPoolExecutor", _Executor)
+    return submitted, constructed
+
+
+def test_pool_reuses_one_executor_across_mine_calls(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """THE payoff test: N cache-put batches through ONE pool build the executor once.
+
+    ``mine_with_cache`` slices the misses into batches of ``DAKP_NERCACHE_PUT_BATCH`` (512) and calls
+    its ``mine`` callable per batch. When that callable built its own pool, a 62k-text build spawned
+    ~123 of them and every worker of every pool re-imported torch, re-acquired the per-device flock
+    and re-read the weights from the model cache.
+    """
+    _submitted, constructed = _install_stub_pool(monkeypatch)
+    monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 0)
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    with MiningPool(ner, ("cuda:0", "cuda:1")) as pool:
+        for batch in range(3):  # three cache-put batches, as mine_with_cache would issue them
+            pool.mine([(f"S{batch}", f"D{i}", "asthma") for i in range(4)])
+        assert pool.started
+    assert len(constructed) == 1  # one executor for the whole run, not one per batch
+    assert constructed[0]["max_workers"] == 2
+    assert not pool.started  # closed on exit
+
+
+def test_pool_announces_worker_logs_once_per_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The parent names the worker-log dir once, and prunes stale files once, per run.
+
+    Worker narration lives in files the Airflow task log never shows, so without this line there is
+    no pointer to it - and nothing else ever retires those per-process files. Announcing per batch
+    (the old behaviour) re-pruned the directory mid-run, deleting the live workers' own logs.
     """
     announced: list[Any] = []
     monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 3)
     monkeypatch.setattr(dispatch, "stats", lambda _log, event, **fields: announced.append((event, fields)))
-
-    class FakeFuture:
-        def result(self) -> list[tuple[str, str, list[Mention]]]:
-            return []
-
-    class FakePool:
-        def __enter__(self) -> FakePool:
-            return self
-
-        def __exit__(self, *_args: Any) -> None:
-            return None
-
-        def submit(self, _function: Any, _shard: list[Any], _config: dict[str, Any], _device: str, **_kwargs: Any) -> FakeFuture:
-            return FakeFuture()
-
-    monkeypatch.setattr(dispatch, "ProcessPoolExecutor", lambda **_kwargs: FakePool())
-    ner = DiseaseNER(gazetteer={"asthma": "disease"}, workdir=tmp_path)
-    dispatch._mine_multi_gpu([("S1", "D1", "asthma")], ner, ("cuda:0",))
+    _install_stub_pool(monkeypatch)
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    with MiningPool(ner, ("cuda:0",)) as pool:
+        pool.mine([("S1", "D1", "asthma"), ("S2", "D2", "asthma")])
+        pool.mine([("S3", "D3", "asthma"), ("S4", "D4", "asthma")])
     assert announced == [("ner_worker_logs", {"path": str(tmp_path / WORKER_LOG_SUBDIR), "pruned": 3})]
 
 
-def test_dispatch_submits_shards_with_the_in_worker_flag_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Every ``pool.submit`` opts the CHILD into the logging redirect (and only the child)."""
-    submitted: list[dict[str, Any]] = []
+def test_pool_spawns_nothing_until_there_is_work(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """An all-cache-hit run must not spawn a process or touch a GPU flock.
 
-    class FakeFuture:
-        def result(self) -> list[tuple[str, str, list[Mention]]]:
-            return []
+    Warm cache is the common case for a re-run, so the pool is lazy by construction: nothing is
+    created until the first non-empty ``mine`` call.
+    """
+    _submitted, constructed = _install_stub_pool(monkeypatch)
+    monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 0)
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    with MiningPool(ner, ("cuda:0", "cuda:1")) as pool:
+        assert pool.mine([]) == {}
+        assert not pool.started
+    assert constructed == []
 
-    class FakePool:
-        def __enter__(self) -> FakePool:
-            return self
 
-        def __exit__(self, *_args: Any) -> None:
-            return None
+def test_pool_hands_every_slot_one_distinct_device(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The slot queue is pre-filled with exactly one entry per pool worker."""
+    _submitted, constructed = _install_stub_pool(monkeypatch)
+    monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 0)
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    pool = MiningPool(ner, ("cuda:0", "cuda:1", "cuda:2", "cuda:3"))
+    pool.start()
+    assert pool.slots == ("cuda:0", "cuda:1", "cuda:2", "cuda:3")
+    assert constructed[0]["initargs"][0].items == ["cuda:0", "cuda:1", "cuda:2", "cuda:3"]
+    assert constructed[0]["initializer"] is dispatch._init_worker
+    pool.close()
 
-        def submit(self, _function: Any, _shard: list[Any], _config: dict[str, Any], _device: str, **kwargs: Any) -> FakeFuture:
-            submitted.append(kwargs)
-            return FakeFuture()
 
-    monkeypatch.setattr(dispatch, "ProcessPoolExecutor", lambda **_kwargs: FakePool())
-    ner = DiseaseNER(gazetteer={"asthma": "disease"}, workdir=tmp_path)
-    dispatch._mine_multi_gpu([("S1", "D1", "asthma"), ("S2", "D2", "diabetes")], ner, ("cuda:0", "cuda:1"))
-    assert submitted == [{"in_worker": True}] * 2
+def test_pool_start_is_idempotent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_stub_pool(monkeypatch)
+    monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 0)
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    pool = MiningPool(ner, ("cuda:0",))
+    assert pool.start() is pool.start()
+    pool.close()
+    pool.close()  # closing twice is safe (the shaper's finally block may race a with-exit)
+
+
+def test_pool_rejects_an_empty_slot_list(tmp_path: Path) -> None:
+    """An empty plan is a caller bug, not a silently sequential run."""
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    with pytest.raises(ValueError, match="at least one device slot"):
+        MiningPool(ner, ())
+
+
+def test_four_slot_pool_creates_four_distinct_chunks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A sufficiently large workload is cut into one chunk per slot, with no item lost or doubled."""
+    submitted, _constructed = _install_stub_pool(monkeypatch)
+    monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 0)
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    items = [("S", f"D{i}", "asthma " * (i + 1)) for i in range(8)]
+    with MiningPool(ner, ("cuda:0", "cuda:1", "cuda:2", "cuda:3")) as pool:
+        pool.mine(items)
+    assert len(submitted) == 4
+    assert sorted(item[1] for chunk in submitted for item in chunk) == [f"D{i}" for i in range(8)]
+    assert all(chunk for chunk in submitted)  # no empty chunk is ever submitted
+
+
+def test_pool_fewer_items_than_slots_submits_no_empty_chunk(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    submitted, constructed = _install_stub_pool(monkeypatch)
+    monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 0)
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    with MiningPool(ner, ("cuda:0", "cuda:1", "cuda:2", "cuda:3")) as pool:
+        pool.mine([("S1", "D1", "asthma")])
+    assert len(submitted) == 1
+    assert constructed[0]["max_workers"] == 4  # the plan is sized by slots; workers spawn on demand
+
+
+def test_pool_worker_log_dir_names_the_run_workdir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_stub_pool(monkeypatch)
+    monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 0)
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    assert MiningPool(ner, ("cuda:0",))._worker_log_dir() == str(tmp_path / WORKER_LOG_SUBDIR)
+    no_workdir = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=None)
+    assert MiningPool(no_workdir, ("cuda:0",))._worker_log_dir() == str(Path("") / WORKER_LOG_SUBDIR)
+
+
+# --- dispatch_pool: the shaper-facing seam ----------------------------------------
+
+
+def test_dispatch_pool_yields_none_for_an_offline_backend() -> None:
+    """The offline gazetteer is deliberately never sent to a GPU (CPU-cheap, deterministic)."""
+    with dispatch.dispatch_pool(_ner("asthma"), ("cuda:0", "cuda:1")) as pool:
+        assert pool is None
+
+
+def test_dispatch_pool_yields_none_without_devices() -> None:
+    """No usable device (CI, a laptop, or an arch the torch build cannot run) means sequential."""
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"})
+    with dispatch.dispatch_pool(ner, None) as pool:
+        assert pool is None
+    with dispatch.dispatch_pool(ner, ()) as pool:
+        assert pool is None
+
+
+def test_dispatch_pool_yields_a_pool_and_closes_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_stub_pool(monkeypatch)
+    monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 0)
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    with dispatch.dispatch_pool(ner, ("cuda:0", "cuda:1")) as pool:
+        assert isinstance(pool, MiningPool)
+        pool.mine([("S1", "D1", "asthma"), ("S2", "D2", "asthma")])
+        assert pool.started
+    assert pool is not None  # narrowed for the type checker
+    assert not pool.started  # closed on exit, flock released
+
+
+def test_dispatch_pool_closes_even_when_mining_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A failed chunk must not leak the pool (and with it the per-device flocks)."""
+    _install_stub_pool(monkeypatch, error=NerWorkerError("cuda:0", 1, "boom"))
+    monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 0)
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    with pytest.raises(NerWorkerError), dispatch.dispatch_pool(ner, ("cuda:0",)) as pool:
+        cast("MiningPool", pool).mine([("S1", "D1", "asthma")])  # narrowed: this seam yields a pool here
+    assert pool is not None  # a production backend with devices always gets a pool
+    assert not pool.started
+
+
+def test_pool_refuses_to_restart_after_close(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Restarting a closed pool would leak children holding GPU flocks.
+
+    An ``ExitStack`` stays usable after ``close()``, so a second ``start()`` would push a fresh spawn
+    shim, slot queue and executor onto a stack nothing will ever unwind: spawned children holding
+    per-device flocks for the rest of the task, and ``__main__.__spec__`` left mutated for the life of
+    the process. Not reachable from either shaper today (both mine synchronously inside the ``with``),
+    but ``MiningPool`` is a public name, so the failure has to be loud rather than silent.
+    """
+    _install_stub_pool(monkeypatch)
+    monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 0)
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    pool = MiningPool(ner, ("cuda:0",))
+    pool.mine([("S1", "D1", "asthma")])
+    pool.close()
+    with pytest.raises(RuntimeError, match="after close"):
+        pool.mine([("S2", "D2", "asthma")])
+
+
+def test_dispatch_pool_close_failure_does_not_mask_the_mining_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A raising ``close`` must not replace the exception carrying the device attribution.
+
+    ``dispatch_pool`` closes in a ``finally``, so a teardown failure (executor shutdown, queue
+    teardown) would otherwise become the propagated error and discard the whole point of
+    ``NerWorkerError``: naming the device that died. The teardown failure is still logged, so the
+    evidence is in the task log even though it is not what propagates.
+    """
+    _install_stub_pool(monkeypatch, error=NerWorkerError("cuda:0", 1, "boom"))
+    monkeypatch.setattr(dispatch, "prune_worker_logs", lambda _workdir: 0)
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, workdir=tmp_path)
+    with _captured_logs() as lines, dispatch.dispatch_pool(ner, ("cuda:0",)) as pool:
+        assert pool is not None  # narrowed for the type checker before use
+        original_close = pool.close
+
+        def _raising_close() -> None:
+            original_close()
+            raise OSError("queue teardown failed")
+
+        pool.close = _raising_close  # type: ignore[method-assign]
+        with pytest.raises(NerWorkerError) as info:
+            pool.mine([("S1", "D1", "asthma")])
+    assert info.value.device == "cuda:0"  # the mining error is what propagated, not the teardown one
+    assert any("ner_pool_close_failed" in line for line in lines)
+
+
+# --- _resolve_devices: the single-arch premise of ordinal-free keying ---------------
+
+
+def test_resolve_devices_warns_when_surviving_devices_are_mixed_arch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tier B keys spans by device CLASS, so a mixed-arch host would make them run-dependent.
+
+    ``cuda:0`` and ``cuda:3`` share one Tier B key because identical archs run identical
+    deterministic kernels and emit identical bits. The executor's call queue decides which card runs
+    a chunk, so on a heterogeneous host one text's cached spans would depend on timing. Mixed archs
+    are not a supported pooled-dispatch target; the warning makes that observable instead of silent.
+    """
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (8, 6) if index == 0 else (8, 0))
+    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_80", "sm_86"])
+    with _captured_logs() as lines:
+        assert dispatch._resolve_devices(DiseaseNER(offline=False)) == ("cuda:0", "cuda:1")
+    assert any("ner_mixed_gpu_arch" in line for line in lines)
+
+
+def test_resolve_devices_is_quiet_for_a_uniform_fleet(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The build host's four identical P100s must not warn: that is the supported configuration."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 4)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (6, 0))
+    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_60"])
+    with _captured_logs() as lines:
+        assert dispatch._resolve_devices(DiseaseNER(offline=False)) == ("cuda:0", "cuda:1", "cuda:2", "cuda:3")
+    assert not any("ner_mixed_gpu_arch" in line for line in lines)
+
+
+def test_mixed_arch_probe_failure_is_not_reported_as_mixing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A capability query that raises is not evidence of a mixed fleet, so it stays quiet.
+
+    ``_cuda_device_supported`` already gated those devices; warning here would blame the host for a
+    probe error and send the next debugger after a problem that does not exist.
+    """
+    import torch
+
+    def capability(index: int) -> tuple[int, int]:
+        if index == 1:
+            raise RuntimeError("CUDA error")
+        return (8, 6)
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", capability)
+    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_86"])
+    with _captured_logs() as lines:
+        dispatch._resolve_devices(DiseaseNER(offline=False))
+    assert not any("ner_mixed_gpu_arch" in line for line in lines)
 
 
 def test_announce_worker_logs_without_a_workdir_says_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -277,34 +603,6 @@ def test_announce_worker_logs_without_a_workdir_says_nothing(monkeypatch: pytest
     monkeypatch.setattr(dispatch, "stats", lambda _log, event, **_fields: announced.append(event))
     dispatch._announce_worker_logs(None)
     assert announced == []
-
-
-def test_four_device_sharding_creates_four_distinct_shards(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A sufficiently large workload schedules one independent shard per visible device."""
-    submitted: list[tuple[list[Any], str]] = []
-
-    class FakeFuture:
-        def result(self) -> list[tuple[str, str, list[Mention]]]:
-            return []
-
-    class FakePool:
-        def __enter__(self) -> FakePool:
-            return self
-
-        def __exit__(self, *_args: Any) -> None:
-            return None
-
-        def submit(self, _function: Any, shard: list[Any], _config: dict[str, Any], device: str, **_kwargs: Any) -> FakeFuture:
-            submitted.append((shard, device))
-            return FakeFuture()
-
-    monkeypatch.setattr(dispatch, "ProcessPoolExecutor", lambda **_kwargs: FakePool())
-    ner = _ner("asthma")
-    items = [("S", f"D{i}", "asthma " * (i + 1)) for i in range(8)]
-    dispatch._mine_multi_gpu(items, ner, ("cuda:0", "cuda:1", "cuda:2", "cuda:3"))
-    assert [device for _shard, device in submitted] == ["cuda:0", "cuda:1", "cuda:2", "cuda:3"]
-    assert sorted(item[1] for shard, _device in submitted for item in shard) == [f"D{i}" for i in range(8)]
-    assert all(shard for shard, _device in submitted)
 
 
 # --- mine_by_position: (set_id, doc_id) is not a unique work-item key --------------

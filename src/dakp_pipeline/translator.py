@@ -46,8 +46,12 @@ import-safe and monkeypatchable. Three public entry points:
     contraindication sections, with DailyMed upstream.
 
   Every family aggregates under the DAKP knowledge provider (``infores:drugapprovals-kp``)
-  as ``primary_knowledge_source``. A family being *absent* is a coverage concern, not a regression
-  violation; :attr:`RegressionReport.families_seen` records which families appeared.
+  as ``primary_knowledge_source``. Every ``FDA_regulatory_approvals`` token on an FDA-sourced row
+  must also be a real FDA drug application number (the EMA/EPAR treats rows carry EMA product
+  numbers in the same column and are exempt, exactly as they are from the FDA upstream chain):
+  the shapers gate that already, and this is the guardrail that keeps a new writer from
+  republishing a FAERS reporter placeholder. A family being *absent* is a coverage concern, not a
+  regression violation; :attr:`RegressionReport.families_seen` records which families appeared.
 """
 
 from __future__ import annotations
@@ -61,6 +65,7 @@ from typing import Any
 
 import polars as pl
 
+from dakp_pipeline.assertions.evidence import is_fda_application_number
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef
 from dakp_pipeline.logging_setup import logger, stats
@@ -568,9 +573,22 @@ def check_rows(rows: Iterable[Mapping[str, object]]) -> RegressionReport:
             _record(offenders, predicate, "primary_knowledge_source", f"expected {INFORES_DAKP!r}, got {primary!r}")
 
         upstream = {token for token in str(row.get("upstream_resource_ids") or "").split("|") if token}
+        alternative = any(chain <= upstream for chain in invariant.alternative_upstream)
         missing = sorted(invariant.required_upstream - upstream)
-        if missing and not any(alternative <= upstream for alternative in invariant.alternative_upstream):
+        if missing and not alternative:
             _record(offenders, predicate, "upstream_provenance", f"missing upstream infores {missing}")
+
+        # Real FDA application numbers only. The EMA/EPAR treats rows put EMA product numbers
+        # (``EMEA/H/C/000123``) in the same column by design, so they are exempt exactly as they are
+        # from the FDA upstream chain above. An EMPTY cell is not a violation: a FAERS ``nda_num``
+        # no register resolves contributes nothing (see
+        # :func:`~dakp_pipeline.assertions.evidence.is_fda_application_number`), and the edge keeps
+        # its case count and quarter URLs.
+        if not alternative:
+            for token in (token for token in str(row.get("FDA_regulatory_approvals") or "").split("|") if token):
+                if not is_fda_application_number(token):
+                    _record(offenders, predicate, "regulatory_approvals", f"{token!r} is not an FDA drug application number")
+                    break
 
         if invariant.clinical_approval_status is not None:
             status = str(row.get("clinical_approval_status") or "").strip()

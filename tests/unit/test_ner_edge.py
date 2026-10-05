@@ -1257,16 +1257,20 @@ def test_stall_watchdog_is_inert_without_cuda(monkeypatch: pytest.MonkeyPatch, t
     assert [result["text"] for result in results] == texts
 
 
-# --- compute_dtype (fp16 experiments) -----------------------------------------------
+# --- compute dtype (fp32 default, fp16 opt-in) --------------------------------------
 
 
 def test_compute_dtype_is_model_side_key_material(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A dtype change moves the Tier B fingerprint (fp16 output bits differ from fp32)."""
     _install_fake_gliner2(monkeypatch, tmp_path, [])
-    fp32 = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path)
+    default = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path)
+    assert default.span_material()["compute_dtype"] == "fp32"  # production default: full precision
+    fp32 = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path, compute_dtype="fp32")
     fp16 = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path, compute_dtype="fp16")
     assert fp32.span_material() != fp16.span_material()
     assert fp32.span_material()["compute_dtype"] == "fp32"
+    # The default IS fp32, so a default backend keeps matching an fp32-mined store (warm cache).
+    assert default.span_material() == fp32.span_material()
     # Worker reconstruction carries the dtype.
     rebuilt = DiseaseNER(device="cpu", **dict(fp16._config()))
     assert rebuilt._config()["compute_dtype"] == "fp16"
@@ -1284,6 +1288,37 @@ def test_fp16_autocast_arms_only_on_cuda(monkeypatch: pytest.MonkeyPatch, tmp_pa
     model = _BatchRecordingModel()
     results = backend._raw_batch_extract(model, ["a", "bb"], 2)
     assert [r["text"] for r in results] == ["a", "bb"]  # inert on CPU, no autocast error
-    # Sanity: the fp32 default path shares the non-autocast branch.
-    fp32_backend = DiseaseNER(offline=False, gazetteer={}, device="cpu", workdir=tmp_path)
-    assert fp32_backend._raw_batch_extract(model, ["a"], 1)[0]["text"] == "a"
+    # Sanity: the default backend (fp32) takes the same non-autocast branch on CPU.
+    default_backend = DiseaseNER(offline=False, gazetteer={}, device="cpu", workdir=tmp_path)
+    assert default_backend._raw_batch_extract(model, ["a"], 1)[0]["text"] == "a"
+
+
+def test_explicit_fp16_autocast_arms_on_cuda_and_the_fp32_default_does_not(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A CUDA-pinned fp16 backend wraps the forward in ``torch.autocast('cuda', float16)``; the
+    fp32 default does not, which is what keeps the fp32-mined cache warm.
+
+    ``torch.autocast`` itself is replaced with a recording fake so the assertion is exact and
+    GPU-independent: real cuda autocast silently disables itself on a host with no device
+    (observed: this test green locally on a GPU host, red on the GPU-less CI runner), and what
+    DAKP owns is the arming decision in ``_raw_batch_extract``, not torch's autocast internals.
+    The CPU test above already proves the non-cuda path never enters the context.
+    """
+    import torch
+
+    _install_fake_gliner2(monkeypatch, tmp_path, [])
+    entered: list[tuple[str, Any]] = []
+
+    @contextmanager
+    def _recording_autocast(device_type: str, **kwargs: Any) -> Iterator[None]:
+        entered.append((device_type, kwargs.get("dtype")))
+        yield
+
+    monkeypatch.setattr(torch, "autocast", _recording_autocast)
+    backend = DiseaseNER(offline=False, gazetteer={}, device="cuda", workdir=tmp_path, compute_dtype="fp16")
+    backend._raw_batch_extract(_BatchRecordingModel(), ["a"], 1)
+    assert entered == [("cuda", torch.float16)]  # explicit fp16 arms autocast on a cuda device
+    # The fp32 default must NOT autocast: its output bits are what the warm store was mined with.
+    entered.clear()
+    default_backend = DiseaseNER(offline=False, gazetteer={}, device="cuda", workdir=tmp_path)
+    default_backend._raw_batch_extract(_BatchRecordingModel(), ["a"], 1)
+    assert entered == []

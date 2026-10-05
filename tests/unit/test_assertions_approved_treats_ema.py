@@ -207,6 +207,46 @@ def test_epar_qualifiers_are_populated_from_the_indication_sentence(disease_map:
     assert row["object_text"] == "severe pain"
 
 
+def test_epar_patient_clause_populates_disease_context(disease_map: dict[str, dict[str, str]]) -> None:
+    """EPAR indication prose carries the same patient-clause template as FDA labels.
+
+    "for the treatment of A in patients with B" -> B is the disease context of the A edge,
+    classified by the shared :func:`~dakp_pipeline.assertions.contexts.patient_clause_contexts`
+    template (the contraindication shaper and NER export already use it). Without this the
+    EPAR rows would ship the qualifier column empty while the mined B mention is dropped.
+    """
+    frame = _ema_frame([_registry_row(therapeutic_indication="KemSu is indicated for the treatment of severe pain in patients with diabetes.")])
+    ner = DiseaseNER(offline=True, gazetteer={"severe pain": "disease", "diabetes": "disease"})
+    rows = build_epar_treats_rows(frame, _mined_map(frame, ner), disease_map)
+
+    row = _rows_by_pair(rows)[("ketamine", "severe pain")]
+    assert row["disease_context_text"] == "diabetes"
+    assert row["object_text"] == "severe pain"
+
+
+def test_epar_disease_context_does_not_leak_across_sentences(disease_map: dict[str, dict[str, str]]) -> None:
+    """A patient clause in one indication sentence must not qualify another sentence's disease.
+
+    Sentence-local mining is what prevents fabricated provenance here (same invariant as the
+    population-context leak test); the disease context rides the identical per-sentence loop.
+    """
+    frame = _ema_frame(
+        [
+            _registry_row(
+                therapeutic_indication=(
+                    "KemSu is indicated for the treatment of shock. It is also indicated for the treatment of severe pain in patients with diabetes."
+                )
+            )
+        ]
+    )
+    ner = DiseaseNER(offline=True, gazetteer={"severe pain": "disease", "shock": "disease", "diabetes": "disease"})
+    rows = build_epar_treats_rows(frame, _mined_map(frame, ner), disease_map)
+    by_pair = _rows_by_pair(rows)
+
+    assert by_pair[("ketamine", "shock")]["disease_context_text"] == ""
+    assert by_pair[("ketamine", "severe pain")]["disease_context_text"] == "diabetes"
+
+
 def test_epar_qualifiers_do_not_leak_across_sentences(disease_map: dict[str, dict[str, str]]) -> None:
     """Rows are built sentence by sentence, so one indication never inherits another's qualifier.
 

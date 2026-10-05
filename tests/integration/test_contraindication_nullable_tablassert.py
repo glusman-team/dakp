@@ -39,9 +39,10 @@ def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_
     on worker count, and every extra spawn child re-imports the full tablassert stack for
     nothing.
 
-    Tablassert 15.1's ``CLASS_FIELD_OVERRIDES`` grant (SkyeAv/Tablassert#120) lets the pinned
-    ``EntityToDiseaseAssociation`` keep ``disease_context_qualifier``, and the emitted qualifier is
-    ``nullable`` — so "contraindicated in asthma when treating hypertension" and "contraindicated in
+    biolink-model 4.4.5 declares ``disease_context_qualifier`` natively on the pinned
+    ``EntityToDiseaseAssociation`` (Tablassert 15.1's ``CLASS_FIELD_OVERRIDES`` grant,
+    SkyeAv/Tablassert#120, carried it there ahead of the model until then), and the emitted qualifier
+    is ``nullable``, so "contraindicated in asthma when treating hypertension" and "contraindicated in
     asthma" no longer deduplicate: the qualifier distinguishes them. The qualified edge carries the
     resolved context CURIE; the blank-context row keeps its edge minus only the qualifier.
     """

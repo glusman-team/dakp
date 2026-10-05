@@ -14,7 +14,7 @@ setup:
 # pyproject.toml is evaluated by coverage at the END of each run over the combined data.
 test:
 	uv run pytest tests/unit
-	uv run pytest tests/integration --cov-append
+	uv run pytest tests/integration -n 0 --cov-append
 
 # Run the Go test suite.
 test-go:

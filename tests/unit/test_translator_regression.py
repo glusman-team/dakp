@@ -149,6 +149,49 @@ def test_wrong_knowledge_level_reported() -> None:
     assert _violations(report) == {("biolink:applied_to_treat", "knowledge_level")}
 
 
+def _uses_row(approvals: str = "") -> dict[str, str]:
+    row = _row("biolink:applied_to_treat", status="off_label_use", knowledge_level="statistical_association")
+    row["FDA_regulatory_approvals"] = approvals
+    return row
+
+
+# --- negative: FDA_regulatory_approvals carries real application numbers ------------
+
+
+def test_reporter_placeholder_approval_reported() -> None:
+    """The guardrail behind the shaper gate: no writer can republish a FAERS placeholder.
+
+    ``999999`` and ``99`` are how FAERS reporters spell "unknown application number", and v1.16.0
+    shipped them on 8,839 edges. The shapers drop them now; this is what keeps a new shaper, a new
+    source, or a hand-edited assertion table from putting them back.
+    """
+    report = check_rows([_uses_row("NDA017977|999999")])
+    assert _violations(report) == {("biolink:applied_to_treat", "regulatory_approvals")}
+    assert "'999999' is not an FDA drug application number" in report.violations[0].message
+
+
+def test_device_clearance_approval_reported() -> None:
+    # A 510(k) clearance is a real FDA number - for a DEVICE. DailyMed writes some into the same
+    # SPL ``approval/id/@extension`` element it writes drug application numbers into.
+    report = check_rows([_uses_row("K001608")])
+    assert _violations(report) == {("biolink:applied_to_treat", "regulatory_approvals")}
+
+
+def test_real_application_numbers_and_an_empty_cell_pass() -> None:
+    # Empty is not a violation: a number no register resolves legitimately contributes nothing, and
+    # the edge keeps its case count and its FAERS quarter URLs.
+    report = check_rows([_uses_row("NDA017977|BLA125514"), _uses_row("")])
+    assert report.ok is True
+    assert report.violations == []
+
+
+def test_ema_treats_row_carries_a_product_number_not_an_application_number() -> None:
+    """EMA/EPAR rows put an EMA product number in the same column, so they are exempt."""
+    row = _row("biolink:treats", status="approved_for_condition", upstream="infores:ema")
+    row["FDA_regulatory_approvals"] = "EMEA/H/C/000123"
+    assert check_rows([row]).ok is True
+
+
 def test_violations_aggregated_with_offending_count() -> None:
     rows = [_row("biolink:treats", status="off_label") for _ in range(3)]
     report = check_rows(rows)

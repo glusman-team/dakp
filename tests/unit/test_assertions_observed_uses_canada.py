@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from dakp_pipeline.assertions.observed_uses import _canada_vigilance_rows, build_observed_use_rows
+from dakp_pipeline.assertions.observed_uses import ApprovedTreatsIndex, _canada_vigilance_rows, build_observed_use_rows
 from dakp_pipeline.extract.canada_vigilance import CV_INDICATIONS_COLUMNS
 from dakp_pipeline.sources.canada_vigilance import CANADA_VIGILANCE_EXTRACTS_URL
 from dakp_pipeline.translator import check_rows
@@ -68,7 +68,7 @@ def test_canada_rows_fall_back_to_brand_subject() -> None:
 def test_canada_status_derives_from_the_approved_pair_index() -> None:
     """approved_for_condition when the pair matches (normalized), off_label_use otherwise."""
     frame = _cv_frame([_observation("100001", "methotrexate", "rheumatoid arthritis"), _observation("100002", "methotrexate", "migraine")])
-    rows = _canada_vigilance_rows(frame, {}, {("methotrexate", "rheumatoid arthritis")})
+    rows = _canada_vigilance_rows(frame, {}, ApprovedTreatsIndex(pairs=frozenset({("methotrexate", "rheumatoid arthritis")})))
     by_object = {row["object_text"]: row for row in rows}
     assert by_object["rheumatoid arthritis"]["clinical_approval_status"] == "approved_for_condition"
     assert by_object["migraine"]["clinical_approval_status"] == "off_label_use"

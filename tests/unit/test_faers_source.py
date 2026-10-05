@@ -64,6 +64,15 @@ def test_discover_quarters_empty_html() -> None:
 # --- real path (monkeypatched network boundaries) -------------------------------
 
 
+#: Pinned member timestamp for the fake FAERS zips. ``ZipFile.writestr(name, data)`` stamps
+#: ``time.localtime()``, and the zip DOS time field has 2-second granularity, so two builds of
+#: byte-identical content straddling that boundary hash differently. Three tests here compare the
+#: blake3 of a re-downloaded zip against a separately primed one, which flaked for that reason alone
+#: (observed under xdist: same 482-byte zip, two different ids). 1980-01-01 is the DOS epoch, the
+#: earliest representable stamp.
+_ZIP_STAMP = (1980, 1, 1, 0, 0, 0)
+
+
 def _build_fake_zip(dest: Path) -> None:
     """A minimal FAERS-style zip: members named <FAMILY>24Q3.txt with trailing-$ lines."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -74,7 +83,7 @@ def _build_fake_zip(dest: Path) -> None:
     }
     with zipfile.ZipFile(dest, "w") as zf:
         for name, data in members.items():
-            zf.writestr(f"ascii/{name}", data)
+            zf.writestr(zipfile.ZipInfo(f"ascii/{name}", date_time=_ZIP_STAMP), data)
 
 
 def _ingest_fake_zip(workdir: Path, source: faers_source.QuarterSource):
