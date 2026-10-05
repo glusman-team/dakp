@@ -10,9 +10,17 @@ from __future__ import annotations
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from dakp_pipeline.assertions.evidence import FDAApprovalIndex, find_faers_cases
-from dakp_pipeline.assertions.observed_uses import ObservedUsesShaper, _approved_pair_index, build_observed_use_rows, is_non_disease_indication
+from dakp_pipeline.assertions.observed_uses import (
+    ApprovedTreatsIndex,
+    ObservedUsesShaper,
+    _coerce_approved_index,
+    _proper_spans,
+    build_observed_use_rows,
+    is_non_disease_indication,
+)
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 
@@ -252,17 +260,304 @@ def test_combo_drugname_stays_one_edge_with_exact_case_count(disease_map: dict[s
     assert rows[0]["number_of_cases"] == "2"
 
 
-def test_approved_pair_index_runs_the_full_textnorm_chain() -> None:
+def test_approved_treats_index_runs_the_full_textnorm_chain() -> None:
     # The index is built from approved-treats subject_text, which can itself carry FAERS
     # fallback junk (brand aliases, dosage tails); both sides must canonicalize identically
     # or the lookup answers asymmetrically.
     frame = pl.DataFrame({"subject_text": ["XEFO 8MG", "Examplestatin"], "object_text": ["Arthritis", "Pain"]})
-    assert _approved_pair_index(frame) == {("lornoxicam", "arthritis"), ("examplestatin", "pain")}
+    assert ApprovedTreatsIndex.from_frame(frame).pairs == {("lornoxicam", "arthritis"), ("examplestatin", "pain")}
 
 
-def test_approved_pair_index_normalizes_and_skips_incomplete_rows() -> None:
+def test_approved_treats_index_normalizes_and_skips_incomplete_rows() -> None:
     frame = pl.DataFrame({"subject_text": ["Examplestatin", "", "DrugY"], "object_text": ["Hypercholesterolemia", "pain", ""]})
-    assert _approved_pair_index(frame) == {("examplestatin", "hypercholesterolemia")}
+    index = ApprovedTreatsIndex.from_frame(frame)
+    assert index.pairs == {("examplestatin", "hypercholesterolemia")}
+    # An empty object means the row approves no condition, so it indexes no application either:
+    # an application key with nothing behind it could only produce false approvals.
+    assert index.objects_by_approval == {}
+
+
+def test_approved_treats_index_maps_applications_to_their_objects() -> None:
+    """The application number is the product identity both tables share.
+
+    ``FDA_regulatory_approvals`` is a pipe-joined multivalued cell, so one row can index several
+    applications for the same object; the normalized object key is what the observed-uses side
+    compares against, which is what makes the brand/ingredient spelling difference irrelevant.
+    """
+    frame = pl.DataFrame(
+        {
+            "subject_text": ["LEUPROLIDE", "LEUPROLIDE", "DENOSUMAB"],
+            "object_text": ["Prostate cancer", "Endometriosis", ""],
+            "FDA_regulatory_approvals": ["NDA021343|NDA021379", "NDA020708", "BLA125320"],
+        }
+    )
+    objects = ApprovedTreatsIndex.from_frame(frame).objects_by_approval
+    assert objects["NDA021343"] == frozenset({"prostate cancer"})
+    assert objects["NDA021379"] == frozenset({"prostate cancer"})
+    assert objects["NDA020708"] == frozenset({"endometriosis"})
+    assert "BLA125320" not in objects  # empty object_text indexes nothing
+
+
+def test_status_uses_fda_application_identity_when_subject_text_differs() -> None:
+    """The reported ELIGARD bug: a brand subject never text-matches the ingredient subject.
+
+    Production v1.16.0 shipped ``ELIGARD | Prostate cancer | off_label_use`` with 35,977 cases
+    even though approved_treats holds ``LEUPROLIDE | Prostate cancer`` for the SAME applications
+    (NDA021343 and friends), and the FDA label for NDA021343 reads "ELIGARD is indicated for the
+    treatment of advanced prostate cancer". The application number both tables already carry is
+    the identity that answers; the drug spelling must not have to.
+    """
+    cases = pl.DataFrame({"drugname": ["ELIGARD"], "indication": ["Prostate cancer"], "primaryid": ["1001"], "nda": ["21343"], "nda_raw": ["021343"]})
+    approved = ApprovedTreatsIndex.from_frame(
+        pl.DataFrame({"subject_text": ["LEUPROLIDE"], "object_text": ["Prostate cancer"], "FDA_regulatory_approvals": ["NDA021343|NDA021379"]})
+    )
+    index = FDAApprovalIndex({"21343": ("NDA021343",)})
+    rows = build_observed_use_rows(cases, {}, approved, approvals=index)
+    assert len(rows) == 1
+    assert rows[0]["subject_text"] == "ELIGARD"  # the subject text is untouched, only the status
+    assert rows[0]["FDA_regulatory_approvals"] == "NDA021343"
+    assert rows[0]["clinical_approval_status"] == "approved_for_condition"
+
+
+def test_status_stays_off_label_when_no_application_matches() -> None:
+    """Negative tests: the application rule must not approve on a partial match.
+
+    A shared application with a different condition, a shared condition under a different
+    application, and a report carrying no application number at all all stay ``off_label_use``
+    (the last one has only the text rule left, and the brand text does not match the ingredient).
+    """
+    approved = ApprovedTreatsIndex.from_frame(
+        pl.DataFrame(
+            {
+                "subject_text": ["LEUPROLIDE", "LEUPROLIDE"],
+                "object_text": ["Prostate cancer", "Endometriosis"],
+                "FDA_regulatory_approvals": ["NDA021343", "NDA020708"],
+            }
+        )
+    )
+    cases = pl.DataFrame(
+        {
+            "drugname": ["ELIGARD", "PROCREN", "ELIGARD"],
+            "indication": ["Endometriosis", "Prostate cancer", "Prostate cancer"],
+            "primaryid": ["1", "2", "3"],
+            "nda": ["21343", "20708", ""],
+            "nda_raw": ["021343", "020708", ""],
+        }
+    )
+    index = FDAApprovalIndex({"21343": ("NDA021343",), "20708": ("NDA020708",)})
+    rows = build_observed_use_rows(cases, {}, approved, approvals=index)
+    statuses = {(r["subject_text"], r["object_text"]): r["clinical_approval_status"] for r in rows}
+    assert statuses == {
+        ("ELIGARD", "Endometriosis"): "off_label_use",  # right application, wrong condition
+        ("PROCREN", "Prostate cancer"): "off_label_use",  # right condition, wrong application
+        ("ELIGARD", "Prostate cancer"): "off_label_use",  # no application number to match on
+    }
+
+
+def _eligard_index() -> ApprovedTreatsIndex:
+    """The real approved_treats row behind the reported bug (LEUPROLIDE / Prostate cancer).
+
+    Subject is the DailyMed ingredient text and the approval cell is the real one from the
+    v1.16.0 production table, so the fixture reproduces the brand-vs-ingredient spelling gap
+    rather than a convenient one.
+    """
+    return ApprovedTreatsIndex.from_frame(
+        pl.DataFrame(
+            {
+                "subject_text": ["LEUPROLIDE"],
+                "object_text": ["Prostate cancer"],
+                "FDA_regulatory_approvals": ["NDA019732|NDA020517|NDA021343|NDA021379|NDA021488|NDA021731|NDA205054|NDA211488"],
+            }
+        )
+    )
+
+
+def test_reported_eligard_prostate_cancer_stage_iv_edge_is_approved() -> None:
+    """The exact production edge that was wrong: KGX id 32c1b660-8fcf-3330-8576-21ec0ac0fab3.
+
+    ``DRUG_APPROVALS_KP_1.16.0.edges.ndjson`` shipped ELIGARD applied_to_treat
+    "Prostate cancer stage IV" (55 cases) as ``off_label_use`` while carrying
+    NDA021343|NDA021379|NDA021488|NDA021731 on the same edge. The FDA label for those four
+    applications reads "ELIGARD is indicated for the treatment of advanced prostate cancer",
+    and stage IV IS advanced prostate cancer, so the observation is on-label.
+    """
+    approvals = {"21343": "NDA021343", "21379": "NDA021379", "21488": "NDA021488", "21731": "NDA021731"}
+    cases = pl.DataFrame(
+        {
+            "drugname": ["ELIGARD"] * 4,
+            "indication": ["Prostate cancer stage IV"] * 4,
+            "primaryid": ["1", "2", "3", "4"],
+            "nda": sorted(approvals),
+            "nda_raw": ["021343", "021379", "021488", "021731"],
+        }
+    )
+    index = FDAApprovalIndex({norm: (display,) for norm, display in approvals.items()})
+    rows = build_observed_use_rows(cases, {}, _eligard_index(), approvals=index)
+    assert len(rows) == 1
+    assert rows[0]["FDA_regulatory_approvals"] == "NDA021343|NDA021379|NDA021488|NDA021731"
+    assert rows[0]["clinical_approval_status"] == "approved_for_condition"
+    # The status is the only thing that changes: the object text stays the specific FAERS wording.
+    assert rows[0]["object_text"] == "Prostate cancer stage IV"
+
+
+def test_status_bridges_object_granularity_within_one_application() -> None:
+    """The general approved object covers the more specific FAERS wording, under one application.
+
+    FAERS reports stage and laterality wording the label never spells out; the label's general
+    term is the approval, so the specific report of the SAME product is on-label.
+    """
+    index = FDAApprovalIndex({"21343": ("NDA021343",)})
+    cases = pl.DataFrame(
+        {
+            "drugname": ["ELIGARD", "ELIGARD", "ELIGARD"],
+            "indication": ["Prostate cancer metastatic", "Hormone refractory prostate cancer", "Prostate cancer"],
+            "primaryid": ["1", "2", "3"],
+            "nda": ["21343"] * 3,
+            "nda_raw": ["021343"] * 3,
+        }
+    )
+    rows = build_observed_use_rows(cases, {}, _eligard_index(), approvals=index)
+    statuses = {r["object_text"]: r["clinical_approval_status"] for r in rows}
+    assert statuses == {
+        "Prostate cancer metastatic": "approved_for_condition",  # trailing qualifier
+        "Hormone refractory prostate cancer": "approved_for_condition",  # leading qualifiers
+        "Prostate cancer": "approved_for_condition",  # exact, the R1 path
+    }
+
+
+def test_containment_never_approves_the_reverse_direction() -> None:
+    """An approved object MORE specific than the observation does not approve it.
+
+    A label for stage IV disease says nothing about earlier stages, so the general report stays
+    off-label. Structurally guaranteed: a longer key cannot be a token span of a shorter one.
+    """
+    approved = ApprovedTreatsIndex.from_frame(
+        pl.DataFrame({"subject_text": ["Xprostatin"], "object_text": ["Prostate cancer stage IV"], "FDA_regulatory_approvals": ["NDA021343"]})
+    )
+    cases = pl.DataFrame({"drugname": ["XPROSTATIN"], "indication": ["Prostate cancer"], "primaryid": ["1"], "nda": ["21343"], "nda_raw": ["021343"]})
+    index = FDAApprovalIndex({"21343": ("NDA021343",)})
+    rows = build_observed_use_rows(cases, {}, approved, approvals=index)
+    assert rows[0]["clinical_approval_status"] == "off_label_use"
+
+
+def test_containment_is_whole_word_only() -> None:
+    """A partial-word overlap is not a match: ``pain`` must not approve ``painful swelling``.
+
+    Span enumeration over the normalized token list gives this for free, and it is the property
+    that keeps a short approved object from approving everything that merely contains its
+    letters.
+    """
+    approved = ApprovedTreatsIndex.from_frame(
+        pl.DataFrame({"subject_text": ["Analgetol"], "object_text": ["Pain"], "FDA_regulatory_approvals": ["NDA020708"]})
+    )
+    cases = pl.DataFrame(
+        {
+            "drugname": ["ANALGETOL", "ANALGETOL"],
+            "indication": ["Painful swelling", "Chronic pain"],
+            "primaryid": ["1", "2"],
+            "nda": ["20708"] * 2,
+            "nda_raw": ["020708"] * 2,
+        }
+    )
+    index = FDAApprovalIndex({"20708": ("NDA020708",)})
+    rows = build_observed_use_rows(cases, {}, approved, approvals=index)
+    statuses = {r["object_text"]: r["clinical_approval_status"] for r in rows}
+    assert statuses == {"Painful swelling": "off_label_use", "Chronic pain": "approved_for_condition"}
+
+
+def test_containment_needs_an_application_number() -> None:
+    """Without an application there is no product identity, so only the text rule remains.
+
+    The granularity bridge is deliberately scoped to one application: extending it across drugs
+    would let any drug's general approval cover any other drug's specific report.
+    """
+    cases = pl.DataFrame({"drugname": ["LEUPROLIDE"], "indication": ["Prostate cancer stage IV"], "primaryid": ["1"]})
+    rows = build_observed_use_rows(cases, {}, _eligard_index())
+    assert rows[0]["FDA_regulatory_approvals"] == ""
+    assert rows[0]["clinical_approval_status"] == "off_label_use"
+
+
+def test_proper_spans_cover_every_contiguous_subphrase_but_not_the_whole_key() -> None:
+    """The span set IS the whole-word containment relation, minus the already-checked equality."""
+    assert _proper_spans("prostate cancer stage iv") == (
+        "prostate",
+        "prostate cancer",
+        "prostate cancer stage",
+        "cancer",
+        "cancer stage",
+        "cancer stage iv",
+        "stage",
+        "stage iv",
+        "iv",
+    )
+    assert _proper_spans("cancer") == ()  # one token: only the exact match can approve
+    assert _proper_spans("") == ()
+    # The property the enumeration exists for: every span is a whole-word occurrence of the key,
+    # and the key itself is excluded because equality is checked before the bridge runs.
+    key = "hormone refractory prostate cancer"
+    spans = _proper_spans(key)
+    assert key not in spans
+    assert all(f" {span} " in f" {key} " for span in spans)
+    assert len(spans) == len(set(spans)) == len(key.split()) * (len(key.split()) + 1) // 2 - 1
+
+
+def test_all_digit_application_keys_are_not_identities() -> None:
+    """A reporter typo must not become a product identity.
+
+    ``FDAApprovalIndex.expand`` falls back to ``<prefix><digits>`` for a number no register
+    knows, and FAERS numbers carry no prefix, so tokens like ``99`` reach both tables. Indexing
+    them would let two unrelated products that happened to report the same typo cross-approve.
+    """
+    approved = ApprovedTreatsIndex.from_frame(
+        pl.DataFrame({"subject_text": ["Leuprolide"], "object_text": ["Prostate cancer"], "FDA_regulatory_approvals": ["99|02248240|NDA021343"]})
+    )
+    assert "NDA021343" in approved.objects_by_approval
+    assert "99" not in approved.objects_by_approval
+    assert "02248240" not in approved.objects_by_approval
+
+    # The typo-citing report stays off-label; the report citing the real application is approved.
+    # Two drugnames, because one (drugname, object) group merges into a single row and would
+    # union the two application numbers.
+    cases = pl.DataFrame(
+        {
+            "drugname": ["Mysterydrug", "Realdrug"],
+            "indication": ["Prostate cancer", "Prostate cancer"],
+            "primaryid": ["1", "2"],
+            "nda": ["99", "21343"],
+            "nda_raw": ["99", "021343"],
+        }
+    )
+    index = FDAApprovalIndex({"21343": ("NDA021343",)})
+    rows = build_observed_use_rows(cases, {}, approved, approvals=index)
+    by_approvals = {r["FDA_regulatory_approvals"]: r["clinical_approval_status"] for r in rows}
+    assert by_approvals == {"99": "off_label_use", "NDA021343": "approved_for_condition"}
+
+
+def test_the_application_index_is_read_only() -> None:
+    """One index is shared by every row of a 1.6M-row table, so a caller cannot corrupt it."""
+    index = ApprovedTreatsIndex.from_frame(
+        pl.DataFrame({"subject_text": ["Leuprolide"], "object_text": ["Prostate cancer"], "FDA_regulatory_approvals": ["NDA021343"]})
+    )
+    with pytest.raises(TypeError):
+        index.objects_by_approval["NDA999999"] = frozenset({"headache"})  # type: ignore[index]
+    assert ApprovedTreatsIndex().objects_by_approval == {}
+
+
+def test_a_bare_pair_iterable_drops_empty_keys() -> None:
+    """An empty key would approve every row whose subject or object normalizes to nothing.
+
+    ``from_frame`` already skips incomplete rows; the compatibility path for a bare iterable of
+    pairs has to hold the same line or the two ways of building an index disagree.
+    """
+    empty = _coerce_approved_index({("", "pain"), ("drug", ""), ("", "")})
+    assert empty is not None
+    assert empty.pairs == frozenset()
+    text_only = _coerce_approved_index({("drug", "pain")})
+    assert text_only is not None
+    assert text_only.pairs == {("drug", "pain")}
+    assert _coerce_approved_index(None) is None
+    existing = ApprovedTreatsIndex(pairs=frozenset({("drug", "pain")}))
+    assert _coerce_approved_index(existing) is existing  # an index passes through untouched
 
 
 def test_shaper_reads_approved_treats_table_for_status(faers_refs: list[ArtifactRef], ctx: TaskContext, tmp_path: Path) -> None:
@@ -277,8 +572,12 @@ def test_shaper_reads_approved_treats_table_for_status(faers_refs: list[Artifact
     refs = ObservedUsesShaper().transform([*faers_refs, approved_ref], ctx)
     assert len(refs) == 1
     status = {rec["subject_text"]: rec["clinical_approval_status"] for rec in schemas.read_table(refs[0].uri).iter_rows(named=True)}
-    # Examplestatin matches the approved pair; Advil (brand name vs the DailyMed ingredient text)
-    # and Placebo (no treats row) read as off-label — the documented name-variant limitation.
+    # Examplestatin matches the approved pair by normalized text. Advil and Placebo read as
+    # off-label because this approved fixture row carries NO FDA_regulatory_approvals, so only
+    # the text key exists and the brand subject does not match the ingredient text. The same
+    # fixture WITH the application number is the integration case
+    # (test_semantic_equivalence.py::test_applied_to_treat_carries_the_off_label_signal), where
+    # Advil is approved through NDA017977.
     assert status == {"Examplestatin": "approved_for_condition", "Advil": "off_label_use", "Placebo": "off_label_use"}
 
 
