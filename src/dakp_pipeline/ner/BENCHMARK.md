@@ -43,20 +43,24 @@ Composite stays **1.000 / 1.000 / 1.000** on branch HEAD defaults
 - xformers/flash-deberta remain infeasible on P100 (sm_60, no flash kernels); the encoder
   still falls back from `sdpa` to `eager` (transformers DebertaV2 limitation).
 
-### fp16 inference default (v1.19.0)
+### fp16 inference (v1.19.0 default, reverted to opt-in in v1.21.0)
 
-`compute_dtype` now defaults to `fp16`: every GLiNER run (DAG mining workers, the CLI, the
-multi-GPU dispatch) executes the forward under `torch.autocast("cuda", float16)`, so
-accumulation-sensitive ops (LayerNorm, softmax) stay fp32 while the rest runs at the
+v1.19.0 made `compute_dtype` default to `fp16`: every GLiNER run (DAG mining workers, the CLI,
+the multi-GPU dispatch) executed the forward under `torch.autocast("cuda", float16)`, so
+accumulation-sensitive ops (LayerNorm, softmax) stayed fp32 while the rest ran at the
 device's fp16 rate. The 28/2000 knife-edge flips recorded above remain the documented
-accuracy delta. Both cache tiers key the EXECUTED numerics regime, not the configured one
-(`DiseaseNER.numerics_material`: resolved dtype plus device class, via `span_material` /
-`config_fingerprint`), so fp32-mined stores are never served to an fp16 run and a CPU-mined entry
-never answers a GPU-keyed lookup: the first build under a new regime re-mines once.
-CPU inference and the test suite are unaffected (autocast arms only on CUDA), and that is exactly
-why the configured value cannot be the key: a CPU load configured `fp16` executes `fp32`, so keying
-`fp16` there would have served CPU-fp32 spans to GPU-fp16 lookups, with which regime a text got
-decided by shard timing.
+accuracy delta. Both cache tiers key `compute_dtype` (`span_material` / `config_fingerprint`),
+so fp32-mined stores are never served to an fp16 run: the first fp16 build re-mines once.
+
+That one-time cost is what v1.21.0 reverts. Measured on wenceslaus (4x Tesla P100, 2026-10-02,
+DAKP 1.20.0 = fp16 default) against the warm v1.16.0 store: the fp32-era run served 144,688 of
+187,376 contraindication texts from Tier B spans by CPU re-merge and GPU-mined only ~42.7k, while
+the fp16 run missed every key in both tiers and GPU-mined the full corpus at ~1,300 texts/min
+(multi-hour, versus minutes for the warm merge). `compute_dtype` therefore defaults to `fp32`
+again: the existing store stays warm and the 1.4% knife-edge flips are avoided. fp16 remains
+available per backend via `compute_dtype="fp16"` (autocast path unchanged, still keyed in both
+tiers, so an fp16 experiment never serves or overwrites fp32 mentions). CPU inference and the
+test suite are unaffected (autocast arms only on CUDA).
 
 ### Current-model local run
 

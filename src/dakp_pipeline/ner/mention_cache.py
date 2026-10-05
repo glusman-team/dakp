@@ -98,17 +98,6 @@ def _jsonable(value: Any) -> Any:
 #: ``DiseaseNER._config`` keys that locate files but never change mentions (not key material).
 _LOCATION_CONFIG_KEYS = frozenset({"workdir", "cache_dir"})
 
-#: ``DiseaseNER._config`` keys superseded by the RESOLVED numerics material (not key material).
-#:
-#: ``compute_dtype`` is what was ASKED for; :meth:`DiseaseNER.numerics_material` is what RAN. Only
-#: the latter can be keyed: a CPU load configured ``fp16`` executes fp32, so the configured value
-#: both over- and under-separates. It splits two backends that emit identical mentions (fp16-on-cpu
-#: vs fp32-on-cpu), and it merges two that do not (fp16-on-cpu vs fp16-on-cuda), which is how a
-#: CPU-mined span could be served to a GPU-keyed lookup.
-_SUPERSEDED_CONFIG_KEYS = frozenset({"compute_dtype"})
-
-_NON_KEY_CONFIG_KEYS = _LOCATION_CONFIG_KEYS | _SUPERSEDED_CONFIG_KEYS
-
 
 def config_fingerprint(ner: DiseaseNER) -> str:
     """64-hex BLAKE3 fingerprint of the backend's serializable construction config.
@@ -118,14 +107,15 @@ def config_fingerprint(ner: DiseaseNER) -> str:
     a different checkout or a migrated workdir (observed: a warm rebuild from a second checkout
     re-mined all 62,512 treatment texts cold).
 
-    The EXECUTED numerics regime (dtype plus device class) IS keyed, so an fp16 run never serves or
-    overwrites fp32 mentions and a CPU-mined entry never answers a GPU-keyed lookup. The configured
-    ``compute_dtype`` is not: it cannot express what ran. Introducing the regime orphans the
-    pre-numerics store once; for Tier A that is a re-MERGE rather than a re-mine, because mentions are
-    recomputed on CPU from the cached raw spans.
+    ``compute_dtype`` is omitted at ``fp32`` (the production default, and the value the store
+    shipped with, so default and explicit-fp32 backends keep matching keys written before the
+    field existed); every other value -- e.g. the opt-in ``fp16`` -- is keyed: a dtype change is
+    a re-mine, never a silent cache serve, so an fp16 run never serves or overwrites fp32
+    mentions.
     """
-    config: dict[str, Any] = {key: value for key, value in ner._config().items() if key not in _NON_KEY_CONFIG_KEYS}
-    config["numerics"] = ner.numerics_material()
+    config = {key: value for key, value in ner._config().items() if key not in _LOCATION_CONFIG_KEYS}
+    if config.get("compute_dtype") == "fp32":
+        del config["compute_dtype"]
     canonical = json.dumps(_jsonable(config), sort_keys=True, separators=(",", ":"))
     return digest_dirname(hash_bytes(canonical.encode("utf-8")))
 

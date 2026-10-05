@@ -109,9 +109,9 @@ def _resolve_devices(ner: DiseaseNER, gpus: Sequence[str] | None = None) -> Sequ
 def _warn_on_mixed_arch(torch_mod: Any, devices: Sequence[str]) -> None:
     """Warn when the surviving ordinals are not all the same compute capability.
 
-    Tier B keys raw spans by device CLASS, never by ordinal (:meth:`DiseaseNER.numerics_material`):
-    ``cuda:0`` and ``cuda:3`` share one key because identical archs run identical deterministic
-    kernels and emit identical bits. A heterogeneous host breaks that premise, and since the
+    Tier B keys raw spans by (dtype, device), never by ordinal: ``cuda:0`` and ``cuda:3`` share one
+    key because identical archs run identical deterministic kernels and emit identical bits. A
+    heterogeneous host breaks that premise, and since the
     executor's call queue decides which card runs a chunk, one text's spans would then depend on run
     timing. Mixed-arch hosts are not a supported pooled-dispatch target; this makes the assumption
     observable in the task log instead of silently non-reproducible.

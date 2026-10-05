@@ -1257,69 +1257,23 @@ def test_stall_watchdog_is_inert_without_cuda(monkeypatch: pytest.MonkeyPatch, t
     assert [result["text"] for result in results] == texts
 
 
-# --- executed numerics regime (dtype + device class) -------------------------------
+# --- compute dtype (fp32 default, fp16 opt-in) --------------------------------------
 
 
-def _regime_backend(tmp_path: Path, device: str, dtype: str) -> DiseaseNER:
-    """A production backend pinned to ``device`` and configured ``dtype`` (model never loads)."""
-    return DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device=device, workdir=tmp_path, compute_dtype=dtype)
-
-
-def test_executed_numerics_are_model_side_key_material(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Tier B keys what the model RAN, not what was asked for.
-
-    Three regimes the configured dtype alone gets wrong:
-
-    * fp16-on-cpu and fp32-on-cpu execute the SAME fp32 math (autocast only arms on cuda), so they
-      must SHARE a key. Splitting them re-mines for nothing.
-    * fp16-on-cpu and fp16-on-cuda execute DIFFERENT math, so they must NOT share a key. That
-      collision was live: a CPU-fp32 span answered a GPU-fp16 lookup, and which one a text got
-      depended on shard timing, so builds stopped reproducing.
-    * cuda:0 and cuda:3 are one class, so the ordinal must not fragment the store across four cards.
-    """
+def test_compute_dtype_is_model_side_key_material(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A dtype change moves the Tier B fingerprint (fp16 output bits differ from fp32)."""
     _install_fake_gliner2(monkeypatch, tmp_path, [])
-    cpu16 = _regime_backend(tmp_path, "cpu", "fp16")
-    cpu32 = _regime_backend(tmp_path, "cpu", "fp32")
-    gpu16 = _regime_backend(tmp_path, "cuda:0", "fp16")
-    gpu32 = _regime_backend(tmp_path, "cuda:0", "fp32")
-    assert cpu16.numerics_material() == {"dtype": "fp32", "device_class": "cpu"}  # autocast never arms on cpu
-    assert gpu16.numerics_material() == {"dtype": "fp16", "device_class": "cuda"}
-    assert cpu16.span_material() == cpu32.span_material()  # same executed math, same key
-    assert gpu16.span_material() != cpu16.span_material()  # the regression: no cross-class serving
-    assert gpu16.span_material() != gpu32.span_material()  # a real dtype change is still a re-mine
-    assert _regime_backend(tmp_path, "cuda:3", "fp16").span_material() == gpu16.span_material()
-    # Worker reconstruction still carries the CONFIGURED dtype: it is a construction kwarg, not a key.
-    assert DiseaseNER(device="cpu", **dict(gpu16._config()))._config()["compute_dtype"] == "fp16"
-
-
-def test_device_none_keys_the_resolved_class_but_never_arms_autocast(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A ``device=None`` backend keys the class it will LOAD on, and the fp32 it will RUN.
-
-    The autocast gate reads the configured device string, so ``device=None`` never arms fp16 even on
-    a GPU host: the model loads on CUDA and executes fp32. Keying the configured dtype here would
-    claim fp16 for fp32 spans, which is the same silent-mismatch bug in a second disguise.
-    """
-    _install_fake_gliner2(monkeypatch, tmp_path, [])
-    monkeypatch.setattr(ner_module, "_model_device", lambda: "cuda")
-    backend = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, workdir=tmp_path, compute_dtype="fp16")
-    assert backend._autocast_arms() is False
-    assert backend.numerics_material() == {"dtype": "fp32", "device_class": "cuda"}
-
-
-def test_device_class_resolution_is_memoized(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Resolving the class can import torch and probe the driver, so it happens once per backend."""
-    probes: list[int] = []
-
-    def _counting_probe() -> str:
-        probes.append(1)
-        return "cpu"
-
-    monkeypatch.setattr(ner_module, "_model_device", _counting_probe)
-    backend = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, workdir=tmp_path)
-    assert backend._device_class() == "cpu"
-    assert backend._device_class() == "cpu"
-    assert backend.numerics_material()["device_class"] == "cpu"
-    assert len(probes) == 1
+    default = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path)
+    assert default.span_material()["compute_dtype"] == "fp32"  # production default: full precision
+    fp32 = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path, compute_dtype="fp32")
+    fp16 = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path, compute_dtype="fp16")
+    assert fp32.span_material() != fp16.span_material()
+    assert fp32.span_material()["compute_dtype"] == "fp32"
+    # The default IS fp32, so a default backend keeps matching an fp32-mined store (warm cache).
+    assert default.span_material() == fp32.span_material()
+    # Worker reconstruction carries the dtype.
+    rebuilt = DiseaseNER(device="cpu", **dict(fp16._config()))
+    assert rebuilt._config()["compute_dtype"] == "fp16"
 
 
 def test_compute_dtype_rejects_unknown_values(tmp_path: Path) -> None:
@@ -1334,13 +1288,14 @@ def test_fp16_autocast_arms_only_on_cuda(monkeypatch: pytest.MonkeyPatch, tmp_pa
     model = _BatchRecordingModel()
     results = backend._raw_batch_extract(model, ["a", "bb"], 2)
     assert [r["text"] for r in results] == ["a", "bb"]  # inert on CPU, no autocast error
-    # Sanity: the default backend (now fp16) takes the same non-autocast branch on CPU.
+    # Sanity: the default backend (fp32) takes the same non-autocast branch on CPU.
     default_backend = DiseaseNER(offline=False, gazetteer={}, device="cpu", workdir=tmp_path)
     assert default_backend._raw_batch_extract(model, ["a"], 1)[0]["text"] == "a"
 
 
-def test_fp16_default_autocast_arms_on_cuda(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A CUDA-pinned fp16-default backend wraps the forward in ``torch.autocast('cuda', float16)``.
+def test_explicit_fp16_autocast_arms_on_cuda_and_the_fp32_default_does_not(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A CUDA-pinned fp16 backend wraps the forward in ``torch.autocast('cuda', float16)``; the
+    fp32 default does not, which is what keeps the fp32-mined cache warm.
 
     ``torch.autocast`` itself is replaced with a recording fake so the assertion is exact and
     GPU-independent: real cuda autocast silently disables itself on a host with no device
@@ -1359,6 +1314,11 @@ def test_fp16_default_autocast_arms_on_cuda(monkeypatch: pytest.MonkeyPatch, tmp
         yield
 
     monkeypatch.setattr(torch, "autocast", _recording_autocast)
-    backend = DiseaseNER(offline=False, gazetteer={}, device="cuda", workdir=tmp_path)
+    backend = DiseaseNER(offline=False, gazetteer={}, device="cuda", workdir=tmp_path, compute_dtype="fp16")
     backend._raw_batch_extract(_BatchRecordingModel(), ["a"], 1)
-    assert entered == [("cuda", torch.float16)]  # the fp16 default arms autocast on a cuda device
+    assert entered == [("cuda", torch.float16)]  # explicit fp16 arms autocast on a cuda device
+    # The fp32 default must NOT autocast: its output bits are what the warm store was mined with.
+    entered.clear()
+    default_backend = DiseaseNER(offline=False, gazetteer={}, device="cuda", workdir=tmp_path)
+    default_backend._raw_batch_extract(_BatchRecordingModel(), ["a"], 1)
+    assert entered == []
