@@ -1119,10 +1119,11 @@ class DiseaseNER:
             gazetteer span. ``None`` preserves the historical merge; production profiles use
             :data:`STRICT_GAZETTEER_EXTENSION_THRESHOLD`.
         compute_dtype: ``"fp16"`` (default) runs the GLiNER2 forward on CUDA devices under
-            ``torch.autocast("cuda", float16)``; CPU inference ignores it. ``"fp32"`` restores
-            full-precision inference. The dtype is keyed in both cache tiers (see
-            :func:`dakp_pipeline.ner.mention_cache.config_fingerprint` and
-            :meth:`span_material`), so switching is a re-mine, never a silent cache serve.
+            ``torch.autocast("cuda", float16)``; CPU inference ignores it (fp16 CPU kernels are
+            38-88x SLOWER than fp32 on AVX-512 hosts without AVX512_FP16, so arming it there would
+            be a catastrophe, not a speedup). ``"fp32"`` runs full precision everywhere. What the
+            model actually EXECUTED - dtype plus device class - is keyed in both cache tiers (see
+            :meth:`numerics_material`), so switching is a re-mine, never a silent cache serve.
     """
 
     def __init__(
@@ -1172,6 +1173,7 @@ class DiseaseNER:
         self._model: Any = None
         self._gpu_lock_fd: int | None = None
         self._schema: Any = None
+        self._resolved_device_class: str | None = None
 
     @classmethod
     def for_indications(cls, **kwargs: Any) -> DiseaseNER:
@@ -1375,14 +1377,64 @@ class DiseaseNER:
         return sorted(self._merge_qualifier_mentions(lexical_qualifiers, emitted), key=_sort_key)
 
     # -- production model (lazy) -----------------------------------------------
+    def _autocast_arms(self) -> bool:
+        """Whether :meth:`_raw_batch_extract` will wrap the forward in ``torch.autocast('cuda', float16)``.
+
+        ONE predicate with two callers: the autocast gate itself and the cache-key material
+        (:meth:`numerics_material`). They used to be written out twice, which is how a backend could
+        execute one dtype while its key claimed another.
+
+        The device test reads the CONFIGURED string, not the resolved one, because that is what the
+        gate has always read: a ``device=None`` backend resolves to CUDA at load time
+        (:func:`_model_device`) yet never arms autocast, so it executes fp32 and must be KEYED fp32.
+        Keying the configured value instead let a CPU-executed span be served to a GPU-fp16 request,
+        mixing two numerics regimes inside one Tier B keyspace.
+        """
+        return self._compute_dtype == "fp16" and str(self._device).startswith("cuda")
+
+    def _device_class(self) -> str:
+        """The device CLASS this backend's model runs on: ``"cuda"`` or ``"cpu"``, memoized.
+
+        Same resolution :meth:`_load_model` uses (``self._device or _model_device()``), reduced to the
+        class. The ORDINAL is deliberately not part of it: ``cuda:0`` and ``cuda:3`` are the same arch
+        running the same deterministic kernels, so keying the ordinal would fragment one store across
+        four cards and make a text's cached spans depend on which card happened to mine it.
+
+        Memoized because it can import torch and probe the driver, and it is called once per cache-key
+        computation, i.e. once per run per tier.
+        """
+        if self._resolved_device_class is None:
+            device = self._device or _model_device()
+            self._resolved_device_class = "cuda" if device.startswith("cuda") else "cpu"
+        return self._resolved_device_class
+
+    def numerics_material(self) -> dict[str, str]:
+        """The numerics regime the model ACTUALLY runs under (key material for both cache tiers).
+
+        Two components, both resolved rather than configured:
+
+        * ``dtype`` -- ``"fp16"`` only when autocast really arms (:meth:`_autocast_arms`); a CPU load
+          configured ``fp16`` executes fp32 and is keyed fp32.
+        * ``device_class`` -- ``"cuda"`` or ``"cpu"``. Same configured dtype, same fp32 math, but
+          different kernels and different reduction orders, so CPU-fp32 and GPU-fp32 spans are NOT
+          interchangeable and must never share a key.
+
+        Both belong in the key because a mismatch is silent and permanent: the store would keep
+        serving one regime's spans to the other, and which regime a text got would depend on shard
+        timing, so builds would stop reproducing.
+        """
+        return {"dtype": "fp16" if self._autocast_arms() else "fp32", "device_class": self._device_class()}
+
     def _raw_batch_extract(self, model: Any, texts: list[str], batch_size: int) -> list[Any]:
         """One batched GLiNER2 inference call over ``texts`` (whole vocabulary, both channels).
 
-        By default (``compute_dtype='fp16'``) the forward on a CUDA device runs under
+        With ``compute_dtype='fp16'`` on a CUDA device the forward runs under
         ``torch.autocast('cuda', float16)``: the GPU executes fp16 math at its fp16 rate,
         and autocast keeps accumulation-sensitive ops (LayerNorm, softmax) in fp32. Raw output
-        bits differ from fp32 at the margin, which is exactly why ``compute_dtype`` is part of
-        the Tier B key material - a dtype change is a re-mine, never a silent cache serve.
+        bits differ from fp32 at the margin, which is exactly why the executed regime
+        (:meth:`numerics_material`) is part of the Tier B key material - a dtype or device-class
+        change is a re-mine, never a silent cache serve. The arming decision lives in
+        :meth:`_autocast_arms` so this gate and that key can never disagree.
         """
         call = lambda: (
             model.batch_extract(
@@ -1393,7 +1445,7 @@ class DiseaseNER:
                 texts, self._model_labels, batch_size=batch_size, threshold=self._threshold, include_confidence=True, include_spans=True
             )
         )
-        if self._compute_dtype == "fp16" and str(self._device).startswith("cuda"):
+        if self._autocast_arms():
             import torch  # lazy: no torch at module load
 
             with torch.autocast("cuda", dtype=torch.float16):
@@ -1620,10 +1672,11 @@ class DiseaseNER:
             "model_labels": self._model_labels,
             "threshold": self._threshold,
             "chunk_words": self._chunk_words,
-            # fp16 changes raw output BITS (not just speed): two dtypes produce different span
-            # sets at the margin, so a dtype experiment must never serve the other dtype's
-            # cached spans.
-            "compute_dtype": self._compute_dtype,
+            # The EXECUTED numerics regime, not the configured one: fp16 changes raw output BITS
+            # (not just speed), and CPU-fp32 and GPU-fp32 are different kernels, so two regimes
+            # produce different span sets at the margin and must never serve each other's spans.
+            # ``compute_dtype`` alone cannot express this - a CPU load configured fp16 runs fp32.
+            "numerics": self.numerics_material(),
         }
 
     def _merge_model_spans(self, text: str, gazetteer_mentions: list[Mention]) -> list[Mention]:

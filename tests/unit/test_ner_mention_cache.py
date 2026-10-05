@@ -117,21 +117,31 @@ def test_config_fingerprint_is_stable_and_config_sensitive(tmp_path: Path) -> No
     assert config_fingerprint(other) != config_fingerprint(ner)
 
 
-def test_tier_a_fingerprint_ignores_file_locations_and_keys_the_dtype(tmp_path: Path) -> None:
+def test_tier_a_fingerprint_ignores_locations_and_ordinals_but_keys_executed_numerics(tmp_path: Path) -> None:
     """The Tier A key must depend only on what changes mentions.
 
-    Regression: a warm rebuild launched from a second checkout (different ``workdir`` string)
-    missed every cached mention and re-mined 62,512 texts cold for 3.6 h. Location fields
-    (``workdir``/``cache_dir``) are not key material. The dtype IS: since fp16 became the
-    production default it is keyed, so an fp16 run never serves or overwrites fp32-mined
-    mentions (the first fp16 build re-mines once); explicit-fp32 backends keep matching the
-    pre-fp16 store keys because ``config_fingerprint`` omits ``fp32``.
+    Regression kept: a warm rebuild launched from a second checkout (different ``workdir`` string)
+    missed every cached mention and re-mined 62,512 texts cold for 3.6 h, so location fields are not
+    key material. Neither is the GPU ORDINAL: cuda:0 and cuda:3 are the same arch running the same
+    deterministic kernels, and keying the ordinal would make a text's cached mentions depend on which
+    card happened to mine it.
+
+    What IS keyed is the EXECUTED numerics regime, so an fp16 run never serves or overwrites
+    fp32-mined mentions and a CPU-mined entry never answers a GPU-keyed lookup. The configured
+    ``compute_dtype`` is deliberately not keyed on its own: it cannot express what ran, so
+    fp16-on-cpu (which executes fp32) must match explicit fp32-on-cpu, and must NOT match
+    fp16-on-cuda.
     """
-    here = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "a", workdir=tmp_path / "wa")
-    there = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "b", workdir=tmp_path / "wb")
-    assert config_fingerprint(here) == config_fingerprint(there)
-    fp32 = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "a", workdir=tmp_path / "wa", compute_dtype="fp32")
-    assert config_fingerprint(fp32) != config_fingerprint(here)
+
+    def _backend(**kwargs: Any) -> DiseaseNER:
+        return DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "a", workdir=tmp_path / "wa", **kwargs)
+
+    here = _backend(device="cuda:0")
+    there = DiseaseNER(offline=False, model_id=_MODEL_ID, cache_dir=tmp_path / "b", workdir=tmp_path / "wb", device="cuda:3")
+    assert config_fingerprint(here) == config_fingerprint(there)  # location and ordinal are not key material
+    assert config_fingerprint(_backend(device="cuda:0", compute_dtype="fp32")) != config_fingerprint(here)  # executed dtype is
+    assert config_fingerprint(_backend(device="cpu")) != config_fingerprint(here)  # device class is
+    assert config_fingerprint(_backend(device="cpu", compute_dtype="fp16")) == config_fingerprint(_backend(device="cpu"))
 
 
 def test_ner_cache_material_offline_backend_is_never_cached() -> None:

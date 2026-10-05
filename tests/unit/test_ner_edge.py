@@ -1257,21 +1257,69 @@ def test_stall_watchdog_is_inert_without_cuda(monkeypatch: pytest.MonkeyPatch, t
     assert [result["text"] for result in results] == texts
 
 
-# --- compute dtype (fp16 production default) ----------------------------------------
+# --- executed numerics regime (dtype + device class) -------------------------------
 
 
-def test_compute_dtype_is_model_side_key_material(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A dtype change moves the Tier B fingerprint (fp16 output bits differ from fp32)."""
+def _regime_backend(tmp_path: Path, device: str, dtype: str) -> DiseaseNER:
+    """A production backend pinned to ``device`` and configured ``dtype`` (model never loads)."""
+    return DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device=device, workdir=tmp_path, compute_dtype=dtype)
+
+
+def test_executed_numerics_are_model_side_key_material(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Tier B keys what the model RAN, not what was asked for.
+
+    Three regimes the configured dtype alone gets wrong:
+
+    * fp16-on-cpu and fp32-on-cpu execute the SAME fp32 math (autocast only arms on cuda), so they
+      must SHARE a key. Splitting them re-mines for nothing.
+    * fp16-on-cpu and fp16-on-cuda execute DIFFERENT math, so they must NOT share a key. That
+      collision was live: a CPU-fp32 span answered a GPU-fp16 lookup, and which one a text got
+      depended on shard timing, so builds stopped reproducing.
+    * cuda:0 and cuda:3 are one class, so the ordinal must not fragment the store across four cards.
+    """
     _install_fake_gliner2(monkeypatch, tmp_path, [])
-    default = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path)
-    assert default.span_material()["compute_dtype"] == "fp16"  # production default: autocast fp16 on CUDA
-    fp32 = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path, compute_dtype="fp32")
-    fp16 = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, device="cpu", workdir=tmp_path, compute_dtype="fp16")
-    assert fp32.span_material() != fp16.span_material()
-    assert fp32.span_material()["compute_dtype"] == "fp32"
-    # Worker reconstruction carries the dtype.
-    rebuilt = DiseaseNER(device="cpu", **dict(fp16._config()))
-    assert rebuilt._config()["compute_dtype"] == "fp16"
+    cpu16 = _regime_backend(tmp_path, "cpu", "fp16")
+    cpu32 = _regime_backend(tmp_path, "cpu", "fp32")
+    gpu16 = _regime_backend(tmp_path, "cuda:0", "fp16")
+    gpu32 = _regime_backend(tmp_path, "cuda:0", "fp32")
+    assert cpu16.numerics_material() == {"dtype": "fp32", "device_class": "cpu"}  # autocast never arms on cpu
+    assert gpu16.numerics_material() == {"dtype": "fp16", "device_class": "cuda"}
+    assert cpu16.span_material() == cpu32.span_material()  # same executed math, same key
+    assert gpu16.span_material() != cpu16.span_material()  # the regression: no cross-class serving
+    assert gpu16.span_material() != gpu32.span_material()  # a real dtype change is still a re-mine
+    assert _regime_backend(tmp_path, "cuda:3", "fp16").span_material() == gpu16.span_material()
+    # Worker reconstruction still carries the CONFIGURED dtype: it is a construction kwarg, not a key.
+    assert DiseaseNER(device="cpu", **dict(gpu16._config()))._config()["compute_dtype"] == "fp16"
+
+
+def test_device_none_keys_the_resolved_class_but_never_arms_autocast(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A ``device=None`` backend keys the class it will LOAD on, and the fp32 it will RUN.
+
+    The autocast gate reads the configured device string, so ``device=None`` never arms fp16 even on
+    a GPU host: the model loads on CUDA and executes fp32. Keying the configured dtype here would
+    claim fp16 for fp32 spans, which is the same silent-mismatch bug in a second disguise.
+    """
+    _install_fake_gliner2(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(ner_module, "_model_device", lambda: "cuda")
+    backend = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, workdir=tmp_path, compute_dtype="fp16")
+    assert backend._autocast_arms() is False
+    assert backend.numerics_material() == {"dtype": "fp32", "device_class": "cuda"}
+
+
+def test_device_class_resolution_is_memoized(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Resolving the class can import torch and probe the driver, so it happens once per backend."""
+    probes: list[int] = []
+
+    def _counting_probe() -> str:
+        probes.append(1)
+        return "cpu"
+
+    monkeypatch.setattr(ner_module, "_model_device", _counting_probe)
+    backend = DiseaseNER(offline=False, gazetteer={"asthma": "Disease"}, workdir=tmp_path)
+    assert backend._device_class() == "cpu"
+    assert backend._device_class() == "cpu"
+    assert backend.numerics_material()["device_class"] == "cpu"
+    assert len(probes) == 1
 
 
 def test_compute_dtype_rejects_unknown_values(tmp_path: Path) -> None:

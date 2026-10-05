@@ -49,9 +49,14 @@ Composite stays **1.000 / 1.000 / 1.000** on branch HEAD defaults
 multi-GPU dispatch) executes the forward under `torch.autocast("cuda", float16)`, so
 accumulation-sensitive ops (LayerNorm, softmax) stay fp32 while the rest runs at the
 device's fp16 rate. The 28/2000 knife-edge flips recorded above remain the documented
-accuracy delta. Both cache tiers key `compute_dtype` (`span_material` / `config_fingerprint`),
-so fp32-mined stores are never served to an fp16 run: the first fp16 build re-mines once.
-CPU inference and the test suite are unaffected (autocast arms only on CUDA).
+accuracy delta. Both cache tiers key the EXECUTED numerics regime, not the configured one
+(`DiseaseNER.numerics_material`: resolved dtype plus device class, via `span_material` /
+`config_fingerprint`), so fp32-mined stores are never served to an fp16 run and a CPU-mined entry
+never answers a GPU-keyed lookup: the first build under a new regime re-mines once.
+CPU inference and the test suite are unaffected (autocast arms only on CUDA), and that is exactly
+why the configured value cannot be the key: a CPU load configured `fp16` executes `fp32`, so keying
+`fp16` there would have served CPU-fp32 spans to GPU-fp16 lookups, with which regime a text got
+decided by shard timing.
 
 ### Current-model local run
 
