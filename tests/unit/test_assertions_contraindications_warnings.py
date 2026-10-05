@@ -21,6 +21,7 @@ from dakp_pipeline.assertions.contraindications import build_contraindication_ro
 from dakp_pipeline.assertions.evidence import build_dailymed_evidence
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef
+from dakp_pipeline.ner import model_cache
 from dakp_pipeline.ner.ner import DiseaseNER
 
 BOXED_WARNING_LOINC = "34066-1"
@@ -216,13 +217,21 @@ def test_build_rows_uses_one_pool_across_cache_put_batches(fake_dispatch_pool: A
     to 2 over 4 distinct sections this issues two batches, and both must go through the SAME pool.
     """
     monkeypatch.setenv("DAKP_NERCACHE_PUT_BATCH", "2")
+
+    # The batching seam engages only when the backend's model manifest resolves (a cold host model
+    # cache takes the pass-through path and every text arrives in one batch). Write a manifest-only
+    # model into tmp, like the dispatch tests, so the test is hermetic against the host's cache.
+    def _write_model(_id: str, dest: Path) -> None:
+        (dest / "w.bin").write_bytes(b"w")
+
+    model_cache.ensure_model("acme/test-ner", cache_dir=tmp_path, downloader=_write_model)
     # Four DISTINCT texts (identical texts dedupe to one work item at the cache seam) and a batch
     # size of 2 give exactly two pool calls and no singleton batch, so the sequential fallback -
     # which would load the real GLiNER model - is never reached.
     letters = "ABCD"
     sections = _sections(tmp_path, [(f"SET-{c}", f"SET-{c}#34070-3", "34070-3", f"asthma variant {c}") for c in letters])
     ingredients = _ingredients(tmp_path, [("active", f"SET-{c}", f"Drug{c}", f"UNII:{c}") for c in letters])
-    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"})
+    ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"}, model_id="acme/test-ner", cache_dir=tmp_path)
 
     def fake_mine(work_items: Any, pool_ner: DiseaseNER) -> dict[tuple[str, str], Any]:
         offline = DiseaseNER(gazetteer=pool_ner._gazetteer)
