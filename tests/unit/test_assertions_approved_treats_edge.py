@@ -130,7 +130,7 @@ def test_candidate_with_no_resolvable_subject_is_skipped(disease_map: dict[str, 
     # -> _subject_for_sets returns ("", "") -> the candidate is dropped.
     ev = DailyMedEvidence(
         approval_sets={"12345": {"SET-A"}},
-        approval_display={"12345": "012345"},
+        approval_display={"12345": "NDA012345"},
         set_ingredient={},  # no ingredient for SET-A
         indication_docs={"SET-A": [("SET-A#34067-9", "hypercholesterolemia")]},
     )
@@ -147,7 +147,7 @@ def test_second_nda_backfills_subject_curie_for_shared_key(disease_map: dict[str
     # provides one -> the aggregate's subject_curie is back-filled from the second candidate.
     ev = DailyMedEvidence(
         approval_sets={"11111": {"SET-A"}, "22222": {"SET-B"}},
-        approval_display={"11111": "011111", "22222": "022222"},
+        approval_display={"11111": "NDA011111", "22222": "NDA022222"},
         set_ingredient={"SET-A": ("DrugX", ""), "SET-B": ("DrugX", "UNII:X")},
         active_ingredients_by_set={"SET-A": [("DrugX", "")], "SET-B": [("DrugX", "UNII:X")]},
         indication_docs={"SET-A": [("SET-A#34067-9", "condY")], "SET-B": [("SET-B#34067-9", "condY")]},
@@ -160,7 +160,7 @@ def test_second_nda_backfills_subject_curie_for_shared_key(disease_map: dict[str
     assert len(rows) == 1
     assert rows[0]["subject_text"] == "DrugX"
     assert rows[0]["subject_curie"] == "UNII:X"  # back-filled from the second NDA's set
-    assert rows[0]["FDA_regulatory_approvals"] == "011111|022222"
+    assert rows[0]["FDA_regulatory_approvals"] == "NDA011111|NDA022222"
     assert (
         rows[0]["supporting_spl_sets"]
         == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-A|https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=SET-B"
@@ -184,7 +184,7 @@ def test_dailymed_fallback_dedups_repeated_indication_docs(disease_map: dict[str
     # second occurrence is skipped (key already seen), yielding exactly one row.
     ev = DailyMedEvidence(
         approval_sets={"12345": {"SET-A"}},
-        approval_display={"12345": "012345"},
+        approval_display={"12345": "NDA012345"},
         set_ingredient={"SET-A": ("Examplestatin", "UNII:QFX8B1R4QF")},
         active_ingredients_by_set={"SET-A": [("Examplestatin", "UNII:QFX8B1R4QF")]},
         indication_docs={"SET-A": [("SET-A#doc1", "hypercholesterolemia"), ("SET-A#doc2", "hypercholesterolemia")]},
@@ -221,7 +221,7 @@ def _supported_evidence(section_text: str, *, second_set_text: str | None = None
         docs["SET-B"] = [("SET-B#34067-9", second_set_text)]
     return DailyMedEvidence(
         approval_sets=approval_sets,
-        approval_display={"12345": "012345"},
+        approval_display={"12345": "NDA012345"},
         set_ingredient=set_ingredient,
         active_ingredients_by_set=active,
         indication_docs=docs,
@@ -305,7 +305,7 @@ def test_multi_ingredient_supporting_set_yields_faers_fallback_subject(disease_m
     # the subject is the FAERS-reported ingredient text with an empty CURIE.
     ev = DailyMedEvidence(
         approval_sets={"12345": {"SET-COMBO"}},
-        approval_display={"12345": "012345"},
+        approval_display={"12345": "NDA012345"},
         set_ingredient={"SET-COMBO": ("ComponentA", "UNII:A")},
         active_ingredients_by_set={"SET-COMBO": [("ComponentA", "UNII:A"), ("ComponentB", "UNII:B")]},
         indication_docs={"SET-COMBO": [("SET-COMBO#34067-9", "Indicated for hypercholesterolemia.")]},
