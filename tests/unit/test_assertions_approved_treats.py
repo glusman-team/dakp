@@ -113,8 +113,9 @@ def test_multi_nda_for_same_subject_object_aggregates_approvals(disease_map: dic
     rows = build_approved_treats_rows(cases, ev, mapping, disease_map)
     assert len(rows) == 1
     row = rows[0]
-    # No index: the DailyMed display value rides through as recorded.
-    assert row["FDA_regulatory_approvals"] == "012345|099998"  # sorted, deduped
+    # No index, and DailyMed's bare display value names no application type: both numbers are
+    # dropped rather than shipped as values nobody can resolve.
+    assert row["FDA_regulatory_approvals"] == ""
 
     # With the Drugs@FDA register, each number resolves to its FDA form.
     index = FDAApprovalIndex({"12345": ("NDA012345",), "99998": ("BLA099998",)})

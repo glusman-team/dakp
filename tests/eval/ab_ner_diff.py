@@ -77,6 +77,9 @@ def _extract(ner: DiseaseNER, items: Sequence[Any]) -> dict[tuple[str, str], Any
     chunk's mentions - the off-by-one the first sweep reported as 89% "differing").
     """
     mined = ner.extract_batch([item[2] for item in items])
+    # strict=True: `extract_batch` returns exactly one mention list per input item, so a length
+    # mismatch means the batching broke. Silent truncation here would re-key mentions onto the
+    # wrong (set_id, doc_id) pairs, which is the failure the docstring above exists to prevent.
     return {(item[0], item[1]): mentions for item, mentions in zip(items, mined, strict=True)}
 
 

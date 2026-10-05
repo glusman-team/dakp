@@ -5,16 +5,16 @@ None); a contraindication set with no active ingredient; multi-ingredient (combi
 sets skipped by the singleton-ingredient discipline in both mining passes; a blank mined span; ingredient rows with
 missing fields / duplicates in the shared evidence cache; a second observation of the same
 (subject, object) pair unioning support; the empty-scores ``_max_score`` guard; the shaper honoring / ignoring an injected
-``params["ner"]``; multi-GPU dispatch (LPT sharding, ``_mine_shard`` worker, ``_mine_multi_gpu``
-orchestrator, ``_resolve_devices`` CUDA guard, and the ``devices`` param on
+``params["ner"]``; device-pinned dispatch (LPT sharding, the ``_mine_chunk`` worker, the
+``MiningPool`` orchestrator, ``_resolve_devices`` CUDA guard, and the ``devices`` param on
 ``build_contraindication_rows``). Inputs are tiny parquet tables built in tmp so no heavy NER deps
 are needed.
 
 **Pass 2 tests** cover: the sentence keyword filter (``_split_sentences`` / ``_contraindication_sentences``);
 embedded contraindication provenance from indication sections (``SETID#34067-9``); false-positive
 prevention (indication-only diseases are NOT mined); no-regression on contraindication-only sets;
-a fake monkeypatched GLiNER mock for the production path; and the flattened multi-GPU dispatch
-(``_mine_multi_gpu`` receiving work items from every pass).
+a fake monkeypatched GLiNER mock for the production path; and the flattened dispatch
+(``MiningPool.mine`` receiving work items from every pass in one call).
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from dakp_pipeline.assertions.contraindications import (
     ContraindicationsShaper,
     ContraWorkItem,
     EvidenceSpan,
+    MiningPool,
     _accumulate,
     _classify_mention,
     _classify_mentions,
@@ -43,8 +44,7 @@ from dakp_pipeline.assertions.contraindications import (
     _finalize_row,
     _max_score,
     _mention_local_span,
-    _mine_multi_gpu,
-    _mine_shard,
+    _mine_chunk,
     _offset_space,
     _resolve_devices,
     _resolve_keywords,
@@ -54,6 +54,7 @@ from dakp_pipeline.assertions.contraindications import (
     _split_sentences,
     _work_item_evidence,
     _work_item_parts,
+    _worker_backend,
     build_contraindication_rows,
     default_ner,
 )
@@ -391,7 +392,7 @@ def test_shaper_ignores_non_backend_ner_param_and_falls_back(tmp_path: Path) -> 
     assert frame.row(0, named=True)["subject_text"] == "Ibuprofen"
 
 
-# --- multi-GPU dispatch: LPT sharding -------------------------------------------
+# --- device-pinned dispatch: LPT sharding ---------------------------------------
 
 
 def test_shard_by_text_length_balances_by_text_length() -> None:
@@ -418,20 +419,20 @@ def test_shard_by_text_length_preserves_all_items() -> None:
     assert sorted(all_items) == sorted(items)
 
 
-# --- multi-GPU dispatch: _mine_shard worker -------------------------------------
+# --- device-pinned pool: _mine_chunk worker --------------------------------------
 
 
-def test_mine_shard_extracts_spans_from_each_text() -> None:
-    """_mine_shard reconstructs a DiseaseNER from config and returns RAW SPANS per text.
+def test_mine_chunk_extracts_spans_from_each_text(as_worker: Any) -> None:
+    """_mine_chunk builds the worker backend from its claimed slot and returns RAW SPANS per text.
 
-    The shard contract is raw model output, not mentions: the parent re-merges (so the Tier B
+    The chunk contract is raw model output, not mentions: the parent re-merges (so the Tier B
     span cache stays merge-config-independent). An OFFLINE backend has no model output, so its
     spans are empty - the offline mention path lives entirely parent-side (merge_spans/extract).
     """
     ner = DiseaseNER(gazetteer={"asthma": "disease"})
-    config = ner._config()
-    shard = [("SET-A", "DOC-A", "patient has asthma"), ("SET-B", "DOC-B", "no disease here")]
-    results = _mine_shard(shard, config, "cpu")
+    as_worker("cpu", ner._config())
+    chunk = [("SET-A", "DOC-A", "patient has asthma"), ("SET-B", "DOC-B", "no disease here")]
+    results = _mine_chunk(chunk)
     assert len(results) == 2
     assert results[0][0] == "SET-A"  # set_id preserved
     assert results[0][1] == "DOC-A"  # doc_id preserved
@@ -441,30 +442,54 @@ def test_mine_shard_extracts_spans_from_each_text() -> None:
     assert results[1][2].objects == []
 
 
-def test_mine_shard_empty_shard_returns_empty_list() -> None:
-    """An empty shard yields an empty result list (no texts to mine)."""
+def test_mine_chunk_empty_chunk_returns_empty_list(monkeypatch: pytest.MonkeyPatch, as_worker: Any) -> None:
+    """An empty chunk yields an empty result list and never constructs a backend."""
+    as_worker("cpu", DiseaseNER(gazetteer={"asthma": "disease"})._config())
+    import dakp_pipeline.assertions.ner_dispatch as dispatch_mod
+
+    def _boom() -> DiseaseNER:
+        raise AssertionError("an empty chunk must not build a backend")
+
+    monkeypatch.setattr(dispatch_mod, "_worker_backend", _boom)
+    assert _mine_chunk([]) == []
+
+
+def test_mine_chunk_reuses_one_backend_across_chunks(as_worker: Any) -> None:
+    """THE payoff of a run-scoped pool: N chunks in one worker build the backend ONCE.
+
+    Under the per-batch pool every cache-put batch re-imported torch, re-took the device flock and
+    re-read the weights from the model cache. This asserts the process-local memoization that
+    removes that fixed cost from every batch after the first.
+    """
     ner = DiseaseNER(gazetteer={"asthma": "disease"})
-    assert _mine_shard([], ner._config(), "cpu") == []
+    as_worker("cpu", ner._config())
+    first = _worker_backend()
+    _mine_chunk([("SET-A", "DOC-A", "asthma")])
+    _mine_chunk([("SET-B", "DOC-B", "asthma")])
+    assert _worker_backend() is first  # memoized, not rebuilt per chunk
 
 
-# --- multi-GPU dispatch: _mine_multi_gpu orchestrator --------------------------
+# --- device-pinned pool: MiningPool orchestrator ----------------------------------
 
 
-def test_mine_multi_gpu_collects_spans_from_all_workers() -> None:
-    """_mine_multi_gpu shards work and collects RAW SPANS from every worker into one map.
+def test_mining_pool_collects_spans_from_all_workers() -> None:
+    """MiningPool shards work and collects RAW SPANS from every spawned worker into one map.
 
     Offline backends contribute empty span sets (no model); the map is what matters - one
-    entry per work item, ready for the parent-side merge.
+    entry per work item, ready for the parent-side merge. These are REAL spawn children, so the
+    test is also the end-to-end proof that the slot queue hands each worker exactly one device.
     """
     ner = DiseaseNER(gazetteer={"asthma": "disease", "diabetes": "disease"})
     items = [("SET-A", "DOC-A", "asthma"), ("SET-B", "DOC-B", "diabetes")]
-    results = _mine_multi_gpu(items, ner, ("cpu", "cpu"))
+    with MiningPool(ner, ("cpu", "cpu")) as pool:
+        results = pool.mine(items)
     assert set(results.keys()) == {("SET-A", "DOC-A"), ("SET-B", "DOC-B")}
     assert all(isinstance(spans, RawTextSpans) for spans in results.values())
     assert all(spans.objects == [] for spans in results.values())  # offline: no model spans
+    assert not pool.started  # closed: the executor is gone
 
 
-# --- multi-GPU dispatch: build_contraindication_rows devices param ---------------
+# --- device-pinned dispatch: build_contraindication_rows devices param -----------
 
 
 def test_devices_ignored_for_offline_ner(tmp_path: Path) -> None:
@@ -580,26 +605,23 @@ def test_resolve_devices_returns_none_when_torch_unimportable(monkeypatch: pytes
     assert _resolve_devices(DiseaseNER(offline=False)) is None
 
 
-# --- multi-GPU dispatch: production NER + devices -> _mine_multi_gpu is called ------
+# --- device-pinned dispatch: production NER + devices -> the pool is called ---------
 
 
-def test_build_rows_dispatches_to_multi_gpu_for_production_ner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Production NER + devices + >1 item: build_contraindication_rows calls _mine_multi_gpu."""
+def test_build_rows_dispatches_to_pool_for_production_ner(fake_dispatch_pool: Any, tmp_path: Path) -> None:
+    """Production NER + devices + >1 item: build_contraindication_rows mines through the pool."""
     sections = _sections(tmp_path, [("SET-A", "SET-A#d", "asthma"), ("SET-B", "SET-B#d", "asthma")])
     ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X"), ("active", "SET-B", "DrugY", "UNII:Y")])
     ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease"})
 
-    called: list[tuple[int, tuple[str, ...]]] = []
-
-    def fake_multi_gpu(work_items: list, ner_arg: DiseaseNER, devices: tuple[str, ...]) -> dict:
-        called.append((len(work_items), tuple(devices)))
+    def fake_mine(work_items: Any, pool_ner: DiseaseNER) -> dict:
         # Use an offline clone to avoid GLiNER loading in tests.
-        offline = DiseaseNER(gazetteer=ner_arg._gazetteer)
+        offline = DiseaseNER(gazetteer=pool_ner._gazetteer)
         return {(s, d): offline.extract(t) for s, d, t in work_items}
 
     import dakp_pipeline.assertions.contraindications as contra_mod
 
-    monkeypatch.setattr(contra_mod, "_mine_multi_gpu", fake_multi_gpu)
+    called = fake_dispatch_pool(contra_mod, fake_mine)
 
     rows = build_contraindication_rows([sections, ingredients], ner, devices=("cuda:0", "cuda:1"))
     assert called == [(2, ("cuda:0", "cuda:1"))]  # dispatched with 2 items across 2 devices
@@ -607,7 +629,7 @@ def test_build_rows_dispatches_to_multi_gpu_for_production_ner(monkeypatch: pyte
     assert {r["subject_text"] for r in rows} == {"DrugX", "DrugY"}
 
 
-def test_shaper_logs_and_dispatches_when_multi_gpu(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_shaper_logs_and_dispatches_when_multi_gpu(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_dispatch_pool: Any) -> None:
     """The shaper logs and passes devices to build_contraindication_rows when CUDA is available."""
     from dakp_pipeline.extract import spl_xml
     from dakp_pipeline.io import schemas
@@ -615,13 +637,11 @@ def test_shaper_logs_and_dispatches_when_multi_gpu(monkeypatch: pytest.MonkeyPat
     ctx = _ctx(tmp_path, {"ner": DiseaseNER(offline=False, gazetteer={"asthma": "disease", "liver disease": "disease"})})
     refs = spl_xml.extract([_ref(FIXTURE_ROOT / "dailymed" / "dailymed_spl.xml.gz")], ctx)
 
-    # Force the multi-GPU path: _resolve_devices returns GPUs, _mine_multi_gpu avoids GPU work.
+    # Force the pooled dispatch path: _resolve_devices returns GPUs, the fake pool avoids GPU work.
     import dakp_pipeline.assertions.contraindications as contra_mod
 
     monkeypatch.setattr(contra_mod, "_resolve_devices", lambda _ner: CONTRAINDICATION_GPUS)
-    monkeypatch.setattr(
-        contra_mod, "_mine_multi_gpu", lambda items, ner, devs: {(s, d): DiseaseNER(gazetteer=ner._gazetteer).extract(t) for s, d, t in items}
-    )
+    fake_dispatch_pool(contra_mod, lambda items, pool_ner: {(s, d): DiseaseNER(gazetteer=pool_ner._gazetteer).extract(t) for s, d, t in items})
 
     out = ContraindicationsShaper().transform(refs, ctx)
     assert len(out) == 1
@@ -938,11 +958,11 @@ def test_production_ner_mines_contraindication_from_indication(monkeypatch: pyte
     assert "hypertension" not in all_glimer_input.lower()  # sentence filter prevented it
 
 
-# --- multi-GPU dispatch: passes flatten into one pool ---------------------------
+# --- device-pinned dispatch: passes flatten into one pool -----------------------
 
 
-def test_build_rows_dispatches_flattened_passes_for_production_ner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Production NER + devices + Pass 1 and Pass 2 work: _mine_multi_gpu gets BOTH passes' items.
+def test_build_rows_dispatches_flattened_passes_for_production_ner(fake_dispatch_pool: Any, tmp_path: Path) -> None:
+    """Production NER + devices + Pass 1 and Pass 2 work: the pool gets BOTH passes' items at once.
 
     Every pass shares the shaper's backend profile, so a per-pass device split would pin the
     dominant warnings pass to a single GPU while the others idle; the dispatch must flatten.
@@ -957,19 +977,16 @@ def test_build_rows_dispatches_flattened_passes_for_production_ner(monkeypatch: 
     ingredients = _ingredients(tmp_path, [("active", "SET-A", "DrugX", "UNII:X"), ("active", "SET-B", "DrugY", "UNII:Y")])
     ner = DiseaseNER(offline=False, gazetteer={"asthma": "disease", "diabetes": "disease"})
 
-    called: list[dict[str, Any]] = []
-
-    def fake_multi_gpu(work_items, ner_arg, devs):
-        called.append({"items": len(work_items), "devices": tuple(devs)})
-        offline = DiseaseNER(gazetteer=ner_arg._gazetteer)
+    def fake_mine(work_items: Any, pool_ner: DiseaseNER) -> dict[tuple[str, str], Any]:
+        offline = DiseaseNER(gazetteer=pool_ner._gazetteer)
         return {(s, d): offline.extract(t) for s, d, t in work_items}
 
     import dakp_pipeline.assertions.contraindications as contra_mod
 
-    monkeypatch.setattr(contra_mod, "_mine_multi_gpu", fake_multi_gpu)
+    called = fake_dispatch_pool(contra_mod, fake_mine)
 
     rows = build_contraindication_rows([sections, ingredients], ner, devices=("cuda:0", "cuda:1", "cuda:2", "cuda:3"))
-    assert called == [{"items": 2, "devices": ("cuda:0", "cuda:1", "cuda:2", "cuda:3")}]
+    assert called == [(2, ("cuda:0", "cuda:1", "cuda:2", "cuda:3"))]  # both passes, one dispatch
     assert {r["subject_text"] for r in rows} == {"DrugX", "DrugY"}
 
 

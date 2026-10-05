@@ -8,8 +8,12 @@ Every shaper that mines DailyMed text with the composite NER backend
   runs; production shapers receive an injected ``params["ner"]`` instead.
 * **device resolution** — :func:`_resolve_devices` discovers every visible CUDA ordinal and
   filters it to torch-supported devices (None when unusable → sequential CPU mining).
-* **multi-GPU dispatch** — :func:`_mine_multi_gpu` shards work items across one spawned worker
-  per GPU (LPT-balanced by text length), with byte-identical output regardless of dispatch mode.
+* **device-pinned mining pool** — :class:`MiningPool` owns ONE spawn pool for a whole mining run
+  (LPT-balanced by text length), with byte-identical output regardless of dispatch mode. Each worker
+  claims a single device slot at startup and keeps its loaded model for the life of the process, so a
+  run pays the CUDA-context + flock + weight-load cost once per device instead of once per cache-put
+  batch. :func:`dispatch_pool` is the context-managed seam both shapers use; it yields ``None``
+  exactly where the shapers used to mine sequentially (offline backend, no usable device).
   The shaper's three mining passes share ONE backend profile, so their work items are
   dispatched as a single globally-balanced pool; a per-pass device split would pin the
   dominant warnings pass to one GPU while the other GPUs idle.
@@ -29,11 +33,13 @@ import ctypes
 import importlib.machinery
 import multiprocessing as mp
 import os
+import queue
 import signal
 import sys
-from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import ProcessPoolExecutor
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +96,7 @@ def _resolve_devices(ner: DiseaseNER, gpus: Sequence[str] | None = None) -> Sequ
         return None
     candidates = tuple(gpus) if gpus is not None else tuple(f"cuda:{index}" for index in range(visible))
     supported = tuple(candidates[index] for index in range(min(visible, len(candidates))) if _cuda_device_supported(torch, index))
+    _warn_on_mixed_arch(torch, supported)
     if not supported:
         logger.warning(
             "contraindication_gpus_unsupported: no visible CUDA device arch is in the torch build arch list = {}; falling back to sequential CPU mining",
@@ -97,6 +104,32 @@ def _resolve_devices(ner: DiseaseNER, gpus: Sequence[str] | None = None) -> Sequ
         )
         return None
     return supported
+
+
+def _warn_on_mixed_arch(torch_mod: Any, devices: Sequence[str]) -> None:
+    """Warn when the surviving ordinals are not all the same compute capability.
+
+    Tier B keys raw spans by (dtype, device), never by ordinal: ``cuda:0`` and ``cuda:3`` share one
+    key because identical archs run identical deterministic kernels and emit identical bits. A
+    heterogeneous host breaks that premise, and since the
+    executor's call queue decides which card runs a chunk, one text's spans would then depend on run
+    timing. Mixed-arch hosts are not a supported pooled-dispatch target; this makes the assumption
+    observable in the task log instead of silently non-reproducible.
+    """
+    if len(devices) < 2:
+        return
+    capabilities: set[Any] = set()
+    for index in range(len(devices)):
+        try:
+            capabilities.add(tuple(torch_mod.cuda.get_device_capability(index)))
+        except Exception:
+            return
+    if len(capabilities) > 1:
+        logger.warning(
+            "ner_mixed_gpu_arch: pooled dispatch assumes one compute capability across devices, found {}; "
+            "Tier B spans are keyed by device class, not ordinal, so a mixed host would make them run-dependent",
+            sorted(capabilities),
+        )
 
 
 def _item_parts(item: Any) -> tuple[str, str, str]:
@@ -159,88 +192,259 @@ def _set_parent_death_signal() -> None:
         os._exit(1)
 
 
-def _mine_shard(shard: Sequence[Any], ner_config: dict[str, Any], device: str, *, in_worker: bool = False) -> list[tuple[str, str, RawTextSpans]]:
-    """ProcessPoolExecutor worker: load GLiNER on ``device``, mine each text, return RAW spans.
+_SLOT_CLAIM_TIMEOUT_SECONDS = 600.0
+"""How long a worker waits for its device slot before failing loudly.
 
-    Reconstructs a :class:`DiseaseNER` from the picklable ``ner_config`` pinned to ``device``,
-    then runs the span pass (:meth:`DiseaseNER.extract_spans_batch`) over every
-    ``(set_id, doc_id, text)`` item in its shard. Workers return each text's RAW model spans
-    (:class:`~dakp_pipeline.ner.ner.RawTextSpans`, pickled whole - the JSON-ready projection for
-    the cache happens parent-side in ``mine_with_cache``) - NOT final mentions: the parent
-    re-merges per run so the Tier B span cache stays merge-config-independent. The model loads
-    lazily on the first extract call, so each worker initializes its own CUDA context (safe under
-    the ``spawn`` start method).
+The claim is a FIFO pop from a queue the parent pre-fills with exactly one entry per pool worker, so
+this never blocks in practice. The timeout exists so a mis-sized pool raises here, with a message
+naming the situation, instead of hanging a multi-hour DAG task forever.
+"""
 
-    ``in_worker`` is passed ONLY by the ``pool.submit`` call site, so the process-global
-    logging reconfiguration below can never fire in the parent. It is an explicit flag rather
-    than a runtime probe because :func:`multiprocessing.parent_process` does not discriminate:
-    it reports the Airflow task process itself as a child (LocalExecutor runs tasks under a
-    ``multiprocessing.Process``, and the supervisor forks the task), so an in-process call
-    would have wiped the TASK's loguru sinks and root handler.
 
-    When set, logging is reconfigured FIRST, before any heavy import can emit: a spawned child
-    inherits no sinks, so loguru's default ``sys.stderr`` sink, ``transformers`` / ``torch``
-    (which own their stderr handlers), and :mod:`warnings` would all reach Airflow as
-    ERROR-level ``task.stderr`` noise for perfectly healthy records.
-    :func:`~dakp_pipeline.logging_setup.configure_worker_logging` redirects the child's stderr
-    fd to ``<workdir>/logs/workers/<device>-<pid>.log``.
+class NerWorkerError(RuntimeError):
+    """A worker chunk failed; carries the device that failed so the parent can name it.
+
+    ``future.result()`` alone re-raises the worker's original exception in the parent, which loses the
+    one thing the task log needs: WHICH device died. DAG runs 8 and 9 both surfaced as a bare
+    ``IndexError`` with no device and no traceback in the task log. The constructor signature is
+    exactly ``(device, items, message)`` because ``BaseException.__reduce__`` replays ``self.args``
+    when unpickling, so a mismatched signature would break the exception's trip back to the parent.
     """
-    if in_worker:
-        configure_worker_logging(ner_config.get("workdir"), device)
-        _set_parent_death_signal()
+
+    def __init__(self, device: str, items: int, message: str) -> None:
+        super().__init__(device, items, message)
+        self.device = device
+        self.items = items
+        self.message = message
+
+    def __str__(self) -> str:
+        return f"{self.device}: {self.message}"
+
+
+_WORKER_SLOT: str | None = None
+_WORKER_CONFIG: dict[str, Any] = {}
+_WORKER_BACKEND: DiseaseNER | None = None
+"""Per-process worker state, populated by :func:`_init_worker` in the child only.
+
+Module globals are the right home because a pool worker is one OS process bound to one device for its
+whole life: the slot it claimed, the config it was handed, and the backend it built once. The parent
+never populates them (an executor initializer only runs in children), which is what makes calling
+:func:`_mine_chunk` directly from a unit test safe: no logging teardown, no death signal, no model.
+"""
+
+
+def _init_worker(slots: Any, ner_config: Mapping[str, Any]) -> None:
+    """Pool initializer: claim ONE device slot, then make this process's output land in a file.
+
+    Runs once per worker process, before any task, so it is the earliest moment at which this process
+    knows who it is. Three things belong here rather than in the first task:
+
+    1. **Slot claim.** ``ProcessPoolExecutor`` hands a task to whichever worker is free, so a task
+       cannot carry its device: the worker must own one. Each worker pops exactly one slot from a
+       queue the parent pre-filled, so N workers hold N distinct devices and no card ever sees two
+       models (the 16 GB cap that makes the per-device flock necessary).
+    2. **Logging redirect.** ``configure_worker_logging`` calls ``logger.remove()`` and
+       ``basicConfig(force=True)``, which would wipe the Airflow task process's own sinks if it ever
+       ran there. An initializer cannot run in the parent, so this is safe by construction; the old
+       ``in_worker`` flag existed only because the same worker function was callable from both sides.
+       It also has to happen before the model load: a spawned child inherits no sinks, so loguru's
+       default stderr sink plus the ``torch``/``transformers`` stderr handlers would all reach
+       Airflow as ERROR-level ``task.stderr`` noise for perfectly healthy records.
+    3. **Death signal and allocator env**, both before torch initializes CUDA in this process.
+    """
+    global _WORKER_SLOT, _WORKER_CONFIG
+    try:
+        _WORKER_SLOT = str(slots.get(timeout=_SLOT_CLAIM_TIMEOUT_SECONDS))
+    except (AttributeError, OSError, queue.Empty) as exc:
+        raise RuntimeError(f"NER worker could not claim a device slot ({type(exc).__name__}: {exc})") from exc
+    _WORKER_CONFIG = dict(ner_config)
+    configure_worker_logging(_WORKER_CONFIG.get("workdir"), _WORKER_SLOT)
+    _set_parent_death_signal()
+    if _WORKER_SLOT.startswith("cuda"):
         # Fragmentation guard, set BEFORE torch initializes CUDA (it is read once, at init): a
         # multi-hour shard on a 16 GB P100 crept to the memory ceiling and then OOMed on every
         # remaining window. Expandable segments is PyTorch's own remedy for a large
         # reserved-but-unallocated pool. ``setdefault`` so an explicit operator setting wins.
         os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-    ner = DiseaseNER(device=device, **ner_config)
-    items = [_item_parts(item) for item in shard]
+
+
+def _worker_backend() -> DiseaseNER:
+    """This worker's backend, built once per process from its claimed slot and handed config.
+
+    Idempotent on purpose: a worker that receives a chunk before its initializer ran, or a unit test
+    calling :func:`_mine_chunk` in-process, still gets a working backend instead of an opaque ``None``
+    dereference. The model itself loads lazily inside the first ``extract_spans_batch``, so this
+    stays cheap until real work arrives.
+    """
+    global _WORKER_BACKEND
+    if _WORKER_BACKEND is None:
+        _WORKER_BACKEND = DiseaseNER(device=_WORKER_SLOT or "cpu", **_WORKER_CONFIG)
+    return _WORKER_BACKEND
+
+
+def _mine_chunk(chunk: Sequence[Any]) -> list[tuple[str, str, RawTextSpans]]:
+    """Mine one chunk of work items on this worker's own device slot and return RAW spans.
+
+    The chunk carries no device because the worker already owns one (:func:`_init_worker`), which is
+    what lets the parent hand chunks to whichever worker is free. Workers return each text's raw model
+    output (:class:`~dakp_pipeline.ner.ner.RawTextSpans`, pickled whole; the JSON-ready cache
+    projection happens parent-side in :func:`mine_with_cache`), NOT final mentions: the parent
+    re-merges per run so the Tier B span cache stays merge-config-independent.
+
+    Failures are wrapped in :class:`NerWorkerError` so the parent can name the device, and the
+    traceback is logged HERE first: the parent only ever sees a re-raised pickled exception, so
+    without this the worker's own log file stops mid-chunk with no frame named anywhere on disk.
+    """
+    if not chunk:
+        return []
+    slot = _WORKER_SLOT or "cpu"
+    items = [_item_parts(item) for item in chunk]
     try:
-        spans = ner.extract_spans_batch([text for _set_id, _doc_id, text in items])
-    except Exception:
-        # The parent only ever receives the pickled exception (``future.result()``), and a spawned
-        # child's stderr is this file, so without this line the worker log simply STOPS mid-shard:
-        # runs 8 and 9 both died on ``IndexError: string index out of range`` with no traceback
-        # anywhere on disk. Name the device and the shard size, keep the traceback, re-raise.
-        logger.exception("ner_shard_failed: device = {} items = {}", device, len(items))
-        raise
+        backend = _worker_backend()
+        spans = backend.extract_spans_batch([text for _set_id, _doc_id, text in items])
+    except BaseException as exc:
+        logger.error("ner_shard_failed: device = {} items = {}", slot, len(items))
+        logger.opt(exception=exc).error("ner_shard_failed_traceback")
+        raise NerWorkerError(slot, len(items), f"{type(exc).__name__}: {exc}") from exc
     return [(set_id, doc_id, result) for (set_id, doc_id, _text), result in zip(items, spans, strict=True)]
 
 
-def _mine_multi_gpu(work_items: Sequence[Any], ner: DiseaseNER, devices: Sequence[str]) -> dict[tuple[str, str], RawTextSpans]:
-    """Dispatch NER span extraction across one worker per GPU and collect raw spans.
+class MiningPool:
+    """A run-scoped, device-pinned NER mining pool with one ``mine`` entry point.
 
-    Shards ``work_items`` across ``len(devices)`` groups (LPT-balanced by text length), spawns
-    one process per device via :class:`~concurrent.futures.ProcessPoolExecutor` (``spawn``
-    start method - CUDA + ``fork`` is unsafe), and returns a ``{(set_id, doc_id): RawTextSpans}``
-    map of raw model output (the parent re-merges and caches it - see :func:`mine_with_cache`).
-    The model cache on disk is shared read-only across workers.
+    Why a pool object rather than a function per call: ``mine_with_cache`` slices the cache misses
+    into batches of ``DAKP_NERCACHE_PUT_BATCH`` (512 by default) and calls its ``mine`` callable once
+    per batch. When that callable built its own ``ProcessPoolExecutor``, a 62k-text build spawned
+    ~123 pools, and every worker of every pool re-imported torch/transformers/gliner2, re-acquired the
+    per-device flock and re-read the weights from the BLAKE3 model cache. One pool per run turns that
+    fixed cost from ``batches x devices`` into ``devices``.
+
+    Construction is free: the executor, the slot queue and the workers are created on the first
+    ``mine`` call, so an all-hits run (the warm-cache common case) spawns no process and never
+    touches a GPU flock.
+
+    Chunks are still LPT-balanced by text length and, for now, one chunk per slot, so the set of texts
+    a worker receives matches what the per-call pool used to give it. WHICH GPU runs a chunk is no
+    longer pinned (the executor's own call queue decides), and that is output-neutral: every visible
+    device is the same arch running the same deterministic kernels, and the device ordinal never
+    enters a cache key.
     """
-    n_workers = min(len(devices), len(work_items))
-    shards = _shard_by_text_length(work_items, n_workers)
-    ner_config = ner._config()
-    _announce_worker_logs(ner_config.get("workdir"))
-    ctx = mp.get_context("spawn")
-    results: dict[tuple[str, str], RawTextSpans] = {}
-    with _spawn_safe_main(), ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
-        futures = [pool.submit(_mine_shard, shard, ner_config, devices[i], in_worker=True) for i, shard in enumerate(shards)]
-        for index, future in enumerate(futures):
+
+    def __init__(self, ner: DiseaseNER, slots: Sequence[str]) -> None:
+        if not slots:
+            raise ValueError("MiningPool needs at least one device slot")
+        self._ner_config: dict[str, Any] = ner._config()
+        self._slots: tuple[str, ...] = tuple(slots)
+        self._stack = ExitStack()
+        self._executor: ProcessPoolExecutor | None = None
+        self._closed = False
+
+    @property
+    def slots(self) -> tuple[str, ...]:
+        """The device slots this pool can run on, in claim order."""
+        return self._slots
+
+    @property
+    def started(self) -> bool:
+        """Whether the executor and its workers exist yet (False for an all-cache-hit run)."""
+        return self._executor is not None
+
+    def _worker_log_dir(self) -> str:
+        return str(Path(self._ner_config.get("workdir") or "") / WORKER_LOG_SUBDIR)
+
+    def start(self) -> ProcessPoolExecutor:
+        """Create the executor and its slot queue once; idempotent.
+
+        ``_spawn_safe_main`` must wrap the executor's whole lifetime, not one call: under Airflow the
+        task process has no module spec, and ``spawn`` re-imports ``__main__`` by name in every child
+        it creates, which raises ``AttributeError`` without the shim.
+        """
+        if self._executor is not None:
+            return self._executor
+        if self._closed:
+            # An ExitStack stays usable after close(), so restarting would push a fresh spawn shim,
+            # slot queue and executor onto a stack nothing will ever unwind: leaked children holding
+            # per-device GPU flocks for the rest of the task, and __main__.__spec__ left mutated.
+            raise RuntimeError("MiningPool.mine() after close(): the pool would leak workers holding GPU flocks")
+        _announce_worker_logs(self._ner_config.get("workdir"))
+        ctx = mp.get_context("spawn")
+        self._stack.enter_context(_spawn_safe_main())
+        slots: Any = ctx.Queue()
+        for slot in self._slots:
+            slots.put(slot)
+        executor = self._stack.enter_context(
+            ProcessPoolExecutor(max_workers=len(self._slots), mp_context=ctx, initializer=_init_worker, initargs=(slots, self._ner_config))
+        )
+        # The feeder thread is the parent's; children hold their own inherited ends, so the parent can
+        # stop holding this one open as soon as every slot is queued.
+        self._stack.callback(slots.close)
+        self._executor = executor
+        return executor
+
+    def mine(self, work_items: Sequence[Any]) -> dict[tuple[str, str], RawTextSpans]:
+        """Mine ``work_items`` across the pool and collect ``{(set_id, doc_id): RawTextSpans}``."""
+        if not work_items:
+            return {}
+        chunks = [chunk for chunk in _shard_by_text_length(work_items, min(len(self._slots), len(work_items))) if chunk]
+        executor = self.start()
+        futures: list[Future[Any]] = [executor.submit(_mine_chunk, chunk) for chunk in chunks]
+        results: dict[tuple[str, str], RawTextSpans] = {}
+        for future in futures:
             try:
-                shard_results = future.result()
-            except Exception as exc:
-                # Attribute the failure in the TASK log: the traceback itself is in the worker's
-                # own file, and without the device name there is no way to know which one to read.
-                logger.error(
-                    "ner_dispatch_failed: device = {} items = {} error = {!r} worker_logs = {}",
-                    devices[index],
-                    len(shards[index]),
-                    exc,
-                    str(Path(ner_config.get("workdir") or "") / WORKER_LOG_SUBDIR),
-                )
+                chunk_results = future.result()
+            except NerWorkerError as exc:
+                self._log_dispatch_failure(exc.device, exc.items, exc.message)
                 raise
-            for set_id, doc_id, result in shard_results:
+            except BrokenProcessPool as exc:
+                # A worker died without returning anything (OOM kill, SIGKILL from the death signal, a
+                # CUDA fault). There is no device to name because no result came back, so point at the
+                # per-process worker logs, which is the only place the cause was written.
+                self._log_dispatch_failure("unknown", 0, f"{type(exc).__name__}: {exc}")
+                raise
+            for set_id, doc_id, result in chunk_results:
                 results[(set_id, doc_id)] = result
-    return results
+        return results
+
+    def _log_dispatch_failure(self, device: str, items: int, error: str) -> None:
+        """Attribute a chunk failure in the TASK log; the traceback itself is in the worker's file."""
+        logger.error("ner_dispatch_failed: device = {} items = {} error = {} worker_logs = {}", device, items, error, self._worker_log_dir())
+
+    def close(self) -> None:
+        """Shut the pool down, releasing every worker's flock. Safe twice over, or never started."""
+        self._closed = True
+        self._executor = None
+        self._stack.close()
+
+    def __enter__(self) -> MiningPool:
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
+
+
+@contextmanager
+def dispatch_pool(ner: DiseaseNER, devices: Sequence[str] | None) -> Iterator[MiningPool | None]:
+    """Yield a run-scoped :class:`MiningPool`, or ``None`` when pooled dispatch is not eligible.
+
+    ``None`` is exactly the condition under which the shapers mine sequentially in-process today: an
+    offline gazetteer backend (deliberately never sent to a GPU) or no usable device. Callers keep
+    their existing sequential closure for that case, so this seam adds a pool without changing any
+    fallback behaviour.
+    """
+    if not devices or ner._offline:
+        yield None
+        return
+    pool = MiningPool(ner, devices)
+    try:
+        yield pool
+    finally:
+        try:
+            pool.close()
+        except BaseException:
+            # A raising close (executor shutdown, queue teardown) would otherwise REPLACE the in-flight
+            # exception, discarding the device attribution this module exists to provide. The evidence
+            # still lands in the task log.
+            logger.exception("ner_pool_close_failed: device slots = {}", pool.slots)
 
 
 #: A shaper's existing mining path (multi-GPU dispatch or sequential loop) over the given

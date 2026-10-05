@@ -77,7 +77,7 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
     # counts it once, so the merged count is 3 + 7 - 1 = 9, not first-wins (3 or 7) and not the
     # naive sum (10).
     rows: list[dict[str, str]] = []
-    for spelling, cases, case_ids, approvals in (("Advil", "3", "1|2|3", "017977"), ("Ibuprofen", "7", "2|4|5|6|7|8|9", "021010")):
+    for spelling, cases, case_ids, approvals in (("Advil", "3", "1|2|3", "NDA017977"), ("Ibuprofen", "7", "2|4|5|6|7|8|9", "NDA021010")):
         row = dict.fromkeys(schemas.FAERS_APPLIED_TO_TREAT_COLUMNS, "")
         row.update(
             subject_text=spelling,
@@ -116,8 +116,10 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
     # Original source mentions survive collision merging and use deterministic pipe joining.
     assert edge["original_subject"] == "Advil|Ibuprofen"
     assert edge["original_object"] == "headache"
-    # List-valued evidence unions (sorted).
-    assert edge["regulatory_approvals"] == ["017977", "021010"]
+    # List-valued evidence unions (sorted). Both values are real FDA application numbers: the
+    # bare ``017977``/``021010`` a FAERS reporter would write are dropped before they ever reach
+    # a published edge, so this fixture must not lock that shape in as an expectation.
+    assert edge["regulatory_approvals"] == ["NDA017977", "NDA021010"]
     # The carrier never ships as an edge field (16.6 strips it; older Tablassert folds it into
     # supporting_text, never a top-level key).
     assert "supporting_case_ids" not in edge

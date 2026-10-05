@@ -951,9 +951,175 @@ template:
       Disease: EntityToDiseaseAssociation
       PhenotypicFeature: EntityToPhenotypicFeatureAssociation
     qualifiers:
+      - qualifier: disease_context_qualifier
+        method: column
+        encoding: J
+        nullable: true
+        prioritize:
+          - Disease
+        avoid:
+          - AccessibleDnaRegion
+          - Activity
+          - AdministrativeEntity
+          - Agent
+          - AnatomicalEntity
+          - Article
+          - Attribute
+          - Bacterium
+          - Behavior
+          - BehavioralExposure
+          - BehavioralFeature
+          - BiologicalEntity
+          - BiologicalProcess
+          - BiologicalProcessOrActivity
+          - BiologicalSex
+          - BioticExposure
+          - Book
+          - BookChapter
+          - Case
+          - Cell
+          - CellLine
+          - CellularComponent
+          - CellularOrganism
+          - ChemicalEntity
+          - ChemicalExposure
+          - ChemicalMixture
+          - ChemicalRole
+          - ChiSquaredAnalysisResult
+          - ClinicalAttribute
+          - ClinicalCourse
+          - ClinicalEntity
+          - ClinicalFinding
+          - ClinicalIntervention
+          - ClinicalMeasurement
+          - ClinicalModifier
+          - ClinicalTrial
+          - CodingSequence
+          - Cohort
+          - CommonDataElement
+          - ComplexChemicalExposure
+          - ComplexMolecularMixture
+          - ConceptCountAnalysisResult
+          - ConfidenceLevel
+          - Dataset
+          - DatasetDistribution
+          - DatasetSummary
+          - DatasetVersion
+          - Device
+          - DiagnosticAid
+          - DiseaseOrPhenotypicFeature
+          - DiseaseOrPhenotypicFeatureExposure
+          - Drug
+          - DrugExposure
+          - DrugLabel
+          - DrugToGeneInteractionExposure
+          - Entity
+          - EnvironmentalExposure
+          - EnvironmentalFeature
+          - EnvironmentalFoodContaminant
+          - EnvironmentalProcess
+          - Event
+          - Evidence
+          - EvidenceType
+          - Exon
+          - ExposureEvent
+          - Food
+          - FoodAdditive
+          - Fungus
+          - Gene
+          - GeneFamily
+          - GeneticInheritance
+          - Genome
+          - GenomicBackgroundExposure
+          - GenomicEntity
+          - Genotype
+          - GenotypicSex
+          - GeographicExposure
+          - GeographicLocation
+          - GeographicLocationAtTime
+          - GrossAnatomicalStructure
+          - Haplotype
+          - Hospitalization
+          - Human
+          - IceesStudyResult
+          - IndividualOrganism
+          - InformationContentEntity
+          - Invertebrate
+          - JournalArticle
+          - LifeStage
+          - LogOddsAnalysisResult
+          - MacromolecularComplex
+          - Mammal
+          - MaterialSample
+          - MicroRNA
+          - MolecularActivity
+          - MolecularEntity
+          - MolecularMixture
+          - NamedThing
+          - NoncodingRNAProduct
+          - NucleicAcidEntity
+          - NucleicAcidSequenceMotif
+          - NucleosomeModification
+          - ObservedExpectedFrequencyAnalysisResult
+          - Onset
+          - OrganismAttribute
+          - OrganismTaxon
+          - OrganismalEntity
+          - Patent
+          - PathologicalAnatomicalExposure
+          - PathologicalAnatomicalStructure
+          - PathologicalProcess
+          - PathologicalProcessExposure
+          - Pathway
+          - Phenomenon
+          - PhenotypicFeature
+          - PhenotypicQuality
+          - PhenotypicSex
+          - PhysicalEntity
+          - PhysiologicalProcess
+          - PlanetaryEntity
+          - Plant
+          - Polypeptide
+          - PopulationOfIndividualOrganisms
+          - PosttranslationalModification
+          - PreprintPublication
+          - Procedure
+          - ProcessedMaterial
+          - Protein
+          - ProteinDomain
+          - ProteinFamily
+          - ProteinIsoform
+          - ProteinLigandAssayResult
+          - Publication
+          - RNAProduct
+          - RNAProductIsoform
+          - ReagentTargetedGene
+          - RegulatoryRegion
+          - RelativeFrequencyAnalysisResult
+          - RetrievalSource
+          - SequenceVariant
+          - Serial
+          - SeverityValue
+          - SiRNA
+          - SmallMolecule
+          - Snv
+          - SocioeconomicAttribute
+          - SocioeconomicExposure
+          - Study
+          - StudyPopulation
+          - StudyResult
+          - StudyVariable
+          - TextMiningStudyResult
+          - Transcript
+          - TranscriptionFactorBindingSite
+          - Treatment
+          - Vertebrate
+          - Virus
+          - WebPage
+          - Zygosity
       - qualifier: anatomical_context_qualifier
         method: column
-        encoding: Y
+        encoding: Z
         nullable: true
         prioritize:
           - AnatomicalEntity
@@ -1183,7 +1349,7 @@ template:
           - "^UMLS:C4071894$"
       - qualifier: sex_qualifier
         method: column
-        encoding: Z
+        encoding: AA
         nullable: true
         prioritize:
           - BiologicalSex
@@ -1349,7 +1515,7 @@ template:
           - Zygosity
       - qualifier: population_context_qualifier
         method: column
-        encoding: AA
+        encoding: AB
         nullable: true
         prioritize:
           - PopulationOfIndividualOrganisms
@@ -1519,7 +1685,7 @@ template:
           - "^UMLS:C0018724$"
       - qualifier: frequency_qualifier
         method: column
-        encoding: AC
+        encoding: AD
         nullable: true
         prioritize:
           - InformationContentEntity
@@ -1685,7 +1851,7 @@ template:
           - Zygosity
       - qualifier: temporal_context_qualifier
         method: column
-        encoding: AD
+        encoding: AE
         nullable: true
         prioritize:
           - InformationContentEntity
@@ -1886,12 +2052,12 @@ template:
   annotations:
     - annotation: regulatory_approvals
       method: column
-      encoding: J
+      encoding: K
       split_by: "|"
     - annotation: publications
       method: column
-      encoding: S
+      encoding: T
       split_by: "|"
     - annotation: clinical_approval_status
       method: column
-      encoding: N
+      encoding: O

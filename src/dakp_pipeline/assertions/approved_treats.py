@@ -48,6 +48,9 @@ the same table in two per-source shapes — rows are never merged across sources
   (cache keys are text-only, so identical texts dedupe automatically): one row per
   ``(active substance, disease/phenotype mention)`` pair, sentence by sentence, with
   qualifier attachment (:func:`~dakp_pipeline.assertions.contexts.attach_qualifiers_with_scores`),
+  explicit patient-clause disease context
+  (:func:`~dakp_pipeline.assertions.contexts.host_disease_context`, backing the
+  ``disease_context_qualifier`` column the FDA path populates identically),
   prevention-cue context derivation, and the same SPL-negation sentence filter as rule 4.
 
 Both EMA shapes carry the EMA product number in ``FDA_regulatory_approvals`` and the EPAR
@@ -100,7 +103,7 @@ from dakp_pipeline.assertions import (
     object_mentions,
     row_for,
 )
-from dakp_pipeline.assertions.contexts import assertion_context, attach_qualifiers_with_scores
+from dakp_pipeline.assertions.contexts import assertion_context, attach_qualifiers_with_scores, host_disease_context
 from dakp_pipeline.assertions.evidence import (
     DailyMedEvidence,
     FDAApprovalIndex,
@@ -113,11 +116,12 @@ from dakp_pipeline.assertions.evidence import (
     find_faers_cases,
     find_table,
     load_or_build_dailymed_evidence,
+    pipe_safe_text,
     sorted_pipe,
     spl_evidence_pipe,
     write_assertion_table,
 )
-from dakp_pipeline.assertions.ner_dispatch import _mine_multi_gpu, _resolve_devices, default_ner, mine_with_cache
+from dakp_pipeline.assertions.ner_dispatch import _resolve_devices, default_ner, dispatch_pool, mine_with_cache
 from dakp_pipeline.assertions.observed_uses import is_non_disease_indication
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
@@ -266,6 +270,17 @@ def _indication_observations(
                     if field not in merged_scores or score > merged_scores[field]:
                         merged_scores[field] = score
                         merged_qualifiers[field] = attached[host_index][field]
+                # Explicit patient-clause disease context ("for treatment of A in patients
+                # with B" -> B qualifies A), the treats-polarity reading of the template the
+                # contraindication shaper and the NER training export also classify. Generic
+                # attachment deliberately withholds Disease mentions, so without this the
+                # comorbidity B is mined and then silently dropped. Sanitized like every
+                # free-text pipe-encoded cell.
+                for host_mention in host:
+                    context_text = pipe_safe_text(host_disease_context(host_mention, objects, sentence_of) or "")
+                    if context_text:
+                        merged_qualifiers["disease_context_text"] = context_text
+                        merged_scores["disease_context_text"] = (1.0, context_text)
                 context = assertion_context("dailymed", "34067-9", sentence)
                 best_model = max((m for m in host if m.context_model), key=lambda m: (m.context_model_score, m.context_model), default=None)
                 observations.append(
@@ -337,9 +352,10 @@ def _mine_indication_mentions(
     Sections are mined per document section — keyed by :func:`_doc_key`, because one SPL document
     can contribute several indication sections and ``(set_id, doc_id)`` alone would collide — and
     shared by both candidate paths (FAERS corroboration + DailyMed fallback), never re-mined per
-    candidate. Production runs dispatch across GPUs
-    (:func:`~dakp_pipeline.assertions.ner_dispatch._mine_multi_gpu`); the offline gazetteer backend
-    runs sequentially with periodic progress narration. When ``cache`` is given, previously mined
+    candidate. Production runs dispatch through ONE run-scoped
+    :class:`~dakp_pipeline.assertions.ner_dispatch.MiningPool` across the visible devices, so each
+    device loads its model once per run rather than once per cache-put batch; the offline gazetteer
+    backend runs sequentially with periodic progress narration. When ``cache`` is given, previously mined
     texts are served from the persistent mention cache
     (:func:`~dakp_pipeline.assertions.ner_dispatch.mine_with_cache`). Output is identical
     regardless of dispatch mode or cache state.
@@ -360,19 +376,29 @@ def _mine_indication_mentions(
     if not work_items and not ema_items:
         return {}, {}
 
-    def mine(items: Sequence[Any]) -> dict[tuple[str, str], Any]:
-        if devices and len(items) > 1 and not ner._offline:
-            return _mine_multi_gpu(items, ner, devices)
-        mined: dict[tuple[str, str], Any] = {}
-        for done, (key_id, doc_id, text) in enumerate(items, start=1):
-            # Production returns RAW SPANS (Tier B cacheable, merged parent-side by
-            # mine_with_cache); offline returns final mentions (never cached). Both normalize
-            # to mention lists at the cache seam.
-            mined[(key_id, doc_id)] = ner.extract_spans(text) if not ner._offline else ner.extract(text)
-            progress(logger, "shape_approved_treats", done, len(items), every=_MINING_PROGRESS_EVERY)
-        return mined
+    # ONE pool for the whole mining region: mine_with_cache slices the misses into batches of
+    # DAKP_NERCACHE_PUT_BATCH (512 by default) and calls `mine` once per batch, so a pool built per
+    # call would re-import torch, re-acquire the per-device flock and re-read the weights that many
+    # times. dispatch_pool yields None for an offline backend or no usable device, which is exactly
+    # the sequential condition below.
+    with dispatch_pool(ner, devices) as pool:
 
-    mined = mine_with_cache([*work_items, *ema_items], ner, mine, cache)
+        def mine(items: Sequence[Any]) -> dict[tuple[str, str], Any]:
+            # EVERY batch goes through the open pool, singletons included: mining one text in the
+            # parent would load a second model onto a card a live worker holds and then block on that
+            # worker's flock (see the same guard in contraindications.build_contraindication_rows).
+            if pool is not None and items:
+                return pool.mine(items)
+            mined: dict[tuple[str, str], Any] = {}
+            for done, (key_id, doc_id, text) in enumerate(items, start=1):
+                # Production returns RAW SPANS (Tier B cacheable, merged parent-side by
+                # mine_with_cache); offline returns final mentions (never cached). Both normalize
+                # to mention lists at the cache seam.
+                mined[(key_id, doc_id)] = ner.extract_spans(text) if not ner._offline else ner.extract(text)
+                progress(logger, "shape_approved_treats", done, len(items), every=_MINING_PROGRESS_EVERY)
+            return mined
+
+        mined = mine_with_cache([*work_items, *ema_items], ner, mine, cache)
     spl_mentions = {key: mentions for key, mentions in mined.items() if not key[0].startswith(_EMA_KEY_PREFIX)}
     ema_mentions = {key: mentions for key, mentions in mined.items() if key[0].startswith(_EMA_KEY_PREFIX)}
     return spl_mentions, ema_mentions
@@ -744,6 +770,9 @@ def build_epar_treats_rows(
             qualifiers = [m for m in local_mentions if m not in hosts]
             sentence_of = lambda _mention, value=sentence: value
             attached, qualifier_scores = attach_qualifiers_with_scores(hosts, qualifiers, sentence_of)
+            # Same explicit patient-clause disease context as the FDA path: EPAR indication
+            # prose carries "for the treatment of A in patients with B" templates too, and B
+            # is a Disease mention the generic attachment withholds by design.
             context = assertion_context("ema", "therapeutic_indication", sentence)
             for host_index, host in enumerate(hosts):
                 object_text = normalize_text(host.text)
@@ -775,6 +804,13 @@ def build_epar_treats_rows(
                         if previous is None or score > previous:
                             agg["qualifier_scores"][field] = score
                             agg["qualifiers"][field] = value
+                    context_text = pipe_safe_text(host_disease_context(hosts[host_index], hosts, sentence_of) or "")
+                    if context_text:
+                        score = (1.0, context_text)
+                        previous = agg["qualifier_scores"].get("disease_context_text")
+                        if previous is None or score > previous:
+                            agg["qualifier_scores"]["disease_context_text"] = score
+                            agg["qualifiers"]["disease_context_text"] = context_text
 
     stats(logger, "shape_approved_treats", epar_medicines=ema_registry.height, epar_mentions=mentions_mined, epar_assertions=len(aggregated))
     rows: list[dict[str, str]] = []
