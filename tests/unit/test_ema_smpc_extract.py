@@ -85,6 +85,40 @@ def _ceplene_documents() -> dict[str, EparDocument]:
     return {doc.stem: doc for doc in product_information_documents(load_documents(_MANIFEST))}
 
 
+@pytest.fixture(autouse=True)
+def _cap_parse_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the default parse-pool width so this file costs the same on any machine.
+
+    ``_workers`` falls back to ``min(os.cpu_count(), 32)``, so on the 80-core build box every
+    ``extract()`` call spawned 32 interpreters while CI's 4-vCPU runner spawns 4: the same test
+    file cost 10x more there than in CI, which also made any duration-based CI shard split
+    machine-specific. Two workers keep the spawn shim, input-order reassembly, and cross-process
+    cache behaviour under test at a fixed small cost; tests that need a specific width pass
+    ``workers=`` explicitly.
+    """
+    monkeypatch.setattr(os, "cpu_count", lambda: 2)
+
+
+@pytest.fixture
+def _untraced_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep a plain ``subprocess`` child out of coverage's interpreter-start tracer.
+
+    ``tests/conftest.py`` exports ``COVERAGE_PROCESS_START`` so spawned NER workers are measured.
+    For the Airflow-shim test below that variable is pure cost: the child re-imports the whole
+    ``dakp_pipeline`` chain under a line tracer and measured 47 s (1.5 s without it), while the
+    test asserts only spawn SEMANTICS (``__spec__ is None``, the CLI is not re-executed) and every
+    line it runs is also executed in-process by the serial path.
+
+    This does NOT stop tracing in ``ProcessPoolExecutor`` children: ``[tool.coverage.run]`` sets
+    ``concurrency = ["multiprocessing", ...]``, whose ``ProcessWithCoverage`` bootstrap starts a
+    tracer unconditionally (that is what makes the child-only NER worker lines measurable). So
+    ``test_parallel_parse_is_identical_to_serial`` still pays ~23 s for its three pool children
+    under coverage; the shard-balancing data in ``.github/ci/unit-test-durations.json`` accounts
+    for it rather than hiding it.
+    """
+    monkeypatch.delenv("COVERAGE_PROCESS_START", raising=False)
+
+
 # --- the real PDF ------------------------------------------------------------------
 
 
@@ -375,6 +409,7 @@ def test_parallel_parse_is_identical_to_serial(tmp_path: Path) -> None:
     assert {w["code"] for w in serial[1]} >= {"unknown_document", "pdf_unreadable"}
 
 
+@pytest.mark.usefixtures("_untraced_subprocess")
 def test_parallel_pdf_read_does_not_reexecute_the_airflow_main_script(tmp_path: Path) -> None:
     """Airflow's main has no spec and is not safe to reexecute in a spawn child."""
     script = tmp_path / "unsafe_main.py"

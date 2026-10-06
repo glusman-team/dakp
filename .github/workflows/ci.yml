@@ -6,9 +6,11 @@
 #   python-lint                          make lint + make fmt-check (gofmt needs a Go toolchain,
 #                                        hence setup-go)
 #   python-type                          make typecheck
-#   python-test (unit) +                 the two `make test` phases run CONCURRENTLY on separate
-#   python-test (integration)            runners, each writing its own coverage data file
-#   python-test                          aggregate: downloads both shards' coverage artifacts,
+#   python-test (unit-1..3) +            the two `make test` phases run CONCURRENTLY on separate
+#   python-test (integration)            runners (the unit phase is split across three of them by
+#                                        .github/ci/select_unit_shard.py), each writing its own
+#                                        coverage data file
+#   python-test                          aggregate: downloads every shard's coverage artifact,
 #                                        combines them, and enforces the single combined
 #                                        fail_under=90 gate (the Makefile `test` target stays the
 #                                        sequential local equivalent; see it for why integration
@@ -17,7 +19,10 @@
 #   pre-commit                           make precommit (validates the contributor hook wiring)
 #
 # Caching is keyed on lockfiles so it invalidates exactly when dependencies change:
-#   - astral-sh/setup-uv caches the uv download/wheel cache, keyed on uv.lock.
+#   - astral-sh/setup-uv caches the uv download/wheel cache, keyed on uv.lock. `prune-cache`
+#     is OFF and the suffix is versioned: a pruned entry once got saved at 273 KB and then hit
+#     forever ("Cache hit occurred ... not saving cache"), so every job re-downloaded torch
+#     (783 MiB) and spent ~54 s in `uv sync` instead of hardlinking a warm cache.
 #   - actions/setup-go caches the Go build + module cache, keyed on go/go.sum.
 #   - actions/cache caches pre-commit's hook environments, keyed on .pre-commit-config.yaml.
 
@@ -44,6 +49,9 @@ env:
   # (dev) group. Pinning `uv run` to whatever the sync step installed keeps each job's env exact
   # and the `uv run` itself a no-op (inexact sync: installs nothing, removes nothing).
   UV_NO_DEFAULT_GROUPS: "1"
+  # Number of unit-phase shards in the python-test-shard matrix; the aggregate python-test job
+  # expects this many coverage artifacts plus the integration shard's.
+  UNIT_SHARDS: "3"
 
 jobs:
   python-lint:
@@ -56,8 +64,8 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-          prune-cache: true
-          cache-suffix: dev
+          prune-cache: false
+          cache-suffix: dev-v2
       # `make lint` runs ruff through the project env, so this job syncs the dev group (ruff
       # lives there, not in `ci`) instead of running ruff standalone via ruff-action.
       - name: Sync dependencies
@@ -83,8 +91,8 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-          prune-cache: true
-          cache-suffix: ci
+          prune-cache: false
+          cache-suffix: ci-v2
       - name: Sync dependencies
         run: uv sync --frozen ${{ env.SYNC_ARGS }}
       - name: Pyright
@@ -103,7 +111,7 @@ jobs:
       # result (or its coverage artifact) behind a cancelled sibling.
       fail-fast: false
       matrix:
-        phase: [unit, integration]
+        phase: [unit-1, unit-2, unit-3, integration]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -112,8 +120,8 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-          prune-cache: true
-          cache-suffix: ci
+          prune-cache: false
+          cache-suffix: ci-v2
       - name: Sync dependencies
         run: uv sync --frozen ${{ env.SYNC_ARGS }}
       # Phase commands mirror the Makefile `test` target (addopts supplies
@@ -123,9 +131,23 @@ jobs:
       # single phase. `--cov-fail-under=0` defers the fail_under=90 gate (pyproject.toml) to
       # the aggregate python-test job, since one phase's data alone cannot clear the gate
       # that the COMBINED data must clear.
+      # The unit phase is the long pole (~104 s of the ~3 min run), so it is split across three
+      # runners by .github/ci/select_unit_shard.py: a deterministic longest-processing-time pack
+      # over measured per-file pytest seconds (.github/ci/unit-test-durations.json). Every tracked
+      # unit test file lands in exactly one shard (unknown files get the median duration), which
+      # tests/unit/test_ci_unit_shard_selector.py asserts. Session-scoped conftest fixtures
+      # already run per xdist worker, so splitting files across runners is equivalent to xdist
+      # distributing them within one.
+      - name: Select this shard's unit test files
+        if: startsWith(matrix.phase, 'unit-')
+        env:
+          SHARD: ${{ matrix.phase }}
+        run: |
+          python3 .github/ci/select_unit_shard.py "${SHARD##*-}" ${{ env.UNIT_SHARDS }} > shard-files.txt
+          wc -l < shard-files.txt
       - name: Run unit tests (parallel, coverage shard)
-        if: matrix.phase == 'unit'
-        run: uv run pytest tests/unit --cov-fail-under=0
+        if: startsWith(matrix.phase, 'unit-')
+        run: uv run pytest $(cat shard-files.txt) --cov-fail-under=0
       - name: Run integration tests (sequential, coverage shard)
         if: matrix.phase == 'integration'
         run: uv run pytest tests/integration -n 0 --cov-fail-under=0
@@ -167,8 +189,8 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-          prune-cache: true
-          cache-suffix: ci
+          prune-cache: false
+          cache-suffix: ci-v2
       # Without merge-multiple, each artifact extracts into its own named directory under
       # `path`, so the two shards' identically named `.coverage` files cannot overwrite each
       # other. download-artifact fails if the pattern matches nothing.
@@ -188,7 +210,10 @@ jobs:
       - name: Combine shards and enforce the combined coverage gate
         run: |
           COVERAGE_VERSION=$(python3 -c 'import tomllib; lock = tomllib.load(open("uv.lock", "rb")); print(next(p["version"] for p in lock["package"] if p["name"] == "coverage"))')
-          uvx --from "coverage==$COVERAGE_VERSION" coverage combine coverage-data/coverage-unit/.coverage coverage-data/coverage-integration/.coverage
+          mapfile -t data < <(find coverage-data -name .coverage | sort)
+          expected=$(( ${{ env.UNIT_SHARDS }} + 1 ))
+          [ "${#data[@]}" -eq "$expected" ] || { echo "expected $expected shard coverage files, got ${#data[@]}: ${data[*]}"; exit 1; }
+          uvx --from "coverage==$COVERAGE_VERSION" coverage combine "${data[@]}"
           uvx --from "coverage==$COVERAGE_VERSION" coverage report
 
   go:
@@ -217,8 +242,8 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-          prune-cache: true
-          cache-suffix: dev
+          prune-cache: false
+          cache-suffix: dev-v2
       - name: Sync dev dependencies
         run: uv sync --frozen --group dev
       - name: Cache pre-commit hook environments
