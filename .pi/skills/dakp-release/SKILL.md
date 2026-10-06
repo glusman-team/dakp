@@ -90,24 +90,37 @@ whole dataset to the laptop.
    `hf upload SkyeAv/drug-approvals-kp <staging>/<version> <version> --repo-type dataset --commit-message "Add DAKP <version> KGX (<biolink>, <N> nodes / <M> edges)"`
    with real counts, matching the established per-release commit message style.
 3. Update the dataset README card from its CURRENT content (download it first):
-   - Insert the new `configs:` entries named `<version>_nodes` and
-     `<version>_edges` at the TOP of the `configs:` list (newest first), reusing
-     the existing `&node_features` / `*edge_features` YAML anchors.
+   - Insert the new `configs:` entries named `<rank>_<version>_edges` and
+     `<rank+1>_<version>_nodes` at the TOP of the `configs:` list, reusing the
+     existing `&edge_features` / `*node_features` YAML anchors. The edges block
+     must come first: it defines `&edge_features`, and a YAML anchor must be
+     defined before later configs alias it.
+   - Pick `<rank>` BELOW the current newest, zero-padded to three digits, edges
+     even and nodes odd. The newest pair is `100_1.23.3_edges` /
+     `101_1.23.3_nodes`, so the next release takes `050` / `051`. NEVER renumber
+     an existing subset: the prefix exists only because the HF viewer orders
+     subsets "default first, then alphabetical" (per HF's data-files-config
+     docs), so a bare `<version>_<kind>` name lists the OLDEST release first,
+     while descending ranks read newest-edges, newest-nodes, next-newest-edges.
+     Card YAML order alone does NOT control this. Ranks are not derivable from
+     the version, so the card's Loading snippet resolves a config by suffix with
+     `get_dataset_config_names`; keep that snippet working.
    - MOVE the `default: true` flag from the previous latest's `_edges` config to
-     the new `<version>_edges`. The HF viewer orders subsets "default first, then
-     alphabetical" (per HF's data-files-config docs); card YAML order alone does
-     NOT put the latest first. With no default, the viewer opens the
-     alphabetically first config, which is always an OLDER release. `default:`
-     also makes plain `load_dataset` load that config. Exactly one config carries
-     the flag at any time.
+     the new `<rank>_<version>_edges`. `default:` also makes plain `load_dataset`
+     load that config. Exactly one config carries the flag at any time.
    - Update the "Latest release" line, and add the `<version>` row at the TOP of
      the Releases table and the checksums table. Extend Schema/Loading only if
      the schema actually changed. Match the card's existing structure and ASCII
      style; keep all historical releases and their URLs intact. Then upload it:
    `hf upload SkyeAv/drug-approvals-kp <staging>/README.md README.md --repo-type dataset --commit-message "..."`
-   Verify afterwards that the viewer opens `<version>_edges` (open the dataset
-   page; the first shown subset must be the new release, older ones behind the
-   subset picker click).
+   Verify afterwards that the viewer opens `<rank>_<version>_edges` (open the
+   dataset page; the first shown subset must be the new release, older ones
+   behind the subset picker click). Adding or renaming configs makes the
+   datasets-server re-convert every subset, during which `/splits`, `/is-valid`
+   and `/parquet` can answer HTTP 500 `server is busier than usual`; a 200 from
+   `first-rows?dataset=...&config=<rank>_<version>_edges&split=train` is the early
+   proof the new card parsed, and `/splits` confirms the order once the queue
+   drains.
 4. Tag last, pinning the completed release, via the Python API (the `hf` CLI
    has no tag command):
    `HfApi().create_tag(repo_id="SkyeAv/drug-approvals-kp", tag="v<version>", repo_type="dataset", tag_message=...)`.
