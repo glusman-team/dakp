@@ -56,7 +56,7 @@ The real runner (:class:`TablassertRunner`) shells out to the installed ``tablas
 (a CORE dependency installed by the single ``uv sync``) and captures stdout / exit code into
 a handoff report; the deferred runner (:class:`DeferredTablassertRunner`) writes a
 deferred-handoff report without ever touching Tablassert (used when no fullmap triggers the
-real handoff, and in tests). DAKP requires Tablassert >= 19.5.1, the floor ``pyproject.toml`` pins;
+real handoff, and in tests). DAKP requires Tablassert >= 19.6.0, the floor ``pyproject.toml`` pins;
 the releases that built it, oldest first: the graph config carries the
 fullmap path (the ``build-kg --fullmap`` flag was removed in Tablassert 8.1), the 8.2
 Biolink-valid KGX modeling (``sources[]`` retrieval provenance, first-class evidence slots)
@@ -113,8 +113,8 @@ read.
 dependency) with output parity preserved, 19.4.0 started auditing enum-ranged qualifier columns
 against their closed Biolink vocabulary and failing the build with ``qualifier-vocabulary-violation``
 (none of DAKP's six qualifier slots is enum-ranged, so that audit cannot fire on a DAKP build), and
-19.5.0 added ``parquet`` as a table source kind, which DAKP does not use (it ships TSV). 19.5.1 is
-the current floor: its biolink-model 4.4.5 attaches ``disease_context_qualifier``,
+19.5.0 added ``parquet`` as a table source kind, which DAKP does not use (it ships TSV). 19.5.1's
+biolink-model 4.4.5 attaches ``disease_context_qualifier``,
 ``anatomical_context_qualifier``, and ``frequency_qualifier`` to the whole disease/phenotype
 association family, renames the FDA-specific ``FDA_regulatory_approvals`` to the canonical
 ``regulatory_approvals`` on both pinned classes, and adds ``sex_qualifier`` to
@@ -123,6 +123,8 @@ grants and kept only ``population_context_qualifier`` and ``temporal_context_qua
 classes) plus ``sex_qualifier`` (``EntityToDiseaseAssociation``). The effective edge field set, and
 every KGX byte DAKP emits, is unchanged; that is why the qualifier contract in
 ``tests/unit/test_tablassert_configs.py`` runs ``prune_to_class`` rather than asserting the grant set.
+19.6.0 adds optional ``validate-kgx --prune``; DAKP does not enable destructive pruning.
+Fullmap v6, annotation encoding, case-count merging and QC are unchanged from 19.5.1.
 
 The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it is
 on ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout override (the
@@ -1045,7 +1047,8 @@ _TABLE_ANNOTATIONS: dict[str, tuple[tuple[str, str, str | None], ...]] = {
     "faers_applied_to_treat_assertions": (
         ("number_of_cases", "number_of_cases", None),
         ("case_ids", "supporting_case_ids", "|"),
-        ("FDA_regulatory_approvals", "regulatory_approvals", "|"),
+        # Reporter application numbers are product metadata, not indication approvals.
+        # Keep the TSV column for status lookup/audit, but never encode it onto observed edges.
         ("edge_evidence", "publications", "|"),
         ("clinical_approval_status", "clinical_approval_status", None),
     ),

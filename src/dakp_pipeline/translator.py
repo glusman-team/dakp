@@ -168,6 +168,7 @@ INCOMPATIBLE_OBJECT_CATEGORY = "incompatible_object_category"
 INVALID_SUPPORTING_STUDIES = "invalid_supporting_studies"
 MISSING_PROVENANCE = "missing_provenance"
 INVALID_APPROVAL_STATUS = "invalid_approval_status"
+INVALID_OBSERVED_APPROVALS = "invalid_observed_approvals"
 
 
 @dataclass(frozen=True)
@@ -461,6 +462,15 @@ def validate_kgx(nodes: Iterable[Mapping[str, Any]], edges: Iterable[Mapping[str
     seen_edge_ids: set[str] = set()
     for index, edge in enumerate(edge_list):
         _check_edge(edge, index, node_index, seen_edge_ids, problems)
+        if _as_str(edge.get("predicate")) == OBSERVED:
+            for field in ("regulatory_approvals", "FDA_regulatory_approvals", "approval_ids", "approvals"):
+                if field in edge:
+                    entity_id = _as_str(edge.get("id")) or f"<edge#{index}>"
+                    problems.append(
+                        ContractProblem(
+                            INVALID_OBSERVED_APPROVALS, "edge", entity_id, field, f"edge {entity_id} carries {field} on an observed-use edge"
+                        )
+                    )
         if edge.get("predicate") == OBSERVED and resolved_pair(edge) in approved_pairs and edge.get("clinical_approval_status") != APPROVED:
             entity_id = _as_str(edge.get("id")) or f"<edge#{index}>"
             problems.append(

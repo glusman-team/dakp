@@ -342,6 +342,8 @@ def test_edge_evidence_lands_on_the_edge_not_in_a_study(kgx_build: KgxBuild) -> 
     applied = [edge for edge in kgx_build.edges if edge["predicate"] == _APPLIED]
     assert applied, "expected FAERS applied_to_treat edges"
     for edge in applied:
+        for field in ("regulatory_approvals", "FDA_regulatory_approvals", "approval_ids", "approvals"):
+            assert field not in edge, f"observed-use edge carries an approval field: {edge}"
         # FAERS-only edges carry no publications identifiers at all now.
         evidence = edge.get("publications") or []
         assert all(not value.startswith("faers:") for value in evidence)

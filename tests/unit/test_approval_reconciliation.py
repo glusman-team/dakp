@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from dakp_pipeline import approval_reconciliation as reconciliation
-from dakp_pipeline.translator import INVALID_APPROVAL_STATUS, validate_kgx
+from dakp_pipeline.translator import INVALID_APPROVAL_STATUS, INVALID_OBSERVED_APPROVALS, validate_kgx
 
 
 def _edge(predicate: str, subject: str = "CHEBI:1", obj: str = "MONDO:1", status: str = "off_label_use", **extras: object) -> dict[str, object]:
@@ -24,9 +24,7 @@ def _write(path: Path, edges: list[dict[str, object]]) -> bytes:
 @pytest.mark.parametrize("reverse", [False, True])
 def test_exact_resolved_counterpart_promotes_without_changing_evidence(tmp_path: Path, status: str, reverse: bool) -> None:
     """Source order and synonyms must not label a resolved label-approved pair off-label."""
-    observed = _edge(
-        reconciliation.OBSERVED, status=status, number_of_cases=42, sources=[{"resource_id": "infores:faers"}], regulatory_approvals=["NDA000001"]
-    )
+    observed = _edge(reconciliation.OBSERVED, status=status, number_of_cases=42, sources=[{"resource_id": "infores:faers"}])
     treated = _edge(reconciliation.TREATS, status=reconciliation.APPROVED, disease_context_qualifier="MONDO:2")
     edges = [observed, treated] if reverse else [treated, observed]
     path = tmp_path / "edges.ndjson"
@@ -113,3 +111,18 @@ def test_contract_rejects_overlap_until_reconciled() -> None:
     assert [p.code for p in problems].count(INVALID_APPROVAL_STATUS) == 1
     edges[1]["clinical_approval_status"] = reconciliation.APPROVED
     assert INVALID_APPROVAL_STATUS not in {p.code for p in validate_kgx([], edges).kgx_problems}
+
+
+@pytest.mark.parametrize("field", ["regulatory_approvals", "FDA_regulatory_approvals", "approval_ids", "approvals"])
+@pytest.mark.parametrize("value", [["NDA022334"], [], None, ""])
+@pytest.mark.parametrize("status", ["off_label_use", "approved_for_condition", "not_provided"])
+@pytest.mark.parametrize("predicate", [reconciliation.OBSERVED, f" {reconciliation.OBSERVED} "])
+def test_contract_rejects_approval_fields_on_observed_edges(field: str, value: object, status: str, predicate: str) -> None:
+    """Neither status nor an empty value permits an approval slot on an observation."""
+    edge = _edge(predicate, status=status)
+    edge[field] = value
+    problems = [p for p in validate_kgx([], [edge]).kgx_problems if p.code == INVALID_OBSERVED_APPROVALS]
+    assert len(problems) == 1
+    assert problems[0].field == field
+    edge["predicate"] = reconciliation.TREATS
+    assert INVALID_OBSERVED_APPROVALS not in {p.code for p in validate_kgx([], [edge]).kgx_problems}

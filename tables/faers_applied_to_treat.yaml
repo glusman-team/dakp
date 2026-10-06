@@ -1042,10 +1042,6 @@ template:
       method: column
       encoding: K
       split_by: "|"
-    - annotation: regulatory_approvals
-      method: column
-      encoding: Q
-      split_by: "|"
     - annotation: publications
       method: column
       encoding: R

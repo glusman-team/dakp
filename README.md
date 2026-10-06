@@ -137,6 +137,12 @@ category allow-list.
 
 ### Observed-use approval status
 
+`applied_to_treat` edges retain `number_of_cases`, including exact distinct-case unions when
+synonym rows merge. They never carry `regulatory_approvals` or approval IDs: reporter-supplied
+application numbers identify products, not approval of the reported indication. These numbers
+stay in the assertion TSV for approval lookup and audit, but are not encoded onto observed-use
+edges. Approval annotations on the other edge families are unchanged.
+
 Every `applied_to_treat` row carries `clinical_approval_status`: `approved_for_condition` when
 the same (drug, condition) pair is label-approved, else `off_label_use` (`not_provided` only when
 no approved-treats table was available). Three source-table keys answer first, followed by
