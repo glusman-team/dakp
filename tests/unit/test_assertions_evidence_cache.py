@@ -156,6 +156,21 @@ def test_cached_shape_outputs_returns_refs_registered_by_write_assertion_table(c
     assert cached_shape_outputs(_OPERATION, dailymed_refs[1:], ctx) is None
 
 
+def test_cached_shape_outputs_misses_when_shaping_logic_changes(
+    ctx: TaskContext, dailymed_refs: list[ArtifactRef], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Code-only approval fixes must not silently reuse a pre-fix production TSV."""
+    from dakp_pipeline.assertions import evidence
+
+    written = write_assertion_table("approved_treats_assertions", [], dailymed_refs, ctx, operation=_OPERATION)
+    assert cached_shape_outputs(_OPERATION, dailymed_refs, ctx) is not None
+    fingerprint = shape_config_fingerprint(ctx)
+    monkeypatch.setattr(evidence, "SHAPE_IMPLEMENTATION_VERSION", evidence.SHAPE_IMPLEMENTATION_VERSION + 1)
+    assert shape_config_fingerprint(ctx) != fingerprint
+    assert cached_shape_outputs(_OPERATION, dailymed_refs, ctx) is None
+    assert written[0].uri.exists()  # invalidate the skip, never destroy the prior artifact
+
+
 def test_cached_shape_outputs_misses_when_the_assertion_schema_changes(
     ctx: TaskContext, dailymed_refs: list[ArtifactRef], monkeypatch: pytest.MonkeyPatch
 ) -> None:

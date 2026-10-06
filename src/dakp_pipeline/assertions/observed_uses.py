@@ -696,11 +696,18 @@ def build_observed_use_rows(
             )
         )
     cv_rows = _canada_vigilance_rows(cv_indications, disease_map, approved_index)
-    # One deterministic total order across both sources: (subject, object, context, upstream).
-    # The tiebreakers matter now that two sources share the table: a FAERS row and a CV row
-    # for the same triple must land in a stable, source-discernible order.
+    # Approved observations sort first across both sources; stable text/context/source
+    # tiebreakers keep the order deterministic. Resolved-pair reconciliation still runs after
+    # Tablassert: ontology synonyms cannot be decided by this pre-resolution ordering.
     rows = sorted(
-        [*rows, *cv_rows], key=lambda row: (row["subject_text"], row["object_text"], row["assertion_context"], row["upstream_resource_ids"])
+        [*rows, *cv_rows],
+        key=lambda row: (
+            row["clinical_approval_status"] != _STATUS_APPROVED,
+            row["subject_text"],
+            row["object_text"],
+            row["assertion_context"],
+            row["upstream_resource_ids"],
+        ),
     )
     stats(
         logger,

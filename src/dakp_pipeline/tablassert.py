@@ -1958,10 +1958,21 @@ class TablassertRunner:
         report = _base_report("real", assertion_refs, config_refs)
         contract_problems: list[str] = []
         contract_error: str | None = None
-        if completed.returncode == 0:  # validate only a build that actually emitted a KGX pair
+        approval_promotions = 0
+        if completed.returncode == 0:  # reconcile only a build that actually emitted a KGX pair
             try:
+                from dakp_pipeline.approval_reconciliation import reconcile_approval_status
+
+                kgx_dir = Workdir(ctx.workdir).kgx
+                stem = _graph_stem(graph_yaml)
+                edges_path = kgx_dir / f"{stem}.edges.ndjson"
+                if not edges_path.is_file():
+                    msg = f"expected exactly one {stem}.edges.ndjson under {kgx_dir} after a successful build-kg, found 0"
+                    raise RuntimeError(msg)
+                approval_promotions = reconcile_approval_status(edges_path)
+                stats(logger, "resolved_approval_status", promoted=approval_promotions)
                 contract_problems = validate_kgx_contract(ctx, graph_yaml)
-            except RuntimeError as exc:  # missing/ambiguous pair: the emission convention moved
+            except (OSError, ValueError, RuntimeError) as exc:
                 contract_error = str(exc)
         report.update(
             {
@@ -1975,6 +1986,7 @@ class TablassertRunner:
                 "tablassert_dir": tablassert_dir,
                 "qc": qc,
                 "release": release,
+                "resolved_approval_promotions": approval_promotions,
             }
         )
         if completed.returncode == 0:

@@ -167,6 +167,7 @@ INCOMPATIBLE_SUBJECT_CATEGORY = "incompatible_subject_category"
 INCOMPATIBLE_OBJECT_CATEGORY = "incompatible_object_category"
 INVALID_SUPPORTING_STUDIES = "invalid_supporting_studies"
 MISSING_PROVENANCE = "missing_provenance"
+INVALID_APPROVAL_STATUS = "invalid_approval_status"
 
 
 @dataclass(frozen=True)
@@ -454,9 +455,23 @@ def validate_kgx(nodes: Iterable[Mapping[str, Any]], edges: Iterable[Mapping[str
         if node_id:
             node_index.setdefault(node_id, node)
 
+    from dakp_pipeline.approval_reconciliation import APPROVED, OBSERVED, approved_resolved_pairs, resolved_pair
+
+    approved_pairs = approved_resolved_pairs(edge_list)
     seen_edge_ids: set[str] = set()
     for index, edge in enumerate(edge_list):
         _check_edge(edge, index, node_index, seen_edge_ids, problems)
+        if edge.get("predicate") == OBSERVED and resolved_pair(edge) in approved_pairs and edge.get("clinical_approval_status") != APPROVED:
+            entity_id = _as_str(edge.get("id")) or f"<edge#{index}>"
+            problems.append(
+                ContractProblem(
+                    INVALID_APPROVAL_STATUS,
+                    "edge",
+                    entity_id,
+                    "clinical_approval_status",
+                    f"edge {entity_id} has a resolved treats counterpart but is not {APPROVED}",
+                )
+            )
 
     report = ContractReport(ok=not problems, kgx_problems=problems, problems=[problem.render() for problem in problems])
     stats(logger, "kgx_contract", level="DEBUG", nodes=len(node_list), edges=len(edge_list), problems=len(problems), ok=report.ok)

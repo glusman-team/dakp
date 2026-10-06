@@ -1499,6 +1499,65 @@ def test_real_runner_records_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert "kgx_contract" not in report  # no KGX was emitted to validate
 
 
+def test_real_runner_reconciles_resolved_approvals_before_validation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The production handoff must repair resolved overlap, not only expose a pure helper."""
+    from dakp_pipeline import __version__
+
+    workdir = Workdir(tmp_path / "work")
+    workdir.create()
+    assertion_refs = _assertion_refs(workdir)
+    config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
+
+    def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        _fake_build_kgx(workdir)
+        path = workdir.kgx / f"{tablassert_configs.GRAPH_NAME}_{__version__}.edges.ndjson"
+        edges = [json.loads(line) for line in path.read_text().splitlines()]
+        treated = next(edge for edge in edges if edge["predicate"] == "biolink:treats")
+        observed = next(edge for edge in edges if edge["predicate"] == "biolink:applied_to_treat")
+        observed.update(subject=treated["subject"], object=treated["object"], clinical_approval_status="off_label_use")
+        path.write_text("".join(json.dumps(edge) + "\n" for edge in edges))
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    _patch_installed(monkeypatch)
+    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
+    TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, run_tablassert=True, fullmap="fixture.redb"))
+    report = _read_report(workdir)
+    assert report["resolved_approval_promotions"] == 1
+    assert report["kgx_contract"]["status"] == "ok"
+
+
+@pytest.mark.parametrize("failure", ["null", "[]", "{bad", "io"])
+def test_real_runner_records_reconciliation_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str) -> None:
+    """Corrupt output or reconciliation I/O failure must leave the handoff report on disk."""
+    from dakp_pipeline import __version__, approval_reconciliation
+
+    workdir = Workdir(tmp_path / "work")
+    workdir.create()
+    assertion_refs = _assertion_refs(workdir)
+    config_refs = tablassert_configs.generate(assertion_refs, _ctx(workdir))
+
+    def fake_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        _fake_build_kgx(workdir)
+        if failure != "io":
+            path = workdir.kgx / f"{tablassert_configs.GRAPH_NAME}_{__version__}.edges.ndjson"
+            path.write_text(failure + "\n")
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    if failure == "io":
+
+        def fail(path: Path) -> int:
+            raise OSError("reconciliation write failed")
+
+        monkeypatch.setattr(approval_reconciliation, "reconcile_approval_status", fail)
+    _patch_installed(monkeypatch)
+    monkeypatch.setattr(_RUN_MODULE, "stream_subprocess", fake_subprocess)
+    with pytest.raises(TablassertError):
+        TablassertRunner().run(assertion_refs, config_refs, _ctx(workdir, run_tablassert=True, fullmap="fixture.redb"))
+    report = _read_report(workdir)
+    assert report["kgx_contract"]["status"] == "error"
+    assert report["kgx_contract"]["error"]
+
+
 def test_real_runner_fails_on_kgx_contract_violation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A successful build whose KGX escapes the pinned classes fails the handoff.
 

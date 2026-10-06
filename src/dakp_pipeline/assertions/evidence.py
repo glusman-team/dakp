@@ -748,6 +748,11 @@ def load_or_build_dailymed_evidence(inputs: Iterable[ArtifactRef], ctx: TaskCont
 # --- shape-stage "already done" skip ---------------------------------------------
 
 
+# Increment when assertion shaping semantics change without a schema/config change.
+# Mention-cache material stays independent: a new shaper can reuse valid mined spans.
+SHAPE_IMPLEMENTATION_VERSION = 2
+
+
 def shape_config_fingerprint(ctx: TaskContext) -> str:
     """A synthetic ``b3:<hex>`` input id capturing everything NON-artifact that shapes outputs.
 
@@ -761,12 +766,14 @@ def shape_config_fingerprint(ctx: TaskContext) -> str:
     generated from the CURRENT schema, so reusing a stale TSV shaped by an older one crashes
     the build on the missing column. Run limits
     (``quarter_limit`` etc.) are deliberately absent — they act on acquisition/extraction,
-    whose OUTPUT ids are already among the keyed inputs.
+    whose OUTPUT ids are already among the keyed inputs. Shaping-only logic changes must
+    increment SHAPE_IMPLEMENTATION_VERSION; otherwise a pre-fix TSV can survive every release.
     """
     from dakp_pipeline.ner.mention_cache import ner_cache_material  # lazy: pulls in the NER stack
     from dakp_pipeline.ner.ner import DiseaseNER
 
     material: dict[str, Any] = {
+        "implementation_version": SHAPE_IMPLEMENTATION_VERSION,
         "disease_map": ctx.params.get("disease_map") or {},
         "schemas": {table: schemas.schema_fingerprint(columns) for table, columns in schemas.ASSERTION_TABLES.items()},
     }

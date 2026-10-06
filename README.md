@@ -132,8 +132,8 @@ category allow-list.
 
 Every `applied_to_treat` row carries `clinical_approval_status`: `approved_for_condition` when
 the same (drug, condition) pair is label-approved, else `off_label_use` (`not_provided` only when
-no approved-treats table was available). The cross-reference answers on three keys, first hit
-wins, and the last two only ever add approvals:
+no approved-treats table was available). Three source-table keys answer first, followed by
+resolved-pair reconciliation. These rules only ever add approvals:
 
 1. **FDA application identity**: the row's own application display forms (`NDA021343`) name the
    exact product, and the approved table says which conditions each application covers. This is
@@ -143,8 +143,23 @@ wins, and the last two only ever add approvals:
    inside the observed condition approves it (`prostate cancer` covers `prostate cancer stage
    iv`), the same direction `approved_treats` already accepts when corroborating a report
    against a label. Never across applications, and never in reverse.
-3. **Normalized text pair**: the legacy rule, and the only one that answers for a report with
-   no application number (64% of production off-label rows).
+3. **Normalized text pair**: the source-table rule for a report without an application number.
+4. **Resolved treats counterpart**: after Tablassert resolves and folds edges, an exact
+   resolved subject/object pair with a `biolink:treats` edge promotes its `applied_to_treat`
+   status to `approved_for_condition`. This preserves the legacy DAKP rule across spelling
+   variants. It never demotes application-derived approvals, generalizes to ancestors, changes
+   predicates, or changes qualifier-distinct IDs, case counts or provenance. Approval status
+   remains a Biolink association annotation, not a qualifier. The publish contract rejects
+   any off-label observed edge with a resolved treats counterpart.
+
+Approved source observations sort first with deterministic text/context/source tie breakers.
+Sorting alone cannot establish resolved approval: Tablassert's scalar fold chooses the
+lexically smallest value, and different source spellings may resolve to the same pair.
+Reconciliation therefore runs before contract validation and legacy export/publication.
+
+Shaping-only changes increment `SHAPE_IMPLEMENTATION_VERSION` in
+`assertions/evidence.py`, invalidating stale shaped TSV skips while preserving NER mention
+caches. A release must not reuse a TSV built with pre-fix shaping logic.
 
 `tests/eval/approval_status_audit.py` re-derives the status over a real build with the shipped
 rule and exits non-zero on any demotion; on the v1.16.0 tables it reports 64,351 rows

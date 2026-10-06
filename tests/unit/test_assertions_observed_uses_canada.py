@@ -92,6 +92,18 @@ def test_canada_and_faers_rows_for_same_triple_stay_separate(disease_map: dict[s
     assert [row["upstream_resource_ids"] for row in rows] == ["infores:faers|infores:dailymed", "infores:canada-vigilance|infores:dailymed"]
 
 
+def test_approved_observations_sort_first_across_sources() -> None:
+    """Evidence priority must beat drug alphabetic order without mixing source case counts."""
+    faers = pl.DataFrame({"primaryid": ["1"], "drugname": ["Aspirin"], "indication": ["migraine"]})
+    cv = _cv_frame([_observation("100001", "methotrexate", "rheumatoid arthritis")])
+    approved = {("methotrexate", "rheumatoid arthritis")}
+    rows = build_observed_use_rows(faers, {}, approved, cv_indications=cv)
+    assert [row["clinical_approval_status"] for row in rows] == ["approved_for_condition", "off_label_use"]
+    assert rows[0]["subject_text"] == "methotrexate"
+    assert rows[0]["number_of_cases"] == "1"
+    assert rows == build_observed_use_rows(faers, {}, approved, cv_indications=cv)
+
+
 def test_translator_accepts_canada_observed_use_row() -> None:
     """The regression contract accepts the CV chain and still rejects foreign upstreams."""
     frame = _cv_frame([_observation("100001", "methotrexate", "rheumatoid arthritis")])
