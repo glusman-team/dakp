@@ -40,6 +40,11 @@ description: "Run DAKP tests, quality gates, and builds on wenceslaus over SSH. 
    - `python3 --version` and the repo's `.python-version`
    - `go version; gofmt --help` (Go has been absent from PATH; `make test-go`,
      `make vet`, and `make fmt-check` need it)
+   - `locale`: wenceslaus defaults to `LANG=en_US` (ISO-8859-1). Export
+     `LC_ALL=C.UTF-8` (or `PYTHONUTF8=1`) for every command; without it
+     `import airflow` dies on `yaml ReaderError: unacceptable character
+     #x0080 ... position 111403` (latin-1 decode of the UTF-8 em dash in
+     airflow's shipped `config.yml`). Not a broken file or filesystem.
    - `tmux -V` for long jobs
    Stop and report on any missing or broken tool. Do not install tools without
    explicit approval.

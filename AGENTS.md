@@ -48,6 +48,13 @@ wenceslaus over SSH, never locally:
 - Follow `.pi/skills/dakp-verify/SKILL.md` for the exact procedure: isolated
   remote snapshot, source-identity manifest, tool preflight, bounded workers,
   captured logs and exit status.
+- Export `LC_ALL=C.UTF-8` (or `PYTHONUTF8=1`) in every remote shell, tmux
+  session, or command that imports airflow or runs the CLI/pytest. Wenceslaus
+  defaults to `LANG=en_US` (ISO-8859-1), and latin-1 decoding of airflow's
+  UTF-8 `config.yml` (it ships an em dash around byte 111401) fails
+  `import airflow` with `yaml ReaderError: unacceptable character #x0080 ...
+  position 111403`. The locale is the whole fix; there is no broken file,
+  symlink, or filesystem behind this error.
 - Local work is limited to reading code, editing, and cheap inspections. Do not
   run `pytest`, `pyright`, `make check`, `make test`, or pipeline commands
   locally, and never fall back to local execution because a remote step failed;
