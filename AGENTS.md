@@ -55,6 +55,29 @@ wenceslaus over SSH, never locally:
 - Heavy production builds (`dakp up --fullmap`) run on wenceslaus against the
   production workdir, only with explicit scope approval.
 
+## Quality gates and QC metrics
+
+- Coverage: `make test` accumulates coverage across the unit + integration phases with `--cov-append`; the `fail_under = 90` gate (pyproject.toml) evaluates the combined data.  (evidence: ci, pyproject)
+- NER accuracy gate: backend/model/inference-config changes must keep the composite backend at
+  P/R/F1 1.000 on the gold fixture (`tests/eval/ner_gold.json`, 34 cases / 42 spans). Rerun
+  `uv run python tests/eval/benchmark_ner.py` per dakp-verify; record in
+  `tests/eval/benchmark_results.json` + `src/dakp_pipeline/ner/BENCHMARK.md`. `tests/eval/*.py`
+  scripts are evaluation artifacts: never pytest-collected, never coverage-gated.  (evidence: history, docs)
+- Inference-config changes (`chunk_words`, `inference_batch_size`, `compute_dtype`) flip
+  knife-edge mentions (fp16: 28/2000 texts). Prove a clean diff with `tests/eval/ab_ner_diff.py`
+  before adopting; `compute_dtype` defaults to fp32 (v1.21.0 revert) and both cache tiers key it.  (evidence: history, docs)
+- `tablassert build-kg --qc` is always requested but dropped with a warning when the QC runtime (`tablassert[qc]`
+  sentence-transformers) is not importable; a green build does not prove QC ran, so check the build log's qc stats event.  (evidence: code: tablassert.py, cli.py)
+- `tests/eval/approval_status_audit.py` re-derives `clinical_approval_status` with the shipped
+  rule over real production tables, exiting non-zero on any demotion; run it when
+  approved-treats or FAERS shaping changes.  (evidence: docs)
+- `tests/eval/build_manifest.py` captures per-table row counts + blake3 hashes; diff manifests
+  across builds to prove speed/refactor work changed nothing observable downstream of NER.  (evidence: docs, history)
+- The three edge families' semantic-equivalence guardrails live in
+  `tests/integration/test_semantic_equivalence.py`; keep them green when touching `translator.py`
+  or assertion shapers.  (evidence: ci)
+- Data-quality fixes use the `quality(<scope>):` commit prefix.  (evidence: history x4)
+
 ## Commits
 
 - Conventional commits; stage deliberately; re-check status first (shared tree).
