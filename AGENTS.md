@@ -112,14 +112,13 @@ wenceslaus over SSH, never locally:
   matching-version KGX artifacts to the Hugging Face dataset
   `SkyeAv/drug-approvals-kp`. Use `.pi/skills/dakp-release/SKILL.md`; GitHub
   `v<version>` tags are created by CI (`tag-version.yml`), never by hand.
-- On the dataset card, the LATEST release is what visitors see first: subset
-  names carry a descending rank prefix (`100_1.23.3_edges`, `101_1.23.3_nodes`,
-  `200_1.23.2_edges`, ...) because the HF viewer orders subsets "default first,
-  then alphabetical"; card YAML order does not control this, and a bare
-  `<version>_<kind>` name lists the OLDEST release first. The newest `_edges`
-  config carries `default: true`, and `configs:` entries plus the
-  Releases/checksums tables are kept newest first. When adding a version, take
-  the next rank BELOW the current newest (three digits, edges even, nodes odd)
-  and insert its configs at the TOP of the list; never renumber an existing
-  subset, and MOVE `default: true` to the new `_edges` config. Older subsets stay
-  one click away in the subset picker.
+- On the dataset card, only the LATEST release is browsable: exactly two subsets,
+  `<version>_edges` (carries `default: true`) and `<version>_nodes`. Earlier
+  releases stay as plain files in their `<version>/` directories, downloadable by
+  path, never parquet-converted and absent from the subset dropdown, so no rank
+  prefix or renumbering is needed (the HF viewer orders subsets "default first,
+  then alphabetical", card YAML order does not control this, and `_edges` sorts
+  before `_nodes`). When adding a version, rewrite both `config_name` values and
+  `data_files` paths, MOVE `default: true` to the new `_edges` config, keep the
+  Releases/checksums tables newest first, and leave every historical directory
+  intact.
