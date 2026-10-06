@@ -26,7 +26,7 @@ from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.ner import model_cache
 from dakp_pipeline.ner.ner import DEFAULT_MODEL
-from dakp_pipeline.sources import canada_vigilance, dailymed, drugsfda, ema, ema_smpc, faers
+from dakp_pipeline.sources import canada_vigilance, dailymed, drugsfda, ema, ema_documents, ema_smpc, faers
 
 #: Media type for a cached NER model directory (a tree artifact, not a single file).
 _MODEL_DIR_MEDIA_TYPE = "application/x-directory"
@@ -59,8 +59,14 @@ def acquire_ema(ctx: TaskContext) -> list[ArtifactRef]:
 
 
 def acquire_ema_smpc(ctx: TaskContext) -> list[ArtifactRef]:
-    """Acquire the EMA product-information corpus: the documents report + its English human SmPC PDFs."""
-    return ema_smpc.fetch(ctx)
+    """Acquire the EMA product-information corpus: the documents report + its English human SmPC PDFs.
+
+    ``extract_ema_smpc`` requires the documents-report JSON among its inputs (it carries the
+    per-document metadata every parsed section is attributed by), so the report ref is returned
+    FIRST, then the crawl refs in selection order. The report fetch is the same cache-gated call
+    the crawl itself makes, so this adds no network traffic on a warm store.
+    """
+    return [*ema_documents.fetch(ctx), *ema_smpc.fetch(ctx)]
 
 
 def acquire_canada_vigilance(ctx: TaskContext) -> list[ArtifactRef]:

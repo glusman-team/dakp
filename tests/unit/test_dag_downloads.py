@@ -15,7 +15,7 @@ import pytest
 from dakp_pipeline import acquire, runtime
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.sources import canada_vigilance, dailymed, drugsfda, ema, ema_smpc, faers
+from dakp_pipeline.sources import canada_vigilance, dailymed, drugsfda, ema, ema_documents, ema_smpc, faers
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -35,10 +35,9 @@ def _ctx(workdir: Path, *, params: dict[str, object] | None = None) -> TaskConte
         (acquire.acquire_faers, faers),
         (acquire.acquire_drugsfda, drugsfda),
         (acquire.acquire_ema, ema),
-        (acquire.acquire_ema_smpc, ema_smpc),
         (acquire.acquire_canada_vigilance, canada_vigilance),
     ],
-    ids=["dailymed", "faers", "drugsfda", "ema", "ema_smpc", "canada_vigilance"],
+    ids=["dailymed", "faers", "drugsfda", "ema", "canada_vigilance"],
 )
 def test_acquire_source_helpers_delegate_to_fetcher(helper, module, monkeypatch, tmp_path: Path) -> None:
     calls: list[TaskContext] = []
@@ -56,6 +55,35 @@ def test_acquire_source_helpers_delegate_to_fetcher(helper, module, monkeypatch,
     assert calls == [ctx]
     assert calls[0].params["quarter_limit"] == 2
     assert [ref.blake3 for ref in refs] == ["b3:deadbeef"]
+
+
+def test_acquire_ema_smpc_returns_documents_report_first_then_pdfs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The extract task requires the documents-report JSON among its inputs; acquire must hand it over.
+
+    The 2026-10-06 production build failed ``extract_ema_smpc`` with "no EMA documents report
+    (json) among the inputs" because the DAG fed it only the crawl's PDF refs. The report ref
+    comes FIRST, then the crawl refs in selection order, and ``extract`` consumes exactly that
+    list end to end.
+    """
+    ctx = _ctx(tmp_path)
+    report_src = _FIXTURE_ROOT / "ema" / "epar_documents_en.json"
+    pdf_src = _FIXTURE_ROOT / "ema" / "smpc" / "ceplene-epar-product-information_en.pdf"
+    report = ArtifactRef(uri=report_src, blake3="b3:report", media_type="application/json")
+    pdf = ArtifactRef(uri=pdf_src, blake3="b3:pdf", media_type="application/pdf")
+    monkeypatch.setattr(ema_documents, "fetch", lambda c: [report])
+    monkeypatch.setattr(ema_smpc, "fetch", lambda c: [pdf])
+
+    refs = acquire.acquire_ema_smpc(ctx)
+
+    assert refs == [report, pdf]
+
+    # The wiring contract: extract accepts the acquire output verbatim and attributes the PDF
+    # via the report (a real pypdf parse of the committed fixture PDF).
+    from dakp_pipeline.extract import ema_smpc as extract_ema_smpc
+
+    extracted = extract_ema_smpc.extract(refs, ctx)
+    assert extracted, "extract must produce the sections/warnings artifacts"
+    assert all(ref.uri.exists() for ref in extracted)
 
 
 # --- Canada Vigilance download identity -----------------------------------------
