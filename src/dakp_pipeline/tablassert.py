@@ -509,9 +509,10 @@ RIG_INGEST_FUTURE_CONSIDERATIONS: tuple[dict[str, str], ...] = (
     {
         "category": "edge_property_content",
         "consideration": (
-            "clinical_approval_status is a first-class Biolink ClinicalApprovalStatusEnum field, "
-            "so values outside the enum cannot be preserved: the legacy FAERS observed_use status "
-            "is coerced to not_provided (degraded mode). Revisit if Biolink adds a dedicated "
+            "clinical_approval_status is a first-class Biolink ClinicalApprovalStatusEnum field. "
+            "Observed assertions ship approved_for_condition or off_label_use; not_provided is "
+            "emitted only in degraded mode, when no approved-treats table was available to check "
+            "the reported drug/condition pair against. Revisit if Biolink adds a dedicated "
             "observation status."
         ),
     },
