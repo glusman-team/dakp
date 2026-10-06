@@ -2039,7 +2039,7 @@ template:
             - "infores:ema"
             - "infores:epar"
           source_record_urls:
-            - "https://db.systemsbiology.net/gestalt/cgi-pub/KGinfo.pl?id={edge_id}"
+            - "https://linkouts.skyelanegoetz.com/edges/{edge_id}"
         - resource_id: "infores:faers"
           resource_role: supporting_data_source
         - resource_id: "infores:dailymed"

@@ -35,8 +35,8 @@ The configs match the ACTUAL current Tablassert schema (verified against
   (the DAKP ``infores`` is graph-level only since Tablassert >= 8.0.1 forbids it in the override;
   no ``publication`` — the override replaces repo/publication provenance), plus the explicit
   ``sources`` template (:data:`_TABLE_SOURCES`) replicating the legacy DAKP edge-provenance
-  shape — the DAKP wrapper entry carries the gestalt ``{edge_id}`` record-URL template
-  (:data:`GESTALT_RECORD_URL_TEMPLATE`), resolved by Tablassert on the final edges;
+  shape — the DAKP wrapper entry carries the edge-linkout ``{edge_id}`` record-URL template
+  (:data:`EDGE_LINKOUT_URL_TEMPLATE`), resolved by Tablassert on the final edges;
 * column-encoded ``statement.qualifiers`` where an assertion column carries the qualifier's entity
   (per-table :data:`_QUALIFIER_GUARD`). A Tablassert qualifier is a node encoding resolved through
   the fullmap alongside subject/object; every qualifier is ``nullable``, so a blank or
@@ -907,10 +907,10 @@ _TABLE_SPECS: dict[str, tuple[str, str, str, str]] = {
 }
 
 #: Per-edge record URL template carried by the ``infores:drugapprovals-kp`` sources
-#: entry — the gestalt viewer deep-links each edge by its own id. ``{edge_id}`` is resolved by
-#: Tablassert in a post-dedup sweep of the final edges ndjson (``override.sources``,
-#: SkyeAv/Tablassert#116).
-GESTALT_RECORD_URL_TEMPLATE = "https://db.systemsbiology.net/gestalt/cgi-pub/KGinfo.pl?id={edge_id}"
+#: entry — the EdgeLinkouts app (linkouts.skyelanegoetz.com) deep-links each edge by its
+#: own id. ``{edge_id}`` is resolved by Tablassert in a post-dedup sweep of the final
+#: edges ndjson (``override.sources``, SkyeAv/Tablassert#116).
+EDGE_LINKOUT_URL_TEMPLATE = "https://linkouts.skyelanegoetz.com/edges/{edge_id}"
 
 #: Static record URL carried by the FAERS table's ``infores:faers`` supporting-data-source
 #: entry — the FDA Adverse Event Monitoring System (AEMS) landing page. FAERS observed-use rows
@@ -921,7 +921,7 @@ FAERS_SOURCE_RECORD_URL = "https://www.fda.gov/safety/fda-adverse-event-monitori
 
 # assertion table -> the explicit ``provenance.override.sources`` template:
 # (resource_id, role, upstream ids, extra record urls). DAKP is the primary knowledge source
-# for every edge family and always carries the gestalt record URL. FAERS remains a supporting
+# for every edge family and always carries the edge-linkout record URL. FAERS remains a supporting
 # source for observed-use edges and keeps its static AEMS record URL; all other entries carry
 # no per-edge record URL. Requires Tablassert >= 14.0 (SkyeAv/Tablassert#116).
 _TABLE_SOURCES: dict[str, tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...]] = {
@@ -954,13 +954,13 @@ _TABLE_SOURCES: dict[str, tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]
 
 
 def _sources_template(table: str) -> list[dict[str, Any]]:
-    """Return explicit sources, adding the gestalt URL and any configured static record URLs."""
+    """Return explicit sources, adding the edge-linkout URL and any configured static record URLs."""
     entries: list[dict[str, Any]] = []
     for resource_id, role, upstream, record_urls in _TABLE_SOURCES[table]:
         entry: dict[str, Any] = {"resource_id": resource_id, "resource_role": role}
         if upstream:
             entry["upstream_resource_ids"] = list(upstream)
-        urls = [GESTALT_RECORD_URL_TEMPLATE, *record_urls] if resource_id == INFORES_DAKP else list(record_urls)
+        urls = [EDGE_LINKOUT_URL_TEMPLATE, *record_urls] if resource_id == INFORES_DAKP else list(record_urls)
         if urls:
             entry["source_record_urls"] = urls
         entries.append(entry)
@@ -1486,7 +1486,7 @@ def table_config(table: str) -> dict[str, Any]:
         "statement": statement,
         "provenance": {
             "override": {
-                # Explicit ``sources`` list: the DAKP primary entry carries the gestalt
+                # Explicit ``sources`` list: the DAKP primary entry carries the edge-linkout
                 # record-URL template, followed by the per-resource supporting entries;
                 # Tablassert >= 14.0 uses it verbatim on every edge and resolves the
                 # ``{edge_id}`` placeholder post-build. The FAERS supporting entry additionally
@@ -2054,9 +2054,9 @@ def run(assertion_refs: list[ArtifactRef], config_refs: list[ArtifactRef], ctx: 
 __all__ = [
     "AGENT_TYPE",
     "DEFAULT_TABLASERT_DIR",
+    "EDGE_LINKOUT_URL_TEMPLATE",
     "FAERS_SOURCE_RECORD_URL",
     "FULLMAP_DEFAULT",
-    "GESTALT_RECORD_URL_TEMPLATE",
     "GRAPH_DESCRIPTION",
     "GRAPH_NAME",
     "INFORES_DAKP",
