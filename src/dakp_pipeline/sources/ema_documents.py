@@ -106,15 +106,14 @@ class EparDocument:
 
     @property
     def stem(self) -> str:
-        """The document filename without its ``.pdf`` (or ``.pdf-<n>``) suffix.
+        """Document filename with the PDF extension removed, retaining Drupal revisions.
 
-        Unique per document in the live report (verified: 1,945 distinct stems for the 1,945
-        selected rows), which makes it a safe content-address alias key — unlike the product
-        number, where one medicine can carry two product-information documents (a pending
-        endorsement version plus the authorised one).
+        ``name.pdf`` and ``name.pdf-0`` can name different products. Preserve ``-0`` in the
+        staging/cache key so parallel downloads and provenance never collide. Ordinary PDF
+        aliases remain unchanged, keeping their existing cached artifacts reusable.
         """
         base = self.document_url.rsplit("/", 1)[-1]
-        return _PDF_SUFFIX.sub("", base) or base
+        return re.sub(r"\.pdf(?=-\d+$|$)", "", base, flags=re.IGNORECASE) or base
 
 
 def product_information_documents(documents: list[EparDocument]) -> list[EparDocument]:

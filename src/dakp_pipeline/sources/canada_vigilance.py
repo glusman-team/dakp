@@ -120,13 +120,21 @@ def _cache_age_days(manifest: object | None) -> float | None:
         return None
 
 
+#: Canada's Akamai edge STALLS unknown user agents on the extract ZIP: aria2c with
+#: ``dakp-pipeline/0.1`` transferred 0 bytes for ~10 minutes in the 2026-10-06 production build
+#: (urllib fallback then read-timed out) while ``curl/8.x`` streamed the same 341 MB archive in
+#: seconds. Identifying as curl keeps the fetch honest and unblocks the only source behind this
+#: edge behavior.
+_CANADA_VIGILANCE_USER_AGENT = "curl/8.10.1"
+
+
 def download_canada_vigilance_zip(url: str, dest: Path, *, timeout: float = 120.0) -> Path:
     """Download ``url`` to ``dest`` (aria2c-accelerated, stdlib fallback). Monkeypatchable.
 
     Tests replace this to serve a local fixture ZIP without network; the real path is covered by
     the offline prod-smoke test and the downloader unit tests.
     """
-    return download(url, dest, timeout=timeout, headers={"User-Agent": "dakp-pipeline/0.1"})
+    return download(url, dest, timeout=timeout, headers={"User-Agent": _CANADA_VIGILANCE_USER_AGENT})
 
 
 fetch = CanadaVigilanceFetcher().fetch

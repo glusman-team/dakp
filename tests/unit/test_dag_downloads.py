@@ -58,6 +58,28 @@ def test_acquire_source_helpers_delegate_to_fetcher(helper, module, monkeypatch,
     assert [ref.blake3 for ref in refs] == ["b3:deadbeef"]
 
 
+# --- Canada Vigilance download identity -----------------------------------------
+
+
+def test_canada_vigilance_download_identifies_as_curl(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Canada's Akamai edge stalls the pipeline UA; the ZIP fetch must present ``curl/8.x``.
+
+    The 2026-10-06 production build hung ~10 minutes transferring 0 bytes with
+    ``dakp-pipeline/0.1`` and the urllib fallback then read-timed out, failing the DAG run.
+    """
+    captured: list[dict[str, str]] = []
+
+    def fake_download(url: str, dest: Path, *, timeout: float = 120.0, headers: dict[str, str] | None = None) -> Path:
+        captured.append(dict(headers or {}))
+        dest.write_bytes(b"PK\x03\x04")
+        return dest
+
+    monkeypatch.setattr(canada_vigilance, "download", fake_download)
+    canada_vigilance.download_canada_vigilance_zip("https://example.test/extract_extrait.zip", tmp_path / "cv.zip")
+
+    assert captured == [{"User-Agent": "curl/8.10.1"}]
+
+
 # --- NER model acquisition ------------------------------------------------------
 
 

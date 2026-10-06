@@ -23,7 +23,7 @@ import pytest
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import TaskContext
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.sources import ema_documents
+from dakp_pipeline.sources import ema_documents, ema_smpc
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 _FIXTURE = _FIXTURE_ROOT / "ema" / "epar_documents_en.json"
@@ -322,7 +322,36 @@ def test_product_information_selection_accepts_the_dotted_pdf_suffix_variant() -
     selected = ema_documents.product_information_documents(documents)
     odd = next(doc for doc in selected if doc.id == "28033")
     assert odd.document_url.endswith("_en.pdf-0")
-    assert odd.stem == "clopidogrel-ratiopharm-epar-product-information_en"
+    # The Drupal revision stays in the key: stripping it collided with the plain ``.pdf``
+    # document of a DIFFERENT product in the 2026-10-06 live report (both named
+    # ``dimethyl-fumarate-accord-epar-product-information_en``), so two PDFs staged onto one
+    # path and the crawl died on a missing file mid-ingest.
+    assert odd.stem == "clopidogrel-ratiopharm-epar-product-information_en-0"
+
+
+def test_pdf_revision_suffix_keeps_live_collision_apart() -> None:
+    """The 2026-10-06 production report pairs ``.pdf`` and ``.pdf-0`` across two products."""
+    plain = ema_documents.EparDocument(
+        id="64041",
+        type="product-information",
+        medicine_name="Dimethyl Fumarate Accord",
+        ema_product_number="EMEA/H/C/006471",
+        document_url="https://www.ema.europa.eu/en/documents/product-information/dimethyl-fumarate-accord-epar-product-information_en.pdf",
+    )
+    revision = ema_documents.EparDocument(
+        id="61597",
+        type="product-information",
+        medicine_name="Dimethyl Fumarate Accord",
+        ema_product_number="EMEA/H/C/005950",
+        document_url="https://www.ema.europa.eu/en/documents/product-information/dimethyl-fumarate-accord-epar-product-information_en.pdf-0",
+    )
+    assert plain.stem == "dimethyl-fumarate-accord-epar-product-information_en"
+    assert revision.stem == "dimethyl-fumarate-accord-epar-product-information_en-0"
+
+    # The crawl keys (member alias, staging path, fingerprint) all derive from the stem, so
+    # distinct stems keep the two PDFs apart end to end.
+    assert ema_smpc.member_alias(revision) != ema_smpc.member_alias(plain)
+    assert ema_smpc.crawl_fingerprint([plain, revision]) == ema_smpc.crawl_fingerprint([revision, plain])
 
 
 def test_product_information_selection_is_deterministic() -> None:
