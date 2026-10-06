@@ -979,6 +979,15 @@ def build_smpc_treats_rows(
                         if previous is None or score > previous:
                             agg["qualifier_scores"][field] = score
                             agg["qualifiers"][field] = value
+                    # SmPC indication prose uses the same explicit patient-clause template
+                    # as EPAR/DailyMed; Disease spans are excluded from generic attachment.
+                    context_text = pipe_safe_text(host_disease_context(hosts[host_index], hosts, sentence_of) or "")
+                    if context_text:
+                        score = (1.0, context_text)
+                        previous = agg["qualifier_scores"].get("disease_context_text")
+                        if previous is None or score > previous:
+                            agg["qualifier_scores"]["disease_context_text"] = score
+                            agg["qualifiers"]["disease_context_text"] = context_text
 
     stats(logger, "shape_approved_treats", smpc_mentions=mentions_mined, smpc_assertions=len(aggregated))
     rows: list[dict[str, str]] = []

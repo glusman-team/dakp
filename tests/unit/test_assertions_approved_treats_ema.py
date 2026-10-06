@@ -488,6 +488,20 @@ def test_smpc_rows_mined_from_indication_text(disease_map: dict[str, dict[str, s
     assert row["upstream_resource_ids"] == "infores:epar"
 
 
+def test_smpc_and_epar_patient_clause_contexts_match(disease_map: dict[str, dict[str, str]]) -> None:
+    """Combining the source PRs must not drop the disease context on the SmPC path."""
+    text = "KemSu is indicated for the treatment of severe pain in patients with diabetes. It is also indicated for shock."
+    registry = _ema_frame([_registry_row(therapeutic_indication=text)])
+    smpc = _smpc_frame([_indication_section(text)])
+    ner = DiseaseNER(offline=True, gazetteer={"severe pain": "disease", "diabetes": "disease", "shock": "disease"})
+    epar_rows = build_epar_treats_rows(registry, _mined_map(registry, ner), disease_map)
+    smpc_rows = build_smpc_treats_rows(smpc, registry, _smpc_mined(smpc, ner), disease_map)
+    for rows in (epar_rows, smpc_rows):
+        by_pair = _rows_by_pair(rows)
+        assert by_pair[("ketamine", "severe pain")]["disease_context_text"] == "diabetes"
+        assert by_pair[("ketamine", "shock")]["disease_context_text"] == ""
+
+
 def test_smpc_skips_unmapped_products_and_non_indication_sections(disease_map: dict[str, dict[str, str]]) -> None:
     """Sections without a registry subject (or of the wrong kind) never become treats rows."""
     frame = _smpc_frame(
