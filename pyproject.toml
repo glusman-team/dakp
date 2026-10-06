@@ -1,6 +1,6 @@
 [project]
 name = "dakp-pipeline"
-version = "1.23.2"
+version = "1.23.3"
 description = "Drug Approvals Knowledge Provider (DAKP) rebuild: reproducible, content-addressed pipeline producing DailyMed / Drugs@FDA / FAERS / MEDI treatment and contraindication assertion tables for Tablassert."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -151,7 +151,7 @@ dependencies = [
     # the app without it, and logging is a silent no-op without `[log]` (loguru), so a build would
     # emit no progress or warning logs at all. Both are load-bearing for `run_tablassert`, hence
     # explicit. `[qc]` still backs the `--qc` audit.
-    "tablassert[cli,log,qc]>=19.5.1,<20",
+    "tablassert[cli,log,qc]>=19.6.0,<20",
     # torch is transitive (sentence-transformers via tablassert[qc]; gliner2 needs it too but
     # only declares it under the `[local]`/`[train]` extras we do not use) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host

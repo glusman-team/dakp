@@ -121,10 +121,12 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
     # Original source mentions survive collision merging and use deterministic pipe joining.
     assert edge["original_subject"] == "Advil|Ibuprofen"
     assert edge["original_object"] == "headache"
-    # List-valued evidence unions (sorted). Both values are real FDA application numbers: the
-    # bare ``017977``/``021010`` a FAERS reporter would write are dropped before they ever reach
-    # a published edge, so this fixture must not lock that shape in as an expectation.
-    assert edge["regulatory_approvals"] == ["NDA017977", "NDA021010"]
+    # Reporter application numbers stay source-table metadata, never approval claims on
+    # observed-use edges, including after synonym collisions merge their case evidence.
+    for field in ("regulatory_approvals", "FDA_regulatory_approvals", "approval_ids", "approvals"):
+        assert field not in edge
+    assert "NDA017977" not in json.dumps(edge)
+    assert "NDA021010" not in json.dumps(edge)
     # The carrier never ships as an edge field (16.6 strips it; older Tablassert folds it into
     # supporting_text, never a top-level key).
     assert "supporting_case_ids" not in edge

@@ -182,7 +182,6 @@ EXPECTED_ANNOTATIONS = {
     "faers_applied_to_treat_assertions": {
         "number_of_cases": ("number_of_cases", None),
         "supporting_case_ids": ("case_ids", "|"),
-        "regulatory_approvals": ("FDA_regulatory_approvals", "|"),
         "publications": ("edge_evidence", "|"),
         "clinical_approval_status": ("clinical_approval_status", None),
     },
