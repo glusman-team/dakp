@@ -21,6 +21,7 @@ from typing import Any, cast
 
 import pytest
 from loguru import logger
+from test_ner_edge import _install_fake_torch
 
 import dakp_pipeline.assertions.ner_dispatch as dispatch
 from dakp_pipeline.assertions.ner_dispatch import MiningPool, NerWorkerError, _mentions_fit, default_ner, mine_by_position, mine_with_cache
@@ -551,12 +552,11 @@ def test_resolve_devices_warns_when_surviving_devices_are_mixed_arch(monkeypatch
     a chunk, so on a heterogeneous host one text's cached spans would depend on timing. Mixed archs
     are not a supported pooled-dispatch target; the warning makes that observable instead of silent.
     """
-    import torch
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (8, 6) if index == 0 else (8, 0))
-    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_80", "sm_86"])
+    torch = _install_fake_torch(monkeypatch)
+    torch.cuda.is_available = lambda: True
+    torch.cuda.device_count = lambda: 2
+    torch.cuda.get_device_capability = lambda index: (8, 6) if index == 0 else (8, 0)
+    torch.cuda.get_arch_list = lambda: ["sm_80", "sm_86"]
     with _captured_logs() as lines:
         assert dispatch._resolve_devices(DiseaseNER(offline=False)) == ("cuda:0", "cuda:1")
     assert any("ner_mixed_gpu_arch" in line for line in lines)
@@ -564,12 +564,11 @@ def test_resolve_devices_warns_when_surviving_devices_are_mixed_arch(monkeypatch
 
 def test_resolve_devices_is_quiet_for_a_uniform_fleet(monkeypatch: pytest.MonkeyPatch) -> None:
     """The build host's four identical P100s must not warn: that is the supported configuration."""
-    import torch
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 4)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (6, 0))
-    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_60"])
+    torch = _install_fake_torch(monkeypatch)
+    torch.cuda.is_available = lambda: True
+    torch.cuda.device_count = lambda: 4
+    torch.cuda.get_device_capability = lambda index: (6, 0)
+    torch.cuda.get_arch_list = lambda: ["sm_60"]
     with _captured_logs() as lines:
         assert dispatch._resolve_devices(DiseaseNER(offline=False)) == ("cuda:0", "cuda:1", "cuda:2", "cuda:3")
     assert not any("ner_mixed_gpu_arch" in line for line in lines)
@@ -581,17 +580,17 @@ def test_mixed_arch_probe_failure_is_not_reported_as_mixing(monkeypatch: pytest.
     ``_cuda_device_supported`` already gated those devices; warning here would blame the host for a
     probe error and send the next debugger after a problem that does not exist.
     """
-    import torch
+    torch = _install_fake_torch(monkeypatch)
 
     def capability(index: int) -> tuple[int, int]:
         if index == 1:
             raise RuntimeError("CUDA error")
         return (8, 6)
 
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", capability)
-    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_86"])
+    torch.cuda.is_available = lambda: True
+    torch.cuda.device_count = lambda: 2
+    torch.cuda.get_device_capability = capability
+    torch.cuda.get_arch_list = lambda: ["sm_86"]
     with _captured_logs() as lines:
         dispatch._resolve_devices(DiseaseNER(offline=False))
     assert not any("ner_mixed_gpu_arch" in line for line in lines)

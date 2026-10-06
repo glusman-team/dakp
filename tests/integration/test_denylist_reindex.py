@@ -34,6 +34,7 @@ build would emit seven edges, and each assertion below fails.
 from __future__ import annotations
 
 import json
+import multiprocessing
 from pathlib import Path
 from typing import Any
 
@@ -135,6 +136,10 @@ def test_denylisted_rows_are_dropped_at_load_time(tmp_path: Path, monkeypatch: p
     graph = tmp_path / "graph.yaml"
     graph.write_text(dakp_tablassert.graph_yaml(["faers_applied_to_treat.yaml"], fullmap=str(fullmap)), encoding="utf-8")
 
+    # Same guard as test_kgx_end_to_end's in-process build: Tablassert spawns two cpu-count-sized
+    # fork Pools per build, and fork inherits xdist thread locks. Pin the section pools to
+    # spawn/Pool(1); ingestion, fullmap resolution and KGX compilation all stay real.
+    monkeypatch.setattr("tablassert.cli.Pool", lambda: multiprocessing.get_context("spawn").Pool(processes=1))
     build_pipeline(graph, PipelineProgress(total_stages=6))
     version = dakp_tablassert.graph_config()["version"]
     edges_path = tmp_path / "kgx" / f"{dakp_tablassert.GRAPH_NAME}_{version}.edges.ndjson"

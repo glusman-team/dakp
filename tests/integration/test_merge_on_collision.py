@@ -18,6 +18,7 @@ first-wins; both shapes are asserted here.
 from __future__ import annotations
 
 import json
+import multiprocessing
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +105,10 @@ def test_synonym_spellings_resolving_to_one_curie_merge_into_one_edge(tmp_path: 
     # The generated graph config is what turns the collision abort into a merge.
     assert dakp_tablassert.graph_config()["uuid_on_collision"] == "merge"
 
+    # Same guard as test_kgx_end_to_end's in-process build: Tablassert spawns two cpu-count-sized
+    # fork Pools per build, and fork inherits xdist thread locks. Pin the section pools to
+    # spawn/Pool(1); ingestion, fullmap resolution and KGX compilation all stay real.
+    monkeypatch.setattr("tablassert.cli.Pool", lambda: multiprocessing.get_context("spawn").Pool(processes=1))
     build_pipeline(graph, PipelineProgress(total_stages=6))
     version = dakp_tablassert.graph_config()["version"]
     edges_path = tmp_path / "kgx" / f"{dakp_tablassert.GRAPH_NAME}_{version}.edges.ndjson"  # rig.artifact_base_path = "kgx" (Tablassert >= 11)

@@ -57,6 +57,37 @@ def _captured_logs() -> Iterator[list[str]]:
         logger.remove(sink_id)
 
 
+@contextmanager
+def _fake_autocast(device_type: str, **kwargs: Any) -> Iterator[None]:
+    """Inert stand-in for ``torch.autocast``; tests that assert the arming replace it."""
+    yield
+
+
+def _install_fake_torch(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Function-scoped fake of the torch surface production code imports lazily: the CUDA
+    probe quartet, ``empty_cache``, and the fp16 autocast arming. Installing it in sys.modules
+    keeps the real torch -- a multi-second import under coverage tracing, paid once per xdist
+    worker by whichever test touches it first -- out of this module's workers, while every
+    device-routing branch, exception and assertion below runs UNMODIFIED against the fake.
+    ``monkeypatch`` restores the previous sys.modules entry at test end, so real-torch
+    consumers elsewhere in the suite (test_logging_setup_edge's spawn child) are unaffected.
+    Defaults mirror a CUDA-less CI host; each test pins the probe results it asserts on."""
+    torch: Any = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(
+        is_available=lambda: False, device_count=lambda: 0, get_device_capability=lambda index: (6, 0), get_arch_list=list, empty_cache=lambda: None
+    )
+    torch.autocast = _fake_autocast
+    torch.float16 = "float16"
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    return torch
+
+
+@pytest.fixture(autouse=True)
+def fake_torch(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Every test in this module runs against _install_fake_torch; request it to pin probes."""
+    return _install_fake_torch(monkeypatch)
+
+
 def test_install_message_names_module_and_command() -> None:
     message = _install_message("gliner2")
     assert "gliner2" in message
@@ -66,19 +97,15 @@ def test_install_message_names_module_and_command() -> None:
 # --- _model_device: CUDA when available, CPU fallbacks -------------------------
 
 
-def test_model_device_selects_cuda_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
-    import torch
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (6, 0))
-    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_50", "sm_60", "sm_75"])
+def test_model_device_selects_cuda_when_available(fake_torch: Any) -> None:
+    fake_torch.cuda.is_available = lambda: True
+    fake_torch.cuda.get_device_capability = lambda index: (6, 0)
+    fake_torch.cuda.get_arch_list = lambda: ["sm_50", "sm_60", "sm_75"]
     assert _model_device() == "cuda"
 
 
-def test_model_device_falls_back_to_cpu_without_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
-    import torch
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+def test_model_device_falls_back_to_cpu_without_cuda(fake_torch: Any) -> None:
+    fake_torch.cuda.is_available = lambda: False
     assert _model_device() == "cpu"
 
 
@@ -87,39 +114,34 @@ def test_model_device_cpu_when_torch_unimportable(monkeypatch: pytest.MonkeyPatc
     assert _model_device() == "cpu"
 
 
-def test_model_device_falls_back_to_cpu_when_arch_unsupported(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_device_falls_back_to_cpu_when_arch_unsupported(fake_torch: Any) -> None:
     """CUDA visible but torch has no kernels for the GPU arch (e.g. a cu128 build on a
     P100/sm_60) — CPU instead of crashing on the first CUDA call."""
-    import torch
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (6, 0))
-    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_75", "sm_80"])
+    fake_torch.cuda.is_available = lambda: True
+    fake_torch.cuda.get_device_capability = lambda index: (6, 0)
+    fake_torch.cuda.get_arch_list = lambda: ["sm_75", "sm_80"]
     assert _model_device() == "cpu"
 
 
 # --- _cuda_device_supported: arch-list gate for one device ----------------------
 
 
-def test_cuda_device_supported_matches_compiled_arch_list(monkeypatch: pytest.MonkeyPatch) -> None:
-    import torch
-
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (6, 0))
-    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_60", "sm_75"])
-    assert _cuda_device_supported(torch, 0) is True
-    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_75", "sm_80"])
-    assert _cuda_device_supported(torch, 0) is False
+def test_cuda_device_supported_matches_compiled_arch_list(fake_torch: Any) -> None:
+    fake_torch.cuda.get_device_capability = lambda index: (6, 0)
+    fake_torch.cuda.get_arch_list = lambda: ["sm_60", "sm_75"]
+    assert _cuda_device_supported(fake_torch, 0) is True
+    fake_torch.cuda.get_arch_list = lambda: ["sm_75", "sm_80"]
+    assert _cuda_device_supported(fake_torch, 0) is False
 
 
-def test_cuda_device_supported_false_when_capability_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cuda_device_supported_false_when_capability_raises(fake_torch: Any) -> None:
     """A device that errors on capability query counts as unsupported, not a crash."""
-    import torch
 
     def _raise(index: int) -> tuple[int, int]:
         raise RuntimeError("CUDA driver error")
 
-    monkeypatch.setattr(torch.cuda, "get_device_capability", _raise)
-    assert _cuda_device_supported(torch, 0) is False
+    fake_torch.cuda.get_device_capability = _raise
+    assert _cuda_device_supported(fake_torch, 0) is False
 
 
 def test_sort_key_and_overlaps_helpers() -> None:
@@ -1293,7 +1315,7 @@ def test_fp16_autocast_arms_only_on_cuda(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert default_backend._raw_batch_extract(model, ["a"], 1)[0]["text"] == "a"
 
 
-def test_explicit_fp16_autocast_arms_on_cuda_and_the_fp32_default_does_not(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_explicit_fp16_autocast_arms_on_cuda_and_the_fp32_default_does_not(fake_torch: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A CUDA-pinned fp16 backend wraps the forward in ``torch.autocast('cuda', float16)``; the
     fp32 default does not, which is what keeps the fp32-mined cache warm.
 
@@ -1303,8 +1325,6 @@ def test_explicit_fp16_autocast_arms_on_cuda_and_the_fp32_default_does_not(monke
     DAKP owns is the arming decision in ``_raw_batch_extract``, not torch's autocast internals.
     The CPU test above already proves the non-cuda path never enters the context.
     """
-    import torch
-
     _install_fake_gliner2(monkeypatch, tmp_path, [])
     entered: list[tuple[str, Any]] = []
 
@@ -1313,10 +1333,10 @@ def test_explicit_fp16_autocast_arms_on_cuda_and_the_fp32_default_does_not(monke
         entered.append((device_type, kwargs.get("dtype")))
         yield
 
-    monkeypatch.setattr(torch, "autocast", _recording_autocast)
+    monkeypatch.setattr(fake_torch, "autocast", _recording_autocast)
     backend = DiseaseNER(offline=False, gazetteer={}, device="cuda", workdir=tmp_path, compute_dtype="fp16")
     backend._raw_batch_extract(_BatchRecordingModel(), ["a"], 1)
-    assert entered == [("cuda", torch.float16)]  # explicit fp16 arms autocast on a cuda device
+    assert entered == [("cuda", fake_torch.float16)]  # explicit fp16 arms autocast on a cuda device
     # The fp32 default must NOT autocast: its output bits are what the warm store was mined with.
     entered.clear()
     default_backend = DiseaseNER(offline=False, gazetteer={}, device="cuda", workdir=tmp_path)

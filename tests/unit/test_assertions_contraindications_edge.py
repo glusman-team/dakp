@@ -29,6 +29,7 @@ from typing import Any
 
 import polars as pl
 import pytest
+from test_ner_edge import _install_fake_torch
 
 from dakp_pipeline.assertions.contraindications import (
     CONTRAINDICATION_GPUS,
@@ -523,79 +524,73 @@ def test_resolve_devices_returns_none_for_offline_ner() -> None:
 
 def test_resolve_devices_returns_gpus_when_cuda_available(monkeypatch: pytest.MonkeyPatch) -> None:
     """Production NER + 4 visible CUDA devices -> the full hardcoded GPU list."""
-    import torch
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 4)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (6, 0))
-    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_50", "sm_60", "sm_75"])
+    torch = _install_fake_torch(monkeypatch)
+    torch.cuda.is_available = lambda: True
+    torch.cuda.device_count = lambda: 4
+    torch.cuda.get_device_capability = lambda index: (6, 0)
+    torch.cuda.get_arch_list = lambda: ["sm_50", "sm_60", "sm_75"]
     assert _resolve_devices(DiseaseNER(offline=False)) == CONTRAINDICATION_GPUS
 
 
 def test_resolve_devices_caps_at_visible_device_count(monkeypatch: pytest.MonkeyPatch) -> None:
     """A single-GPU host (e.g. the laptop) gets only cuda:0 — never a missing cuda:N."""
-    import torch
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (6, 0))
-    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_60"])
+    torch = _install_fake_torch(monkeypatch)
+    torch.cuda.is_available = lambda: True
+    torch.cuda.device_count = lambda: 1
+    torch.cuda.get_device_capability = lambda index: (6, 0)
+    torch.cuda.get_arch_list = lambda: ["sm_60"]
     assert _resolve_devices(DiseaseNER(offline=False)) == ("cuda:0",)
 
 
 def test_resolve_devices_returns_none_when_no_arch_supported(monkeypatch: pytest.MonkeyPatch) -> None:
     """CUDA visible but torch has no kernels for any GPU's arch (e.g. a cu128 build on the
     P100s) — sequential CPU fallback instead of dispatching workers that crash on first use."""
-    import torch
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 4)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (6, 0))
-    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_75", "sm_80"])
+    torch = _install_fake_torch(monkeypatch)
+    torch.cuda.is_available = lambda: True
+    torch.cuda.device_count = lambda: 4
+    torch.cuda.get_device_capability = lambda index: (6, 0)
+    torch.cuda.get_arch_list = lambda: ["sm_75", "sm_80"]
     assert _resolve_devices(DiseaseNER(offline=False)) is None
 
 
 def test_resolve_devices_keeps_only_arch_supported_devices(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mixed fleet: only devices whose arch is compiled into torch are dispatched."""
-    import torch
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (8, 6) if index == 0 else (6, 0))
-    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_86"])
+    torch = _install_fake_torch(monkeypatch)
+    torch.cuda.is_available = lambda: True
+    torch.cuda.device_count = lambda: 2
+    torch.cuda.get_device_capability = lambda index: (8, 6) if index == 0 else (6, 0)
+    torch.cuda.get_arch_list = lambda: ["sm_86"]
     assert _resolve_devices(DiseaseNER(offline=False)) == ("cuda:0",)
 
 
 def test_resolve_devices_skips_device_whose_capability_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """A device that errors on capability query counts as unsupported; the rest still dispatch."""
-    import torch
+    torch = _install_fake_torch(monkeypatch)
 
     def capability(index: int) -> tuple[int, int]:
         if index == 0:
             raise RuntimeError("CUDA error")
         return (8, 6)
 
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", capability)
-    monkeypatch.setattr(torch.cuda, "get_arch_list", lambda: ["sm_86"])
+    torch.cuda.is_available = lambda: True
+    torch.cuda.device_count = lambda: 2
+    torch.cuda.get_device_capability = capability
+    torch.cuda.get_arch_list = lambda: ["sm_86"]
     assert _resolve_devices(DiseaseNER(offline=False)) == ("cuda:1",)
 
 
 def test_resolve_devices_returns_none_when_cuda_reports_zero_devices(monkeypatch: pytest.MonkeyPatch) -> None:
     """is_available() True but device_count() == 0 (driver edge) falls back to sequential."""
-    import torch
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    torch = _install_fake_torch(monkeypatch)
+    torch.cuda.is_available = lambda: True
+    torch.cuda.device_count = lambda: 0
     assert _resolve_devices(DiseaseNER(offline=False)) is None
 
 
 def test_resolve_devices_returns_none_when_cuda_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     """Production NER but no CUDA -> sequential fallback (CI / non-GPU hosts)."""
-    import torch
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    torch = _install_fake_torch(monkeypatch)
+    torch.cuda.is_available = lambda: False
     assert _resolve_devices(DiseaseNER(offline=False)) is None
 
 
