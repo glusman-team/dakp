@@ -268,14 +268,38 @@ def _work_item_parts(item: ContraWorkItem | tuple[str, str, str]) -> tuple[str, 
     return item
 
 
-def _work_item_evidence(item: ContraWorkItem | tuple[str, str, str], mention: Mention) -> str:
+def _overlapping_span(item: ContraWorkItem, mention: Mention, spans: dict[Mention, EvidenceSpan | None] | None = None) -> EvidenceSpan | None:
+    """First evidence span overlapping ``mention``, or ``None`` (the shared evidence lookup).
+
+    ``spans`` is an optional per-item memo keyed by the value-hashable frozen :class:`Mention`:
+    the same mention is localized repeatedly (classification, object attachment, qualifier
+    attachment) and every lookup otherwise rescans all evidence spans. ``evidence_spans`` is an
+    immutable tuple, so the first-overlap answer for a mention value never changes within a run
+    and the memo is exact.
+    """
+    if spans is not None:
+        try:
+            return spans[mention]
+        except KeyError:
+            pass
+    found: EvidenceSpan | None = None
+    for span in item.evidence_spans:
+        if mention.start < span.mined_end and span.mined_start < mention.end:
+            found = span
+            break
+    if spans is not None:
+        spans[mention] = found
+    return found
+
+
+def _work_item_evidence(
+    item: ContraWorkItem | tuple[str, str, str], mention: Mention, spans: dict[Mention, EvidenceSpan | None] | None = None
+) -> str:
     """Return the original sentence containing a mention, or the mined text as a fallback."""
     if not isinstance(item, ContraWorkItem):
         return item[2].strip()
-    for span in item.evidence_spans:
-        if mention.start < span.mined_end and span.mined_start < mention.end:
-            return span.text.strip()
-    return item.source_text.strip()
+    span = _overlapping_span(item, mention, spans)
+    return item.source_text.strip() if span is None else span.text.strip()
 
 
 def _offset_space(item: ContraWorkItem | tuple[str, str, str]) -> str:
@@ -291,17 +315,21 @@ def _offset_space(item: ContraWorkItem | tuple[str, str, str]) -> str:
     return item[2]
 
 
-def _mention_local_span(item: ContraWorkItem, mention: Mention) -> tuple[str, int, int, int] | None:
+def _mention_local_span(
+    item: ContraWorkItem, mention: Mention, spans: dict[Mention, EvidenceSpan | None] | None = None
+) -> tuple[str, int, int, int] | None:
     """Map a mined mention back to ``(source sentence, local start, local end, source start)``."""
-    for span in item.evidence_spans:
-        if mention.start < span.mined_end and span.mined_start < mention.end:
-            start = span.source_start + max(0, mention.start - span.mined_start)
-            end = span.source_start + min(mention.end - span.mined_start, span.mined_end - span.mined_start)
-            return span.text, max(0, start - span.source_start), min(len(span.text), end - span.source_start), span.source_start
-    return None
+    span = _overlapping_span(item, mention, spans)
+    if span is None:
+        return None
+    start = span.source_start + max(0, mention.start - span.mined_start)
+    end = span.source_start + min(mention.end - span.mined_start, span.mined_end - span.mined_start)
+    return span.text, max(0, start - span.source_start), min(len(span.text), end - span.source_start), span.source_start
 
 
-def _classify_mention(item: ContraWorkItem | tuple[str, str, str], mention: Mention) -> MentionDecision:
+def _classify_mention(
+    item: ContraWorkItem | tuple[str, str, str], mention: Mention, spans: dict[Mention, EvidenceSpan | None] | None = None
+) -> MentionDecision:
     """Apply local polarity and trigger rules before an edge is formed.
 
     A dedicated contraindication section supplies section-level positive context, but explicit
@@ -309,13 +337,13 @@ def _classify_mention(item: ContraWorkItem | tuple[str, str, str], mention: Ment
     precautions) candidates require hard prohibition language; broad filter terms (``avoid`` /
     ``not recommended``) are not enough to assert a contraindication.
     """
-    evidence_text = _work_item_evidence(item, mention)
+    evidence_text = _work_item_evidence(item, mention, spans)
     if _EXPLICIT_NEGATION.search(evidence_text):
         return MentionDecision(False, "explicit_negation", evidence_text)
     hard = _HARD_CONTRA_TRIGGER.search(evidence_text)
     medication = _MEDICATION_CONTEXT.search(evidence_text)
     if medication is not None and isinstance(item, ContraWorkItem):
-        mapped = _mention_local_span(item, mention)
+        mapped = _mention_local_span(item, mention, spans)
         patient_with = _PATIENT_WITH_MARKER.search(evidence_text)
         # A disease named only before ``patients receiving/taking <drug>`` is treatment context,
         # not a contraindicated patient disease. The grouped template below preserves a separate
@@ -339,7 +367,9 @@ def _classify_mention(item: ContraWorkItem | tuple[str, str, str], mention: Ment
     return MentionDecision(True, "contraindication_section", evidence_text)
 
 
-def _classify_mentions(item: ContraWorkItem | tuple[str, str, str], mentions: list[Mention]) -> list[MentionDecision]:
+def _classify_mentions(
+    item: ContraWorkItem | tuple[str, str, str], mentions: list[Mention], spans: dict[Mention, EvidenceSpan | None] | None = None
+) -> list[MentionDecision]:
     """Classify mentions and assign only explicit, unambiguous disease context.
 
     The common template is ``for treatment of A in patients with B``: ``B`` is the
@@ -353,7 +383,7 @@ def _classify_mentions(item: ContraWorkItem | tuple[str, str, str], mentions: li
     parallel to ``object_mentions(mentions)``, which is what the caller iterates.
     """
     mentions = object_mentions(mentions)
-    decisions = [_classify_mention(item, mention) for mention in mentions]
+    decisions = [_classify_mention(item, mention, spans) for mention in mentions]
     if not isinstance(item, ContraWorkItem) or not mentions:
         return decisions
 
@@ -361,7 +391,7 @@ def _classify_mentions(item: ContraWorkItem | tuple[str, str, str], mentions: li
     origin: list[int] = []
     sentence_by_mention: dict[int, tuple[str, int]] = {}
     for index, mention in enumerate(mentions):
-        mapped = _mention_local_span(item, mention)
+        mapped = _mention_local_span(item, mention, spans)
         if mapped is None:
             continue
         sentence, start, end, source_start = mapped
@@ -692,30 +722,44 @@ def build_contraindication_rows(
                 source = _SOURCE_DAILYMED
             all_mentions = mined[index]
             mentions = object_mentions(all_mentions)
-            decisions = _classify_mentions(item, mentions)
+            # One span memo per item: classification, object localization, and qualifier
+            # localization share a single evidence-span scan per distinct mention value.
+            item_spans: dict[Mention, EvidenceSpan | None] | None = {} if isinstance(item, ContraWorkItem) else None
+            decisions = _classify_mentions(item, mentions, item_spans)
             qualifier_fields: dict[int, dict[str, str]] = {}
             qualifier_scores: dict[int, dict[str, tuple[float, str]]] = {}
             localized_objects: list[tuple[int, Mention, str]] = []
             localized_qualifiers: list[tuple[Mention, str]] = []
-            for index, mention in enumerate(mentions):
-                mapped = _mention_local_span(item, mention) if isinstance(item, ContraWorkItem) else None
+            # Mention is a frozen, value-hashable dataclass: set membership replaces the
+            # O(objects) linear scan per qualifier mention.
+            mention_objects = frozenset(mentions)
+            for object_index, mention in enumerate(mentions):
+                mapped = _mention_local_span(item, mention, item_spans) if isinstance(item, ContraWorkItem) else None
                 if mapped is None:
-                    localized_objects.append((index, mention, _offset_space(item)))
+                    localized_objects.append((object_index, mention, _offset_space(item)))
                 else:
                     sentence, start, end, _source_start = mapped
-                    localized_objects.append((index, replace(mention, start=start, end=end, text=sentence[start:end]), sentence))
+                    localized_objects.append((object_index, replace(mention, start=start, end=end, text=sentence[start:end]), sentence))
             for mention in all_mentions:
-                if mention in mentions:
+                if mention in mention_objects:
                     continue
-                mapped = _mention_local_span(item, mention) if isinstance(item, ContraWorkItem) else None
+                mapped = _mention_local_span(item, mention, item_spans) if isinstance(item, ContraWorkItem) else None
                 if mapped is None:
                     localized_qualifiers.append((mention, _offset_space(item)))
                 else:
                     sentence, start, end, _source_start = mapped
                     localized_qualifiers.append((replace(mention, start=start, end=end, text=sentence[start:end]), sentence))
-            for sentence in {value for _index, _mention, value in localized_objects}:
-                object_group = [(index, mention) for index, mention, value in localized_objects if value == sentence]
-                qualifier_group = [mention for mention, value in localized_qualifiers if value == sentence]
+            # Group objects and qualifiers by sentence in one pass instead of rescanning both
+            # lists once per distinct sentence. Sentence groups partition the mentions, so the
+            # per-mention-index qualifier assignment below cannot depend on group order.
+            objects_by_sentence: dict[str, list[tuple[int, Mention]]] = {}
+            for object_index, mention, sentence in localized_objects:
+                objects_by_sentence.setdefault(sentence, []).append((object_index, mention))
+            qualifiers_by_sentence: dict[str, list[Mention]] = {}
+            for mention, sentence in localized_qualifiers:
+                qualifiers_by_sentence.setdefault(sentence, []).append(mention)
+            for sentence, object_group in objects_by_sentence.items():
+                qualifier_group = qualifiers_by_sentence.get(sentence, [])
                 attached, scores = attach_qualifiers_with_scores(
                     [mention for _index, mention in object_group], qualifier_group, lambda _mention, value=sentence: value
                 )

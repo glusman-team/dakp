@@ -79,7 +79,9 @@ BLAKE3-keyed mentions under `tmp/cache/ner/`), e.g. to force re-mining without l
 - **aggregate**: joins the extracts and NER mentions into the DailyMed-backed tables, unions the
   EMA-derived approved-treats rows (registry MeSH therapeutic areas, mined EPAR indications, and
   mined SmPC indication sections) and EMA SmPC contraindication rows, and aggregates FAERS and
-  Canada Vigilance observed-use rows without NER.
+  Canada Vigilance observed-use rows without NER. Label corroboration preparations are cached
+  per unique section/sentence within a run; contraindication evidence spans and qualifier groups
+  are indexed per work item. These caches preserve the existing matching, offsets, and provenance.
 - **Tablassert handoff**: generates a graph config plus one table config per assertion table,
   then delegates to `tablassert build-kg` and validates the emitted KGX against the DAKP
   Translator contract — bare-`biolink:Association` edges, off-allow-list node categories, or

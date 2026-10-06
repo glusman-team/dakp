@@ -85,7 +85,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 import polars as pl
@@ -247,16 +247,30 @@ def _indication_observations(
     candidate: Mapping[str, str],
     disease_map: Mapping[str, Mapping[str, str]],
     mentions: Mapping[tuple[str, str], list[Mention]] | None,
+    preparations: _PreparationCache | None = None,
 ) -> list[dict[str, Any]]:
-    """Preserve the sentence, context, host, and model corroboration for each support document."""
+    """Preserve the sentence, context, host, and model corroboration for each support document.
+
+    ``preparations`` (the run-scoped cache) serves each unique text's section preparation and
+    sentence spans once instead of once per candidate x document; results are identical with
+    or without it.
+    """
     observations: list[dict[str, Any]] = []
     for set_id in sets:
         for occurrence, (doc_id, text) in enumerate(dailymed.indication_docs.get(set_id, [])):
             doc_mentions = list((mentions or {}).get((set_id, _doc_key(doc_id, occurrence)), []))
-            if not _section_mentions_condition(text, candidate, disease_map, doc_mentions):
+            if not _section_mentions_condition(
+                text, candidate, disease_map, doc_mentions, preparation=preparations.prepare(text, disease_map) if preparations is not None else None
+            ):
                 continue
-            for start, _end, sentence in _sentence_spans(text):
-                if not _section_mentions_condition(sentence, candidate, disease_map, doc_mentions):
+            for start, _end, sentence in preparations.sentence_spans(text) if preparations is not None else _sentence_spans(text):
+                if not _section_mentions_condition(
+                    sentence,
+                    candidate,
+                    disease_map,
+                    doc_mentions,
+                    preparation=preparations.prepare(sentence, disease_map) if preparations is not None else None,
+                ):
                     continue
                 sentence_end = start + len(sentence)
                 sentence_mentions = [m for m in doc_mentions if m.start < sentence_end and start < m.end]
@@ -312,6 +326,53 @@ def _positive_context_text(section_text: str) -> str:
     """
     kept = [chunk for chunk in _SENTENCE_BOUNDARY.split(section_text or "") if chunk.strip() and not _NEGATION_CUES.search(chunk)]
     return " ".join(kept)
+
+
+@dataclass(frozen=True)
+class _SectionPreparation:
+    """Candidate-invariant preparation of one indication-section (or sentence) text.
+
+    Every field is a pure function of the text and the run's disease map, so it can be
+    computed once per unique text and shared by every candidate compared against it. The
+    comparison itself (needle/CURIE branching, mention loop) stays candidate-sensitive and
+    is never cached.
+    """
+
+    normalized_text: str
+    dictionary_matches: tuple[Mapping[str, str], ...]
+
+
+class _PreparationCache:
+    """Run-scoped per-text cache of :class:`_SectionPreparation` and sentence spans.
+
+    Bounded by construction: keys are the distinct indication-section and sentence texts of
+    the run's visible labels (corpus-proportional constants), never the candidate stream, so
+    the cache cannot grow with the hundreds of thousands of production FAERS candidates.
+    Instances live only inside one :func:`build_approved_treats_rows` call and the disease
+    map is that call's parameter, so keying on text alone is sound. Returned span lists are
+    shared -- callers must treat them as read-only (they only iterate).
+    """
+
+    def __init__(self) -> None:
+        self._by_text: dict[str, _SectionPreparation] = {}
+        self._spans: dict[str, list[tuple[int, int, str]]] = {}
+
+    def prepare(self, text: str, disease_map: Mapping[str, Mapping[str, str]]) -> _SectionPreparation:
+        prepared = self._by_text.get(text)
+        if prepared is None:
+            positive_text = _positive_context_text(text)
+            prepared = _SectionPreparation(
+                normalized_text=normalize_text(positive_text), dictionary_matches=tuple(match_diseases(positive_text, disease_map))
+            )
+            self._by_text[text] = prepared
+        return prepared
+
+    def sentence_spans(self, text: str) -> list[tuple[int, int, str]]:
+        spans = self._spans.get(text)
+        if spans is None:
+            spans = _sentence_spans(text)
+            self._spans[text] = spans
+        return spans
 
 
 class ApprovedTreatsShaper:
@@ -486,6 +547,7 @@ def build_approved_treats_rows(
     )
 
     aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
+    preparations = _PreparationCache()
     candidates_seen = 0
     dropped_no_ingredient_map = 0
     dropped_no_spl_support = 0
@@ -501,11 +563,11 @@ def build_approved_treats_rows(
         if not sets:  # (2)+(3) DailyMed approval AND SPL indication-section support
             dropped_no_spl_support += 1
             continue
-        support_sets = _condition_corroborated_sets(dailymed, sets, cand, disease_map, spl_mentions)
+        support_sets = _condition_corroborated_sets(dailymed, sets, cand, disease_map, spl_mentions, preparations)
         if not support_sets:  # (4) the condition must actually appear on a supporting label
             dropped_no_label_term_support += 1
             continue
-        observations = _indication_observations(dailymed, support_sets, cand, disease_map, spl_mentions)
+        observations = _indication_observations(dailymed, support_sets, cand, disease_map, spl_mentions, preparations)
         if not observations:
             dropped_no_label_term_support += 1
             continue
@@ -615,20 +677,31 @@ def _condition_corroborated_sets(
     cand: Mapping[str, str],
     disease_map: Mapping[str, Mapping[str, str]],
     mentions: Mapping[tuple[str, str], list[Mention]] | None = None,
+    preparations: _PreparationCache | None = None,
 ) -> list[str]:
     """The supporting sets whose indication-section text actually mentions the candidate condition."""
     return [
         set_id
         for set_id in sets
         if any(
-            _section_mentions_condition(text, cand, disease_map, (mentions or {}).get((set_id, _doc_key(doc_id, occurrence))))
+            _section_mentions_condition(
+                text,
+                cand,
+                disease_map,
+                (mentions or {}).get((set_id, _doc_key(doc_id, occurrence))),
+                preparation=preparations.prepare(text, disease_map) if preparations is not None else None,
+            )
             for occurrence, (doc_id, text) in enumerate(dailymed.indication_docs[set_id])
         )
     ]
 
 
 def _section_mentions_condition(
-    section_text: str, cand: Mapping[str, str], disease_map: Mapping[str, Mapping[str, str]], mentions: list[Mention] | None = None
+    section_text: str,
+    cand: Mapping[str, str],
+    disease_map: Mapping[str, Mapping[str, str]],
+    mentions: list[Mention] | None = None,
+    preparation: _SectionPreparation | None = None,
 ) -> bool:
     """True when the indication section names the candidate condition (dictionary, verbatim, or NER).
 
@@ -653,14 +726,19 @@ def _section_mentions_condition(
     needle = normalize_text(cand["object_text"])
     if not needle:
         return False
-    positive_text = _positive_context_text(section_text)
-    for match in match_diseases(positive_text, disease_map):
+    if preparation is None:
+        positive_text = _positive_context_text(section_text)
+        dictionary_matches = match_diseases(positive_text, disease_map)
+        normalized_section = normalize_text(positive_text)
+    else:
+        dictionary_matches = preparation.dictionary_matches
+        normalized_section = preparation.normalized_text
+    for match in dictionary_matches:
         if cand["object_curie"] and match["curie"]:
             if match["curie"] == cand["object_curie"]:
                 return True
         elif normalize_text(match["text"]) == needle:
             return True
-    normalized_section = normalize_text(positive_text)
     if f" {needle} " in f" {normalized_section} ":
         return True
     for mention in object_mentions(mentions or []):

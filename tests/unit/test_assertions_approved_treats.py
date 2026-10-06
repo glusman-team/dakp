@@ -8,8 +8,12 @@ determinism, and the end-to-end shaper TSV output.
 
 from __future__ import annotations
 
-import polars as pl
+from collections.abc import Mapping
 
+import polars as pl
+import pytest
+
+import dakp_pipeline.assertions.approved_treats as approved_treats
 from dakp_pipeline.assertions.approved_treats import ApprovedTreatsShaper, build_approved_treats_rows
 from dakp_pipeline.assertions.evidence import (
     DailyMedEvidence,
@@ -20,6 +24,7 @@ from dakp_pipeline.assertions.evidence import (
 )
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
+from dakp_pipeline.ner.ner import Mention
 
 # --- the rule, driven by FAERS NDA-bearing pairs --------------------------------
 
@@ -221,3 +226,131 @@ def test_shaper_writes_uncompressed_tsv_with_contract_columns(
     assert frame.height == 3  # DailyMed-fallback path (no FAERS case table among the inputs)
     # Uncompressed: plain-text header is the first line.
     assert out.uri.read_bytes().startswith(b"subject_text\t")
+
+
+# --- run-scoped preparation cache (per-text invariants across many candidates) ---
+
+
+def _host_mention(text: str) -> Mention:
+    return Mention(text=text, start=0, end=len(text), type="Disease", score=1.0)
+
+
+class _NullPreparationCache:
+    """Replaces the run-scoped cache with per-call recomputation (the pre-fix behavior)."""
+
+    def prepare(self, text: str, disease_map: Mapping[str, Mapping[str, str]]) -> approved_treats._SectionPreparation:
+        positive_text = approved_treats._positive_context_text(text)
+        return approved_treats._SectionPreparation(
+            normalized_text=approved_treats.normalize_text(positive_text),
+            dictionary_matches=tuple(approved_treats.match_diseases(positive_text, disease_map)),
+        )
+
+    def sentence_spans(self, text: str) -> list[tuple[int, int, str]]:
+        return approved_treats._sentence_spans(text)
+
+
+def test_preparation_cache_prepares_each_unique_text_once(monkeypatch, disease_map: dict[str, dict[str, str]]) -> None:
+    """Section preparation runs once per unique text, never once per candidate x document."""
+    section = "Examplestatin improves hypercholesterolemia. Headache has not been established. Treats migraine disorder in adults."
+    ndas = [f"9{i:04d}" for i in range(1, 9)]
+    ev = DailyMedEvidence(
+        approval_sets={nda: {f"SET-{nda}"} for nda in ndas},
+        approval_display={nda: nda for nda in ndas},
+        set_ingredient={f"SET-{nda}": ("Examplestatin", "UNII:QFX8B1R4QF") for nda in ndas},
+        indication_docs={f"SET-{nda}": [(f"SET-{nda}#34067-9", section)] for nda in ndas},
+    )
+    mapping = {nda: {"EXAMPLESTATIN"} for nda in ndas}
+    cases = pl.DataFrame(
+        {
+            "nda": ndas,
+            "indication": ["hypercholesterolemia"] * len(ndas),
+            "drugname": ["Examplestatin"] * len(ndas),
+            "ingredient": ["Examplestatin"] * len(ndas),
+        }
+    )
+
+    real_positive_text = approved_treats._positive_context_text
+    prepared_texts: list[str] = []
+
+    def counting_positive_text(text: str) -> str:
+        prepared_texts.append(text)
+        return real_positive_text(text)
+
+    monkeypatch.setattr(approved_treats, "_positive_context_text", counting_positive_text)
+    rows = build_approved_treats_rows(cases, ev, mapping, disease_map)
+
+    assert rows, "sanity: candidates must be corroborated"
+    unique_texts = {section, *(sentence for _s, _e, sentence in approved_treats._sentence_spans(section))}
+    assert len(prepared_texts) == len(unique_texts)  # 4, NOT candidates x (1 section + 3 sentences)
+
+
+def test_rows_identical_with_and_without_preparation_cache(monkeypatch, disease_map: dict[str, dict[str, str]]) -> None:
+    """Cached and uncached aggregation produce identical rows (lexical + negation + normalize channels)."""
+    section = "Treats hypercholesterolemia in adults. Migraine disorder not recommended. Also treats migraine headaches in adults."
+    ndas = ["11111", "22222", "33333"]
+    ev = DailyMedEvidence(
+        approval_sets={nda: {f"SET-{nda}"} for nda in ndas},
+        approval_display={nda: nda for nda in ndas},
+        set_ingredient={f"SET-{nda}": ("Examplestatin", "UNII:QFX8B1R4QF") for nda in ndas},
+        indication_docs={f"SET-{nda}": [(f"SET-{nda}#34067-9", section), (f"SET-{nda}#34067-9b", "Migraine disorder clinic.")] for nda in ndas},
+    )
+    mapping = {nda: {"EXAMPLESTATIN"} for nda in ndas}
+    indications = ["hypercholesterolemia", "migraine headaches", "migraine disorder", "Migraine-Disorder"]
+    cases = pl.DataFrame(
+        {
+            "nda": [nda for nda in ndas for _ in indications],
+            "indication": indications * len(ndas),
+            "drugname": ["Examplestatin"] * (len(indications) * len(ndas)),
+            "ingredient": ["Examplestatin"] * (len(indications) * len(ndas)),
+        }
+    )
+
+    original = approved_treats._positive_context_text
+    preparations: list[str] = []
+
+    def counted(text: str) -> str:
+        preparations.append(text)
+        return original(text)
+
+    monkeypatch.setattr(approved_treats, "_positive_context_text", counted)
+    rows_cached = build_approved_treats_rows(cases, ev, mapping, disease_map)
+    cached_count = len(preparations)
+    preparations.clear()
+    monkeypatch.setattr(approved_treats, "_PreparationCache", _NullPreparationCache)
+    rows_uncached = build_approved_treats_rows(cases, ev, mapping, disease_map)
+
+    assert rows_cached
+    assert rows_cached == rows_uncached
+    assert len(preparations) > cached_count, "the uncached seam must actually recompute preparation"
+
+
+@pytest.mark.parametrize(
+    ("section_text", "object_text", "object_curie", "section_mentions", "expected"),
+    [
+        # lexical verbatim, no dictionary entry anywhere
+        ("Treats migraine headaches in adults.", "migraine headaches", "", [], True),
+        # different spelling/case/punctuation: the normalized-text channel matches
+        ("Treats Migraine-Headaches, chronic form.", "MIGRAINE    headaches!", "", [], True),
+        # NER mention word-contained IN the more specific candidate (model channel)
+        ("Hormone receptor positive breast cancer.", "hormone receptor positive breast cancer", "", [_host_mention("breast cancer")], True),
+        # NER mention naming a condition that survives only in a negated sentence
+        ("Headache not indicated. Treats migraine disorder.", "headache", "", [_host_mention("headache")], False),
+        # same CURIE, different surface spelling (dictionary CURIE-equality channel)
+        ("Migraine disorder responds to therapy.", "hemicrania", "MONDO:0005439", [], True),
+        # different CURIE and no textual overlap: no channel corroborates
+        ("Migraine disorder responds to therapy.", "episodic pain", "MONDO:9999999", [], False),
+    ],
+)
+def test_section_mentions_condition_with_preparation_matches_without(
+    section_text: str, object_text: str, object_curie: str, section_mentions: list, expected: bool
+) -> None:
+    local_map = {"migraine disorder": {"curie": "MONDO:0005439", "name": "Migraine", "category": "Disease"}}
+    cand = {"object_text": object_text, "object_curie": object_curie}
+    cache = approved_treats._PreparationCache()
+    uncached = approved_treats._section_mentions_condition(section_text, cand, local_map, section_mentions)
+    prepared = cache.prepare(section_text, local_map)
+    cached = approved_treats._section_mentions_condition(section_text, cand, local_map, section_mentions, preparation=prepared)
+    repeated = approved_treats._section_mentions_condition(
+        section_text, cand, local_map, section_mentions, preparation=cache.prepare(section_text, local_map)
+    )
+    assert cached == repeated == uncached == expected
