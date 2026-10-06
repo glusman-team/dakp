@@ -441,3 +441,111 @@ def test_transform_mines_indications_with_the_injected_ner(ctx: TaskContext, dis
     assert mined["FDA_regulatory_approvals"] == "EMEA/H/C/005540"
     assert mined["supporting_spl_documents"] == "https://www.ema.europa.eu/en/medicines/human/EPAR/pyrukynd"
     assert by_pair[("teclistamab", "multiple myeloma")]["upstream_resource_ids"] == "infores:epar"  # INN fallback subject
+
+
+# --- US-006: SmPC 4.1 indication mining (infores:epar) ---------------------------
+
+from dakp_pipeline.assertions.approved_treats import _smpc_indication_items, build_smpc_treats_rows  # noqa: E402
+from dakp_pipeline.extract.ema_smpc import SMPC_SECTIONS_COLUMNS  # noqa: E402
+
+_SMPC_URL = "https://www.ema.europa.eu/en/documents/product-information/kemsu-epar-product-information_en.pdf"
+
+
+def _smpc_frame(rows: list[dict[str, str]]) -> pl.DataFrame:
+    base = dict.fromkeys(SMPC_SECTIONS_COLUMNS, "")
+    return pl.DataFrame([{**base, **row} for row in rows], schema=dict.fromkeys(SMPC_SECTIONS_COLUMNS, pl.Utf8))
+
+
+def _indication_section(text: str, product: str = "EMEA/H/C/006395", kind: str = "indications") -> dict[str, str]:
+    return {
+        "source_record_id": f"{product}::{kind}",
+        "ema_product_number": product,
+        "medicine_name": "KemSu",
+        "section_kind": kind,
+        "section_title": "4.1 Therapeutic indications",
+        "section_text": text,
+        "document_url": _SMPC_URL,
+    }
+
+
+def _smpc_mined(frame: pl.DataFrame, ner: DiseaseNER) -> dict[tuple[str, str], list[Mention]]:
+    return {(key, doc): ner.extract(text) for key, doc, text in _smpc_indication_items(frame, _ema_frame([_registry_row()]))}
+
+
+def test_smpc_rows_mined_from_indication_text(disease_map: dict[str, dict[str, str]]) -> None:
+    """4.1 sections mine like EPAR text; provenance follows the approved-treats EMA conventions."""
+    frame = _smpc_frame([_indication_section("KemSu is indicated for the management of severe pain.")])
+    rows = build_smpc_treats_rows(frame, _ema_frame([_registry_row()]), _smpc_mined(frame, _ner("severe pain", "pain")), disease_map)
+    by_pair = _rows_by_pair(rows)
+    assert set(by_pair) == {("sufentanil", "severe pain"), ("ketamine", "severe pain")}
+
+    row = by_pair[("ketamine", "severe pain")]
+    assert row["predicate"] == "biolink:treats"
+    assert row["FDA_regulatory_approvals"] == "EMEA/H/C/006395"
+    assert row["supporting_spl_sets"] == ""
+    assert row["supporting_spl_documents"] == _SMPC_URL
+    assert row["clinical_approval_status"] == "approved_for_condition"
+    assert row["upstream_resource_ids"] == "infores:epar"
+
+
+def test_smpc_and_epar_patient_clause_contexts_match(disease_map: dict[str, dict[str, str]]) -> None:
+    """Combining the source PRs must not drop the disease context on the SmPC path."""
+    text = "KemSu is indicated for the treatment of severe pain in patients with diabetes. It is also indicated for shock."
+    registry = _ema_frame([_registry_row(therapeutic_indication=text)])
+    smpc = _smpc_frame([_indication_section(text)])
+    ner = DiseaseNER(offline=True, gazetteer={"severe pain": "disease", "diabetes": "disease", "shock": "disease"})
+    epar_rows = build_epar_treats_rows(registry, _mined_map(registry, ner), disease_map)
+    smpc_rows = build_smpc_treats_rows(smpc, registry, _smpc_mined(smpc, ner), disease_map)
+    for rows in (epar_rows, smpc_rows):
+        by_pair = _rows_by_pair(rows)
+        assert by_pair[("ketamine", "severe pain")]["disease_context_text"] == "diabetes"
+        assert by_pair[("ketamine", "shock")]["disease_context_text"] == ""
+
+
+def test_smpc_skips_unmapped_products_and_non_indication_sections(disease_map: dict[str, dict[str, str]]) -> None:
+    """Sections without a registry subject (or of the wrong kind) never become treats rows."""
+    frame = _smpc_frame(
+        [
+            _indication_section("KemSu is indicated for severe pain.", product="EMEA/H/C/999999"),
+            _indication_section("Contraindicated in patients with severe pain.", kind="contraindications"),
+        ]
+    )
+    rows = build_smpc_treats_rows(frame, _ema_frame([_registry_row()]), _smpc_mined(frame, _ner("severe pain", "pain")), disease_map)
+    assert rows == []
+
+
+def test_smpc_skips_negated_sentences(disease_map: dict[str, dict[str, str]]) -> None:
+    frame = _smpc_frame([_indication_section("KemSu is not indicated for severe pain.")])
+    rows = build_smpc_treats_rows(frame, _ema_frame([_registry_row()]), _smpc_mined(frame, _ner("severe pain", "pain")), disease_map)
+    assert rows == []
+
+
+def test_smpc_and_epar_rows_stay_separate_for_same_triple(disease_map: dict[str, dict[str, str]]) -> None:
+    """Same (substance, object) from the registry text and the SmPC text: two rows, each naming
+    the document that actually carries the sentence."""
+    registry = _ema_frame([_registry_row(therapeutic_indication="KemSu is indicated for severe pain.")])
+    smpc = _smpc_frame([_indication_section("KemSu is indicated for severe pain.")])
+    ner = _ner("severe pain", "pain")
+    epar_rows = build_epar_treats_rows(registry, {(key, doc): ner.extract(text) for key, doc, text in _ema_indication_items(registry)}, disease_map)
+    smpc_rows = build_smpc_treats_rows(smpc, registry, _smpc_mined(smpc, ner), disease_map)
+    assert len(epar_rows) == 2
+    assert len(smpc_rows) == 2
+    assert {row["supporting_spl_documents"] for row in epar_rows} == {"https://www.ema.europa.eu/en/medicines/human/EPAR/kemsu"}
+    assert {row["supporting_spl_documents"] for row in smpc_rows} == {_SMPC_URL}
+
+
+def test_shaper_unions_smpc_rows_with_fda_and_ema(disease_map: dict[str, dict[str, str]]) -> None:
+    """The full shaper dispatches SmPC items in the shared pool and unions the three row kinds."""
+    shaper_rows = build_approved_treats_rows(
+        None,
+        DailyMedEvidence(),
+        {},
+        disease_map,
+        ner=_ner("severe pain", "pain"),
+        ema_registry=_ema_frame([_registry_row(therapeutic_indication="KemSu is indicated for severe pain.")]),
+        smpc_sections=_smpc_frame([_indication_section("KemSu is indicated for severe pain.")]),
+    )
+    triples = {(row["subject_text"], row["object_text"], row["supporting_spl_documents"]) for row in shaper_rows}
+    assert ("ketamine", "severe pain", "https://www.ema.europa.eu/en/medicines/human/EPAR/kemsu") in triples
+    assert ("ketamine", "severe pain", _SMPC_URL) in triples
+    assert all(row["upstream_resource_ids"] in {"infores:ema", "infores:epar"} for row in shaper_rows)

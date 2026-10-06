@@ -196,11 +196,16 @@ EXPECTED_ANNOTATIONS = {
 # which carries no dataset-level URLs).
 EMA_MEDICINES_XLSX_URL = "https://www.ema.europa.eu/en/documents/report/medicines-output-medicines-report_en.xlsx"
 EMA_EPAR_DOCUMENTS_JSON_URL = "https://www.ema.europa.eu/en/documents/report/documents-output-epar_documents_json-report_en.json"
-# Each table's ``source.url`` list: approved-treats aggregates TWO upstream datasets (the DailyMed
-# full-release index and the EMA medicines xlsx), and contraindications two as well (the DailyMed
-# full-release index and the EMA EPAR documents report manifesting the SmPC crawl); the rest one.
+# Each table's ``source.url`` list: approved-treats aggregates THREE upstream datasets (the
+# DailyMed full-release index, the EMA medicines xlsx, and the EMA EPAR documents report that
+# manifests the SmPC crawl), contraindications two (the DailyMed index and the same SmPC
+# corpus); the rest one.
 EXPECTED_SOURCE_URLS = {
-    "approved_treats_assertions": ["https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm", EMA_MEDICINES_XLSX_URL],
+    "approved_treats_assertions": [
+        "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm",
+        EMA_MEDICINES_XLSX_URL,
+        EMA_EPAR_DOCUMENTS_JSON_URL,
+    ],
     "faers_applied_to_treat_assertions": ["https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"],
     "contraindication_assertions": ["https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm", EMA_EPAR_DOCUMENTS_JSON_URL],
 }

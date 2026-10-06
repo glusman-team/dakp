@@ -108,10 +108,11 @@ rig:
     scope: >-
       Approved-treats edges (DailyMed SPL indications joined to Drugs@FDA
       applications and FAERS cases, plus EMA centrally-authorised medicines'
-      MeSH therapeutic areas and mined EPAR indication text), FAERS
-      observed-use edges, and contraindication edges text-mined from
-      DailyMed SPL sections and EMA SmPC product-information sections; all
-      other content of the upstream feeds is out of scope.
+      MeSH therapeutic areas, mined EPAR indication text, and mined EMA SmPC
+      product-information indications), FAERS observed-use edges, and
+      contraindication edges text-mined from DailyMed SPL sections and EMA
+      SmPC product-information sections; all other content of the upstream
+      feeds is out of scope.
     relevant_files:
       - file_name: "DailyMed full-release SPL zips"
         location: "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm"
