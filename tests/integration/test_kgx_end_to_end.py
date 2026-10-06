@@ -28,7 +28,7 @@ so the skip does not affect the 100% ``src/`` coverage gate.
 Provenance shape (Tablassert >= 14.0, explicit ``override.sources``, SkyeAv/Tablassert#116): edges
 carry NO flat ``primary_knowledge_source`` scalar — retrieval provenance lives only in the
 ``sources`` list, where ``infores:drugapprovals-kp`` is the primary knowledge source
-for every edge family and carries the gestalt per-edge record URL with the edge's OWN id
+for every edge family and carries the edge-linkout per-edge record URL with the edge's OWN id
 resolved in place of ``{edge_id}``; DailyMed and FAERS follow as supporting entries, and the
 FAERS supporting entry on ``applied_to_treat`` edges also carries the static AEMS record URL.
 """
@@ -54,7 +54,7 @@ from dakp_pipeline import tablassert as dakp_tablassert_module
 from dakp_pipeline.assertions.evidence import DAILYMED_SET_CURIE_PREFIX
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
-from dakp_pipeline.tablassert import FAERS_SOURCE_RECORD_URL, GESTALT_RECORD_URL_TEMPLATE, TablassertRunner
+from dakp_pipeline.tablassert import EDGE_LINKOUT_URL_TEMPLATE, FAERS_SOURCE_RECORD_URL, TablassertRunner
 from dakp_pipeline.translator import INFORES_DAKP, read_kgx_jsonl, validate_kgx
 
 # Skip the WHOLE module when tablassert is not importable (deps not installed). tiny_fullmap imports
@@ -215,7 +215,7 @@ def test_three_edge_families_present(kgx_build: KgxBuild) -> None:
 # predicate -> the DAKP-primary ``sources`` shape the explicit ``override.sources`` template
 # (Tablassert >= 14.0, SkyeAv/Tablassert#116) stamps on every edge of that family:
 # (resource_id, resource_role, upstream_resource_ids-or-None) in template order. The DAKP
-# primary entry carries the gestalt record URL with the edge's own id resolved; the FAERS
+# primary entry carries the edge-linkout record URL with the edge's own id resolved; the FAERS
 # supporting entry on observed-use edges carries the static AEMS page
 # (:data:`~dakp_pipeline.tablassert.FAERS_SOURCE_RECORD_URL`).
 EXPECTED_SOURCES_BY_PREDICATE: dict[str, list[tuple[str, str, list[str] | None]]] = {
@@ -257,7 +257,7 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
     NO flat ``primary_knowledge_source`` scalar (removed in Tablassert 11.0): retrieval
     provenance lives only in the ``sources`` RetrievalSource list — the explicit
     ``override.sources`` template (SkyeAv/Tablassert#116). The DAKP primary entry carries the
-    gestalt per-edge record URL with ``{edge_id}`` resolved to the edge's own id; the FAERS
+    edge-linkout per-edge record URL with ``{edge_id}`` resolved to the edge's own id; the FAERS
     supporting entry on ``applied_to_treat`` edges retains the static AEMS page.
     """
     assert kgx_build.edges, "build-kg produced no edges"
@@ -280,8 +280,8 @@ def test_edges_carry_dakp_provenance(kgx_build: KgxBuild) -> None:
             assert all(value != [] for value in entry.values()), f"empty list leaked onto the edge: {entry}"
             assert "example.invalid" not in str(entry)
         dakp_entry = next(entry for entry in sources if entry.get("resource_id") == INFORES_DAKP)
-        # The gestalt viewer deep-link resolved the template to THIS edge's id.
-        assert dakp_entry.get("source_record_urls") == [GESTALT_RECORD_URL_TEMPLATE.replace("{edge_id}", edge["id"])]
+        # The edge-linkout deep-link resolved the template to THIS edge's id.
+        assert dakp_entry.get("source_record_urls") == [EDGE_LINKOUT_URL_TEMPLATE.replace("{edge_id}", edge["id"])]
         # No dataset-level record URLs on any other entry — except the FAERS supporting entry
         # on applied_to_treat edges, which carries exactly the static AEMS page.
         for entry in sources:
