@@ -80,7 +80,8 @@ wenceslaus over SSH, never locally:
 - Preserve source provenance, deterministic edge identity, clinical approval
   logic, and product-level FAERS case attribution.
 - Dev workflows go through the Makefile; CI (`.github/workflows/ci.yml`) runs
-  `make lint fmt-check typecheck test test-go vet` plus `make precommit`. The
+  parallel unit/integration shards and a `python-test` combined coverage gate;
+  other jobs run `make lint fmt-check typecheck test-go vet precommit`. The
   coverage gate lives in `pyproject.toml` (`fail_under`, currently 90); older
   README/history claims of 100% are stale. Read current config rather than
   trusting remembered test counts.
