@@ -15,7 +15,7 @@ import pytest
 from dakp_pipeline import acquire, runtime
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.sources import dailymed, drugsfda, ema, faers
+from dakp_pipeline.sources import dailymed, drugsfda, ema, ema_smpc, faers
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -30,8 +30,14 @@ def _ctx(workdir: Path, *, params: dict[str, object] | None = None) -> TaskConte
 
 @pytest.mark.parametrize(
     ("helper", "module"),
-    [(acquire.acquire_dailymed, dailymed), (acquire.acquire_faers, faers), (acquire.acquire_drugsfda, drugsfda), (acquire.acquire_ema, ema)],
-    ids=["dailymed", "faers", "drugsfda", "ema"],
+    [
+        (acquire.acquire_dailymed, dailymed),
+        (acquire.acquire_faers, faers),
+        (acquire.acquire_drugsfda, drugsfda),
+        (acquire.acquire_ema, ema),
+        (acquire.acquire_ema_smpc, ema_smpc),
+    ],
+    ids=["dailymed", "faers", "drugsfda", "ema", "ema_smpc"],
 )
 def test_acquire_source_helpers_delegate_to_fetcher(helper, module, monkeypatch, tmp_path: Path) -> None:
     calls: list[TaskContext] = []
@@ -165,7 +171,7 @@ def test_build_context_forwards_source_max_age_days(tmp_path: Path) -> None:
 
 def test_dag_includes_acquisition_tasks_and_pools(dakp_build) -> None:
     dag = dakp_build.dag_obj
-    acquire_ids = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ema", "acquire_ner_models"}
+    acquire_ids = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ema", "acquire_ema_smpc", "acquire_ner_models"}
     assert acquire_ids <= {t.task_id for t in dag.tasks}
 
     def upstream(task_id: str) -> set[str]:

@@ -4,8 +4,9 @@ This is the **only** orchestrator (the former pure-Python pipeline runner is ret
 parsing/extraction runs as **native Airflow Go SDK
 bundle workers** (``go/cmd/dakp-bundle``): the DailyMed/FAERS/Drugs@FDA ``extract_*`` tasks are
 ``@task.stub(queue="golang")`` declarations whose Go implementations the ExecutableCoordinator
-forks per task instance; the EMA ``extract_ema`` task is a plain Python ``@task`` (polars parses
-the small xlsx in-process). Every other stage (acquisition, assertion shaping, Tablassert handoff,
+forks per task instance; the EMA tasks (``extract_ema`` for the medicines xlsx,
+``extract_ema_smpc`` for the product-information PDFs) are plain Python ``@task``s (polars +
+pypdf parse in-process). Every other stage (acquisition, assertion shaping, Tablassert handoff,
 legacy TSV export, release publishing, GLiNER2 NER export) is a real Python TaskFlow task
 reusing the existing stage modules.
 
@@ -95,17 +96,19 @@ class AcquireOutputs:
     faers: Any
     drugsfda: Any
     ema: Any
+    smpc: Any
     ner_models: Any
 
 
 @dataclass(frozen=True)
 class ExtractOutputs:
-    """Task handles produced by the extraction stage (Go stubs + the Python EMA parse)."""
+    """Task handles produced by the extraction stage (Go stubs + the Python EMA parses)."""
 
     dailymed: Any
     faers: Any
     drugsfda: Any
     ema: Any
+    smpc: Any
 
 
 @dataclass(frozen=True)
@@ -219,6 +222,23 @@ def _build_acquire_stage() -> AcquireOutputs:
         @task(
             pool=DOWNLOAD_POOL,
             execution_timeout=_ACQUIRE_TIMEOUT,
+            doc_md=(
+                "Download/cache the EMA EPAR documents report and its English human "
+                "product-information (SmPC) PDFs; returns `ArtifactRef` manifests only."
+            ),
+        )
+        def acquire_ema_smpc() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+            from dakp_pipeline import acquire
+
+            ctx = _ctx()
+            with step(logger, "task acquire_ema_smpc"):
+                refs = acquire.acquire_ema_smpc(ctx)
+                stats(logger, "task acquire_ema_smpc", output_refs=len(refs))
+                return _refs_to_xcom(refs)
+
+        @task(
+            pool=DOWNLOAD_POOL,
+            execution_timeout=_ACQUIRE_TIMEOUT,
             doc_md="Ensure the production GLiNER checkpoint is cached before contraindication mining.",
         )
         def acquire_ner_models() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
@@ -231,7 +251,12 @@ def _build_acquire_stage() -> AcquireOutputs:
                 return _refs_to_xcom(refs)
 
         return AcquireOutputs(
-            dailymed=acquire_dailymed(), faers=acquire_faers(), drugsfda=acquire_drugsfda(), ema=acquire_ema(), ner_models=acquire_ner_models()
+            dailymed=acquire_dailymed(),
+            faers=acquire_faers(),
+            drugsfda=acquire_drugsfda(),
+            ema=acquire_ema(),
+            smpc=acquire_ema_smpc(),
+            ner_models=acquire_ner_models(),
         )
 
 
@@ -262,8 +287,22 @@ def _build_extract_stage(raw: AcquireOutputs) -> ExtractOutputs:
                 stats(logger, "task extract_ema", output_refs=len(refs))
                 return _refs_to_xcom(refs)
 
+        @task(pool=EXTRACT_POOL, doc_md="Parse the crawled EMA SmPC PDFs into the interim `smpc_sections.parquet` (pypdf).")
+        def extract_ema_smpc(raw_refs: Any) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
+            from dakp_pipeline.extract import ema_smpc
+
+            ctx = _ctx()
+            with step(logger, "task extract_ema_smpc"):
+                refs = ema_smpc.extract(_refs_from_xcom(raw_refs), ctx)
+                stats(logger, "task extract_ema_smpc", output_refs=len(refs))
+                return _refs_to_xcom(refs)
+
         return ExtractOutputs(
-            dailymed=extract_dailymed(raw.dailymed), faers=extract_faers(raw.faers), drugsfda=extract_drugsfda(raw.drugsfda), ema=extract_ema(raw.ema)
+            dailymed=extract_dailymed(raw.dailymed),
+            faers=extract_faers(raw.faers),
+            drugsfda=extract_drugsfda(raw.drugsfda),
+            ema=extract_ema(raw.ema),
+            smpc=extract_ema_smpc(raw.smpc),
         )
 
 
@@ -354,17 +393,18 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
         @task(
             pool=NER_MINING_POOL,
             execution_timeout=_SHAPE_TIMEOUT,
-            doc_md="Mine contraindication assertions from DailyMed + Drugs@FDA refs after production NER models are cached.",
+            doc_md="Mine contraindication assertions from DailyMed + Drugs@FDA + EMA SmPC refs after production NER models are cached.",
         )
         def shape_contraindication_tables(
-            dm_ext: Any, drugsfda_ext: Any, ner_models_ref: Any
+            dm_ext: Any, drugsfda_ext: Any, smpc_ext: Any, ema_ext: Any, ner_models_ref: Any
         ) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
             # ``ner_models_ref`` is an ordering dependency: the production NER lazily loads the
             # GLiNER weights cached by acquire_ner_models, so mining runs after acquisition (the
-            # model refs aren't inputs). The shaper owns its internal two-pass indication-section
-            # mining and 4-GPU dispatch; the DAG needs DailyMed refs (the mined sections),
+            # model refs aren't inputs). The shaper owns its internal multi-pass section mining
+            # and 4-GPU dispatch; the DAG needs DailyMed refs (the mined SPL sections),
             # Drugs@FDA refs (the FDA application register that expands approval numbers to their
-            # display form), and model-cache ordering.
+            # display form), EMA refs (the medicines registry resolving SmPC subjects) + EMA SmPC
+            # refs (the mined EU product-information sections), and model-cache ordering.
             del ner_models_ref
             from dakp_pipeline.assertions import contraindications
             from dakp_pipeline.assertions.evidence import cached_shape_outputs
@@ -380,8 +420,16 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
             # concurrent indication-parser work can monkeypatch the module attribute.
             with step(logger, "task shape_contraindication_tables"):
                 dailymed_refs, drugsfda_refs = _refs_from_xcom(dm_ext), _refs_from_xcom(drugsfda_ext)
-                in_refs = [*dailymed_refs, *drugsfda_refs]
-                stats(logger, "task shape_contraindication_tables", dailymed_refs=len(dailymed_refs), drugsfda_refs=len(drugsfda_refs))
+                smpc_refs, ema_refs = _refs_from_xcom(smpc_ext), _refs_from_xcom(ema_ext)
+                in_refs = [*dailymed_refs, *drugsfda_refs, *smpc_refs, *ema_refs]
+                stats(
+                    logger,
+                    "task shape_contraindication_tables",
+                    dailymed_refs=len(dailymed_refs),
+                    drugsfda_refs=len(drugsfda_refs),
+                    smpc_refs=len(smpc_refs),
+                    ema_refs=len(ema_refs),
+                )
                 # A missed contraindication is more harmful than retaining a low-confidence
                 # candidate, so this task uses the lower contraindication acceptance point.
                 ner = DiseaseNER.for_contraindications(offline=False, workdir=ctx.workdir)
@@ -401,7 +449,7 @@ def _build_shape_stage(extracts: ExtractOutputs, ner_models: Any) -> AssertionOu
         return AssertionOutputs(
             approved=approved,
             uses=shape_faers_use_tables(extracts.faers, extracts.dailymed, extracts.drugsfda, approved),
-            contraindications=shape_contraindication_tables(extracts.dailymed, extracts.drugsfda, ner_models),
+            contraindications=shape_contraindication_tables(extracts.dailymed, extracts.drugsfda, extracts.smpc, extracts.ema, ner_models),
         )
 
 

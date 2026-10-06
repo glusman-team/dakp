@@ -20,11 +20,13 @@ _EXPECTED_TASK_IDS = {
     "acquire_faers",
     "acquire_drugsfda",
     "acquire_ema",
+    "acquire_ema_smpc",
     "acquire_ner_models",
     "extract_dailymed",
     "extract_faers",
     "extract_drugsfda",
     "extract_ema",
+    "extract_ema_smpc",
     "shape_treatment_tables",
     "shape_faers_use_tables",
     "shape_contraindication_tables",
@@ -36,10 +38,10 @@ _EXPECTED_TASK_IDS = {
 }
 
 _GO_STUB_IDS = {"extract_dailymed", "extract_faers", "extract_drugsfda"}
-_ACQUIRE_IDS = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ema", "acquire_ner_models"}
+_ACQUIRE_IDS = {"acquire_dailymed", "acquire_faers", "acquire_drugsfda", "acquire_ema", "acquire_ema_smpc", "acquire_ner_models"}
 _EXPECTED_GROUP_MEMBERS = {
     "acquire": _ACQUIRE_IDS,
-    "extract": _GO_STUB_IDS | {"extract_ema"},
+    "extract": _GO_STUB_IDS | {"extract_ema", "extract_ema_smpc"},
     "shape": {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"},
     "tablassert": {"generate_tablassert_configs", "run_tablassert"},
     "export": {"export_legacy_tsv", "publish_release_artifacts"},
@@ -124,20 +126,27 @@ def test_dag_task_graph(dakp_build) -> None:
     def downstream(task_id: str) -> set[str]:
         return set(dag.get_task(task_id).downstream_task_ids)
 
-    # Acquisition feeds its own extractor (download -> native Go extract; the EMA parse is a
-    # plain Python task fed by acquire_ema).
+    # Acquisition feeds its own extractor (download -> native Go extract; the EMA parses are
+    # plain Python tasks fed by acquire_ema / acquire_ema_smpc).
     assert upstream("extract_dailymed") == {"acquire_dailymed"}
     assert upstream("extract_faers") == {"acquire_faers"}
     assert upstream("extract_drugsfda") == {"acquire_drugsfda"}
     assert upstream("extract_ema") == {"acquire_ema"}
+    assert upstream("extract_ema_smpc") == {"acquire_ema_smpc"}
 
     # Shapers join the extracts (treatment: dm+drugsfda+faers+ema + NER models; uses: faers+dm+drugsfda
-    # + the produced approved-treats table + NER models; contraindication: dm+drugsfda + NER
+    # + the produced approved-treats table + NER models; contraindication: dm+drugsfda+smpc+ema + NER
     # models). Every shaper takes Drugs@FDA: it is the FDA application register that expands the
     # prefix-stripped application numbers into their FDA form for FDA_regulatory_approvals.
     assert upstream("shape_treatment_tables") == {"extract_dailymed", "extract_drugsfda", "extract_faers", "extract_ema", "acquire_ner_models"}
     assert upstream("shape_faers_use_tables") == {"extract_faers", "extract_dailymed", "extract_drugsfda", "shape_treatment_tables"}
-    assert upstream("shape_contraindication_tables") == {"extract_dailymed", "extract_drugsfda", "acquire_ner_models"}
+    assert upstream("shape_contraindication_tables") == {
+        "extract_dailymed",
+        "extract_drugsfda",
+        "extract_ema",
+        "extract_ema_smpc",
+        "acquire_ner_models",
+    }
 
     shapes = {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"}
     assert upstream("generate_tablassert_configs") == shapes

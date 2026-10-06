@@ -26,7 +26,7 @@ from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.ner import model_cache
 from dakp_pipeline.ner.ner import DEFAULT_MODEL
-from dakp_pipeline.sources import dailymed, drugsfda, ema, faers
+from dakp_pipeline.sources import dailymed, drugsfda, ema, ema_smpc, faers
 
 #: Media type for a cached NER model directory (a tree artifact, not a single file).
 _MODEL_DIR_MEDIA_TYPE = "application/x-directory"
@@ -56,6 +56,11 @@ def acquire_drugsfda(ctx: TaskContext) -> list[ArtifactRef]:
 def acquire_ema(ctx: TaskContext) -> list[ArtifactRef]:
     """Acquire the EMA centrally-authorised medicines xlsx over the network."""
     return ema.fetch(ctx)
+
+
+def acquire_ema_smpc(ctx: TaskContext) -> list[ArtifactRef]:
+    """Acquire the EMA product-information corpus: the documents report + its English human SmPC PDFs."""
+    return ema_smpc.fetch(ctx)
 
 
 # --- NER model acquisition ------------------------------------------------------
