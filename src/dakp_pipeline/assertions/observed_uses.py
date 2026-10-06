@@ -103,7 +103,16 @@ from types import MappingProxyType
 
 import polars as pl
 
-from dakp_pipeline.assertions import AT_MANUAL, INFORES_DAILYMED, INFORES_DAKP, INFORES_FAERS, join_pipe, match_diseases, row_for
+from dakp_pipeline.assertions import (
+    AT_MANUAL,
+    INFORES_CANADA_VIGILANCE,
+    INFORES_DAILYMED,
+    INFORES_DAKP,
+    INFORES_FAERS,
+    join_pipe,
+    match_diseases,
+    row_for,
+)
 from dakp_pipeline.assertions.contexts import assertion_context
 from dakp_pipeline.assertions.evidence import (
     FDAApprovalIndex,
@@ -120,10 +129,15 @@ from dakp_pipeline.assertions.evidence import (
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
+from dakp_pipeline.sources.canada_vigilance import CANADA_VIGILANCE_EXTRACTS_URL as CANADA_VIGILANCE_SOURCE_RECORD_URL
 from dakp_pipeline.textnorm import defaers_text, defaersify
 
 _TABLE = "faers_applied_to_treat_assertions"
 _PREDICATE = "biolink:applied_to_treat"
+#: Interim Canada Vigilance observation table (extract.canada_vigilance), joined into the SAME
+#: applied-to-treat table with source-partitioned provenance (a CV row and a FAERS row for the
+#: same (subject, object, context) stay separate rows; the upstream chains differ).
+_CV_INDICATIONS_FILENAME = "cv_indications.parquet"
 #: The (drug, condition) pair has an approved-treats row: the observed use IS the approved use.
 _STATUS_APPROVED = "approved_for_condition"
 #: No approved-treats row for the pair: the FAERS use is observed but not label-approved (the
@@ -177,8 +191,14 @@ class ObservedUsesShaper:
                 approved = find_table(inputs, "approved_treats_assertions.tsv")
                 approved_index = ApprovedTreatsIndex.from_frame(approved) if approved is not None else None
                 approvals = build_fda_approval_index(inputs)
+                cv_indications = find_table(inputs, _CV_INDICATIONS_FILENAME)
             rows = build_observed_use_rows(
-                faers_cases, disease_map, approved_index, approvals=approvals, faers_quarter_urls=faers_quarter_urls(inputs)
+                faers_cases,
+                disease_map,
+                approved_index,
+                approvals=approvals,
+                faers_quarter_urls=faers_quarter_urls(inputs),
+                cv_indications=cv_indications,
             )
             return write_assertion_table(_TABLE, rows, inputs, ctx, operation="shape_faers_applied_to_treat")
 
@@ -333,6 +353,162 @@ def _pair_key(text: str) -> str:
     return normalize_text(defaers_text(text))
 
 
+def _indication_mapping(indications: list[str], disease_map: Mapping[str, Mapping[str, str]], source: str) -> tuple[pl.DataFrame, int]:
+    """Resolve distinct indication strings to object attributes + assertion contexts.
+
+    Shared by the FAERS and Canada Vigilance aggregation paths: stop-listed placeholders are
+    dropped (counted), disease-map matches win, misses degrade to text-first ``Disease``
+    objects, and canonical object attributes per resolved text keep dictionary-casing variants
+    deterministic when merged. ``source`` feeds :func:`assertion_context` (``faers`` and
+    ``canada_vigilance`` share the spontaneous-report semantics).
+    """
+    resolution: dict[str, dict[str, str]] = {}
+    misses: list[str] = []
+    stoplist_drops = 0
+    for indication in indications:
+        if is_non_disease_indication(indication):
+            stoplist_drops += 1
+            continue  # placeholder/usage-context indication, not a drug->condition observation
+        matches = match_diseases(indication, disease_map)
+        if matches:
+            resolution[indication] = matches[0]
+        else:
+            misses.append(indication)
+
+    for indication in misses:
+        resolution[indication] = {"text": indication, "curie": "", "name": indication, "category": "Disease"}
+
+    # Canonical object attributes per resolved object text (first indication in sorted order
+    # wins), so dictionary-key casing variants stay deterministic when merged.
+    canonical: dict[str, dict[str, str]] = {}
+    for indication in sorted(resolution):
+        canonical.setdefault(resolution[indication]["text"], resolution[indication])
+    mapping_rows: list[dict[str, str]] = []
+    for indication in sorted(resolution):
+        obj = canonical[resolution[indication]["text"]]
+        mapping_rows.append(
+            {
+                "indication": indication,
+                "object_text": obj["text"],
+                "object_curie": obj["curie"],
+                "object_name": obj["name"],
+                "object_category": obj["category"],
+            }
+        )
+    mapping = pl.DataFrame(
+        mapping_rows,
+        schema={"indication": pl.Utf8, "object_text": pl.Utf8, "object_curie": pl.Utf8, "object_name": pl.Utf8, "object_category": pl.Utf8},
+    ).with_columns(
+        pl.col("indication")
+        .map_elements(lambda value: assertion_context(source, "indication", str(value or "")), return_dtype=pl.Utf8)
+        .alias("assertion_context")
+    )
+    return mapping, stoplist_drops
+
+
+def _canada_vigilance_rows(
+    cv_indications: pl.DataFrame | None, disease_map: Mapping[str, Mapping[str, str]], approved_index: ApprovedTreatsIndex | None
+) -> list[dict[str, str]]:
+    """Aggregate Canada Vigilance drug-indication observations into applied-to-treat rows.
+
+    Mirrors the FAERS aggregation with the source-appropriate inputs: the subject is the active
+    ingredient (brand-name fallback for products the ingredients member does not cover), the
+    case count is the number of DISTINCT report ids, and provenance rides the
+    ``infores:canada-vigilance`` + ``infores:dailymed`` chain (the corroboration-derived
+    ``clinical_approval_status`` is DailyMed-backed, exactly like FAERS rows). CV rows are built
+    SEPARATELY from FAERS rows on purpose: same triple, different upstream chain, never merged.
+    """
+    if cv_indications is None or cv_indications.is_empty():
+        return []
+
+    def _text_column(name: str) -> pl.Expr:
+        return pl.col(name).fill_null("").cast(pl.Utf8) if name in cv_indications.columns else pl.lit("")
+
+    report_id = _text_column("report_id").str.strip_chars()
+    cases = (
+        cv_indications.lazy()
+        .select(
+            # Ingredient subject, brand fallback: ingredient text matches the approved-treats
+            # subjects (DailyMed ingredient text) under the same pair normalization.
+            pl.when(_text_column("ingredient").str.strip_chars() != "")
+            .then(_text_column("ingredient").str.strip_chars())
+            .otherwise(_text_column("drugname").str.strip_chars())
+            .alias("subject"),
+            _text_column("indication").str.strip_chars().alias("indication"),
+            report_id.alias("report_id"),
+            _text_column("source_record_id").alias("source_record_id"),
+        )
+        .filter((pl.col("subject") != "") & (pl.col("indication") != ""))
+    )
+
+    mapping, _stoplist_drops = _indication_mapping(
+        sorted(set(cases.select("indication").unique().collect().get_column("indication").to_list()) - {""}), disease_map, "canada_vigilance"
+    )
+    _rid = pl.col("report_id")
+    pairs = (
+        cases.join(mapping.lazy(), on="indication", how="inner")
+        .group_by("subject", "object_text", "assertion_context")
+        .agg(
+            pl.col("object_curie").first(),
+            pl.col("object_name").first(),
+            pl.col("object_category").first(),
+            _rid.filter(_rid != "").n_unique().alias("distinct_cases"),
+            _rid.filter(_rid != "").unique().alias("case_ids"),
+            _rid.filter(_rid == "").len().alias("anon_rows"),
+            pl.col("source_record_id").filter(pl.col("source_record_id") != "").unique().alias("source_records"),
+            pl.col("source_record_id").filter((_rid == "") & (pl.col("source_record_id") != "")).unique().alias("anon_records"),
+        )
+        .collect()
+        .sort("subject", "object_text")
+    )
+
+    rows: list[dict[str, str]] = []
+    for rec in pairs.iter_rows(named=True):
+        subject = str(rec["subject"])
+        case_ids = {str(value) for value in rec.get("case_ids") or () if value}
+        source_records = {str(value) for value in rec.get("source_records") or () if value}
+        # Anonymous rows (no report id) contribute `anon:<source_record_id>` tokens, padded so
+        # len(case_ids) == number_of_cases stays exact (the FAERS convention).
+        anon_pad = int(rec["anon_rows"])
+        anon_records = {str(value) for value in rec.get("anon_records") or () if value}
+        anon_tokens = {f"anon:{record}" for record in anon_records}
+        anon_tokens.update(f"anon:row:{subject}:{rec['object_text']}:{index}" for index in range(max(anon_pad, 0)))
+        if approved_index is None:
+            status = _STATUS_NOT_PROVIDED
+        # CV reports carry no FDA application number, so only the normalized text rule can answer.
+        elif approved_index.is_approved(_pair_key(subject), _pair_key(str(rec["object_text"])), ()):
+            status = _STATUS_APPROVED
+        else:
+            status = _STATUS_OFF_LABEL
+        rows.append(
+            row_for(
+                _TABLE,
+                subject_text=subject,
+                subject_curie="",
+                subject_name=subject,
+                subject_category="ChemicalEntity",
+                predicate=_PREDICATE,
+                object_text=str(rec["object_text"]),
+                object_curie=str(rec["object_curie"]),
+                object_name=str(rec["object_name"]),
+                object_category=str(rec["object_category"]),
+                assertion_context=str(rec.get("assertion_context") or "indication"),
+                number_of_cases=int(rec["distinct_cases"]) + int(rec["anon_rows"]),
+                case_ids=sorted_pipe([*case_ids, *anon_tokens]),
+                FDA_regulatory_approvals="",
+                edge_evidence="",
+                supporting_faers_records=sorted_pipe(source_records),
+                supporting_faers_urls=CANADA_VIGILANCE_SOURCE_RECORD_URL,
+                clinical_approval_status=status,
+                knowledge_level=_KNOWLEDGE_LEVEL,
+                agent_type=AT_MANUAL,
+                primary_knowledge_source=INFORES_DAKP,
+                upstream_resource_ids=join_pipe(INFORES_CANADA_VIGILANCE, INFORES_DAILYMED),
+            )
+        )
+    return rows
+
+
 def build_observed_use_rows(
     faers_cases: pl.DataFrame | None,
     disease_map: Mapping[str, Mapping[str, str]],
@@ -340,6 +516,7 @@ def build_observed_use_rows(
     *,
     approvals: FDAApprovalIndex | None = None,
     faers_quarter_urls: Mapping[str, str] | None = None,
+    cv_indications: pl.DataFrame | None = None,
     # Kept for source compatibility with callers from before the FAERS NER bypass. These
     # parameters are deliberately ignored: FAERS fields are never sent to NER.
     ner: object | None = None,
@@ -413,47 +590,8 @@ def build_observed_use_rows(
     )
 
     # Resolve each distinct stop-list-passing indication to its object BEFORE aggregation.
-    indications = sorted(set(cases.select("indication").unique().collect().get_column("indication").to_list()) - {""})
-    resolution: dict[str, dict[str, str]] = {}
-    misses: list[str] = []
-    stoplist_drops = 0
-    for indication in indications:
-        if is_non_disease_indication(indication):
-            stoplist_drops += 1
-            continue  # FAERS placeholder/usage-context indication, not a drug->condition observation
-        matches = match_diseases(indication, disease_map)
-        if matches:
-            resolution[indication] = matches[0]
-        else:
-            misses.append(indication)
-
-    for indication in misses:
-        resolution[indication] = {"text": indication, "curie": "", "name": indication, "category": "Disease"}
-
-    # Canonical object attributes per resolved object text (first indication in sorted order
-    # wins), so dictionary-key casing variants stay deterministic when merged.
-    canonical: dict[str, dict[str, str]] = {}
-    for indication in sorted(resolution):
-        canonical.setdefault(resolution[indication]["text"], resolution[indication])
-    mapping_rows: list[dict[str, str]] = []
-    for indication in sorted(resolution):
-        obj = canonical[resolution[indication]["text"]]
-        mapping_rows.append(
-            {
-                "indication": indication,
-                "object_text": obj["text"],
-                "object_curie": obj["curie"],
-                "object_name": obj["name"],
-                "object_category": obj["category"],
-            }
-        )
-    mapping = pl.DataFrame(
-        mapping_rows,
-        schema={"indication": pl.Utf8, "object_text": pl.Utf8, "object_curie": pl.Utf8, "object_name": pl.Utf8, "object_category": pl.Utf8},
-    ).with_columns(
-        pl.col("indication")
-        .map_elements(lambda value: assertion_context("faers", "indication", str(value or "")), return_dtype=pl.Utf8)
-        .alias("assertion_context")
+    mapping, stoplist_drops = _indication_mapping(
+        sorted(set(cases.select("indication").unique().collect().get_column("indication").to_list()) - {""}), disease_map, "faers"
     )
     # Vectorized per-group set building (US-007): the previous form materialized EVERY source
     # row as a Python dict (49M structs on production) and folded it in a nested loop - ~2/3 of
@@ -557,12 +695,19 @@ def build_observed_use_rows(
                 upstream_resource_ids=join_pipe(INFORES_FAERS, INFORES_DAILYMED),
             )
         )
+    cv_rows = _canada_vigilance_rows(cv_indications, disease_map, approved_index)
+    # One deterministic total order across both sources: (subject, object, context, upstream).
+    # The tiebreakers matter now that two sources share the table: a FAERS row and a CV row
+    # for the same triple must land in a stable, source-discernible order.
+    rows = sorted(
+        [*rows, *cv_rows], key=lambda row: (row["subject_text"], row["object_text"], row["assertion_context"], row["upstream_resource_ids"])
+    )
     stats(
         logger,
         "shape_faers_applied_to_treat",
-        indications=len(indications),
         stoplist_drops=stoplist_drops,
         assertions=len(rows),
+        canada_vigilance_assertions=len(cv_rows),
         unresolved_application_numbers=unresolved_numbers,
     )
     return rows
@@ -583,4 +728,4 @@ def _coerce_approved_index(approved_pairs: ApprovedTreatsIndex | Iterable[tuple[
 
 transform = ObservedUsesShaper().transform
 
-__all__ = ["ApprovedTreatsIndex", "ObservedUsesShaper", "build_observed_use_rows", "is_non_disease_indication", "transform"]
+__all__ = ["ApprovedTreatsIndex", "ObservedUsesShaper", "_canada_vigilance_rows", "build_observed_use_rows", "is_non_disease_indication", "transform"]

@@ -166,6 +166,7 @@ from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.io.manifests import OperationBlock
 from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.paths import Workdir
+from dakp_pipeline.sources import canada_vigilance as canada_vigilance_source
 from dakp_pipeline.sources import dailymed as dailymed_source
 from dakp_pipeline.sources import drugsfda as drugsfda_source
 from dakp_pipeline.sources import ema as ema_source
@@ -255,11 +256,12 @@ UUID_DOMAIN = INFORES_DAKP
 #: approved-treats rows come from DailyMed SPL releases (the DailyMed full-release index), the
 #: EMA medicines registry (the fixed-name xlsx bulk export), and the EMA SmPC product-information
 #: corpus (the EPAR documents JSON report that manifests the SmPC crawl); contraindication rows
-#: from DailyMed AND that same SmPC corpus; FAERS observed-use rows from the FAERS quarterly
-#: ASCII extracts (the FDA quarterly-data listing).
+#: from DailyMed AND that same SmPC corpus; observed-use rows from the FAERS quarterly ASCII
+#: extracts (the FDA quarterly-data listing) AND Health Canada's Canada Vigilance data extract
+#: (the fixed-name monthly ZIP).
 _TABLE_SOURCE_URLS: dict[str, tuple[str, ...]] = {
     "approved_treats_assertions": (dailymed_source.FULL_RELEASE_INDEX_URL, ema_source.EMA_MEDICINES_URL, ema_documents_source.EMA_DOCUMENTS_URL),
-    "faers_applied_to_treat_assertions": (faers_source.FDA_FAERS_INDEX_URL,),
+    "faers_applied_to_treat_assertions": (faers_source.FDA_FAERS_INDEX_URL, canada_vigilance_source.CANADA_VIGILANCE_EXTRACTS_URL),
     "contraindication_assertions": (dailymed_source.FULL_RELEASE_INDEX_URL, ema_documents_source.EMA_DOCUMENTS_URL),
 }
 GRAPH_DESCRIPTION = (
@@ -405,6 +407,30 @@ RIG_SUPPORTING_DATA_SOURCES: tuple[dict[str, Any], ...] = (
                 "file_name": "EMA medicines report (xlsx)",
                 "location": ema_source.EMA_MEDICINES_URL,
                 "description": "Bulk export of centrally reviewed medicines; MeSH therapeutic areas and EPAR indication text",
+            }
+        ],
+    },
+    {
+        "infores_id": "infores:canada-vigilance",
+        "name": "Health Canada Canada Vigilance Adverse Reaction Online Database",
+        "description": (
+            "Health Canada's Canada Vigilance database collects adverse reaction reports submitted for "
+            "drugs and health products marketed in Canada. DAKP uses the suspect drug-indication pairs "
+            "in its monthly data extract to derive observed drug-disease usage relationships and case "
+            "counts, including on-label and off-label use (infores:canada-vigilance)."
+        ),
+        "terms_of_use_info": {
+            "terms_of_use_url": "https://open.canada.ca/en/open-government-licence-canada",
+            "terms_of_use_description": (
+                "The extract is released under the Open Government Licence - Canada: reproduction for "
+                "commercial and non-commercial purposes is permitted with attribution to Health Canada."
+            ),
+        },
+        "relevant_files": [
+            {
+                "file_name": "Canada Vigilance data extract (zip)",
+                "location": canada_vigilance_source.CANADA_VIGILANCE_EXTRACTS_URL,
+                "description": "Monthly full extract of the Canada Vigilance Adverse Reaction Online Database; suspect drug-indication pairs",
             }
         ],
     },
@@ -597,6 +623,11 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
             "description": "FDA Adverse Event Reporting System quarterly extracts; drug/indication case pairs.",
         },
         {
+            "file_name": "Canada Vigilance data extract (zip)",
+            "location": canada_vigilance_source.CANADA_VIGILANCE_EXTRACTS_URL,
+            "description": "Health Canada's Canada Vigilance Adverse Reaction Online Database monthly extract; suspect drug-indication pairs.",
+        },
+        {
             "file_name": "EMA medicines report (xlsx)",
             "location": ema_source.EMA_MEDICINES_URL,
             "description": "EMA centrally-authorised medicines bulk export; MeSH therapeutic areas and EPAR indication text.",
@@ -633,6 +664,7 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
             "data_access_locations": [
                 f"DailyMed SPL releases - {dailymed_source.FULL_RELEASE_INDEX_URL}",
                 f"FAERS quarterly ASCII extracts - {faers_source.FDA_FAERS_INDEX_URL}",
+                f"Canada Vigilance data extract - {canada_vigilance_source.CANADA_VIGILANCE_EXTRACTS_URL}",
                 f"Drugs@FDA data files - {drugsfda_source.DRUGSFDA_DATA_FILES_URL}",
                 f"EMA medicines report - {ema_source.EMA_MEDICINES_URL}",
                 f"EMA EPAR documents report - {ema_documents_source.EMA_DOCUMENTS_URL}",
@@ -648,14 +680,16 @@ def _rig_config(tables: list[str]) -> dict[str, Any]:
             # through, and the upstream DAKP RIG declares the same category.
             "ingest_categories": ["translator_knowledge_creator"],
             "utility": (
-                "Provides FDA- and EMA-approved drug-disease treatment relationships, FAERS-observed "
-                "applied-to-treat uses, and SPL-mined contraindications for Translator querying."
+                "Provides FDA- and EMA-approved drug-disease treatment relationships, FAERS- and Canada "
+                "Vigilance-observed applied-to-treat uses, and SPL-mined contraindications for "
+                "Translator querying."
             ),
             "scope": (
                 "Approved-treats edges (DailyMed SPL indications joined to Drugs@FDA applications and "
                 "FAERS cases, plus EMA centrally-authorised medicines' MeSH therapeutic areas, mined "
-                "EPAR indication text, and mined EMA SmPC product-information indications), FAERS "
-                "observed-use edges, and contraindication edges text-mined from DailyMed SPL sections "
+                "EPAR indication text, and mined EMA SmPC product-information indications), FAERS and "
+                "Canada Vigilance observed-use edges, and contraindication edges text-mined from "
+                "DailyMed SPL sections "
                 "and EMA SmPC product-information sections; all other content of the upstream feeds is "
                 "out of scope."
             ),
@@ -901,9 +935,13 @@ _TABLE_SOURCES: dict[str, tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]
         ("infores:epar", "supporting_data_source", (), ()),
     ),
     "faers_applied_to_treat_assertions": (
-        (INFORES_DAKP, "primary_knowledge_source", ("infores:dailymed", "infores:faers"), ()),
+        (INFORES_DAKP, "primary_knowledge_source", ("infores:dailymed", "infores:faers", "infores:canada-vigilance"), ()),
         ("infores:faers", "supporting_data_source", (), (FAERS_SOURCE_RECORD_URL,)),
         ("infores:dailymed", "supporting_data_source", (), ()),
+        # Canada Vigilance supporting entry: like DailyMed, the honest dataset URL lives on the
+        # section source.url + the RIG, and per-report record ids stay in the assertion TSV's
+        # supporting_faers_records debug column.
+        ("infores:canada-vigilance", "supporting_data_source", (), ()),
     ),
     "contraindication_assertions": (
         (INFORES_DAKP, "primary_knowledge_source", ("infores:dailymed", "infores:epar"), ()),
