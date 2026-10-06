@@ -18,8 +18,8 @@ Guarantees (asserted in ``tests/unit/test_ci_unit_shard_selector.py``):
   partition and a rerun reproduces it byte for byte;
 - durations entries for deleted files are ignored.
 
-Usage: ``select_unit_shard.py <shard> [shard-count]`` (shard is 1-based) prints one path per
-line. The workflow pipes it into ``pytest``.
+Usage: ``select_unit_shard.py <shard> [shard-count]`` (shard is 1-based, shard-count defaults to
+:data:`DEFAULT_SHARDS`) prints one path per line. The workflow pipes it into ``pytest``.
 """
 
 from __future__ import annotations
@@ -30,6 +30,8 @@ import sys
 from pathlib import Path
 
 DURATIONS_PATH = Path(__file__).resolve().with_name("unit-test-durations.json")
+#: Must match `UNIT_SHARDS` and the `unit-*` matrix entries in .github/workflows/ci.yml.
+DEFAULT_SHARDS = 4
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNIT_GLOB = "tests/unit/test_*.py"
 
@@ -72,7 +74,7 @@ def main(argv: list[str]) -> int:
         print(__doc__, file=sys.stderr)
         return 2
     shard = int(argv[0])
-    shard_count = int(argv[1]) if len(argv) == 2 else 3
+    shard_count = int(argv[1]) if len(argv) == 2 else DEFAULT_SHARDS
     for path in shard_files(tracked_unit_files(), shard, shard_count, measured_seconds()):
         print(path)
     return 0

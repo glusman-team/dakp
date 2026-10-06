@@ -38,7 +38,7 @@
     "tests/unit/test_drugsfda_source.py": 0.1,
     "tests/unit/test_ema_documents_source.py": 0.249,
     "tests/unit/test_ema_extract.py": 0.343,
-    "tests/unit/test_ema_smpc_extract.py": 42.884,
+    "tests/unit/test_ema_smpc_extract.py": 24.765,
     "tests/unit/test_ema_smpc_source.py": 0.313,
     "tests/unit/test_ema_source.py": 0.1,
     "tests/unit/test_faers_ascii_edge.py": 0.277,

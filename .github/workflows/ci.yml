@@ -50,8 +50,9 @@ env:
   # and the `uv run` itself a no-op (inexact sync: installs nothing, removes nothing).
   UV_NO_DEFAULT_GROUPS: "1"
   # Number of unit-phase shards in the python-test-shard matrix; the aggregate python-test job
-  # expects this many coverage artifacts plus the integration shard's.
-  UNIT_SHARDS: "3"
+  # expects this many coverage artifacts plus the integration shard's. Change this, the matrix
+  # below, and the selector's default shard count together.
+  UNIT_SHARDS: "4"
 
 jobs:
   python-lint:
@@ -111,7 +112,7 @@ jobs:
       # result (or its coverage artifact) behind a cancelled sibling.
       fail-fast: false
       matrix:
-        phase: [unit-1, unit-2, unit-3, integration]
+        phase: [unit-1, unit-2, unit-3, unit-4, integration]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -184,13 +185,14 @@ jobs:
           exit 1
       - name: Checkout repository
         uses: actions/checkout@v7
+      # No uv cache in this job on purpose: it only runs `uvx --from coverage==<locked>`, a tiny
+      # tool env, so restoring the 2.9 GB dependency cache bought nothing and cost ~35 s
+      # (measured: this job took 47 s with the cache enabled and 12 s without).
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.0
         with:
           python-version: "3.12"
-          enable-cache: true
-          prune-cache: false
-          cache-suffix: ci-v2
+          enable-cache: false
       # Without merge-multiple, each artifact extracts into its own named directory under
       # `path`, so the two shards' identically named `.coverage` files cannot overwrite each
       # other. download-artifact fails if the pattern matches nothing.

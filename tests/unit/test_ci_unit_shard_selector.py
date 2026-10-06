@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SELECTOR = REPO_ROOT / ".github" / "ci" / "select_unit_shard.py"
@@ -76,7 +77,7 @@ def test_selection_is_deterministic(selector, seconds, shard_count) -> None:
 def test_unmeasured_file_still_runs_and_uses_the_median(selector, seconds) -> None:
     """A brand-new test file nobody measured must be assigned, not skipped."""
     files = [*_tracked_files(), "tests/unit/test_brand_new_unmeasured.py"]
-    shard_count = 3
+    shard_count = selector.DEFAULT_SHARDS
     shards = [selector.shard_files(files, i, shard_count, seconds) for i in range(1, shard_count + 1)]
     assert sum("tests/unit/test_brand_new_unmeasured.py" in shard for shard in shards) == 1
 
@@ -85,7 +86,8 @@ def test_durations_entries_for_deleted_files_are_ignored(selector, seconds) -> N
     stale = dict(seconds)
     stale["tests/unit/test_deleted_long_ago.py"] = 9999.0
     files = _tracked_files()
-    assert selector.shard_files(files, 1, 3, stale) == selector.shard_files(files, 1, 3, seconds)
+    n = selector.DEFAULT_SHARDS
+    assert selector.shard_files(files, 1, n, stale) == selector.shard_files(files, 1, n, seconds)
 
 
 def test_heaviest_file_drives_the_balance(selector, seconds) -> None:
@@ -95,7 +97,7 @@ def test_heaviest_file_drives_the_balance(selector, seconds) -> None:
     file and the split stays within 1.6x of the ideal equal share on the measured suite.
     """
     files = _tracked_files()
-    shard_count = 3
+    shard_count = selector.DEFAULT_SHARDS
     loads = [sum(seconds.get(path, 0.0) for path in selector.shard_files(files, i, shard_count, seconds)) for i in range(1, shard_count + 1)]
     heaviest = max(seconds.get(path, 0.0) for path in files)
     ideal = sum(seconds.get(path, 0.0) for path in files) / shard_count
@@ -108,6 +110,20 @@ def test_heaviest_file_drives_the_balance(selector, seconds) -> None:
 def test_out_of_range_shard_is_rejected(selector, seconds, shard) -> None:
     with pytest.raises(ValueError, match=r"outside 1\.\.3"):
         selector.shard_files(_tracked_files(), shard, 3, seconds)
+
+
+def test_default_shard_count_matches_the_workflow(selector) -> None:
+    """The selector default, `UNIT_SHARDS`, and the matrix entries must agree.
+
+    Drift here fails silently: the aggregate job would wait for N coverage artifacts while the
+    matrix ran M shards, or a shard index would select nothing and its tests would never run.
+    """
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    env_shards = int(workflow["env"]["UNIT_SHARDS"])
+    phases = workflow["jobs"]["python-test-shard"]["strategy"]["matrix"]["phase"]
+    unit_phases = [phase for phase in phases if phase.startswith("unit-")]
+    assert selector.DEFAULT_SHARDS == env_shards == len(unit_phases)
+    assert sorted(int(phase.rsplit("-", 1)[1]) for phase in unit_phases) == list(range(1, env_shards + 1))
 
 
 def test_durations_file_shape(selector) -> None:
@@ -123,8 +139,9 @@ def test_durations_file_shape(selector) -> None:
 
 
 def test_cli_prints_one_path_per_line(selector) -> None:
-    out = subprocess.run(["python3", str(SELECTOR), "1", "3"], capture_output=True, text=True, check=True, cwd=REPO_ROOT).stdout.splitlines()
-    assert out == selector.shard_files(_tracked_files(), 1, 3, selector.measured_seconds())
+    n = str(selector.DEFAULT_SHARDS)
+    out = subprocess.run(["python3", str(SELECTOR), "1", n], capture_output=True, text=True, check=True, cwd=REPO_ROOT).stdout.splitlines()
+    assert out == selector.shard_files(_tracked_files(), 1, selector.DEFAULT_SHARDS, selector.measured_seconds())
     assert all(line.startswith("tests/unit/test_") and line.endswith(".py") for line in out)
 
 

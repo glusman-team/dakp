@@ -388,6 +388,7 @@ def test_annex_i_read_without_an_annex_i_marker_reads_everything(tmp_path: Path)
     assert ema_smpc.read_annex_i_text(path) == ema_smpc.read_pdf_text(path)
 
 
+@pytest.mark.usefixtures("_untraced_pool_children")
 def test_parallel_parse_is_identical_to_serial(tmp_path: Path) -> None:
     """The spawn pool reassembles in input order: rows and warnings match a serial run exactly."""
     pdfs = [
@@ -407,6 +408,50 @@ def test_parallel_parse_is_identical_to_serial(tmp_path: Path) -> None:
     parallel = ema_smpc.parse_documents(refs, documents, workers=3)
     assert parallel == serial
     assert {w["code"] for w in serial[1]} >= {"unknown_document", "pdf_unreadable"}
+
+
+@pytest.fixture
+def _untraced_pool_children(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ``ProcessPoolExecutor`` children out of coverage's tracer for the pool-parity test.
+
+    Three independent mechanisms would otherwise trace each child, and all three are needed for
+    the child-only NER worker lines elsewhere in the suite:
+
+    - ``COVERAGE_PROCESS_START`` (set by ``tests/conftest.py``) arms the installed ``coverage``
+      ``.pth`` hook, so every fresh interpreter starts a line tracer at startup;
+    - ``[tool.coverage.run] concurrency = ["multiprocessing", ...]`` swaps
+      ``BaseProcess._bootstrap`` for one that starts a tracer;
+    - the same patch injects a ``Stowaway`` into the spawn preparation data so the child
+      re-applies that patch to itself.
+
+    The cost here is out of all proportion: each trivial PDF-parse child re-imports the whole
+    package under a tracer (~7 s per child, 23 s for one test), and this file alone was a quarter
+    of the CI unit phase. What the test asserts is spawn ORDERING, and every line the children run
+    is also executed in-process by the serial path (``_read_texts`` with ``workers <= 1``), so no
+    coverage is lost.
+
+    Degrades to a no-op if coverage's internals move: the assertions are unaffected and the test
+    simply costs what it did before.
+    """
+    import multiprocessing.process
+    import multiprocessing.spawn
+
+    monkeypatch.delenv("COVERAGE_PROCESS_START", raising=False)
+    try:
+        from coverage import multiproc as coverage_multiproc
+    except ImportError:
+        return
+    original_bootstrap = getattr(coverage_multiproc, "original_bootstrap", None)
+    if original_bootstrap is not None:
+        monkeypatch.setattr(multiprocessing.process.BaseProcess, "_bootstrap", original_bootstrap, raising=False)
+    wrapped = multiprocessing.spawn.get_preparation_data
+
+    def without_stowaway(name: str) -> dict[str, object]:
+        data = wrapped(name)
+        data.pop("stowaway", None)
+        return data
+
+    monkeypatch.setattr(multiprocessing.spawn, "get_preparation_data", without_stowaway)
 
 
 @pytest.mark.usefixtures("_untraced_subprocess")
