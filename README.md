@@ -64,7 +64,12 @@ BLAKE3-keyed mentions under `tmp/cache/ner/`), e.g. to force re-mining without l
   are content-addressed and freshness-gated (7-day cache window), so re-runs skip tens of GB.
 - **extract**: heavy parsers run as native Go workers ([`go/`](./go)); the EMA medicines xlsx is
   parsed in Python (`fastexcel`) down to the Authorised, Human centrally-authorised rows, and
-  the SmPC PDFs are cut to their QRD 4.1/4.3/4.4 sections in Python (`pypdf`), and the Canada
+  the SmPC PDFs are cut to their QRD 4.1/4.3/4.4 sections in Python (`pypdf`). PDF parsing uses
+  up to 32 spawn workers (bounded by the run's `threads`), stops decoding at the first Annex II-V
+  marker after Annex I, and reuses unchanged outputs by input hashes, paths, and parser revision.
+  `force` bypasses the extraction cache. Serial and parallel outputs preserve identical provenance,
+  section text, warning rows, and ordering on the verified live corpus. Corruption confined to
+  unvisited leaflet pages no longer discards valid Annex I evidence. The Canada
   Vigilance extract's `$`-delimited members are joined down to suspect drug-indication pairs.
 - **NER**: a composite DiseaseNER (curated gazetteer + GLiNER2 recall) mines
   disease/phenotype mentions from DailyMed sections, EMA EPAR therapeutic-indication text, and

@@ -30,11 +30,21 @@ Design notes:
 * **Nothing is dropped silently.** An unreadable PDF, an empty text layer, a missing expected
   section and a superseded document each produce a structured warning row with a stable code and a
   count, exactly as the FAERS and SPL extractors do.
+* **Fast by construction.** pypdf text extraction is the whole cost (the 2026-10 production
+  corpus: 1,945 documents, 119k pages, ~5,300 CPU-seconds; ~89 minutes serial). Two levers keep
+  it to minutes with identical rows and warnings on that live corpus: (1) a document is read page by page and stops
+  at the first Annex II-V marker after Annex I, the exact boundary :func:`cut_sections` cuts at,
+  so the labelling and leaflet pages (most of the document) are never decoded; (2) documents are
+  parsed on a spawn process pool, largest first, and reassembled in input order, so the rows and
+  warnings are identical to a serial run.
 """
 
 from __future__ import annotations
 
+import multiprocessing as mp
+import os
 import re
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import polars as pl
@@ -89,6 +99,9 @@ _PAGE_NUMBER_LINE = re.compile(r"^[ \t]*\d{1,4}[ \t]*$", re.MULTILINE)
 
 #: Narration prefix for every log line this extractor emits (one stat per line).
 _EVENT = "extract_ema_smpc"
+# Change when parsing semantics or output schemas change; worker count cannot change output.
+_PARSE_CACHE_VERSION = "smpc-annex-i-v1"
+_MAX_PARSE_WORKERS = 32
 
 
 class EmaSmpcExtractor:
@@ -108,11 +121,18 @@ class EmaSmpcExtractor:
             msg = "no EMA product-information PDFs among the inputs"
             raise ValueError(msg)
 
+        input_ids = [ref.blake3 for ref in inputs]
+        cache_inputs = [*input_ids, _PARSE_CACHE_VERSION, *(str(ref.uri) for ref in inputs)]
+        if not ctx.params.get("force"):
+            cached = store.find_by_operation(_EVENT, cache_inputs)
+            if cached is not None:
+                stats(log, _EVENT, cache_hit=True, outputs=len(cached))
+                return cached
+
         documents = {doc.stem: doc for doc in product_information_documents(load_documents(manifest_ref.uri))}
-        rows, warnings = parse_documents(pdf_refs, documents)
+        rows, warnings = parse_documents(pdf_refs, documents, workers=_workers(ctx))
 
         operation = OperationBlock(name=_EVENT)
-        input_ids = [ref.blake3 for ref in inputs]
         interim_dir = wd.interim / "ema"
         sections_fp = schemas.schema_fingerprint(SMPC_SECTIONS_COLUMNS)
         warnings_fp = schemas.schema_fingerprint(SMPC_WARNINGS_COLUMNS)
@@ -124,30 +144,38 @@ class EmaSmpcExtractor:
                 warnings, SMPC_WARNINGS_COLUMNS, interim_dir / "smpc_warnings.parquet", store, operation, warnings_fp, len(warnings), input_ids
             ),
         ]
+        store.record_operation(_EVENT, cache_inputs, refs)
         stats(log, _EVENT, pdfs=len(pdf_refs), rows=len(rows), warnings=len(warnings), outputs=len(refs), sections=",".join(_SECTION_ORDER))
         return refs
 
 
-def parse_documents(pdf_refs: list[ArtifactRef], documents: dict[str, EparDocument]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+def parse_documents(
+    pdf_refs: list[ArtifactRef], documents: dict[str, EparDocument], *, workers: int = 1
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """Parse every crawled PDF into section rows + warning rows (pure; deterministic order).
 
     ``documents`` maps the manifest's document stem to its record, so each PDF can be attributed to
     a medicine, a product number and a source URL. A PDF whose stem is not in the manifest is a
     warning, not a row: without the metadata the section could not be joined to an active substance
     or carry an approval id, and inventing one would be worse than reporting the gap.
+
+    ``workers > 1`` reads the PDFs on a spawn process pool (:func:`_read_texts`); the result is
+    identical to a serial run because texts are reassembled in input order before anything else.
     """
     rows: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
+    known = [(ref, documents[ref.uri.stem]) for ref in pdf_refs if ref.uri.stem in documents]
+    # Identity preserves distinct refs with equal content; `known` keeps every ref alive.
+    texts = dict(zip((id(ref) for ref, _ in known), _read_texts([ref.uri for ref, _ in known], workers), strict=True))
     for ref in pdf_refs:
         stem = ref.uri.stem
         doc = documents.get(stem)
         if doc is None:
             warnings.append(_warning("", "unknown_document", f"PDF {ref.uri.name} is not in the documents report selection"))
             continue
-        try:
-            text = read_pdf_text(ref.uri)
-        except (OSError, PdfReadError, ValueError) as exc:
-            warnings.append(_warning(doc.ema_product_number, "pdf_unreadable", f"{doc.medicine_name}: {type(exc).__name__}: {exc}"))
+        text, error = texts[id(ref)]
+        if error is not None:
+            warnings.append(_warning(doc.ema_product_number, "pdf_unreadable", f"{doc.medicine_name}: {error}"))
             continue
         if not text.strip():
             warnings.append(_warning(doc.ema_product_number, "no_text", f"{doc.medicine_name}: the PDF has no extractable text layer"))
@@ -186,6 +214,85 @@ def read_pdf_text(path: Path) -> str:
     if reader.is_encrypted:
         reader.decrypt("")
     return "\n".join(page.extract_text() or "" for page in reader.pages)
+
+
+def read_annex_i_text(path: Path) -> str:
+    """The text layer up to and including the page that ends Annex I (else the whole document).
+
+    :func:`cut_sections` keeps only the text between the FIRST ``ANNEX I`` line and the first
+    Annex II-V marker after it, so decoding stops at the page that carries that marker: the
+    labelling and package-leaflet pages after it can never reach a row. Markers are line-scoped
+    and pages are newline-joined, so a per-page search finds exactly the markers a search over the
+    joined text finds (private-use glyphs are blanked first, as :func:`cut_sections` does). A
+    document without an ``ANNEX I`` line is read in full, because its fallback cut needs it.
+    Corruption only on an unvisited leaflet page is no longer a whole-document failure: valid
+    Annex I evidence survives, whereas the old full read could emit only ``pdf_unreadable``.
+    """
+    reader = PdfReader(str(path))
+    if reader.is_encrypted:
+        reader.decrypt("")
+    pages: list[str] = []
+    in_annex_i = False
+    for page in reader.pages:
+        page_text = page.extract_text() or ""
+        pages.append(page_text)
+        visible = _PRIVATE_USE.sub(" ", page_text)
+        search_from = 0
+        if not in_annex_i:
+            start = _ANNEX_I.search(visible)
+            if start is None:
+                continue
+            in_annex_i, search_from = True, start.end()
+        if _NEXT_ANNEX.search(visible, search_from) is not None:
+            break
+    return "\n".join(pages)
+
+
+def _read_one(path: str) -> tuple[str, str | None]:
+    """``(annex_i_text, None)`` or ``("", "<ExcType>: <message>")`` for an unreadable PDF.
+
+    Module-level (picklable) so a spawn worker can run it; only the expected unreadable-document
+    failures are captured, anything else propagates and fails the task loudly.
+    """
+    try:
+        return read_annex_i_text(Path(path)), None
+    except (OSError, PdfReadError, ValueError) as exc:
+        return "", f"{type(exc).__name__}: {exc}"
+
+
+def _read_texts(paths: list[Path], workers: int) -> list[tuple[str, str | None]]:
+    """Read every PDF (see :func:`_read_one`), returning results in ``paths`` order.
+
+    Parallel runs use a SPAWN pool (the Airflow worker is multi-threaded, so fork is unsafe) and
+    dispatch the largest files first, one per task, so the 300-600 page documents do not land on
+    the tail of the schedule.
+    """
+    if workers <= 1 or len(paths) <= 1:
+        return [_read_one(str(path)) for path in paths]
+    order = sorted(range(len(paths)), key=lambda index: (-_file_size(paths[index]), index))
+    results: list[tuple[str, str | None]] = [("", None)] * len(paths)
+    # Airflow's CLI is __main__ without a module spec; spawn must not execute that CLI again.
+    from dakp_pipeline.assertions.ner_dispatch import _spawn_safe_main
+
+    with _spawn_safe_main(), ProcessPoolExecutor(max_workers=min(workers, len(paths)), mp_context=mp.get_context("spawn")) as pool:
+        for index, result in zip(order, pool.map(_read_one, [str(paths[index]) for index in order], chunksize=1), strict=True):
+            results[index] = result
+    return results
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0  # unreadable is reported by _read_one; order only needs a total key
+
+
+def _workers(ctx: TaskContext) -> int:
+    """Use run ``threads`` (else host cores), capped at 32 to bound PDF memory and imports."""
+    value = ctx.params.get("threads")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return min(value, _MAX_PARSE_WORKERS)
+    return min(os.cpu_count() or 1, _MAX_PARSE_WORKERS)
 
 
 def cut_sections(text: str) -> tuple[dict[str, tuple[str, str]], list[tuple[str, str]]]:
@@ -315,4 +422,13 @@ def _write_parquet(
 
 extract = EmaSmpcExtractor().extract
 
-__all__ = ["SMPC_SECTIONS_COLUMNS", "SMPC_WARNINGS_COLUMNS", "EmaSmpcExtractor", "cut_sections", "extract", "parse_documents", "read_pdf_text"]
+__all__ = [
+    "SMPC_SECTIONS_COLUMNS",
+    "SMPC_WARNINGS_COLUMNS",
+    "EmaSmpcExtractor",
+    "cut_sections",
+    "extract",
+    "parse_documents",
+    "read_annex_i_text",
+    "read_pdf_text",
+]

@@ -10,12 +10,15 @@ structured warning path (unreadable PDF, no text layer, unknown document, missin
 
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import polars as pl
 import pytest
-from pypdf import PdfReader, PdfWriter
+from pypdf import PageObject, PdfReader, PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from dakp_pipeline.extract import ema_smpc
@@ -285,6 +288,119 @@ def test_a_pdf_without_a_text_layer_is_a_warning(tmp_path: Path) -> None:
     assert [w["code"] for w in warnings] == ["no_text"]
 
 
+def _multi_page_pdf(tmp_path: Path, stem: str, pages: list[str]) -> Path:
+    """One PDF page per entry of ``pages`` (each a newline-separated text layer)."""
+    writer = PdfWriter()
+    for text in pages:
+        single = PdfReader(str(_pdf_with_text(tmp_path, f"{stem}-page", text)))
+        writer.add_page(single.pages[0])
+    path = tmp_path / f"{stem}.pdf"
+    with path.open("wb") as handle:
+        writer.write(handle)
+    return path
+
+
+def test_annex_i_read_stops_at_the_page_that_ends_annex_i(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Labelling/leaflet pages after the Annex II marker are never decoded (the 89-minute fix)."""
+    path = _multi_page_pdf(
+        tmp_path,
+        "stop_en",
+        [
+            "ANNEX I\n4.1 Therapeutic indications\nPsoriasis.",
+            "4.3 Contraindications\nActive tuberculosis.\nANNEX II\nMANUFACTURER",
+            "ANNEX III\nDo not use if you have hepatitis B.",
+            "leaflet page that must never be decoded",
+        ],
+    )
+    decoded: list[str] = []
+    original = PageObject.extract_text
+
+    def counting_extract_text(self: PageObject, *args: object, **kwargs: object) -> str:
+        text = original(self, *args, **kwargs)  # type: ignore[arg-type]
+        decoded.append(text)
+        return text
+
+    monkeypatch.setattr(PageObject, "extract_text", counting_extract_text)
+    text = ema_smpc.read_annex_i_text(path)
+    monkeypatch.undo()
+
+    assert len(decoded) == 2
+    assert "hepatitis B" not in text
+    # Byte-identical cut to the full-document read: the trailing pages never reach a section.
+    assert ema_smpc.cut_sections(text) == ema_smpc.cut_sections(ema_smpc.read_pdf_text(path))
+
+
+def test_annex_i_read_ignores_an_annex_ii_marker_before_annex_i(tmp_path: Path) -> None:
+    """A table of contents naming ANNEX II BEFORE the ANNEX I line must not end the read early."""
+    path = _multi_page_pdf(
+        tmp_path,
+        "toc_en",
+        [
+            "CONTENTS\nANNEX II\nconditions",
+            "ANNEX I\n4.3 Contraindications\nActive tuberculosis.",
+            "4.4 Special warnings\nInfections.\nANNEX II",
+            "ANNEX III\nleaflet",
+        ],
+    )
+    text = ema_smpc.read_annex_i_text(path)
+    assert "Infections." in text
+    assert "leaflet" not in text
+    assert ema_smpc.cut_sections(text) == ema_smpc.cut_sections(ema_smpc.read_pdf_text(path))
+
+
+def test_annex_i_read_without_an_annex_i_marker_reads_everything(tmp_path: Path) -> None:
+    """No ANNEX I line => the whole document, because the fallback cut needs it unchanged."""
+    path = _multi_page_pdf(tmp_path, "nomarker_en", ["4.3 Contraindications\nX.", "ANNEX II\nY", "tail"])
+    assert ema_smpc.read_annex_i_text(path) == ema_smpc.read_pdf_text(path)
+
+
+def test_parallel_parse_is_identical_to_serial(tmp_path: Path) -> None:
+    """The spawn pool reassembles in input order: rows and warnings match a serial run exactly."""
+    pdfs = [
+        _pdf_with_text(tmp_path, "a-doc_en", "ANNEX I\n4.3 Contraindications\nA wording.\nANNEX II"),
+        _pdf_with_text(tmp_path, "b-doc_en", "ANNEX I\n4.1 Therapeutic indications\nB indication.\nANNEX II"),
+        _pdf_with_text(tmp_path, "stray_en", "ANNEX I\n4.3 Contraindications\nZ.\nANNEX II"),
+    ]
+    broken = tmp_path / "broken-doc_en.pdf"
+    broken.write_bytes(b"%PDF-1.4\nnot a pdf body")
+    refs = [_ref(path) for path in [*pdfs, broken]]
+    documents = {
+        "a-doc_en": _doc("a-doc_en", number="EMEA/H/C/000001"),
+        "b-doc_en": _doc("b-doc_en", number="EMEA/H/C/000002"),
+        "broken-doc_en": _doc("broken-doc_en", number="EMEA/H/C/000003"),
+    }
+    serial = ema_smpc.parse_documents(refs, documents, workers=1)
+    parallel = ema_smpc.parse_documents(refs, documents, workers=3)
+    assert parallel == serial
+    assert {w["code"] for w in serial[1]} >= {"unknown_document", "pdf_unreadable"}
+
+
+def test_parallel_pdf_read_does_not_reexecute_the_airflow_main_script(tmp_path: Path) -> None:
+    """Airflow's main has no spec and is not safe to reexecute in a spawn child."""
+    script = tmp_path / "unsafe_main.py"
+    script.write_text(
+        "if __name__ != '__main__':\n"
+        "    raise RuntimeError('CLI was reexecuted in the child')\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from dakp_pipeline.extract.ema_smpc import _read_texts\n"
+        "assert __spec__ is None\n"
+        "result = _read_texts([Path(sys.argv[1]), Path(sys.argv[1])], 2)\n"
+        "assert all(text and error is None for text, error in result)\n"
+        "assert __spec__ is None\n",
+        encoding="utf-8",
+    )
+    run = subprocess.run([sys.executable, str(script), str(_CEPLENE_PDF)], capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+
+
+@pytest.mark.parametrize(("threads", "expected"), [(12, 12), (80, 32), (0, None), (True, None), ("8", None), (None, None)])
+def test_parse_workers_follow_the_threads_param(tmp_path: Path, threads: object, expected: int | None) -> None:
+    params = {} if threads is None else {"threads": threads}
+    ctx = TaskContext(workdir=tmp_path, fixture_root=_FIXTURE_ROOT, params=params)
+    assert ema_smpc._workers(ctx) == (expected if expected is not None else min(os.cpu_count() or 1, 32))
+
+
 def test_read_pdf_text_decrypts_an_empty_password(tmp_path: Path) -> None:
     """EMA serves some documents with an encryption dictionary but no user password."""
     writer = PdfWriter(clone_from=PdfReader(str(_CEPLENE_PDF)))
@@ -293,6 +409,7 @@ def test_read_pdf_text_decrypts_an_empty_password(tmp_path: Path) -> None:
     with path.open("wb") as handle:
         writer.write(handle)
     assert "4.3 Contraindications" in ema_smpc.read_pdf_text(path)
+    assert "4.3 Contraindications" in ema_smpc.read_annex_i_text(path)
 
 
 # --- the extractor (artifact contract) ----------------------------------------------
@@ -334,6 +451,47 @@ def test_extract_is_byte_deterministic(tmp_path: Path) -> None:
     first = ema_smpc.extract([manifest, _ref(pdf)], _ctx(tmp_path / "a"))
     second = ema_smpc.extract([manifest, _ref(pdf)], _ctx(tmp_path / "b"))
     assert [ref.blake3 for ref in first] == [ref.blake3 for ref in second]
+
+
+def test_extract_reuses_unchanged_outputs_and_force_bypasses_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _ctx(tmp_path / "work")
+    inputs = [_manifest_ref(), _ref(_CEPLENE_PDF)]
+    original = ema_smpc.parse_documents
+    calls: list[int] = []
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ema_smpc, "parse_documents", counted)
+    first = ema_smpc.extract(inputs, ctx)
+    second = ema_smpc.extract(inputs, ctx)
+    assert [r.blake3 for r in first] == [r.blake3 for r in second]
+    assert len(calls) == 1
+    forced = TaskContext(workdir=ctx.workdir, fixture_root=ctx.fixture_root, params={"force": True})
+    ema_smpc.extract(inputs, forced)
+    assert len(calls) == 2
+    first[0].uri.unlink()
+    ema_smpc.extract(inputs, ctx)
+    assert len(calls) == 3
+    assert first[0].uri.exists()
+
+
+def test_extract_cache_invalidates_on_parser_revision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _ctx(tmp_path / "work")
+    inputs = [_manifest_ref(), _ref(_CEPLENE_PDF)]
+    ema_smpc.extract(inputs, ctx)
+    monkeypatch.setattr(ema_smpc, "_PARSE_CACHE_VERSION", "new-parser")
+    original = ema_smpc.parse_documents
+    calls: list[int] = []
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ema_smpc, "parse_documents", counted)
+    ema_smpc.extract(inputs, ctx)
+    assert len(calls) == 1
 
 
 def test_extract_writes_an_empty_typed_table_when_nothing_is_minable(tmp_path: Path) -> None:
