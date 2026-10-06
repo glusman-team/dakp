@@ -265,6 +265,83 @@ def test_indication_observation_merges_duplicate_host_qualifiers_by_score(monkey
     assert observations[0]["qualifiers"] == {"sex_text": "women"}
 
 
+def test_patient_clause_disease_context_attaches_to_the_indication_host() -> None:
+    """ "for treatment of A in patients with B" must qualify the A edge with disease context B.
+
+    The comorbidity B is a Disease mention, and Disease mentions are deliberately NOT generic
+    qualifiers (attach_qualifiers_with_scores withholds them), so without the explicit
+    patient-clause classifier B is mined and then silently dropped: the treated-population
+    restriction never reaches the edge. The contraindication shaper and the NER training
+    export already classify this template; the approved-treats path must agree with them.
+    """
+    sentence = "Examplestatin is indicated for the treatment of asthma in patients with diabetes."
+    mentions = {
+        ("SET-A", "SET-A#34067-9"): [
+            Mention("asthma", sentence.index("asthma"), sentence.index("asthma") + 6, "Disease", 1.0),
+            Mention("diabetes", sentence.index("diabetes"), sentence.index("diabetes") + 8, "Disease", 1.0),
+        ]
+    }
+    observations = _indication_observations(
+        DailyMedEvidence(indication_docs={"SET-A": [("SET-A#34067-9", sentence)]}),
+        ["SET-A"],
+        {"object_text": "asthma", "object_category": "Disease"},
+        {},
+        mentions,
+    )
+    assert observations[0]["qualifiers"]["disease_context_text"] == "diabetes"
+    assert observations[0]["qualifier_scores"]["disease_context_text"] == (1.0, "diabetes")
+
+
+def test_indication_without_patient_clause_leaves_disease_context_blank() -> None:
+    """Negative guard: a bare indication sentence must not fabricate a disease context.
+
+    The qualifier is sparse by contract (nullable on the edge); a second Disease mention
+    outside the explicit template is NOT context and must stay unattached, or unrelated
+    comorbidity prose would mint spurious qualifier-distinct edges (UUID_FIELDS includes
+    disease_context_qualifier, so a fabricated value splits edge identity).
+    """
+    sentence = "Examplestatin is indicated for the treatment of asthma."
+    mentions = {("SET-A", "SET-A#34067-9"): [Mention("asthma", sentence.index("asthma"), sentence.index("asthma") + 6, "Disease", 1.0)]}
+    observations = _indication_observations(
+        DailyMedEvidence(indication_docs={"SET-A": [("SET-A#34067-9", sentence)]}),
+        ["SET-A"],
+        {"object_text": "asthma", "object_category": "Disease"},
+        {},
+        mentions,
+    )
+    assert "disease_context_text" not in observations[0]["qualifiers"]
+
+
+def test_patient_clause_context_does_not_attach_to_a_non_host_disease() -> None:
+    """The context belongs to the after-marker host only, never to the before-marker disease.
+
+    Guards the object-index mapping: ``patient_clause_contexts`` keys contexts by index into
+    the sentence's object mentions, and the FDA path filters those to candidate-matching
+    hosts. A wrong index would attach B's context to B itself (restating the object) or to
+    an unrelated co-mentioned disease. Here two asthma mentions match the candidate, so the
+    template's "exactly one after-marker object" guard abstains: no context rather than a
+    guessed one.
+    """
+    sentence = "Not for asthma alone; indicated for the treatment of asthma in patients with diabetes."
+    first = sentence.index("asthma")
+    second = sentence.index("asthma", first + 1)
+    mentions = {
+        ("SET-A", "SET-A#34067-9"): [
+            Mention("asthma", first, first + 6, "Disease", 1.0),
+            Mention("asthma", second, second + 6, "Disease", 1.0),
+            Mention("diabetes", sentence.index("diabetes"), sentence.index("diabetes") + 8, "Disease", 1.0),
+        ]
+    }
+    observations = _indication_observations(
+        DailyMedEvidence(indication_docs={"SET-A": [("SET-A#34067-9", sentence)]}),
+        ["SET-A"],
+        {"object_text": "asthma", "object_category": "Disease"},
+        {},
+        mentions,
+    )
+    assert "disease_context_text" not in observations[0]["qualifiers"]
+
+
 def test_dailymed_context_and_qualifiers_aggregate_model_metadata() -> None:
     """DailyMed sentence context and qualifiers must survive aggregation, with the best model vote.
 

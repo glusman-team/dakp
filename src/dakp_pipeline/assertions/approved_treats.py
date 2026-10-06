@@ -48,6 +48,9 @@ the same table in two per-source shapes — rows are never merged across sources
   (cache keys are text-only, so identical texts dedupe automatically): one row per
   ``(active substance, disease/phenotype mention)`` pair, sentence by sentence, with
   qualifier attachment (:func:`~dakp_pipeline.assertions.contexts.attach_qualifiers_with_scores`),
+  explicit patient-clause disease context
+  (:func:`~dakp_pipeline.assertions.contexts.host_disease_context`, backing the
+  ``disease_context_qualifier`` column the FDA path populates identically),
   prevention-cue context derivation, and the same SPL-negation sentence filter as rule 4.
 
 Both EMA shapes carry the EMA product number in ``FDA_regulatory_approvals`` and the EPAR
@@ -100,7 +103,7 @@ from dakp_pipeline.assertions import (
     object_mentions,
     row_for,
 )
-from dakp_pipeline.assertions.contexts import assertion_context, attach_qualifiers_with_scores
+from dakp_pipeline.assertions.contexts import assertion_context, attach_qualifiers_with_scores, host_disease_context
 from dakp_pipeline.assertions.evidence import (
     DailyMedEvidence,
     FDAApprovalIndex,
@@ -113,6 +116,7 @@ from dakp_pipeline.assertions.evidence import (
     find_faers_cases,
     find_table,
     load_or_build_dailymed_evidence,
+    pipe_safe_text,
     sorted_pipe,
     spl_evidence_pipe,
     write_assertion_table,
@@ -266,6 +270,17 @@ def _indication_observations(
                     if field not in merged_scores or score > merged_scores[field]:
                         merged_scores[field] = score
                         merged_qualifiers[field] = attached[host_index][field]
+                # Explicit patient-clause disease context ("for treatment of A in patients
+                # with B" -> B qualifies A), the treats-polarity reading of the template the
+                # contraindication shaper and the NER training export also classify. Generic
+                # attachment deliberately withholds Disease mentions, so without this the
+                # comorbidity B is mined and then silently dropped. Sanitized like every
+                # free-text pipe-encoded cell.
+                for host_mention in host:
+                    context_text = pipe_safe_text(host_disease_context(host_mention, objects, sentence_of) or "")
+                    if context_text:
+                        merged_qualifiers["disease_context_text"] = context_text
+                        merged_scores["disease_context_text"] = (1.0, context_text)
                 context = assertion_context("dailymed", "34067-9", sentence)
                 best_model = max((m for m in host if m.context_model), key=lambda m: (m.context_model_score, m.context_model), default=None)
                 observations.append(
@@ -755,6 +770,9 @@ def build_epar_treats_rows(
             qualifiers = [m for m in local_mentions if m not in hosts]
             sentence_of = lambda _mention, value=sentence: value
             attached, qualifier_scores = attach_qualifiers_with_scores(hosts, qualifiers, sentence_of)
+            # Same explicit patient-clause disease context as the FDA path: EPAR indication
+            # prose carries "for the treatment of A in patients with B" templates too, and B
+            # is a Disease mention the generic attachment withholds by design.
             context = assertion_context("ema", "therapeutic_indication", sentence)
             for host_index, host in enumerate(hosts):
                 object_text = normalize_text(host.text)
@@ -786,6 +804,13 @@ def build_epar_treats_rows(
                         if previous is None or score > previous:
                             agg["qualifier_scores"][field] = score
                             agg["qualifiers"][field] = value
+                    context_text = pipe_safe_text(host_disease_context(hosts[host_index], hosts, sentence_of) or "")
+                    if context_text:
+                        score = (1.0, context_text)
+                        previous = agg["qualifier_scores"].get("disease_context_text")
+                        if previous is None or score > previous:
+                            agg["qualifier_scores"]["disease_context_text"] = score
+                            agg["qualifiers"]["disease_context_text"] = context_text
 
     stats(logger, "shape_approved_treats", epar_medicines=ema_registry.height, epar_mentions=mentions_mined, epar_assertions=len(aggregated))
     rows: list[dict[str, str]] = []

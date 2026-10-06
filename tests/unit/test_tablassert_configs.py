@@ -123,6 +123,7 @@ EXPECTED_SOURCES = {
 # ``test_qualifier_stack_survives_prune_to_class_on_the_pinned_classes`` asserts.
 EXPECTED_QUALIFIERS: dict[str, dict[str, str]] = {
     "approved_treats_assertions": {
+        "disease_context_qualifier": "disease_context_text",
         "anatomical_context_qualifier": "anatomical_context_text",
         "sex_qualifier": "sex_text",
         "population_context_qualifier": "population_context_text",

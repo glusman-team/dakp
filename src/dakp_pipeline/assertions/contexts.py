@@ -314,6 +314,53 @@ def patient_clause_contexts(
     return PatientClause(contexts=contexts, context_only=context_only, ambiguous=ambiguous)
 
 
+def host_disease_context(host: Mention, objects: Sequence[Mention], sentence_of: Callable[[Mention], str | None]) -> str | None:
+    """The treated-population disease context of a ``treats`` host, or ``None``.
+
+    The indication template is ``for the treatment of A in patients with B``: on a treats edge
+    the object is the BEFORE-marker disease A (the treated condition) and the patient clause
+    names the comorbid population B, so B is A's ``disease_context_qualifier`` value. This is
+    the mirror image of the contraindication reading (:func:`patient_clause_contexts`, whose
+    object is the AFTER-marker disease and whose context is the treated condition before it),
+    which is why the treats shapers cannot reuse that function's index mapping directly.
+    Same guards as the shared classifier, applied with the treats polarity: the marker, exactly
+    one Disease mention on each side, the host IS the before-marker disease, a treatment intro
+    phrase (:data:`CONTEXT_INTRO`) vouching for the clause and never starting inside it, the
+    disease-range rule (Biolink's ``disease_context_qualifier`` is disease-ranged), and the
+    companion-medication guard (:data:`MEDICATION_CONTEXT` -- a drug-named patient clause
+    belongs to a future interaction assertion, not this slot). Any other geometry abstains:
+    ``None`` rather than a guessed context, because a fabricated value mints a spurious
+    qualifier-distinct edge (``disease_context_qualifier`` participates in edge identity via
+    the graph's ``uuid_fields``).
+    """
+    sentence = sentence_of(host)
+    if not sentence:
+        return None
+    marker = PATIENT_WITH_MARKER.search(sentence)
+    if marker is None:
+        return None
+    diseases = [
+        mention
+        for mention in objects
+        if sentence_of(mention) == sentence
+        and 0 <= mention.start <= mention.end <= len(sentence)
+        and canonical_type(str(mention.type)) == TYPE_DISEASE
+    ]
+    before = [mention for mention in diseases if mention.end <= marker.start()]
+    after = [mention for mention in diseases if mention.start >= marker.end()]
+    if len(before) != 1 or len(after) != 1:
+        return None
+    if host is not before[0]:
+        return None
+    intro = CONTEXT_INTRO.search(sentence, 0, marker.start())
+    if intro is None or intro.end() > after[0].start:
+        return None
+    if MEDICATION_CONTEXT.search(sentence):
+        return None
+    context_text = normalize_text(after[0].text)
+    return context_text or None
+
+
 __all__ = [
     "ASSERTION_CONTEXTS",
     "CONTEXT_INTRO",
@@ -325,5 +372,6 @@ __all__ = [
     "attach_qualifiers",
     "attach_qualifiers_with_scores",
     "context_predicate",
+    "host_disease_context",
     "patient_clause_contexts",
 ]
