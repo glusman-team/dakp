@@ -54,11 +54,19 @@ Never stash or commit someone else's changes as part of a release.
 
 ## Matching dataset build
 
-The HF dataset publishes one directory per released version with exactly three
-files: `DRUG_APPROVALS_KP_<version>.nodes.ndjson`,
+The HF dataset's `main` branch carries exactly one `<version>/` directory per
+release - the LATEST one - with exactly three files:
+`DRUG_APPROVALS_KP_<version>.nodes.ndjson`,
 `DRUG_APPROVALS_KP_<version>.edges.ndjson`, and
 `DRUG_APPROVALS_KP_<version>.RIG.yaml`. No TSV views, no foldreports, no NER
-bundles unless separately requested.
+bundles unless separately requested. Every earlier release lives on its
+`v<version>` tag as a version-only snapshot (the three files plus a
+version-scoped card), reachable via
+`resolve/v<version>/<version>/...` or
+`load_dataset(..., revision="v<version>")`. The accumulated
+all-versions-on-main layout that predated this rule was migrated once (main
+pruned to the latest release; every existing tag retargeted to a version-only
+snapshot), so tags created under this runbook are version-only by construction.
 
 - Reuse finished artifacts ONLY after verifying they were produced from the
   release revision: check the build's source revision, embedded graph-config
@@ -95,9 +103,11 @@ whole dataset to the laptop.
      `data_files` pointing at the new `<version>/` NDJSON pair and both feature
      lists declared inline. Only the latest release is browsable, so nothing
      aliases them and no YAML anchors are needed.
-   - Do NOT keep configs for earlier releases: their directories stay in the repo
-     as path downloads, never parquet-converted and never in the subset dropdown,
-     which is what keeps the dropdown reading newest-edges then newest-nodes. The
+   - Do NOT keep configs for earlier releases: they live on their `v<version>`
+     tags as version-only snapshots (path-downloadable via
+     `resolve/v<version>/<version>/...`), never parquet-converted on main and
+     never in the subset dropdown, which is what keeps the dropdown reading
+     newest-edges then newest-nodes. The
      HF viewer orders subsets "default first, then alphabetical" (per HF's
      data-files-config docs) and `_edges` sorts before `_nodes`, so two configs
      need no rank prefix; card YAML order alone does NOT control the order.
@@ -108,6 +118,16 @@ whole dataset to the laptop.
      the schema actually changed. Match the card's existing structure and ASCII
      style; keep all historical releases and their URLs intact. Then upload it:
    `hf upload SkyeAv/drug-approvals-kp <staging>/README.md README.md --repo-type dataset --commit-message "..."`
+4. Prune superseded releases from main: delete every `<old-version>/`
+   directory except the new one (one `create_commit` on main with
+   `CommitOperationDelete(..., is_folder=True)` ops), so main always carries
+   exactly the latest release. Keep `.gitattributes` and `README.md`. Do this
+   BEFORE tagging: main-only-latest is what makes the `v<version>` tag a
+   version-only snapshot by construction. Commit deletions directly on main (no
+   temp branch): the hub API can 500 when branching from old CLI-uploaded
+   commits. Replace the card with a single `CommitOperationAdd` (an add on an
+   existing path is an update; a delete+add pair for the same path split into
+   multiple commits mid-run).
    Verify afterwards that the viewer opens `<version>_edges`:
    `datasets-server.huggingface.co/splits?dataset=SkyeAv/drug-approvals-kp` must
    return exactly `["<version>_edges", "<version>_nodes"]` in that order, and
@@ -121,9 +141,14 @@ whole dataset to the laptop.
    has no tag command):
    `HfApi().create_tag(repo_id="SkyeAv/drug-approvals-kp", tag="v<version>", repo_type="dataset", tag_message=...)`.
    If the tag exists, verify it points where expected; never delete or move it.
+   Because main holds only the new release at this point, the tag snapshot
+   contains exactly that release's files and card; no per-tag pruning is
+   needed.
 5. Verify everything, with evidence: the three files resolve under
    `https://huggingface.co/datasets/SkyeAv/drug-approvals-kp/tree/main/<version>`
-   and match the `artifact_base_url` the release's RIG advertises; spot-check
+   and match the `artifact_base_url` the release's RIG advertises; the main tree
+   is exactly `.gitattributes`, `README.md`, and the one `<version>/`
+   directory; spot-check
    one downloaded file hash against the source; the card renders the new
    configs; `v<version>` exists on the dataset; the code tag exists on GitHub.
 

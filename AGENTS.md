@@ -120,12 +120,15 @@ wenceslaus over SSH, never locally:
   `SkyeAv/drug-approvals-kp`. Use `.pi/skills/dakp-release/SKILL.md`; GitHub
   `v<version>` tags are created by CI (`tag-version.yml`), never by hand.
 - On the dataset card, only the LATEST release is browsable: exactly two subsets,
-  `<version>_edges` (carries `default: true`) and `<version>_nodes`. Earlier
-  releases stay as plain files in their `<version>/` directories, downloadable by
-  path, never parquet-converted and absent from the subset dropdown, so no rank
-  prefix or renumbering is needed (the HF viewer orders subsets "default first,
-  then alphabetical", card YAML order does not control this, and `_edges` sorts
-  before `_nodes`). When adding a version, rewrite both `config_name` values and
-  `data_files` paths, MOVE `default: true` to the new `_edges` config, keep the
-  Releases/checksums tables newest first, and leave every historical directory
-  intact.
+  `<version>_edges` (carries `default: true`) and `<version>_nodes` (the HF viewer orders
+  subsets "default first, then alphabetical", card YAML order does not control this, and
+  `_edges` sorts before `_nodes`). main holds exactly the latest release's `<version>/`
+  directory: on every release, upload the new directory and DELETE every superseded one
+  in the same publication pass. Earlier releases live on their `v<version>` tags as
+  version-only snapshots (NDJSON pair + RIG + version-scoped card), reachable via
+  `resolve/v<version>/<version>/...` or `load_dataset(..., revision="v<version>")`,
+  never parquet-converted on main and absent from the subset dropdown. When adding a
+  version, rewrite both `config_name` values and `data_files` paths, MOVE `default: true`
+  to the new `_edges` config, keep the Releases/checksums tables newest first, prune the
+  superseded directories, and tag `v<version>` last (the migration of the pre-existing
+  accumulated layout was a one-time exception that moved old tags).
