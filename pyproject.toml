@@ -83,8 +83,9 @@ classifiers = [
 # 4.4.5 then attached `anatomical_context_qualifier` and `frequency_qualifier` to the whole
 # disease/phenotype family natively (as it did `disease_context_qualifier`, noted above) and added
 # `sex_qualifier` to `EntityToPhenotypicFeatureAssociation`, so Tablassert dropped those four
-# grants. Still granted, still deliberately ahead of the model: `population_context_qualifier` and
-# `temporal_context_qualifier` on both pinned classes, `sex_qualifier` on
+# grants. 19.7.0's biolink-model 4.4.6 then attached `population_context_qualifier` to both
+# pinned classes natively, so Tablassert dropped that grant too; still granted, still deliberately
+# ahead of the model: `temporal_context_qualifier` on both pinned classes, `sex_qualifier` on
 # `EntityToDiseaseAssociation`. Fullmaps must be
 # `tablassert.fullmap.v6` redb files: 19.0 rebased level-one normalization onto stemmed,
 # deduped, byte-sorted tokens, which changed the RECORDS key SPACE, so a v5 database is not an
@@ -151,7 +152,7 @@ dependencies = [
     # the app without it, and logging is a silent no-op without `[log]` (loguru), so a build would
     # emit no progress or warning logs at all. Both are load-bearing for `run_tablassert`, hence
     # explicit. `[qc]` still backs the `--qc` audit.
-    "tablassert[cli,log,qc]>=19.6.0,<20",
+    "tablassert[cli,log,qc]>=19.7.0,<20",
     # torch is transitive (sentence-transformers via tablassert[qc]; gliner2 needs it too but
     # only declares it under the `[local]`/`[train]` extras we do not use) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host

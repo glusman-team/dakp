@@ -56,7 +56,7 @@ The real runner (:class:`TablassertRunner`) shells out to the installed ``tablas
 (a CORE dependency installed by the single ``uv sync``) and captures stdout / exit code into
 a handoff report; the deferred runner (:class:`DeferredTablassertRunner`) writes a
 deferred-handoff report without ever touching Tablassert (used when no fullmap triggers the
-real handoff, and in tests). DAKP requires Tablassert >= 19.6.0, the floor ``pyproject.toml`` pins;
+real handoff, and in tests). DAKP requires Tablassert >= 19.7.0, the floor ``pyproject.toml`` pins;
 the releases that built it, oldest first: the graph config carries the
 fullmap path (the ``build-kg --fullmap`` flag was removed in Tablassert 8.1), the 8.2
 Biolink-valid KGX modeling (``sources[]`` retrieval provenance, first-class evidence slots)
@@ -120,11 +120,15 @@ association family, renames the FDA-specific ``FDA_regulatory_approvals`` to the
 ``regulatory_approvals`` on both pinned classes, and adds ``sex_qualifier`` to
 ``EntityToPhenotypicFeatureAssociation``, so Tablassert retired those four ``CLASS_FIELD_OVERRIDES``
 grants and kept only ``population_context_qualifier`` and ``temporal_context_qualifier`` (both pinned
-classes) plus ``sex_qualifier`` (``EntityToDiseaseAssociation``). The effective edge field set, and
+classes) plus ``sex_qualifier`` (``EntityToDiseaseAssociation``). 19.7.0's biolink-model 4.4.6 then
+attached ``population_context_qualifier`` to both pinned classes natively, so Tablassert retired that
+grant as well (SkyeAv/Tablassert#213); the remaining grants are ``temporal_context_qualifier`` on both
+pinned classes plus ``sex_qualifier`` on ``EntityToDiseaseAssociation``. The effective edge field set, and
 every KGX byte DAKP emits, is unchanged; that is why the qualifier contract in
 ``tests/unit/test_tablassert_configs.py`` runs ``prune_to_class`` rather than asserting the grant set.
 19.6.0 adds optional ``validate-kgx --prune``; DAKP does not enable destructive pruning.
-Fullmap v6, annotation encoding, case-count merging and QC are unchanged from 19.5.1.
+19.7.0 changes only the qualifier grants above (and ``BIOLINK_VERSION`` now reports 4.4.6
+accurately); fullmap v6, annotation encoding, case-count merging and QC are unchanged from 19.5.1.
 
 The DEFAULT invocation runs the installed package — the venv ``tablassert`` binary when it is
 on ``PATH``, otherwise ``uv run tablassert``. An OPTIONAL editable-checkout override (the
@@ -1255,11 +1259,12 @@ _QUALIFIER_EXCLUDE_REGEX: dict[str, tuple[str, ...]] = {
 # classes. The second layer is met natively or by grant, depending on the pinned model: biolink-model
 # 4.4.5 (Tablassert >= 19.5.1) attaches ``disease_context_qualifier``,
 # ``anatomical_context_qualifier``, and ``frequency_qualifier`` to the whole disease/phenotype
-# association family and ``sex_qualifier`` to ``EntityToPhenotypicFeatureAssociation``, while
-# Tablassert's ``CLASS_FIELD_OVERRIDES`` still grants ``population_context_qualifier`` and
+# association family and ``sex_qualifier`` to ``EntityToPhenotypicFeatureAssociation``; biolink-model
+# 4.4.6 (Tablassert >= 19.7.0, SkyeAv/Tablassert#213) attaches ``population_context_qualifier`` to both
+# pinned classes; and Tablassert's ``CLASS_FIELD_OVERRIDES`` still grants
 # ``temporal_context_qualifier`` to both pinned classes plus ``sex_qualifier`` to
-# ``EntityToDiseaseAssociation`` (15.1/#120 and 19.0/#188 had granted all six before 4.4.5 absorbed
-# four of them). Either way the qualifier rides the edge; a downgrade that loses coverage nulls it
+# ``EntityToDiseaseAssociation`` (15.1/#120 and 19.0/#188 had granted all six before the model
+# absorbed five of them). Either way the qualifier rides the edge; a downgrade that loses coverage nulls it
 # into the pruned column, which
 # ``test_qualifier_stack_survives_prune_to_class_on_the_pinned_classes`` fails on.
 _TABLE_QUALIFIERS: dict[str, tuple[tuple[str, str], ...]] = {
