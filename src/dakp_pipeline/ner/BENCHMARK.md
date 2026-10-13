@@ -21,6 +21,46 @@ part of the span while temporal/evidential hedges are not.
 
 ## Results (strict span-level micro P/R/F1; a TP needs exact `(start, end, type)`)
 
+### GLiNER2.5 boundary checkpoint + full-window inference (2026-10-13, wenceslaus 4x P100)
+
+The production default moved from the GLiNER2 large **span** checkpoint
+`fastino/gliner2-large-v1` (384-word effective window: the checkpoint config has no `max_len`, so
+the backend fell back to `_DEFAULT_WORD_BUDGET = 384`) to the GLiNER2.5 **boundary** checkpoint
+`fastino/gliner2.5-base-v1` (`max_len: 4096`) at the full 4096-word budget, fp32. Composite stays
+**1.000 / 1.000 / 1.000** (42 TP / 0 FP / 0 FN; `benchmark_results.json`); the isolated GLiNER
+leg improves from P 0.794 / R 0.643 / F1 0.711 (lenient 0.789) to **P 0.897 / R 0.833 /
+F1 0.864 (lenient 0.938)** — the boundary architecture's attribute mechanism extracts longer,
+qualifier-aware spans without mistyping them.
+
+Supporting evidence from the same session (all on wenceslaus, 4x Tesla P100-16GB, fp32):
+
+- **Window budget probe** (single 4096-word window, batch 1): peak 14.44 GiB / 2.79 s — fits a
+  16 GB P100 only at batch 1, hence the adaptive `_word_budget_batches`: windows pack into
+  batches by word budget, and a CUDA OOM halves both the batch size and the word budget
+  (`_MAX_OOM_HALVINGS = 2`).
+- **gliner2 2.1.0 CUDA bug**: `_attach_entity_attributes` indexes CPU logits with `device=`
+  indices (crashes every boundary-model attribute pass). Fixed by the vendored, source-
+  signature-gated shim `ner/_gliner25_compat.py` (no engine edit); no-op on span checkpoints
+  and after an upstream fix.
+- **A/B vs the old checkpoint** (`tests/eval/ab_ner_diff.py --sample 500`): 411/500 texts
+  produce different mentions. Per-label counts (500 DailyMed sections, same seed): the old
+  model over-extracts boilerplate — Disease 5474 vs 2326, PhenotypicFeature 5141 vs 2070,
+  PopulationOfIndividualOrganisms 1987 vs 342 (top old surfaces: `patients`, `adults`,
+  `pediatric patients`), OrganismTaxon 528 vs 320 (old top surfaces: `human`, `rats`, `mice`,
+  `rabbits` — animal-study boilerplate), frequency_qualifier 523 vs 65 (dose-wording junk).
+  `QUALIFIER_SURFACE_BLOCKLIST` enforcement is visible in the abstain log (`adults` blocked at
+  score 0.96).
+- **Throughput**: old checkpoint 500 texts on one P100 = 183.8 s (2.72 texts/s/GPU, ~8 windows
+  per section); new checkpoint 500 texts pooled across 4 P100s via `MiningPool` = 47.5 s
+  (10.5 texts/s aggregate, ~2.6 texts/s/GPU at full-length windows, but each section runs as
+  ONE window instead of ~8 — no truncation, no redundant boundary passes, 4x aggregate over
+  the previous single-GPU setup).
+- **Qualifier prompting** is Biolink-grounded: `MODEL_LABELS` descriptions follow the
+  biolink-model class definitions, and the assertion-context vocabulary is limited to the two
+  predicates the pipeline actually compiles (`indication` -> `biolink:treats` /
+  `biolink:applied_to_treat`, `contraindication` -> `biolink:contraindicated_in`); the
+  unusable `prevention` / `observed_prevention` contexts were removed.
+
 ### v1.16.0 build-speed work (2026-10-01, wenceslaus 4x P100)
 
 Composite stays **1.000 / 1.000 / 1.000** on branch HEAD defaults

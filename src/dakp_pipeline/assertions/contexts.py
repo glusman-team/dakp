@@ -1,12 +1,14 @@
 """Pure assertion-context derivation and sparse qualifier attachment.
 
-The model's context attribute is provenance only. Source/section rules remain authoritative;
-prevention predicates are deliberately deferred: biolink-model 4.4.5 still does not attach
-``prevents`` or ``applied_to_prevent`` to the ``related to`` hierarchy, so emitting them would put
-DAKP's predicates outside the pinned model. Tablassert >= 19.1 exposes exactly this family as local
-``PREDICATE_OVERRIDES``, so a build validates them today; adopting them is therefore a DAKP modeling
-decision, not a dependency wait. Rows retain the prevention context
-while their existing treats predicates remain unchanged.
+The model's context attribute is provenance only. Source/section rules remain authoritative.
+The context vocabulary is exactly the two predicates the pinned biolink-model can carry:
+``indication`` (emitted as ``biolink:treats``, or ``biolink:applied_to_treat`` on
+spontaneous-report sources) and ``contraindication`` (``biolink:contraindicated_in``). The
+former ``prevention``/``observed_prevention`` contexts were removed: biolink-model has no
+``prevents``/``applied_to_prevent`` predicate, so those contexts never had an edge of their
+own and only blurred the treat-vs-contraindicated decision the KG actually stores. Sentence
+cues no longer influence the context either: prophylaxis wording is an indication surface,
+and the treats predicate it already mapped to is what the row emits today.
 """
 
 from __future__ import annotations
@@ -19,59 +21,47 @@ from dakp_pipeline.logging_setup import logger, stats
 from dakp_pipeline.ner.dictionary import OBJECT_TYPES, TYPE_DISEASE, canonical_type, normalize_text
 from dakp_pipeline.ner.lexical import Mention
 
-ASSERTION_CONTEXTS = ("indication", "contraindication", "prevention", "observed_prevention")
-
-# Closed, case-insensitive cues. Longer phrases precede their component words for readability;
-# regex matching is deterministic and word bounded.
-PREVENTION_CUE = re.compile(
-    r"\b(?:post[- ]exposure\s+prophylaxis|reduce\s+the\s+risk\s+of|"
-    r"prophylaxis|prophylactic|prevention\s+of|to\s+prevent|preventing|"
-    r"immunization|immunisation|vaccine|PEP|PrEP)\b",
-    re.IGNORECASE,
-)
+ASSERTION_CONTEXTS = ("indication", "contraindication")
 
 _DAILYMED_CONTRA = frozenset({"34070-3", "34066-1", "43685-7", "34071-1", "42232-9", "contraindications", "boxed_warning", "warnings", "warning"})
 _DAILYMED_INDICATION = frozenset({"34067-9", "indications", "indications_and_usage", "indication"})
 _EMA_INDICATION = frozenset({"therapeutic_indication", "indication"})
 
 
-def _has_cue(sentence: str) -> bool:
-    return bool(PREVENTION_CUE.search(sentence or ""))
-
-
 def assertion_context(source: str, section_kind: str, sentence: str) -> str:
-    """Derive the authoritative context from source section and sentence cues.
+    """Derive the authoritative context from the source section.
 
-    ``source`` is ``dailymed``, ``faers``, ``ema``, or ``canada_vigilance``. DailyMed indication
-    sections distinguish treatment from prevention; dedicated contraindication/warning sections
-    always remain contraindications. FAERS and Canada Vigilance indications distinguish observed
-    prevention from an observed indication (the spontaneous-report semantics are identical). EMA
-    registry indications reuse the indication semantics (prevention cue -> ``prevention``, else
-    ``indication``). Model opinions are intentionally not accepted by this function.
+    ``source`` is ``dailymed``, ``faers``, ``ema``, or ``canada_vigilance``. Dedicated
+    contraindication/warning sections always remain contraindications; every indication surface
+    (DailyMed, FAERS, Canada Vigilance, EMA) is an indication. ``sentence`` stays in the
+    signature because every call site derives it per row, but the context no longer depends on
+    sentence cues: the removed prevention vocabulary was the only cue-driven branch, and its
+    rows already emitted the treats-family predicate this function now names directly. Model
+    opinions are intentionally not accepted by this function.
     """
+    del sentence
     source_key = source.strip().lower()
     section_key = section_kind.strip().lower()
     if source_key not in {"dailymed", "faers", "ema", "canada_vigilance"}:
         raise ValueError(f"unknown assertion source: {source!r}")
-    if source_key == "dailymed":
-        if section_key in _DAILYMED_CONTRA:
-            return "contraindication"
-        if section_key in _DAILYMED_INDICATION:
-            return "prevention" if _has_cue(sentence) else "indication"
-    elif source_key in {"faers", "canada_vigilance"} and section_key in {"indication", "indications", "faers_indication"}:
-        return "observed_prevention" if _has_cue(sentence) else "indication"
-    elif source_key == "ema" and section_key in _EMA_INDICATION:
-        return "prevention" if _has_cue(sentence) else "indication"
+    if source_key == "dailymed" and section_key in _DAILYMED_CONTRA:
+        return "contraindication"
+    if (
+        (source_key == "dailymed" and section_key in _DAILYMED_INDICATION)
+        or (source_key in {"faers", "canada_vigilance"} and section_key in {"indication", "indications", "faers_indication"})
+        or (source_key == "ema" and section_key in _EMA_INDICATION)
+    ):
+        return "indication"
     raise ValueError(f"unknown assertion section_kind: {section_kind!r}")
 
 
 def context_predicate(context: str, source: str) -> str:
-    """Map a context to the currently emittable predicate.
+    """Map a context to the predicate the pinned biolink-model can carry.
 
-    Prevention contexts are recorded but use the producing shaper's existing predicate: the
-    anticipated ``biolink:prevents`` and ``biolink:applied_to_prevent`` slots are still absent from
-    the pinned Biolink-model 4.4.5 (only Tablassert's local ``PREDICATE_OVERRIDES`` carry them), so
-    they are not emitted or tested here.
+    Indication rows emit ``biolink:treats`` (registry/SPL sources) or
+    ``biolink:applied_to_treat`` (spontaneous-report sources); contraindication rows emit
+    ``biolink:contraindicated_in``. There is no prevention context to map: the vocabulary was
+    trimmed to the two biolink-usable predicates (see the module docstring).
     """
     source_key = source.strip().lower()
     if source_key not in {"dailymed", "faers", "ema", "canada_vigilance"}:
@@ -366,7 +356,6 @@ __all__ = [
     "CONTEXT_INTRO",
     "MEDICATION_CONTEXT",
     "PATIENT_WITH_MARKER",
-    "PREVENTION_CUE",
     "PatientClause",
     "assertion_context",
     "attach_qualifiers",

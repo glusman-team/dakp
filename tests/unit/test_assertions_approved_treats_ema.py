@@ -337,7 +337,7 @@ def test_epar_keeps_the_highest_context_model_and_qualifier_scores(disease_map: 
             end=text.rindex("severe pain") + len("severe pain"),
             type="Disease",
             score=0.9,
-            context_model="prevention",
+            context_model="contraindication",
             context_model_score=0.8,
         ),
         # Second sentence's qualifier ties on score but loses the text tie-break ("adult" < "elderly"):
@@ -353,13 +353,13 @@ def test_epar_keeps_the_highest_context_model_and_qualifier_scores(disease_map: 
     ]
     rows = build_epar_treats_rows(frame, {("ema:EMEA/H/C/006395", "indication"): mentions}, disease_map)
 
-    # Neither sentence carries a prevention cue, so both share the "indication" context and
-    # aggregate into ONE row: the context-model score is REPLACED by the higher one (prevention,
-    # 0.8) while the qualifier tie-break ("adult" > "aged" at equal 0.5) keeps the FIRST
+    # Both sentences derive the "indication" context, so they aggregate into ONE row: the
+    # context-model score is REPLACED by the higher one (contraindication, 0.8) while the
+    # qualifier tie-break ("adult" > "aged" at equal 0.5) keeps the FIRST
     # qualifier — evidence aggregation is max-per-field, never first-or-last-wins wholesale.
     assert [row["assertion_context"] for row in rows] == ["indication"]
     row = rows[0]
-    assert row["assertion_context_model"] == "prevention"
+    assert row["assertion_context_model"] == "contraindication"
     assert row["assertion_context_model_score"] == "0.8"
     assert row["population_context_text"] == "elderly patients"  # the smaller-text candidate did not replace it
 

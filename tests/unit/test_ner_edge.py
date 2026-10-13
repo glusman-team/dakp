@@ -1342,3 +1342,43 @@ def test_explicit_fp16_autocast_arms_on_cuda_and_the_fp32_default_does_not(fake_
     default_backend = DiseaseNER(offline=False, gazetteer={}, device="cuda", workdir=tmp_path)
     default_backend._raw_batch_extract(_BatchRecordingModel(), ["a"], 1)
     assert entered == []
+
+
+# --- qualifier surface blocklist: measured junk the prompt alone did not prevent ------------
+
+
+def test_qualifier_surface_blocklist_drops_measured_junk_spans(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The wenceslaus NER-export scan (187,314 shipped training examples / 4.25M mentions)
+    measured dose-amount nouns tagged as frequency_qualifier, age/species words tagged as
+    BiologicalSex (biolink defines it as the organismal sex quality itself, PATO:0000047, not a
+    life-stage or species attribute) and the condition noun 'pregnancy' tagged as
+    temporal_context_qualifier. Each blocked surface is abstained on, never emitted."""
+    text = "Do not exceed the recommended dosage. Adults and humans: history of pregnancy."
+    predictions = [
+        {"start": text.index("dosage"), "end": text.index("dosage") + 6, "label": "frequency_qualifier", "score": 0.9},
+        {"start": text.index("Adults"), "end": text.index("Adults") + 6, "label": "biolink:BiologicalSex", "score": 0.9},
+        {"start": text.index("humans"), "end": text.index("humans") + 6, "label": "biolink:BiologicalSex", "score": 0.8},
+        {"start": text.index("pregnancy"), "end": text.index("pregnancy") + 9, "label": "temporal_context_qualifier", "score": 0.7},
+    ]
+    _install_fake_gliner2(monkeypatch, tmp_path, predictions)
+    mentions = DiseaseNER(offline=False, gazetteer={}).extract(text)
+    assert mentions == []
+
+
+def test_qualifier_surface_blocklist_is_exact_surface_per_type(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The blocklist gates exact normalized surfaces on their own qualifier type only: the same
+    word on the object channel and legitimate qualifier wording survive untouched."""
+    text = "Contraindicated during pregnancy and lactation. Take once daily with food in women."
+    predictions = [
+        # 'pregnancy' blocked ONLY as temporal_context_qualifier; as the object-channel finding it stands.
+        {"start": text.index("pregnancy"), "end": text.index("pregnancy") + 9, "label": "biolink:PhenotypicFeature", "score": 0.9},
+        {"start": text.index("once daily"), "end": text.index("once daily") + 10, "label": "frequency_qualifier", "score": 0.8},
+        {"start": text.index("women"), "end": text.index("women") + 5, "label": "biolink:BiologicalSex", "score": 0.9},
+    ]
+    _install_fake_gliner2(monkeypatch, tmp_path, predictions)
+    mentions = DiseaseNER(offline=False, gazetteer={}).extract(text)
+    assert [(m.text, m.type) for m in mentions] == [
+        ("pregnancy", "PhenotypicFeature"),
+        ("once daily", "frequency_qualifier"),
+        ("women", "BiologicalSex"),
+    ]

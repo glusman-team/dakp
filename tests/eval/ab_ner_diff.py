@@ -69,6 +69,26 @@ def _mention_multiset(mentions: list[dict[str, Any]]) -> Counter[tuple[str, int,
     return Counter((m["text"], int(m["start"]), int(m["end"]), m["type"]) for m in mentions)
 
 
+def _pooled_devices(ner: DiseaseNER) -> Sequence[str] | None:
+    """All torch-supported CUDA ordinals for pooled dispatch, or None when unavailable."""
+    from dakp_pipeline.assertions.ner_dispatch import _resolve_devices
+
+    return _resolve_devices(ner)
+
+
+def _mine_dispatched(ner: DiseaseNER, pool: Any, items: Sequence[Any]) -> dict[tuple[str, str], Any]:
+    """One pass over a run-scoped MiningPool, returned in the sequential _extract shape.
+
+    ``mine_by_position`` bridges the pool's span-valued worker results back to per-item mention
+    lists (positional keys, duplicate (set_id, doc_id) safe) and the zip restores the harness's
+    item-keyed mapping so mine_with_cache cannot re-key a truncated batch.
+    """
+    from dakp_pipeline.assertions.ner_dispatch import mine_by_position
+
+    mined = mine_by_position(items, ner, pool.mine, None)
+    return {(item[0], item[1]): mentions for item, mentions in zip(items, mined, strict=True)}
+
+
 def _extract(ner: DiseaseNER, items: Sequence[Any]) -> dict[tuple[str, str], Any]:
     """Mine the given items in one batched call, keyed by the items' own ids.
 
@@ -95,6 +115,12 @@ def main() -> int:
     parser.add_argument(
         "--device", type=str, default=None, help="Device for BOTH sides' mines (e.g. cuda:2); one config per GPU lets a sweep run in parallel"
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Experiment model id override (e.g. a candidate checkpoint); baseline stays the production default, cache-served",
+    )
     parser.add_argument("--out", type=Path, default=None, help="Write the diff report JSON here")
     parser.add_argument("--gate", action="store_true", help="Exit nonzero when any text differs (adoptability gate)")
     args = parser.parse_args()
@@ -108,6 +134,8 @@ def main() -> int:
     device_kwargs: dict[str, Any] = {"device": args.device} if args.device else {}
     baseline = DiseaseNER.for_contraindications(offline=False, workdir=args.workdir, **device_kwargs)
     experiment_kwargs: dict[str, Any] = dict(device_kwargs)
+    if args.model is not None:
+        experiment_kwargs["model_id"] = args.model
     if args.chunk_words is not None:
         experiment_kwargs["chunk_words"] = args.chunk_words
     if args.batch_size is not None:
@@ -119,20 +147,31 @@ def main() -> int:
     differing = 0
     baseline_missing = 0
     changed_texts: list[dict[str, Any]] = []
+
+    # Pooled dispatch fans each side across every visible GPU (one model per device, windows
+    # sharded LPT-balanced); a --device sweep keeps the sequential single-GPU path so both sides
+    # share the pinned card exactly as before. The two sides' pools MUST NOT overlap: a pool's
+    # workers hold their per-device flocks for the pool's whole life, so a second pool opened
+    # alongside would wait on the first pool's locks forever. Run side by side, pool by pool.
+    def _run_side(ner: DiseaseNER, use_pool: bool, items: list[tuple[str, str, str]], cache: Any) -> dict[tuple[str, str], Any]:
+        devices = _pooled_devices(ner) if use_pool else None
+        if not devices:
+            return mine_with_cache(items, ner, lambda it: _extract(ner, it), cache)
+        print(f"pooled dispatch: {ner._model_id} on {', '.join(devices)}")
+        with dispatch_pool(ner, devices) as pool:
+            assert pool is not None
+            return mine_with_cache(items, ner, lambda it: _mine_dispatched(ner, pool, it), cache)
+
     with MentionCache(args.workdir) as cache:
-        from dakp_pipeline.assertions.ner_dispatch import mine_with_cache
+        from dakp_pipeline.assertions.ner_dispatch import dispatch_pool, mine_with_cache
 
         items = [("ab", f"doc{i}", text) for i, text in enumerate(texts)]
         started = time.monotonic()
-        baseline_mentions = mine_with_cache(items, baseline, lambda it: _extract(baseline, it), cache)
+        baseline_mentions = _run_side(baseline, not args.device, items, cache)
         baseline_seconds = time.monotonic() - started
         started = time.monotonic()
-        experiment_mentions = mine_with_cache(
-            items,
-            experiment,
-            lambda it: _extract(experiment, it),
-            None,  # the experiment config must not write sweep entries into the production cache
-        )
+        # cache=None: the experiment config must not write sweep entries into the production cache
+        experiment_mentions = _run_side(experiment, not args.device, items, None)
         experiment_seconds = time.monotonic() - started
         for i, text in enumerate(texts):
             base = _mention_multiset([m.to_dict() for m in baseline_mentions.get(("ab", f"doc{i}"), [])])
@@ -154,7 +193,13 @@ def main() -> int:
     report = {
         "sample": len(texts),
         "seed": args.seed,
-        "experiment": {"chunk_words": args.chunk_words, "batch_size": args.batch_size, "dtype": args.dtype, "device": args.device},
+        "experiment": {
+            "model": args.model,
+            "chunk_words": args.chunk_words,
+            "batch_size": args.batch_size,
+            "dtype": args.dtype,
+            "device": args.device,
+        },
         # Wall time of each side. The baseline side is cache-served (CPU re-merge only), so the
         # experiment side's seconds are the GPU cost of the config under test; compare configs
         # against a control run (no experiment flags) on the same sample, not against baseline.

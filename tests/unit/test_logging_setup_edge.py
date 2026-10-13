@@ -247,9 +247,9 @@ def _worker_body(workdir: str, device: str) -> None:
     # The imports themselves are the point (each installs its own stderr handler), not the values.
     assert torch is not None
     assert transformers is not None
-    logger.info("ner_model_load: model_id = fastino/gliner2-large-v1")
+    logger.info("ner_model_load: model_id = fastino/gliner2.5-base-v1")
     logger.debug("ner_gpu_lock: waited = false")
-    logging.getLogger("transformers.modeling_utils").warning("You are using a model of type `extractor`")
+    logging.getLogger("transformers.modeling_utils").warning("You are using a model of type `gliner2`")
     logging.getLogger("torch.cuda").warning("torch-owned handler line")
     warnings.warn("Encoder rejected attn_implementation='sdpa'", RuntimeWarning, stacklevel=1)
     print("native-library chatter", file=sys.stderr)  # stands in for native CUDA / tqdm output
@@ -268,9 +268,9 @@ def test_worker_logging_redirects_every_stderr_channel_into_the_worker_file(tmp_
     assert len(worker_logs) == 1, f"expected exactly one worker log, got {worker_logs}"
     contents = worker_logs[0].read_text(encoding="utf-8")
     for expected in (
-        "ner_model_load: model_id = fastino/gliner2-large-v1",
+        "ner_model_load: model_id = fastino/gliner2.5-base-v1",
         "ner_gpu_lock: waited = false",
-        "You are using a model of type `extractor`",
+        "You are using a model of type `gliner2`",
         "torch-owned handler line",
         "Encoder rejected attn_implementation='sdpa'",
         "native-library chatter",

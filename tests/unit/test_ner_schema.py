@@ -483,10 +483,16 @@ def test_schema_attribute_path_is_built_once_for_models_with_extract(monkeypatch
     class _Schema:
         def entities(self, labels: Any) -> _Schema:
             self.labels = labels
+            # Mirror the real Schema surface _schema_for_model grounds: the entities dict maps
+            # label -> prompt description.
+            self.schema = {"entities": dict.fromkeys(labels, "")}
             return self
 
         def entity_attributes(self, attrs: Any) -> _Schema:
             self.attrs = attrs
+            for group_name, group in attrs.items():
+                for label in group.labels:
+                    self.schema["entities"][f"{group_name}: {label}"] = ""
             return self
 
     class _SchemaModel:
@@ -515,7 +521,12 @@ def test_schema_attribute_path_is_built_once_for_models_with_extract(monkeypatch
     assert backend._schema_for_model(model) is backend._schema
     assert model.schema is not None
     attrs = model.schema.attrs["assertion_context"]
-    assert attrs.labels == ["indication", "contraindication", "prevention", "observed_prevention"]
+    assert attrs.labels == ["indication", "contraindication"]
+    # The context labels carry biolink-grounded prompt descriptions (CONTEXT_ATTRIBUTE_PROMPTS):
+    # the model must classify with the semantics the shapers' edges actually use.
+    entities = model.schema.schema["entities"]
+    assert "biolink:treats" in entities["assertion_context: indication"]
+    assert "biolink:contraindicated_in" in entities["assertion_context: contraindication"]
     from dakp_pipeline.ner.ner import CONTEXT_ATTRIBUTE_THRESHOLD
 
     assert attrs.kwargs == {"multi_label": True, "threshold": CONTEXT_ATTRIBUTE_THRESHOLD, "qualify_labels": True}

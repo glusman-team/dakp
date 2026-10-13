@@ -600,11 +600,15 @@ def test_infer_windows_halves_the_batch_on_a_cuda_oom(monkeypatch: pytest.Monkey
     lines: list[str] = []
     sink_id = logger.add(lambda message: lines.append(message.record["message"]), level="DEBUG")
     try:
-        out = backend.extract_batch(["asthma", "chronic hives"])
+        out = backend.extract_batch([f"condition {i}" for i in range(20)])
     finally:
         logger.remove(sink_id)
-    assert len(out) == 2
-    assert _OomAboveBatchModel.batches == [16, 8, 4]  # halved until it fit; never a per-window replay
+    assert len(out) == 20
+    # Halved until it fit, never a per-window replay. The word-budget slicing shapes the ladder:
+    # the first submission rides the full requested batch of 16; each retry re-runs the whole
+    # piece at half the batch AND half the word budget, so the piece resolves as 8-window slices
+    # and then 4-window slices at the model's max_batch.
+    assert _OomAboveBatchModel.batches == [16, 8, 4, 4, 4, 4, 4]
     assert any("retrying at half the batch" in line for line in lines)
     assert not any("window dropped" in line for line in lines)
 

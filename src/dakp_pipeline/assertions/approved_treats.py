@@ -51,7 +51,7 @@ the same table in two per-source shapes — rows are never merged across sources
   explicit patient-clause disease context
   (:func:`~dakp_pipeline.assertions.contexts.host_disease_context`, backing the
   ``disease_context_qualifier`` column the FDA path populates identically),
-  prevention-cue context derivation, and the same SPL-negation sentence filter as rule 4.
+  section-derived assertion contexts, and the same SPL-negation sentence filter as rule 4.
 
 Both EMA shapes carry the EMA product number in ``FDA_regulatory_approvals`` and the EPAR
 ``medicine_url`` in ``supporting_spl_documents``; the union re-sorts deterministically.
@@ -866,12 +866,12 @@ def build_epar_treats_rows(
     pool with SPL indication sections); rows are then built sentence by sentence: object hosts
     are the ``object_mentions`` subset of the sentence-localized mentions, qualifier spans are
     attached with the same :func:`~dakp_pipeline.assertions.contexts.attach_qualifiers_with_scores`
-    floor/host rules as FDA rows, and the context is derived from the sentence's prevention cues
+    floor/host rules as FDA rows, and the context is the section-derived indication
     (``assertion_context("ema", ...)``). Sentences carrying the SPL-negation boilerplate
     ("not indicated", "not recommended", ...) are skipped — mirroring the FDA rule-4 spirit.
 
-    Aggregation keys on ``(subject, object, context)`` so indication and prevention
-    observations for the same pair never inherit each other's qualifiers. ``infores:epar``
+    Aggregation keys on ``(subject, object, context)`` so observations for the same pair never
+    inherit each other's qualifiers. ``infores:epar``
     provenance; the EMA product number rides ``FDA_regulatory_approvals`` and the EPAR
     ``medicine_url`` stays in ``supporting_spl_documents``.
     """

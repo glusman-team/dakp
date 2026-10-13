@@ -5,7 +5,6 @@ import pytest
 from dakp_pipeline.assertions.approved_treats import _candidate_mention
 from dakp_pipeline.assertions.contexts import (
     ASSERTION_CONTEXTS,
-    PREVENTION_CUE,
     _template_host_indices,
     assertion_context,
     attach_qualifiers,
@@ -20,7 +19,10 @@ def mention(text: str, start: int, end: int, typ: str, score: float = 1.0) -> Me
     return Mention(text=text, start=start, end=end, type=typ, score=score)
 
 
-def test_context_matrix_and_every_prevention_cue() -> None:
+def test_context_matrix_and_removed_prevention_vocabulary() -> None:
+    """Contexts come from source/section only. The prevention vocabulary is REMOVED (no biolink
+    predicate carries it), so former cue surfaces are ordinary indication rows and the removed
+    labels are rejected by the predicate mapper."""
     cues = (
         "prophylaxis",
         "prophylactic",
@@ -36,17 +38,16 @@ def test_context_matrix_and_every_prevention_cue() -> None:
         "reduce the risk of",
     )
     for cue in cues:
-        assert PREVENTION_CUE.search(cue)
-        assert assertion_context("dailymed", "34067-9", f"For {cue} migraine") == "prevention"
-        assert assertion_context("faers", "indication", f"For {cue} migraine") == "observed_prevention"
+        assert assertion_context("dailymed", "34067-9", f"For {cue} migraine") == "indication"
+        assert assertion_context("faers", "indication", f"For {cue} migraine") == "indication"
     assert assertion_context("dailymed", "34067-9", "Treatment of migraine") == "indication"
     assert assertion_context("faers", "indication", "Treatment of migraine") == "indication"
     for section in ("34070-3", "34066-1", "43685-7", "34071-1", "42232-9", "contraindications", "boxed_warning", "warnings"):
         assert assertion_context("dailymed", section, "vaccine migraine") == "contraindication"
-    assert set(ASSERTION_CONTEXTS) == {"indication", "contraindication", "prevention", "observed_prevention"}
+    assert set(ASSERTION_CONTEXTS) == {"indication", "contraindication"}
 
 
-def test_context_errors_and_deferred_predicate_mapping() -> None:
+def test_context_errors_and_predicate_mapping() -> None:
     with pytest.raises(ValueError, match="source"):
         assertion_context("other", "34067-9", "x")
     with pytest.raises(ValueError, match="section_kind"):
@@ -56,8 +57,14 @@ def test_context_errors_and_deferred_predicate_mapping() -> None:
     with pytest.raises(ValueError, match="context"):
         context_predicate("unknown", "dailymed")
     assert context_predicate("indication", "dailymed") == "biolink:treats"
-    assert context_predicate("prevention", "dailymed") == "biolink:treats"
-    assert context_predicate("observed_prevention", "faers") == "biolink:applied_to_treat"
+    assert context_predicate("indication", "faers") == "biolink:applied_to_treat"
+    assert context_predicate("indication", "ema") == "biolink:treats"
+    assert context_predicate("contraindication", "dailymed") == "biolink:contraindicated_in"
+    # The removed prevention vocabulary is no longer a valid context anywhere.
+    with pytest.raises(ValueError, match="context"):
+        context_predicate("prevention", "dailymed")
+    with pytest.raises(ValueError, match="context"):
+        context_predicate("observed_prevention", "faers")
     assert context_predicate("contraindication", "faers") == "biolink:contraindicated_in"
 
 
@@ -102,14 +109,14 @@ def test_patient_disease_context_and_attribute_abstention_payload() -> None:
                             "start": 0,
                             "end": 6,
                             "confidence": 1.0,
-                            "assertion_context": [{"label": "indication", "confidence": 0.4}, {"label": "prevention", "confidence": 0.8}],
+                            "assertion_context": [{"label": "indication", "confidence": 0.4}, {"label": "contraindication", "confidence": 0.8}],
                         }
                     ]
                 }
             },
             "asthma",
         )[0].context_model
-        == "prevention"
+        == "contraindication"
     )
 
 
@@ -129,12 +136,13 @@ def test_sentence_relative_offsets_are_position_independent() -> None:
 
 
 def test_context_faers_alias_and_qualifier_tie_breaking() -> None:
-    """FAERS prevention must retain observed context, and repeated fields keep the higher score.
+    """The FAERS source alias resolves (former cue surfaces now yield plain indications), and
+    repeated fields keep the higher score.
 
     These guards protect the source-specific context branch and deterministic sparse-field update
-    without crossing the deferred ``prevents`` predicate boundary.
+    against the trimmed two-label vocabulary.
     """
-    assert assertion_context(" FAERS ", "faers_indication", "PEP for migraine") == "observed_prevention"
+    assert assertion_context(" FAERS ", "faers_indication", "PEP for migraine") == "indication"
     with pytest.raises(ValueError, match="section_kind"):
         assertion_context("faers", "warnings", "x")
     text = "Drug is used in women twice daily."

@@ -37,7 +37,7 @@ Each row becomes one ``TrainingExample`` (see :func:`build_example`):
   the qualifier mention; ``evidence="mined"``). A relation ships only when both of its
   surfaces occur in the row text — gliner2's in-text invariant.
 * ``classifications`` — one "indication context classification" example per row derived
-  from ``contexts.assertion_context`` + ``PREVENTION_CUE``.
+  from ``contexts.assertion_context`` (source/section rules over the two-label vocabulary).
 
 Candidate derivation (the corpus families): DailyMed contraindication sections (LOINC
 ``34070-3``), DailyMed boxed-warning / warnings-and-precautions sections (LOINCs

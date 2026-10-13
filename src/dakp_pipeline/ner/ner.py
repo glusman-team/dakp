@@ -70,12 +70,15 @@ from pathlib import Path
 from typing import Any
 
 from dakp_pipeline.logging_setup import logger, stats
+from dakp_pipeline.ner._gliner25_compat import apply_boundary_attribute_device_fix
 from dakp_pipeline.ner.dictionary import (
     MENTION_TYPES,
     OBJECT_TYPES,
     TYPE_BIOLOGICAL_SEX,
     TYPE_DISEASE,
+    TYPE_FREQUENCY_QUALIFIER,
     TYPE_PHENOTYPE,
+    TYPE_TEMPORAL_CONTEXT_QUALIFIER,
     Gazetteer,
     canonical_type,
     normalize_text,
@@ -83,13 +86,19 @@ from dakp_pipeline.ner.dictionary import (
 from dakp_pipeline.ner.lexical import LexicalMatcher, Mention
 from dakp_pipeline.ner.model_cache import NERDependencyError, default_model_cache_dir, ensure_model
 
-# GLiNER2-native large span checkpoint. The previous v1 domain fine-tune of
-# ``urchade/gliner_small-v2.1`` is NOT loadable by gliner2 — its knowledgator config schema and
-# BiLSTM head layout predate the gliner2 architecture split — so re-fine-tuning that
-# FAERS/DailyMed corpus for gliner2 is a recorded follow-up. The compatible large checkpoint
-# improved the isolated zero-shot benchmark while preserving the composite score; see
-# ``BENCHMARK.md``. Override for another GLiNER2 checkpoint.
-DEFAULT_MODEL = "fastino/gliner2-large-v1"
+# GLiNER2.5 English boundary checkpoint: the boundary-prediction architecture replaces span
+# enumeration with sparse start/end pairing (no fixed span-width cap) and declares
+# ``config.max_len: 4096`` word tokens, which :func:`_token_budget` reads as the window budget
+# (the retired ``fastino/gliner2-large-v1`` shipped ``max_len: null`` and silently pinned
+# production to the 384-word :data:`_DEFAULT_WORD_BUDGET` fallback). There is no GLiNER2.5
+# "large": the family tops out at small (74M) / base (0.2B, this checkpoint) / multi (0.3B),
+# and base wins the English few-shot NER benchmark (FewNERD F1 55.14 vs multi 52.37 per
+# Fastino's comparison). The previous v1 domain fine-tune of ``urchade/gliner_small-v2.1`` is
+# NOT loadable by gliner2 — its knowledgator config schema and BiLSTM head layout predate the
+# gliner2 architecture split — so re-fine-tuning that FAERS/DailyMed corpus for gliner2 is a
+# recorded follow-up. Requires ``gliner2>=2.1`` (first release with ``BoundaryExtractor`` and
+# ``AutoExtractor`` architecture auto-selection). Override for another GLiNER2/2.5 checkpoint.
+DEFAULT_MODEL = "fastino/gliner2.5-base-v1"
 #: The prompt-engineered label vocabulary: label -> description, passed VERBATIM as gliner2's
 #: ``entity_types`` on every inference call. Both call paths DAKP uses funnel it straight into
 #: ``Schema.entities()`` (``inference/runtime.py:1293`` per-text, ``:1335`` batched), which
@@ -143,7 +152,11 @@ MODEL_LABELS: dict[str, str] = {
         "including the condition it localizes, e.g. liver, kidney, lung, gastrointestinal tract, "
         "central nervous system."
     ),
-    "biolink:BiologicalSex": "The sex or gender word describing the patient, drawn on that word alone, e.g. women, men, female, male.",
+    "biolink:BiologicalSex": (
+        "The patient's sex or gender: a word that itself denotes being male or female (a "
+        "biological attribute), drawn on that word alone and never on an age, life-stage or "
+        "species word, e.g. women, men, female, male."
+    ),
     "biolink:PopulationOfIndividualOrganisms": (
         "A described patient group or subpopulation the statement is about, drawn as the whole group "
         "phrase including its modifiers, e.g. women of childbearing potential, pregnant women, "
@@ -151,12 +164,14 @@ MODEL_LABELS: dict[str, str] = {
     ),
     "biolink:OrganismTaxon": "A species or taxon named as such, drawn on the species or taxon word alone, e.g. humans, rodents, rats.",
     "frequency_qualifier": (
-        "How often or at what rate a drug is given, drawn on the frequency wording alone and never "
-        "including the drug name, e.g. once daily, every 8 hours, twice weekly, as needed."
+        "How often or at what rate a drug is given, drawn on the timing or rate wording alone and "
+        "never including the drug name or a dose amount, e.g. once daily, every 8 hours, twice "
+        "weekly, as needed."
     ),
     "temporal_context_qualifier": (
         "The temporal or evidential wording framing when or how a condition holds, drawn on that "
-        "wording alone, e.g. history of, prior to, currently, recently, known, suspected."
+        "wording alone and never on the condition or finding itself, e.g. history of, prior to, "
+        "currently, recently, known, suspected."
     ),
     "temporal_interval_qualifier": (
         "A bounded time interval or duration, drawn as the whole interval including its endpoints and "
@@ -173,8 +188,41 @@ QUALIFIER_NOTES = "gliner:qualifier"
 #: existing object assertion, so a wrong qualifier silently distorts a true edge, and 0.5 is the
 #: point at which the measured qualifier labels were reliable.
 QUALIFIER_ACCEPT_THRESHOLD = 0.5
+#: Deterministic backstop for qualifier surfaces the shipped checkpoint mining measured as junk
+#: (wenceslaus NER-export scan over 187,314 shipped training examples / 4.25M mentions): dose
+#: amount nouns tagged as ``frequency_qualifier`` (``dosage`` 4,601x, ``dose`` 2,531x, ...),
+#: age/species words tagged as ``BiologicalSex`` (``adults`` 4,154x, ``adult`` 3,677x,
+#: ``human`` 2,923x; biolink defines BiologicalSex as the organismal sex quality itself,
+#: PATO:0000047, not a life-stage or species attribute), and the condition noun ``pregnancy``
+#: tagged as ``temporal_context_qualifier`` (885x; the exact mistype the object-channel prompt
+#: already fights). The MODEL_LABELS descriptions carry the same rule as prompt guidance; this
+#: blocklist is the deterministic guarantee. Exact normalized surfaces per canonical type; the
+#: object channel is untouched. A blocked span is logged, never emitted.
+QUALIFIER_SURFACE_BLOCKLIST: dict[str, frozenset[str]] = {
+    TYPE_BIOLOGICAL_SEX: frozenset({"adult", "adults", "human", "humans"}),
+    TYPE_FREQUENCY_QUALIFIER: frozenset({"dose", "doses", "dosage", "dosages"}),
+    TYPE_TEMPORAL_CONTEXT_QUALIFIER: frozenset({"pregnancy"}),
+}
 CONTEXT_ATTRIBUTE_THRESHOLD = 0.5
 CONTEXT_ATTRIBUTE_GROUP = "assertion_context"
+#: Prompt descriptions for the assertion-context labels, keyed by the raw label (the schema
+#: qualifies them with the group name). Wording is grounded in the predicates the shapers emit
+#: through :func:`dakp_pipeline.assertions.contexts.context_predicate` — indication wording feeds
+#: ``biolink:treats`` (``biolink:applied_to_treat`` on spontaneous-report sources) and
+#: contraindication wording feeds ``biolink:contraindicated_in`` — so the model classifies with
+#: the same semantics the edges carry. ``prevention``/``observed_prevention`` were removed from
+#: the vocabulary: the pinned biolink-model has no ``prevents``/``applied_to_prevent`` predicate,
+#: so those contexts never had an emittable edge of their own.
+CONTEXT_ATTRIBUTE_PROMPTS: dict[str, str] = {
+    "indication": (
+        "the text asserts the drug treats the condition or that the condition is an indication "
+        "for it (a biolink:treats edge; biolink:applied_to_treat on spontaneous-report sources)"
+    ),
+    "contraindication": (
+        "the text asserts the drug must not be given because of the condition, or the condition "
+        "contraindicates the drug (a biolink:contraindicated_in edge)"
+    ),
+}
 #: Lowest model score retained for merge consideration. This is deliberately a generation
 #: floor, not a production operating point: the specificity merge needs to see low-scoring
 #: specific spans before a use-specific acceptance policy decides whether to assert them.
@@ -216,9 +264,42 @@ _GLINER_TOKEN = re.compile(
 # :func:`_sentence_piece_spans` holds; otherwise the whole text is one piece.
 _SENTENCE_PIECE = re.compile(r"[^.!?;]+[.!?;]*\s*")
 
-#: Window-budget fallback (GLiNER2 word tokens) when a model exposes no ``config.max_len``; the
-#: shipped checkpoint sets ``max_len: 4096``.
+#: Window-budget fallback (GLiNER2 word tokens) when a model exposes no usable ``config.max_len``
+#: or a caller passes a checkpoint that declares nothing. The shipped GLiNER2.5 base checkpoint
+#: declares ``max_len: 4096``; the retired ``fastino/gliner2-large-v1`` shipped ``max_len: null``,
+#: which silently pinned production windows to this 384-word budget.
 _DEFAULT_WORD_BUDGET = 384
+
+#: Long windows are the memory constraint at fp32 on the 16 GB build-host P100s (measured peaks,
+#: batch 1): one ~4,096-word GLiNER2.5 window peaks at ~14.4 GiB, a 2,500-word window at ~6 GiB.
+#: Length-sorted submissions are additionally split so every batch's PADDED word total stays
+#: within this budget: the longest sections ride solo, mid-length windows pair up, and short
+#: windows keep the full requested inference batch. See :meth:`DiseaseNER._infer_chunk`.
+_BATCH_WORD_BUDGET = 5000
+
+
+def _word_budget_batches(ordered: Sequence[str], requested_batch: int, budget: int = _BATCH_WORD_BUDGET) -> list[list[str]]:
+    """Split a length-sorted window list into consecutive batches within ``budget`` padded words.
+
+    A GLiNER2 batch pads every member to its longest window, so a batch's peak footprint scales
+    with ``len(batch) * longest``; a batch is cut the moment that product or the requested batch
+    size would be exceeded. Input order is preserved (callers pass length-sorted windows and
+    restore submission order afterwards), which keeps every batch nearly length-uniform.
+    """
+    batches: list[list[str]] = []
+    current: list[str] = []
+    longest = 0
+    for text in ordered:
+        words = len(text.split())
+        if current and (len(current) >= requested_batch or max(longest, words) * (len(current) + 1) > budget):
+            batches.append(current)
+            current, longest = [], 0
+        current.append(text)
+        longest = max(longest, words)
+    if current:
+        batches.append(current)
+    return batches
+
 
 #: Windows submitted per batched gliner2 call. ONE failed call discards all of its own work, so
 #: the submission is chunked: run 11's cuda:1 worker hit ``torch.OutOfMemoryError`` 2h11m into a
@@ -622,8 +703,10 @@ def _token_budget_offline(model_dir: Path | None, override: int | None) -> int:
     The cached model's ``config.json`` is the exact file ``AutoExtractor.from_pretrained`` loads
     into ``model.config``, so its ``max_len`` is the value the worker's ``_token_budget`` sees.
     Absent/invalid entries fall through exactly like the runtime path (override wins, then the
-    config value, then :data:`_DEFAULT_WORD_BUDGET`) - the shipped checkpoint carries no
-    ``max_len`` at all, so the fallback IS the production budget.
+    config value, then :data:`_DEFAULT_WORD_BUDGET`). The shipped GLiNER2.5 base checkpoint
+    declares ``max_len: 4096``; the fallback covers override-less checkpoints that declare
+    nothing (the retired ``fastino/gliner2-large-v1`` shipped ``max_len: null`` and silently
+    ran production on this 384-word budget).
     """
     if isinstance(override, int) and override >= 1:
         return override
@@ -1477,14 +1560,17 @@ class DiseaseNER:
         return outcome["raw"]
 
     def _infer_chunk(self, model: Any, texts: list[str], batch_size: int, _oom_attempts: int = 0) -> list[Any]:
-        """Infer ``texts`` in LENGTH-SORTED batches, retrying a failure at half the batch size or half the window list.
+        """Infer ``texts`` in LENGTH-SORTED, WORD-BUDGETED batches, retrying failures at half the batch size or half the window list.
 
         Batching sorts windows by length first and restores submission order on return: a shard
         mixes 30-word and ~4k-word sections, and GLiNER2 pads every batch to its longest member,
         so an unsorted batch sequence pads most batches to ~4096 tokens. Sorting makes each
         batch nearly uniform - the same windows, the same per-window outputs, a fraction of the
         pad tokens. Per-window results are independent of batch composition, so this is a pure
-        throughput change (asserted byte-identical in the unit tests).
+        throughput change (asserted byte-identical in the unit tests). The sorted windows are
+        additionally split by :func:`_word_budget_batches` so a batch of the LONGEST windows
+        cannot exceed GPU memory at fp32 (one ~4,096-word window already peaks at ~14.4 GiB on a
+        16 GB P100, so the longest sections ride solo while short windows keep the full batch).
 
         Two distinct failure modes, told apart by :func:`_is_memory_error`:
 
@@ -1510,7 +1596,12 @@ class DiseaseNER:
         """
         try:
             order = sorted(range(len(texts)), key=lambda index: len(texts[index]))
-            raw_sorted = self._run_with_stall_watchdog(model, [texts[index] for index in order], batch_size)
+            # Retries shrink the budget with the batch: a poisoned batch of long windows retries
+            # at genuinely smaller padded totals, not just fewer of the same oversized slices.
+            budget = max(1024, _BATCH_WORD_BUDGET >> _oom_attempts)
+            raw_sorted: list[Any] = []
+            for batch_texts in _word_budget_batches([texts[index] for index in order], batch_size, budget):
+                raw_sorted.extend(self._run_with_stall_watchdog(model, batch_texts, len(batch_texts)))
             raw: list[Any] = [None] * len(texts)
             for position, index in enumerate(order):
                 raw[index] = raw_sorted[position]
@@ -1548,14 +1639,23 @@ class DiseaseNER:
                 .entity_attributes(
                     {
                         CONTEXT_ATTRIBUTE_GROUP: AttributeGroup(
-                            ["indication", "contraindication", "prevention", "observed_prevention"],
-                            multi_label=True,
-                            threshold=CONTEXT_ATTRIBUTE_THRESHOLD,
-                            qualify_labels=True,
+                            list(CONTEXT_ATTRIBUTE_PROMPTS), multi_label=True, threshold=CONTEXT_ATTRIBUTE_THRESHOLD, qualify_labels=True
                         )
                     }
                 )
             )
+        # gliner2 stores the (qualified) attribute labels as entity entries and renders any
+        # description they carry into the prompt; ground them in the KG predicates so the
+        # model classifies with the same semantics the shapers emit (see
+        # CONTEXT_ATTRIBUTE_PROMPTS). Schema.schema is the serialized wrapper ({"entities":
+        # {...}}); the fake schema mirrors only that surface.
+        schema_map = getattr(self._schema, "schema", None)
+        entities = schema_map.get("entities") if isinstance(schema_map, dict) else None
+        if isinstance(entities, dict):
+            for label, description in CONTEXT_ATTRIBUTE_PROMPTS.items():
+                key = f"{CONTEXT_ATTRIBUTE_GROUP}: {label}"
+                if key in entities:
+                    entities[key] = description
         return self._schema
 
     def _load_model(self) -> Any:
@@ -1577,6 +1677,10 @@ class DiseaseNER:
                 self._gpu_lock_fd = _acquire_gpu_lock(device, _gpu_lock_dir(cache_dir=self._cache_dir, workdir=self._workdir))
             started = time.monotonic()
             self._model = AutoExtractor.from_pretrained(str(ref.path), map_location=device)
+            # gliner2 2.1.0's boundary decoder indexes CPU-resident attribute logits with CUDA
+            # indices (RuntimeError on every CUDA call); the shim swaps in the device-corrected
+            # method and no-ops once upstream fixes it. Idempotent per process; see the module.
+            apply_boundary_attribute_device_fix()
             stats(logger, "ner_model_load", model_id=self._model_id, device=device, b3=ref.b3, elapsed_s=round(time.monotonic() - started, 3))
         return self._model
 
@@ -1753,7 +1857,9 @@ class DiseaseNER:
         survive rather than lose a contest it is not part of.
 
         Spans below :data:`QUALIFIER_ACCEPT_THRESHOLD` are abstained on (logged, never emitted),
-        duplicates on ``(start, end, type)`` collapse to the highest-scoring one, and the sort
+        exact surfaces in :data:`QUALIFIER_SURFACE_BLOCKLIST` for their type are abstained on the
+        same way (measured junk the prompt alone did not fully prevent), duplicates on
+        ``(start, end, type)`` collapse to the highest-scoring one, and the sort
         makes that choice independent of the order gliner2 returned its labels in.
         """
         seen: set[tuple[int, int, str]] = set()
@@ -1762,6 +1868,10 @@ class DiseaseNER:
             surface = text[span.start : span.end]
             if span.score < QUALIFIER_ACCEPT_THRESHOLD:
                 self._abstain(surface, span.score, "qualifier_below_accept_floor")
+                continue
+            blocked = QUALIFIER_SURFACE_BLOCKLIST.get(span.type)
+            if blocked is not None and normalize_text(surface) in blocked:
+                self._abstain(surface, span.score, "qualifier_blocked_surface")
                 continue
             key = (span.start, span.end, span.type)
             if key in seen:

@@ -11,8 +11,8 @@ missing fields / duplicates in the shared evidence cache; a second observation o
 are needed.
 
 **Pass 2 tests** cover: the sentence keyword filter (``_split_sentences`` / ``_contraindication_sentences``);
-embedded contraindication provenance from indication sections (``SETID#34067-9``); false-positive
-prevention (indication-only diseases are NOT mined); no-regression on contraindication-only sets;
+embedded contraindication provenance from indication sections (``SETID#34067-9``); indication-only
+diseases are NOT mined; no-regression on contraindication-only sets;
 a fake monkeypatched GLiNER mock for the production path; and the flattened dispatch
 (``MiningPool.mine`` receiving work items from every pass in one call).
 """

@@ -126,8 +126,12 @@ dependencies = [
     # pydantic/requests/tqdm/urllib3 — torch + transformers arrive through the explicit cu126
     # torch pin below and tablassert[qc] instead, so the runtime still has everything the
     # extractor needs without a version conflict. Imported lazily by
-    # `dakp_pipeline.ner.ner._load_model` (no torch at module load).
-    "gliner2>=2.0,<3",
+    # `dakp_pipeline.ner.ner._load_model` (no torch at module load). The >=2.1 floor is the
+    # first release with the GLiNER2.5 boundary architecture (`BoundaryExtractor`, selected
+    # automatically by `AutoExtractor` from the checkpoint's `architecture` field) that the
+    # shipped `fastino/gliner2.5-base-v1` checkpoint requires; 2.0.0 only knows the span
+    # architecture and cannot load it.
+    "gliner2>=2.1,<3",
     "huggingface_hub>=0.24",
     "loguru>=0.7.3",
     # Required by gliner2's own import chain but NOT declared as a base dependency: `AutoExtractor

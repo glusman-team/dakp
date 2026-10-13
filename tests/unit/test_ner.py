@@ -23,6 +23,7 @@ from dakp_pipeline.ner.ner import (
     MODEL_LABEL_NAMES,
     MODEL_LABELS,
     QUALIFIER_ACCEPT_THRESHOLD,
+    QUALIFIER_SURFACE_BLOCKLIST,
     STRICT_GAZETTEER_EXTENSION_THRESHOLD,
     DiseaseNER,
     Mention,
@@ -38,9 +39,9 @@ _ONTOLOGY_TSV = _FIXTURE_ROOT / "ontology" / "disease_map.tsv"
 
 
 def test_defaults_and_mention_type_vocabulary() -> None:
-    # The compatible gliner2 large span checkpoint improves the zero-shot fixture while the
-    # gazetteer-first composite retains its score; the benchmark records the comparison.
-    assert DEFAULT_MODEL == "fastino/gliner2-large-v1"
+    # The GLiNER2.5 English base boundary checkpoint (first release in the 2.5 family; no
+    # "large" exists) replaces the retired span checkpoint; the benchmark records the comparison.
+    assert DEFAULT_MODEL == "fastino/gliner2.5-base-v1"
     # The label vocabulary is a label -> description mapping covering BOTH channels in one call;
     # the names-only view is the same vocabulary in the same (prompt) order.
     assert isinstance(MODEL_LABELS, dict)
@@ -57,6 +58,15 @@ def test_defaults_and_mention_type_vocabulary() -> None:
     # Qualifiers are asserted at their own, higher floor (they narrow a true object edge).
     assert QUALIFIER_ACCEPT_THRESHOLD == 0.5
     assert GLINER_GENERATION_FLOOR < QUALIFIER_ACCEPT_THRESHOLD
+    # Measured junk surfaces per canonical qualifier type (wenceslaus NER-export scan; the
+    # counts behind each entry are recorded on the QUALIFIER_SURFACE_BLOCKLIST constant).
+    assert "adult" in QUALIFIER_SURFACE_BLOCKLIST["BiologicalSex"]
+    assert "adults" in QUALIFIER_SURFACE_BLOCKLIST["BiologicalSex"]
+    assert "human" in QUALIFIER_SURFACE_BLOCKLIST["BiologicalSex"]
+    assert "humans" in QUALIFIER_SURFACE_BLOCKLIST["BiologicalSex"]
+    assert {"dose", "doses", "dosage", "dosages"} <= set(QUALIFIER_SURFACE_BLOCKLIST["frequency_qualifier"])
+    assert "pregnancy" in QUALIFIER_SURFACE_BLOCKLIST["temporal_context_qualifier"]
+    assert not (set(QUALIFIER_SURFACE_BLOCKLIST) & set(OBJECT_TYPES))
     # Object types are the exact tablassert.biolink.Categories values; the mention vocabulary is
     # the two channels concatenated, object channel first.
     assert OBJECT_TYPES == (TYPE_DISEASE, TYPE_PHENOTYPE) == ("Disease", "PhenotypicFeature")

@@ -35,38 +35,44 @@ Benchmarked on a hand-labeled fixture (34 cases / 42 gold spans, `tests/eval/`):
 | composite | **1.000** | **1.000** | **1.000** | **settled backend** (gazetteer + GLiNER merge) |
 | scispacy  | 0.571     | 0.457  | 0.508 | dropped: no phenotype label, coarse spans |
 
-> These numbers were measured with older checkpoints (`gliner_large-v2.5`, then the
-> `SkyeAv/drug-approvals-gliner-small-v2.1` v1 fine-tune). The production default is now the
-> gliner2-native large span checkpoint `fastino/gliner2-large-v1`, prompted with the
-> Biolink-category label vocabulary in `MODEL_LABELS` (see below). It improved model-only F1
-> from 0.651 to 0.675 while preserving composite F1 1.000. The gold fixture's `type` values are
-> canonical `Mention.type` strings (`Disease` / `PhenotypicFeature`) and only the **object**
-> channel is scored — qualifier mentions have no gold span by policy. Re-run
+> The default checkpoint has changed twice since these rows were measured; the current one is
+> the GLiNER2.5 **boundary** checkpoint `fastino/gliner2.5-base-v1` (deberta-v3-base,
+> `max_len: 4096`), prompted with the Biolink-category label vocabulary in `MODEL_LABELS`
+> (see below). Under it the model-only leg reaches P 0.897 / R 0.833 / F1 0.864 (lenient 0.938)
+> while composite F1 stays 1.000 (see `BENCHMARK.md`, 2026-10-13). The gold fixture's `type`
+> values are canonical `Mention.type` strings (`Disease` / `PhenotypicFeature`) and only the
+> **object** channel is scored — qualifier mentions have no gold span by policy. Re-run
 > `tests/eval/benchmark_ner.py --model <checkpoint>` to compare a replacement reproducibly.
 
 * **Offline mode (default):** curated gazetteer + deterministic lexical matcher. Zero heavy deps,
   fully deterministic. Used by tests + offline runs. Bounded by its fixed vocabulary: it returns
   the generic head for qualified diseases (`hypertension` for `pulmonary hypertension`).
 * **Production mode (`offline=False`):** the same gazetteer anchors high-precision spans and
-  a GLiNER2 large span checkpoint (`fastino/gliner2-large-v1`, loaded via
+  a GLiNER2.5 boundary checkpoint (`fastino/gliner2.5-base-v1`, loaded via
   `gliner2.AutoExtractor`) fills out-of-gazetteer gaps when invoked on DailyMed
   sections. On overlap the **most specific span wins**: a model span that
   strictly contains a gazetteer span supersedes it (`pulmonary hypertension` over
   `hypertension`), taking the model's boundary and the gazetteer's type. Equal spans, partial
   overlaps, and spans covering several gazetteer terms (a conjunction) go to the gazetteer.
   Model spans whose normalized surface is a population descriptor (e.g. `women of childbearing
-  potential`) are dropped, leading hedge tokens (`recent`, `a history of`) are trimmed, and spans
-  a hard window split cuts across a phrase boundary are re-joined — **object channel only** (see
-  below). GLiNER2 is natively **multi-entity** and schema-conditioned: ONE call per window
+  potential`) are dropped, leading hedge tokens (`recent`, `a history of`) are trimmed, and
+  qualifier surfaces on `QUALIFIER_SURFACE_BLOCKLIST` (dose words, `pregnancy`, sex-class junk
+  like `adults`) are abstained on, and spans a hard window split cuts across a phrase boundary
+  are re-joined — **object channel only** (see below). GLiNER2 is natively
+  **multi-entity** and schema-conditioned: ONE call per window
   carries the whole `MODEL_LABELS` vocabulary and every returned span is routed by its canonical
   type. The gazetteer remains
   the type authority whenever a span contests a gazetteer term, and Tablassert resolves the
   ontology concept downstream. GLiNER2 is a
-  core, lazy-imported dependency (`gliner2`, loaded lazily via `AutoExtractor`). GLiNER2 silently truncates inputs past `config.max_len` word tokens (4096 on the
-  shipped checkpoint), so long sections (some run to ~3000 words) are predicted in
-  sentence-aware, exact-substring windows of ≤ that budget (`chunk_words` kwarg overrides it) and
-  span offsets are remapped back into full-text coordinates — no mention past the truncation
-  point is lost.
+  core, lazy-imported dependency (`gliner2`, loaded lazily via `AutoExtractor`). GLiNER2
+  silently truncates inputs past `config.max_len` word tokens (4096 on the shipped checkpoint),
+  so long sections (some run to ~3000 words) are predicted in
+  sentence-aware, exact-substring windows of ≤ that budget (`chunk_words` kwarg overrides it),
+  packed by `_word_budget_batches` into word-budget-sized batches (a CUDA OOM halves batch size
+  and window budget together), and span offsets are remapped back into full-text coordinates —
+  no mention past the truncation point is lost. gliner2 2.1.0's boundary attribute pass indexes
+  CPU logits with device indices; `ner/_gliner25_compat.py` applies a signature-gated,
+  idempotent shim at model load (no engine edit, no-op for span checkpoints).
 
 ## Label vocabulary and the two channels
 
@@ -189,8 +195,9 @@ The NER deps are intentionally heavy (pull torch/transformers) but are part of t
 - NER deps are core (installed by `uv sync`) but lazy-imported (no torch at module load).
 - One backend / one entry point; offline (deterministic) vs production (model) is a mode toggle.
 - Prefer the most specific span; abstain rather than assert a low-confidence or over-general one.
-- Lazy imports for the model; weights cached once (the shipped fine-tune is a
-  deberta-v3-small encoder, ≈ 0.8 GB fp32 — fits comfortably on any build GPU; CPU fallback
-  works).
+- Lazy imports for the model; weights cached once (the shipped 2.5 base checkpoint is a
+  deberta-v3-base encoder, ≈ 0.8 GB fp32 — fits comfortably on any build GPU; CPU fallback
+  works). Multi-GPU mining fans out through `MiningPool` (`ner_dispatch.py`): one persistent
+  worker per visible device, LPT-balanced shards.
 - `loguru` for logging; deterministic offline mode; no absolute paths.
 - Mentions are text + type only; ontology CURIE resolution is Tablassert-only.

@@ -355,14 +355,14 @@ def test_dailymed_context_and_qualifiers_aggregate_model_metadata() -> None:
     host_start = text.index("asthma")
     mentions = {
         ("SET-A", "SET-A#34067-9"): [
-            Mention("asthma", host_start, host_start + 6, "Disease", 1.0, context_model="prevention", context_model_score=0.8),
+            Mention("asthma", host_start, host_start + 6, "Disease", 1.0, context_model="contraindication", context_model_score=0.8),
             Mention("women", text.index("women"), text.index("women") + 5, "BiologicalSex", 0.9),
         ]
     }
     observations = _indication_observations(ev, ["SET-A"], {"object_text": "asthma"}, {}, mentions)
     assert observations[0]["context"] == "indication"
     assert observations[0]["qualifiers"] == {"sex_text": "women"}
-    assert observations[0]["model"] == "prevention"
+    assert observations[0]["model"] == "contraindication"
 
 
 def test_approved_qualifier_merge_keeps_highest_score_and_deterministic_tie(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -405,14 +405,14 @@ def test_approved_qualifier_merge_keeps_highest_score_and_deterministic_tie(monk
 def test_approved_aggregation_handles_empty_observations_and_upgrades_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """The aggregator must drop empty observations and retain the highest context-model score."""
     first = {"set_id": "SET-A", "doc_id": "DOC-A", "context": "indication", "qualifiers": {}, "model": "indication", "model_score": 0.2}
-    second = {"set_id": "SET-A", "doc_id": "DOC-B", "context": "indication", "qualifiers": {}, "model": "prevention", "model_score": 0.9}
+    second = {"set_id": "SET-A", "doc_id": "DOC-B", "context": "indication", "qualifiers": {}, "model": "contraindication", "model_score": 0.9}
     monkeypatch.setattr(approved_treats, "_condition_corroborated_sets", lambda *args: ["SET-A"])
     monkeypatch.setattr(approved_treats, "_indication_observations", lambda *args: [first, second])
     cases = _cases("asthma")
     ev = _supported_evidence("asthma")
     ev.indication_docs["SET-A"].append(("DOC-B", "asthma"))
     rows = build_approved_treats_rows(cases, ev, _MAPPING, {}, ner=None)
-    assert rows[0]["assertion_context_model"] == "prevention"
+    assert rows[0]["assertion_context_model"] == "contraindication"
     monkeypatch.setattr(approved_treats, "_indication_observations", lambda *args: [])
     assert rows[0]["assertion_context_model_score"] == "0.9"
     assert build_approved_treats_rows(cases, ev, _MAPPING, {}, ner=None) == []
