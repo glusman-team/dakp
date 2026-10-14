@@ -889,9 +889,10 @@ def build_epar_treats_rows(
             if _NEGATION_CUES.search(sentence):
                 continue  # the EPAR text disclaims this sentence's conditions
             sentence_mentions = [m for m in row_mentions if m.start < start + len(sentence) and start < m.end]
-            local_mentions = [
-                replace(m, start=m.start - start, end=m.end - start, text=sentence[m.start - start : m.end - start]) for m in sentence_mentions
-            ]
+            # Clip straddling spans to the sentence (the _sentence_local policy the FDA path has
+            # used since run 10): a bare shift sends a boundary-straddling span negative or past
+            # the sentence end, which attach_qualifiers_with_scores rejects by contract.
+            local_mentions = [_sentence_local(m, start, start + len(sentence), sentence) for m in sentence_mentions]
             hosts = object_mentions(local_mentions)
             if not hosts:
                 continue
@@ -1017,9 +1018,8 @@ def build_smpc_treats_rows(
             if _NEGATION_CUES.search(sentence):
                 continue  # the SmPC text disclaims this sentence's conditions
             sentence_mentions = [m for m in row_mentions if m.start < start + len(sentence) and start < m.end]
-            local_mentions = [
-                replace(m, start=m.start - start, end=m.end - start, text=sentence[m.start - start : m.end - start]) for m in sentence_mentions
-            ]
+            # Same clip policy as build_epar_treats_rows (see there).
+            local_mentions = [_sentence_local(m, start, start + len(sentence), sentence) for m in sentence_mentions]
             hosts = object_mentions(local_mentions)
             if not hosts:
                 continue

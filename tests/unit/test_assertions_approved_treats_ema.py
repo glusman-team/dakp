@@ -272,6 +272,37 @@ def test_epar_qualifiers_do_not_leak_across_sentences(disease_map: dict[str, dic
     assert by_pair[("ketamine", "shock")]["population_context_text"] == "adult patients"
 
 
+def test_epar_straddling_mention_is_clipped_to_the_sentence(disease_map: dict[str, dict[str, str]]) -> None:
+    """A mined span straddling a sentence boundary must CLIP to each sentence, not raise.
+
+    GLiNER2.5's full-window boundary spans straddle sentences; the EMA rebases used a bare
+    offset shift, so the straddler's shifted offsets went negative or past the sentence end and
+    :func:`~dakp_pipeline.assertions.contexts.attach_qualifiers_with_scores` raised
+    ``mention offsets must be sentence-relative and within sentence bounds`` — the same crash
+    that killed run 10's DailyMed side and the 2026-10-13 g25 production build's
+    ``shape_treatment_tables`` after all mining had completed. The FDA path has clipped via
+    :func:`_sentence_local` since run 10; the EMA paths share that policy now.
+    """
+    frame = _ema_frame([_registry_row(therapeutic_indication="KemSu is indicated for management. Severe pain is chronic.")])
+    key, doc, text = next(iter(_ema_indication_items(frame)))
+    straddle_start = text.index("management. Severe")
+    straddle = Mention(
+        "management. Severe pain",
+        straddle_start,
+        text.index("Severe pain") + len("Severe pain"),
+        "Disease",
+        0.9,
+        normalized="severe pain",
+        notes="gliner",
+    )
+    rows = build_epar_treats_rows(frame, {(key, doc): [straddle]}, disease_map)
+    by_pair = _rows_by_pair(rows)
+    # Both clipped halves survive as objects (sentence 1 keeps the "management" tail, sentence 2
+    # keeps "Severe pain"), for both fan-out substances - and nothing raises. Object text is the
+    # dictionary-normalized surface, so "management." lands as "management".
+    assert set(by_pair) == {(substance, obj) for substance in ("sufentanil", "ketamine") for obj in ("management", "severe pain")}
+
+
 def test_epar_row_key_falls_back_to_url_then_row_index() -> None:
     """``_ema_row_key`` keeps mined mentions addressable when the registry row lacks ids.
 
@@ -470,6 +501,25 @@ def _indication_section(text: str, product: str = "EMEA/H/C/006395", kind: str =
 
 def _smpc_mined(frame: pl.DataFrame, ner: DiseaseNER) -> dict[tuple[str, str], list[Mention]]:
     return {(key, doc): ner.extract(text) for key, doc, text in _smpc_indication_items(frame, _ema_frame([_registry_row()]))}
+
+
+def test_smpc_straddling_mention_is_clipped_to_the_sentence(disease_map: dict[str, dict[str, str]]) -> None:
+    """SmPC 4.1 rebases share the EPAR clip policy: straddling spans must not raise."""
+    frame = _smpc_frame([_indication_section("KemSu is indicated for management. Severe pain is chronic.")])
+    key, doc, text = next(iter(_smpc_indication_items(frame, _ema_frame([_registry_row()]))))
+    straddle_start = text.index("management. Severe")
+    straddle = Mention(
+        "management. Severe pain",
+        straddle_start,
+        text.index("Severe pain") + len("Severe pain"),
+        "Disease",
+        0.9,
+        normalized="severe pain",
+        notes="gliner",
+    )
+    rows = build_smpc_treats_rows(frame, _ema_frame([_registry_row()]), {(key, doc): [straddle]}, disease_map)
+    by_pair = _rows_by_pair(rows)
+    assert set(by_pair) == {(substance, obj) for substance in ("sufentanil", "ketamine") for obj in ("management", "severe pain")}
 
 
 def test_smpc_rows_mined_from_indication_text(disease_map: dict[str, dict[str, str]]) -> None:
