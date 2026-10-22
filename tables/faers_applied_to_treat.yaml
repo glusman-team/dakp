@@ -5,113 +5,2564 @@ template:
     url:
       - "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
       - "https://www.canada.ca/en/health-canada/services/drugs-health-products/medeffect-canada/adverse-reaction-database/canada-vigilance-online-database-data-extract.html"
+      - "https://ftp.cdc.gov/pub/Health_Statistics/NCHS/Publications/ICD10CM/2027/icd10cm-table-and-index-2027.zip"
     delimiter: "\t"
     reindex:
       - column: A
-        comparison: ne
-        comparator: "METHYL ALCHOL"
-      - column: A
-        comparison: ne
-        comparator: "methyl alchol"
-      - column: A
-        comparison: ne
-        comparator: "Methyl Alchol"
-      - column: A
-        comparison: ne
-        comparator: "Methyl alchol"
-      - column: A
-        comparison: ne
-        comparator: METHANOL
-      - column: A
-        comparison: ne
-        comparator: methanol
-      - column: A
-        comparison: ne
-        comparator: Methanol
-      - column: A
-        comparison: ne
-        comparator: "GENERIC DRUG"
-      - column: A
-        comparison: ne
-        comparator: "generic drug"
-      - column: A
-        comparison: ne
-        comparator: "Generic Drug"
-      - column: A
-        comparison: ne
-        comparator: "Generic drug"
-      - column: A
-        comparison: ne
-        comparator: "GENERIC DRUGS"
-      - column: A
-        comparison: ne
-        comparator: "generic drugs"
-      - column: A
-        comparison: ne
-        comparator: "Generic Drugs"
-      - column: A
-        comparison: ne
-        comparator: "Generic drugs"
-      - column: A
-        comparison: ne
-        comparator: PLACEBO
-      - column: A
-        comparison: ne
-        comparator: placebo
-      - column: A
-        comparison: ne
-        comparator: Placebo
-      - column: A
-        comparison: ne
-        comparator: "*PLACEBO"
-      - column: A
-        comparison: ne
-        comparator: "*placebo"
-      - column: A
-        comparison: ne
-        comparator: "*Placebo"
-      - column: A
-        comparison: ne
-        comparator: "WATER PILL"
-      - column: A
-        comparison: ne
-        comparator: "water pill"
-      - column: A
-        comparison: ne
-        comparator: "Water Pill"
-      - column: A
-        comparison: ne
-        comparator: "Water pill"
-      - column: A
-        comparison: ne
-        comparator: "WATER PILLS"
-      - column: A
-        comparison: ne
-        comparator: "water pills"
-      - column: A
-        comparison: ne
-        comparator: "Water Pills"
-      - column: A
-        comparison: ne
-        comparator: "Water pills"
-      - column: A
-        comparison: ne
-        comparator: EYE
-      - column: A
-        comparison: ne
-        comparator: eye
-      - column: A
-        comparison: ne
-        comparator: Eye
-      - column: A
-        comparison: ne
-        comparator: CLEAR
-      - column: A
-        comparison: ne
-        comparator: clear
-      - column: A
-        comparison: ne
-        comparator: Clear
+        comparison: antijoin
+        comparator:
+          - "METHYL ALCHOL"
+          - "methyl alchol"
+          - "Methyl Alchol"
+          - "Methyl alchol"
+          - METHANOL
+          - methanol
+          - Methanol
+          - "GENERIC DRUG"
+          - "generic drug"
+          - "Generic Drug"
+          - "Generic drug"
+          - "GENERIC DRUGS"
+          - "generic drugs"
+          - "Generic Drugs"
+          - "Generic drugs"
+          - PLACEBO
+          - placebo
+          - Placebo
+          - "*PLACEBO"
+          - "*placebo"
+          - "*Placebo"
+          - "WATER PILL"
+          - "water pill"
+          - "Water Pill"
+          - "Water pill"
+          - "WATER PILLS"
+          - "water pills"
+          - "Water Pills"
+          - "Water pills"
+          - EYE
+          - eye
+          - Eye
+          - CLEAR
+          - clear
+          - Clear
+          - "1 PROPANOL"
+          - "1 propanol"
+          - "1 Propanol"
+          - "1-PROPANOL"
+          - "1-propanol"
+          - "1-Propanol"
+          - "2 ETHOXYETHANOL"
+          - "2 ethoxyethanol"
+          - "2 Ethoxyethanol"
+          - "2-ETHOXYETHANOL"
+          - "2-ethoxyethanol"
+          - "2-Ethoxyethanol"
+          - "2 METHOXYETHANOL"
+          - "2 methoxyethanol"
+          - "2 Methoxyethanol"
+          - "2-METHOXYETHANOL"
+          - "2-methoxyethanol"
+          - "2-Methoxyethanol"
+          - "2 PROPANOL"
+          - "2 propanol"
+          - "2 Propanol"
+          - "2-PROPANOL"
+          - "2-propanol"
+          - "2-Propanol"
+          - ABRINE
+          - abrine
+          - Abrine
+          - ABRUS
+          - abrus
+          - Abrus
+          - ABSINTHE
+          - absinthe
+          - Absinthe
+          - ACARICIDE
+          - acaricide
+          - Acaricide
+          - ACETAL
+          - acetal
+          - Acetal
+          - ACETALDEHYDE
+          - acetaldehyde
+          - Acetaldehyde
+          - ACETOMORPHINE
+          - acetomorphine
+          - Acetomorphine
+          - ACETONE
+          - acetone
+          - Acetone
+          - ACETONITRILE
+          - acetonitrile
+          - Acetonitrile
+          - ACETOPHENONE
+          - acetophenone
+          - Acetophenone
+          - ACETORPHINE
+          - acetorphine
+          - Acetorphine
+          - ACETYLDIHYDROCODEINE
+          - acetyldihydrocodeine
+          - Acetyldihydrocodeine
+          - ACETYLDIHYDROCODEINONE
+          - acetyldihydrocodeinone
+          - Acetyldihydrocodeinone
+          - ACETYLENE
+          - acetylene
+          - Acetylene
+          - ACRIDINE
+          - acridine
+          - Acridine
+          - ACROLEIN
+          - acrolein
+          - Acrolein
+          - ACRYLAMIDE
+          - acrylamide
+          - Acrylamide
+          - ACRYLONITRILE
+          - acrylonitrile
+          - Acrylonitrile
+          - "ACTAEA SPICATA"
+          - "actaea spicata"
+          - "Actaea Spicata"
+          - "Actaea spicata"
+          - "ADHESIVE NEC"
+          - "adhesive nec"
+          - "Adhesive Nec"
+          - "Adhesive nec"
+          - "AEROSOL SPRAY NEC"
+          - "aerosol spray nec"
+          - "Aerosol Spray Nec"
+          - "Aerosol spray nec"
+          - "AETHUSA CYNAPIUM"
+          - "aethusa cynapium"
+          - "Aethusa Cynapium"
+          - "Aethusa cynapium"
+          - AFLATOXIN
+          - aflatoxin
+          - Aflatoxin
+          - "AFRICAN BOXWOOD"
+          - "african boxwood"
+          - "African Boxwood"
+          - "African boxwood"
+          - "AGRICULTURAL AGENT NEC"
+          - "agricultural agent nec"
+          - "Agricultural Agent Nec"
+          - "Agricultural agent nec"
+          - "AIR CONTAMINANT"
+          - "air contaminant"
+          - "Air Contaminant"
+          - "Air contaminant"
+          - AKEE
+          - akee
+          - Akee
+          - ALDICARB
+          - aldicarb
+          - Aldicarb
+          - ALDRIN
+          - aldrin
+          - Aldrin
+          - ALGAE
+          - algae
+          - Algae
+          - "ALIPHATIC THIOCYANATES"
+          - "aliphatic thiocyanates"
+          - "Aliphatic Thiocyanates"
+          - "Aliphatic thiocyanates"
+          - ALKALI
+          - alkali
+          - Alkali
+          - ALKENES
+          - alkenes
+          - Alkenes
+          - ALKYLISOCYANATE
+          - alkylisocyanate
+          - Alkylisocyanate
+          - "AMANITA PHALLOIDES"
+          - "amanita phalloides"
+          - "Amanita Phalloides"
+          - "Amanita phalloides"
+          - AMANITINE
+          - amanitine
+          - Amanitine
+          - AMINOPHENOL
+          - aminophenol
+          - Aminophenol
+          - AMYGDALINE
+          - amygdaline
+          - Amygdaline
+          - "ANAMIRTA COCCULUS"
+          - "anamirta cocculus"
+          - "Anamirta Cocculus"
+          - "Anamirta cocculus"
+          - "ANEMONE PULSATILLA"
+          - "anemone pulsatilla"
+          - "Anemone Pulsatilla"
+          - "Anemone pulsatilla"
+          - ANILINE
+          - aniline
+          - Aniline
+          - ANISIDINE
+          - anisidine
+          - Anisidine
+          - "ANTIARIS TOXICARIA"
+          - "antiaris toxicaria"
+          - "Antiaris Toxicaria"
+          - "Antiaris toxicaria"
+          - ANTIFREEZE
+          - antifreeze
+          - Antifreeze
+          - ANTIKNOCK
+          - antiknock
+          - Antiknock
+          - ANTIMONY
+          - antimony
+          - Antimony
+          - ANTROL
+          - antrol
+          - Antrol
+          - ANTU
+          - antu
+          - Antu
+          - "AQUA FORTIS"
+          - "aqua fortis"
+          - "Aqua Fortis"
+          - "Aqua fortis"
+          - AROMATICS
+          - aromatics
+          - Aromatics
+          - "ARSENATE OF LEAD"
+          - "arsenate of lead"
+          - "Arsenate Of Lead"
+          - "Arsenate of lead"
+          - ARSINE
+          - arsine
+          - Arsine
+          - ARTHROPOD
+          - arthropod
+          - Arthropod
+          - ASBESTOS
+          - asbestos
+          - Asbestos
+          - AURAMINE
+          - auramine
+          - Auramine
+          - "AUTOMOBILE FUEL"
+          - "automobile fuel"
+          - "Automobile Fuel"
+          - "Automobile fuel"
+          - AZADIRACHTA
+          - azadirachta
+          - Azadirachta
+          - AZINPHOS
+          - azinphos
+          - Azinphos
+          - AZIRIDINE
+          - aziridine
+          - Aziridine
+          - "AZOBENZENE SMOKE"
+          - "azobenzene smoke"
+          - "Azobenzene Smoke"
+          - "Azobenzene smoke"
+          - "BATTERY ACID OR FLUID"
+          - "battery acid or fluid"
+          - "Battery Acid Or Fluid"
+          - "Battery acid or fluid"
+          - "BAY RUM"
+          - "bay rum"
+          - "Bay Rum"
+          - "Bay rum"
+          - BEARSFOOT
+          - bearsfoot
+          - Bearsfoot
+          - BENOMYL
+          - benomyl
+          - Benomyl
+          - BENZENAMINE
+          - benzenamine
+          - Benzenamine
+          - BENZENE
+          - benzene
+          - Benzene
+          - BENZIDINE
+          - benzidine
+          - Benzidine
+          - BENZIMIDAZOLE
+          - benzimidazole
+          - Benzimidazole
+          - BENZOL
+          - benzol
+          - Benzol
+          - "BERGAMOT OIL"
+          - "bergamot oil"
+          - "Bergamot Oil"
+          - "Bergamot oil"
+          - BERRIES
+          - berries
+          - Berries
+          - BERYLLIUM
+          - beryllium
+          - Beryllium
+          - BICHROMATES
+          - bichromates
+          - Bichromates
+          - BINITROBENZOL
+          - binitrobenzol
+          - Binitrobenzol
+          - "BITTER ALMOND OIL"
+          - "bitter almond oil"
+          - "Bitter Almond Oil"
+          - "Bitter almond oil"
+          - BITTERSWEET
+          - bittersweet
+          - Bittersweet
+          - "BLAST FURNACE GAS"
+          - "blast furnace gas"
+          - "Blast Furnace Gas"
+          - "Blast furnace gas"
+          - BLEACH
+          - bleach
+          - Bleach
+          - "BLUE VELVET"
+          - "blue velvet"
+          - "Blue Velvet"
+          - "Blue velvet"
+          - "BONE MEAL"
+          - "bone meal"
+          - "Bone Meal"
+          - "Bone meal"
+          - "BORANE COMPLEX"
+          - "borane complex"
+          - "Borane Complex"
+          - "Borane complex"
+          - BORATE
+          - borate
+          - Borate
+          - BORAX
+          - borax
+          - Borax
+          - "BORDEAUX MIXTURE"
+          - "bordeaux mixture"
+          - "Bordeaux Mixture"
+          - "Bordeaux mixture"
+          - BORON
+          - boron
+          - Boron
+          - "BRAKE FLUID VAPOR"
+          - "brake fluid vapor"
+          - "Brake Fluid Vapor"
+          - "Brake fluid vapor"
+          - BRASS
+          - brass
+          - Brass
+          - BRASSO
+          - brasso
+          - Brasso
+          - BRODIFACOUM
+          - brodifacoum
+          - Brodifacoum
+          - BROMBENZYLCYANIDE
+          - brombenzylcyanide
+          - Brombenzylcyanide
+          - BROMETHALIN
+          - bromethalin
+          - Bromethalin
+          - BROMOBENZYLCYANIDE
+          - bromobenzylcyanide
+          - Bromobenzylcyanide
+          - BROMOXYNIL
+          - bromoxynil
+          - Bromoxynil
+          - "BROWN RECLUSE SPIDER"
+          - "brown recluse spider"
+          - "Brown Recluse Spider"
+          - "Brown recluse spider"
+          - "BROWN SPIDER"
+          - "brown spider"
+          - "Brown Spider"
+          - "Brown spider"
+          - BRUCIA
+          - brucia
+          - Brucia
+          - BRUCINE
+          - brucine
+          - Brucine
+          - BUFOTENINE
+          - bufotenine
+          - Bufotenine
+          - BUTANE
+          - butane
+          - Butane
+          - BUTANOL
+          - butanol
+          - Butanol
+          - BUTANONE
+          - butanone
+          - Butanone
+          - BUTTERCUPS
+          - buttercups
+          - Buttercups
+          - BUTYLTOLUENE
+          - butyltoluene
+          - Butyltoluene
+          - CACODYL
+          - cacodyl
+          - Cacodyl
+          - CADMIUM
+          - cadmium
+          - Cadmium
+          - "CALABAR BEAN"
+          - "calabar bean"
+          - "Calabar Bean"
+          - "Calabar bean"
+          - "CALADIUM SEGUINUM"
+          - "caladium seguinum"
+          - "Caladium Seguinum"
+          - "Caladium seguinum"
+          - "CANNED HEAT"
+          - "canned heat"
+          - "Canned Heat"
+          - "Canned heat"
+          - CAPTAFOL
+          - captafol
+          - Captafol
+          - CAPTAN
+          - captan
+          - Captan
+          - CARBARIL
+          - carbaril
+          - Carbaril
+          - CARBARYL
+          - carbaryl
+          - Carbaryl
+          - CARBINOL
+          - carbinol
+          - Carbinol
+          - CARBITOL
+          - carbitol
+          - Carbitol
+          - "CARBOLIC ACID"
+          - "carbolic acid"
+          - "Carbolic Acid"
+          - "Carbolic acid"
+          - "CARBONIC ACID GAS"
+          - "carbonic acid gas"
+          - "Carbonic Acid Gas"
+          - "Carbonic acid gas"
+          - CARBOPHENOTHION
+          - carbophenothion
+          - Carbophenothion
+          - CASSAVA
+          - cassava
+          - Cassava
+          - CATERPILLAR
+          - caterpillar
+          - Caterpillar
+          - CATHA
+          - catha
+          - Catha
+          - CAUSTIC
+          - caustic
+          - Caustic
+          - CELLOSOLVE
+          - cellosolve
+          - Cellosolve
+          - CENTIPEDE
+          - centipede
+          - Centipede
+          - CERBERA
+          - cerbera
+          - Cerbera
+          - "CHELIDONIUM MAJUS"
+          - "chelidonium majus"
+          - "Chelidonium Majus"
+          - "Chelidonium majus"
+          - "CHEMICAL SUBSTANCE NEC"
+          - "chemical substance nec"
+          - "Chemical Substance Nec"
+          - "Chemical substance nec"
+          - "CHERRY LAUREL"
+          - "cherry laurel"
+          - "Cherry Laurel"
+          - "Cherry laurel"
+          - CHLORALOSE
+          - chloralose
+          - Chloralose
+          - CHLORAMINE
+          - chloramine
+          - Chloramine
+          - CHLORATE
+          - chlorate
+          - Chlorate
+          - CHLORBENZENE
+          - chlorbenzene
+          - Chlorbenzene
+          - CHLORDAN
+          - chlordan
+          - Chlordan
+          - CHLOREX
+          - chlorex
+          - Chlorex
+          - CHLORFENVINPHOS
+          - chlorfenvinphos
+          - Chlorfenvinphos
+          - "CHLORIDE OF LIME"
+          - "chloride of lime"
+          - "Chloride Of Lime"
+          - "Chloride of lime"
+          - CHLORINE
+          - chlorine
+          - Chlorine
+          - CHLORMEPHOS
+          - chlormephos
+          - Chlormephos
+          - "CHLOROACETIC ACID"
+          - "chloroacetic acid"
+          - "Chloroacetic Acid"
+          - "Chloroacetic acid"
+          - CHLOROACETONE
+          - chloroacetone
+          - Chloroacetone
+          - CHLOROACETOPHENONE
+          - chloroacetophenone
+          - Chloroacetophenone
+          - CHLOROANILINE
+          - chloroaniline
+          - Chloroaniline
+          - CHLOROBENZENE
+          - chlorobenzene
+          - Chlorobenzene
+          - CHLOROBROMOMETHANE
+          - chlorobromomethane
+          - Chlorobromomethane
+          - CHLORODINITROBENZENE
+          - chlorodinitrobenzene
+          - Chlorodinitrobenzene
+          - CHLORODIPHENYL
+          - chlorodiphenyl
+          - Chlorodiphenyl
+          - CHLOROETHYLENE
+          - chloroethylene
+          - Chloroethylene
+          - CHLOROFLUOROCARBONS
+          - chlorofluorocarbons
+          - Chlorofluorocarbons
+          - CHLOROFORM
+          - chloroform
+          - Chloroform
+          - CHLORONITROBENZENE
+          - chloronitrobenzene
+          - Chloronitrobenzene
+          - CHLOROPHACINONE
+          - chlorophacinone
+          - Chlorophacinone
+          - CHLOROPHENOL
+          - chlorophenol
+          - Chlorophenol
+          - CHLOROPHENOTHANE
+          - chlorophenothane
+          - Chlorophenothane
+          - CHLOROPICRIN
+          - chloropicrin
+          - Chloropicrin
+          - CHLOROPYRIFOS
+          - chloropyrifos
+          - Chloropyrifos
+          - CHLOROTHALONIL
+          - chlorothalonil
+          - Chlorothalonil
+          - "CHLOROVINYLDICHLORO ARSINE"
+          - "chlorovinyldichloro arsine"
+          - "Chlorovinyldichloro Arsine"
+          - "Chlorovinyldichloro arsine"
+          - CHLOROVINYLDICHLORO-ARSINE
+          - chlorovinyldichloro-arsine
+          - Chlorovinyldichloro-Arsine
+          - Chlorovinyldichloro-arsine
+          - CHLORTHION
+          - chlorthion
+          - Chlorthion
+          - CHLORTHIOPHOS
+          - chlorthiophos
+          - Chlorthiophos
+          - "CHOKE DAMP"
+          - "choke damp"
+          - "Choke Damp"
+          - "Choke damp"
+          - "CHROMYL CHLORIDE"
+          - "chromyl chloride"
+          - "Chromyl Chloride"
+          - "Chromyl chloride"
+          - "CICUTA MACULATA OR VIROSA"
+          - "cicuta maculata or virosa"
+          - "Cicuta Maculata Or Virosa"
+          - "Cicuta maculata or virosa"
+          - CICUTOXIN
+          - cicutoxin
+          - Cicutoxin
+          - "CIGARETTE LIGHTER FLUID"
+          - "cigarette lighter fluid"
+          - "Cigarette Lighter Fluid"
+          - "Cigarette lighter fluid"
+          - CIGARETTES
+          - cigarettes
+          - Cigarettes
+          - CIGUATOXIN
+          - ciguatoxin
+          - Ciguatoxin
+          - "CLAVICEPS PURPUREA"
+          - "claviceps purpurea"
+          - "Claviceps Purpurea"
+          - "Claviceps purpurea"
+          - CLEANER
+          - cleaner
+          - Cleaner
+          - "CLEMATIS VITALBA"
+          - "clematis vitalba"
+          - "Clematis Vitalba"
+          - "Clematis vitalba"
+          - CLIRADON
+          - cliradon
+          - Cliradon
+          - CLOROX
+          - clorox
+          - Clorox
+          - COAL
+          - coal
+          - Coal
+          - COBALT
+          - cobalt
+          - Cobalt
+          - COBRA
+          - cobra
+          - Cobra
+          - "COCCULUS INDICUS"
+          - "cocculus indicus"
+          - "Cocculus Indicus"
+          - "Cocculus indicus"
+          - COCHINEAL
+          - cochineal
+          - Cochineal
+          - COFFEE
+          - coffee
+          - Coffee
+          - "COKE FUMES OR GAS"
+          - "coke fumes or gas"
+          - "Coke Fumes Or Gas"
+          - "Coke fumes or gas"
+          - COLCHICUM
+          - colchicum
+          - Colchicum
+          - CONIINE
+          - coniine
+          - Coniine
+          - CONIUM
+          - conium
+          - Conium
+          - "CONVALLARIA MAJALIS"
+          - "convallaria majalis"
+          - "Convallaria Majalis"
+          - "Convallaria majalis"
+          - "COPPERHEAD SNAKE"
+          - "copperhead snake"
+          - "Copperhead Snake"
+          - "Copperhead snake"
+          - CORAL
+          - coral
+          - Coral
+          - CORDITE
+          - cordite
+          - Cordite
+          - "CORROSIVE NEC"
+          - "corrosive nec"
+          - "Corrosive Nec"
+          - "Corrosive nec"
+          - COUMAPHOS
+          - coumaphos
+          - Coumaphos
+          - COWBANE
+          - cowbane
+          - Cowbane
+          - CRACK
+          - crack
+          - Crack
+          - CREOLIN
+          - creolin
+          - Creolin
+          - CRIMIDINE
+          - crimidine
+          - Crimidine
+          - "CRUDE OIL"
+          - "crude oil"
+          - "Crude Oil"
+          - "Crude oil"
+          - CRYOLITE
+          - cryolite
+          - Cryolite
+          - CUCKOOPINT
+          - cuckoopint
+          - Cuckoopint
+          - "CUPROUS SULFATE"
+          - "cuprous sulfate"
+          - "Cuprous Sulfate"
+          - "Cuprous sulfate"
+          - "CYANIC ACID"
+          - "cyanic acid"
+          - "Cyanic Acid"
+          - "Cyanic acid"
+          - CYANIDE
+          - cyanide
+          - Cyanide
+          - CYANOGEN
+          - cyanogen
+          - Cyanogen
+          - "CYCLAMEN EUROPAEUM"
+          - "cyclamen europaeum"
+          - "Cyclamen Europaeum"
+          - "Cyclamen europaeum"
+          - CYCLOALKANES
+          - cycloalkanes
+          - Cycloalkanes
+          - CYCLOHEXANE
+          - cyclohexane
+          - Cyclohexane
+          - CYCLOHEXANOL
+          - cyclohexanol
+          - Cyclohexanol
+          - CYCLOHEXANONE
+          - cyclohexanone
+          - Cyclohexanone
+          - CYCLOHEXIMIDE
+          - cycloheximide
+          - Cycloheximide
+          - "CYCLOHEXYL ACETATE"
+          - "cyclohexyl acetate"
+          - "Cyclohexyl Acetate"
+          - "Cyclohexyl acetate"
+          - CYCLOPARAFFINS
+          - cycloparaffins
+          - Cycloparaffins
+          - CYHALOTHRIN
+          - cyhalothrin
+          - Cyhalothrin
+          - CYPERMETHRIN
+          - cypermethrin
+          - Cypermethrin
+          - CYPHENOTHRIN
+          - cyphenothrin
+          - Cyphenothrin
+          - "D CON"
+          - "d con"
+          - "D Con"
+          - "D con"
+          - D-CON
+          - d-con
+          - D-Con
+          - D-con
+          - "D LYSERGIC ACID DIETHYLAMIDE"
+          - "d lysergic acid diethylamide"
+          - "D Lysergic Acid Diethylamide"
+          - "D lysergic acid diethylamide"
+          - "D-LYSERGIC ACID DIETHYLAMIDE"
+          - "d-lysergic acid diethylamide"
+          - "D-Lysergic Acid Diethylamide"
+          - "D-lysergic acid diethylamide"
+          - DALAPON
+          - dalapon
+          - Dalapon
+          - DAPHNE
+          - daphne
+          - Daphne
+          - DARNEL
+          - darnel
+          - Darnel
+          - "DEADLY NIGHTSHADE"
+          - "deadly nightshade"
+          - "Deadly Nightshade"
+          - "Deadly nightshade"
+          - DECABORANE
+          - decaborane
+          - Decaborane
+          - DECAHYDRONAPHTHALENE
+          - decahydronaphthalene
+          - Decahydronaphthalene
+          - DECALIN
+          - decalin
+          - Decalin
+          - DEET
+          - deet
+          - Deet
+          - DEKALIN
+          - dekalin
+          - Dekalin
+          - DELPHINIUM
+          - delphinium
+          - Delphinium
+          - DELTAMETHRIN
+          - deltamethrin
+          - Deltamethrin
+          - "DEMEPHION O AND S"
+          - "demephion o and s"
+          - "Demephion O And S"
+          - "Demephion o and s"
+          - "DEMEPHION -O AND -S"
+          - "demephion -o and -s"
+          - "Demephion -O And -S"
+          - "Demephion -o and -s"
+          - "DEMETON O AND S"
+          - "demeton o and s"
+          - "Demeton O And S"
+          - "Demeton o and s"
+          - "DEMETON -O AND -S"
+          - "demeton -o and -s"
+          - "Demeton -O And -S"
+          - "Demeton -o and -s"
+          - "DENATURED ALCOHOL"
+          - "denatured alcohol"
+          - "Denatured Alcohol"
+          - "Denatured alcohol"
+          - "DERRIS ROOT"
+          - "derris root"
+          - "Derris Root"
+          - "Derris root"
+          - DESOMORPHINE
+          - desomorphine
+          - Desomorphine
+          - DEXTROMORAMIDE
+          - dextromoramide
+          - Dextromoramide
+          - "DIACETONE ALCOHOL"
+          - "diacetone alcohol"
+          - "Diacetone Alcohol"
+          - "Diacetone alcohol"
+          - "DIACETYL MONOXIME"
+          - "diacetyl monoxime"
+          - "Diacetyl Monoxime"
+          - "Diacetyl monoxime"
+          - DIACETYLMORPHINE
+          - diacetylmorphine
+          - Diacetylmorphine
+          - "DIALKYL CARBONATE"
+          - "dialkyl carbonate"
+          - "Dialkyl Carbonate"
+          - "Dialkyl carbonate"
+          - DIAZINON
+          - diazinon
+          - Diazinon
+          - DIAZOMETHANE
+          - diazomethane
+          - Diazomethane
+          - DIBORANE
+          - diborane
+          - Diborane
+          - DIBROMOCHLOROPROPANE
+          - dibromochloropropane
+          - Dibromochloropropane
+          - DIBROMOETHANE
+          - dibromoethane
+          - Dibromoethane
+          - DICAMBA
+          - dicamba
+          - Dicamba
+          - DICAPTHON
+          - dicapthon
+          - Dicapthon
+          - DICHLOBENIL
+          - dichlobenil
+          - Dichlobenil
+          - DICHLONE
+          - dichlone
+          - Dichlone
+          - DICHLORBENZIDINE
+          - dichlorbenzidine
+          - Dichlorbenzidine
+          - DICHLORHYDRIN
+          - dichlorhydrin
+          - Dichlorhydrin
+          - DICHLOROBENZENE
+          - dichlorobenzene
+          - Dichlorobenzene
+          - DICHLORODIFLUOROMETHANE
+          - dichlorodifluoromethane
+          - Dichlorodifluoromethane
+          - DICHLOROETHANE
+          - dichloroethane
+          - Dichloroethane
+          - "DICHLOROETHYL SULFIDE"
+          - "dichloroethyl sulfide"
+          - "Dichloroethyl Sulfide"
+          - "Dichloroethyl sulfide"
+          - DICHLOROETHYLENE
+          - dichloroethylene
+          - Dichloroethylene
+          - DICHLOROFORMOXINE
+          - dichloroformoxine
+          - Dichloroformoxine
+          - DICHLOROHYDRIN
+          - dichlorohydrin
+          - Dichlorohydrin
+          - DICHLOROMETHANE
+          - dichloromethane
+          - Dichloromethane
+          - DICHLORONAPHTHOQUINONE
+          - dichloronaphthoquinone
+          - Dichloronaphthoquinone
+          - DICHLOROPROPENE
+          - dichloropropene
+          - Dichloropropene
+          - "DICHLOROPROPIONIC ACID"
+          - "dichloropropionic acid"
+          - "Dichloropropionic Acid"
+          - "Dichloropropionic acid"
+          - DICHLORVOS
+          - dichlorvos
+          - Dichlorvos
+          - DICROTOPHOS
+          - dicrotophos
+          - Dicrotophos
+          - DICYANOGEN
+          - dicyanogen
+          - Dicyanogen
+          - DIELDRIN
+          - dieldrin
+          - Dieldrin
+          - DIETHYLHEXYLPHTHALATE
+          - diethylhexylphthalate
+          - Diethylhexylphthalate
+          - DIETHYLTRYPTAMINE
+          - diethyltryptamine
+          - Diethyltryptamine
+          - DIFLUBENZURON
+          - diflubenzuron
+          - Diflubenzuron
+          - DIMEFOX
+          - dimefox
+          - Dimefox
+          - DIMETHOATE
+          - dimethoate
+          - Dimethoate
+          - DIMETHYLFORMAMIDE
+          - dimethylformamide
+          - Dimethylformamide
+          - DIMETILAN
+          - dimetilan
+          - Dimetilan
+          - DINITRO
+          - dinitro
+          - Dinitro
+          - DINITROBENZENE
+          - dinitrobenzene
+          - Dinitrobenzene
+          - DINITROBENZOL
+          - dinitrobenzol
+          - Dinitrobenzol
+          - DINITROBUTYLPHENOL
+          - dinitrobutylphenol
+          - Dinitrobutylphenol
+          - DINITROCYCLOHEXYLPHENOL
+          - dinitrocyclohexylphenol
+          - Dinitrocyclohexylphenol
+          - DINITROPHENOL
+          - dinitrophenol
+          - Dinitrophenol
+          - DINOSEB
+          - dinoseb
+          - Dinoseb
+          - DIOXANE
+          - dioxane
+          - Dioxane
+          - DIOXATHION
+          - dioxathion
+          - Dioxathion
+          - DIOXIN
+          - dioxin
+          - Dioxin
+          - DIPENTENE
+          - dipentene
+          - Dipentene
+          - DIPHACINONE
+          - diphacinone
+          - Diphacinone
+          - DIPHENYLAMINE
+          - diphenylamine
+          - Diphenylamine
+          - DIPHENYLCHLOROARSINE
+          - diphenylchloroarsine
+          - Diphenylchloroarsine
+          - "DIPHENYLMETHANE DYE"
+          - "diphenylmethane dye"
+          - "Diphenylmethane Dye"
+          - "Diphenylmethane dye"
+          - DIPIPANONE
+          - dipipanone
+          - Dipipanone
+          - DIQUAT
+          - diquat
+          - Diquat
+          - DISINFECTANT
+          - disinfectant
+          - Disinfectant
+          - DISULFOTON
+          - disulfoton
+          - Disulfoton
+          - DITHIOCARBAMATE
+          - dithiocarbamate
+          - Dithiocarbamate
+          - DIURON
+          - diuron
+          - Diuron
+          - DNBP
+          - dnbp
+          - Dnbp
+          - DNOC
+          - dnoc
+          - Dnoc
+          - DRANO
+          - drano
+          - Drano
+          - "DYE NEC"
+          - "dye nec"
+          - "Dye Nec"
+          - "Dye nec"
+          - DYNAMITE
+          - dynamite
+          - Dynamite
+          - ECSTASY
+          - ecstasy
+          - Ecstasy
+          - ELDER
+          - elder
+          - Elder
+          - ENDOSULFAN
+          - endosulfan
+          - Endosulfan
+          - ENDOTHALL
+          - endothall
+          - Endothall
+          - ENDRIN
+          - endrin
+          - Endrin
+          - EPICHLORHYDRIN
+          - epichlorhydrin
+          - Epichlorhydrin
+          - "EPOXY RESIN"
+          - "epoxy resin"
+          - "Epoxy Resin"
+          - "Epoxy resin"
+          - EQUISETUM
+          - equisetum
+          - Equisetum
+          - "ERGOT NEC"
+          - "ergot nec"
+          - "Ergot Nec"
+          - "Ergot nec"
+          - ETHANOL
+          - ethanol
+          - Ethanol
+          - "ETHIDIUM CHLORIDE"
+          - "ethidium chloride"
+          - "Ethidium Chloride"
+          - "Ethidium chloride"
+          - ETHION
+          - ethion
+          - Ethion
+          - ETHYLENE
+          - ethylene
+          - Ethylene
+          - "EXHAUST GAS"
+          - "exhaust gas"
+          - "Exhaust Gas"
+          - "Exhaust gas"
+          - FENTHION
+          - fenthion
+          - Fenthion
+          - "FER DE LANCE"
+          - "fer de lance"
+          - "Fer De Lance"
+          - "Fer de lance"
+          - FERROVANADIUM
+          - ferrovanadium
+          - Ferrovanadium
+          - "FERTILIZERS NEC"
+          - "fertilizers nec"
+          - "Fertilizers Nec"
+          - "Fertilizers nec"
+          - FIBERGLASS
+          - fiberglass
+          - Fiberglass
+          - FIREDAMP
+          - firedamp
+          - Firedamp
+          - FLUORACETATE
+          - fluoracetate
+          - Fluoracetate
+          - FLUORINE
+          - fluorine
+          - Fluorine
+          - FLUOROACETATE
+          - fluoroacetate
+          - Fluoroacetate
+          - "FLUOROCARBON MONOMER"
+          - "fluorocarbon monomer"
+          - "Fluorocarbon Monomer"
+          - "Fluorocarbon monomer"
+          - "FLUOROPHOSPHATE INSECTICIDE"
+          - "fluorophosphate insecticide"
+          - "Fluorophosphate Insecticide"
+          - "Fluorophosphate insecticide"
+          - FOLPET
+          - folpet
+          - Folpet
+          - FOOD
+          - food
+          - Food
+          - "FOOL PARSLEY"
+          - "fool parsley"
+          - "Fool Parsley"
+          - "Fool parsley"
+          - "FOOL'S PARSLEY"
+          - "fool's parsley"
+          - "Fool'S Parsley"
+          - "Fool's parsley"
+          - FORMALDEHYDE
+          - formaldehyde
+          - Formaldehyde
+          - FORMALIN
+          - formalin
+          - Formalin
+          - "FORMIC ACID"
+          - "formic acid"
+          - "Formic Acid"
+          - "Formic acid"
+          - "FOWLER SOLUTION"
+          - "fowler solution"
+          - "Fowler Solution"
+          - "Fowler solution"
+          - "FOWLER'S SOLUTION"
+          - "fowler's solution"
+          - "Fowler'S Solution"
+          - "Fowler's solution"
+          - FOXGLOVE
+          - foxglove
+          - Foxglove
+          - FREON
+          - freon
+          - Freon
+          - "FULMINATE OF MERCURY"
+          - "fulminate of mercury"
+          - "Fulminate Of Mercury"
+          - "Fulminate of mercury"
+          - FUMES
+          - fumes
+          - Fumes
+          - "FUMIGANT NEC"
+          - "fumigant nec"
+          - "Fumigant Nec"
+          - "Fumigant nec"
+          - FUNGI
+          - fungi
+          - Fungi
+          - "FUNGICIDE NEC"
+          - "fungicide nec"
+          - "Fungicide Nec"
+          - "Fungicide nec"
+          - FURFURAL
+          - furfural
+          - Furfural
+          - FURNACE
+          - furnace
+          - Furnace
+          - "FURNITURE POLISH"
+          - "furniture polish"
+          - "Furniture Polish"
+          - "Furniture polish"
+          - "FUSEL OIL"
+          - "fusel oil"
+          - "Fusel Oil"
+          - "Fusel oil"
+          - "GAS NEC"
+          - "gas nec"
+          - "Gas Nec"
+          - "Gas nec"
+          - GASOLINE
+          - gasoline
+          - Gasoline
+          - "GAULTHERIA PROCUMBENS"
+          - "gaultheria procumbens"
+          - "Gaultheria Procumbens"
+          - "Gaultheria procumbens"
+          - GELSEMIUM
+          - gelsemium
+          - Gelsemium
+          - "GILA MONSTER"
+          - "gila monster"
+          - "Gila Monster"
+          - "Gila monster"
+          - "GLUE NEC"
+          - "glue nec"
+          - "Glue Nec"
+          - "Glue nec"
+          - GLUTARALDEHYDE
+          - glutaraldehyde
+          - Glutaraldehyde
+          - GLYCOLS
+          - glycols
+          - Glycols
+          - GLYPHOSATE
+          - glyphosate
+          - Glyphosate
+          - "GOLDEN SULFIDE OF ANTIMONY"
+          - "golden sulfide of antimony"
+          - "Golden Sulfide Of Antimony"
+          - "Golden sulfide of antimony"
+          - GOLDYLOCKS
+          - goldylocks
+          - Goldylocks
+          - "GRAIN ALCOHOL"
+          - "grain alcohol"
+          - "Grain Alcohol"
+          - "Grain alcohol"
+          - "GRATIOLA OFFICINALIS"
+          - "gratiola officinalis"
+          - "Gratiola Officinalis"
+          - "Gratiola officinalis"
+          - GREASE
+          - grease
+          - Grease
+          - "GREEN HELLEBORE"
+          - "green hellebore"
+          - "Green Hellebore"
+          - "Green hellebore"
+          - GUANO
+          - guano
+          - Guano
+          - "HAWAIIAN WOODROSE SEEDS"
+          - "hawaiian woodrose seeds"
+          - "Hawaiian Woodrose Seeds"
+          - "Hawaiian woodrose seeds"
+          - "HEAVENLY BLUE"
+          - "heavenly blue"
+          - "Heavenly Blue"
+          - "Heavenly blue"
+          - "HEDGE HYSSOP"
+          - "hedge hyssop"
+          - "Hedge Hyssop"
+          - "Hedge hyssop"
+          - HELLEBORE
+          - hellebore
+          - Hellebore
+          - HEMLOCK
+          - hemlock
+          - Hemlock
+          - HENBANE
+          - henbane
+          - Henbane
+          - HEPTACHLOR
+          - heptachlor
+          - Heptachlor
+          - "HERBICIDE NEC"
+          - "herbicide nec"
+          - "Herbicide Nec"
+          - "Herbicide nec"
+          - HEROIN
+          - heroin
+          - Heroin
+          - HETP
+          - hetp
+          - Hetp
+          - HEXACHLOROBENZENE
+          - hexachlorobenzene
+          - Hexachlorobenzene
+          - HEXACHLOROCYCLOHEXANE
+          - hexachlorocyclohexane
+          - Hexachlorocyclohexane
+          - "HEXAETHYL TETRAPHOSPHATE"
+          - "hexaethyl tetraphosphate"
+          - "Hexaethyl Tetraphosphate"
+          - "Hexaethyl tetraphosphate"
+          - HEXAHYDROBENZOL
+          - hexahydrobenzol
+          - Hexahydrobenzol
+          - HEXAHYDROCRESOL
+          - hexahydrocresol
+          - Hexahydrocresol
+          - HEXAHYDROPHENOL
+          - hexahydrophenol
+          - Hexahydrophenol
+          - HEXALEN
+          - hexalen
+          - Hexalen
+          - HEXAMETHYLENE
+          - hexamethylene
+          - Hexamethylene
+          - HEXANONE
+          - hexanone
+          - Hexanone
+          - HEXONE
+          - hexone
+          - Hexone
+          - HEXYLRESORCINOL
+          - hexylresorcinol
+          - Hexylresorcinol
+          - "HOLLY BERRIES"
+          - "holly berries"
+          - "Holly Berries"
+          - "Holly berries"
+          - HORNET
+          - hornet
+          - Hornet
+          - "HORTICULTURE AGENT NEC"
+          - "horticulture agent nec"
+          - "Horticulture Agent Nec"
+          - "Horticulture agent nec"
+          - HYDRAZINE
+          - hydrazine
+          - Hydrazine
+          - "HYDRAZOIC ACID"
+          - "hydrazoic acid"
+          - "Hydrazoic Acid"
+          - "Hydrazoic acid"
+          - "HYDROCARBON GAS"
+          - "hydrocarbon gas"
+          - "Hydrocarbon Gas"
+          - "Hydrocarbon gas"
+          - "HYDROCHLORIC ACID"
+          - "hydrochloric acid"
+          - "Hydrochloric Acid"
+          - "Hydrochloric acid"
+          - "HYDROCYANIC ACID"
+          - "hydrocyanic acid"
+          - "Hydrocyanic Acid"
+          - "Hydrocyanic acid"
+          - "HYDROFLUORIC ACID"
+          - "hydrofluoric acid"
+          - "Hydrofluoric Acid"
+          - "Hydrofluoric acid"
+          - HYDROMORPHINOL
+          - hydromorphinol
+          - Hydromorphinol
+          - "HYDROSULFURIC ACID"
+          - "hydrosulfuric acid"
+          - "Hydrosulfuric Acid"
+          - "Hydrosulfuric acid"
+          - HYDROXYMETHYLPENTANONE
+          - hydroxymethylpentanone
+          - Hydroxymethylpentanone
+          - HYDROXYTOLUENE
+          - hydroxytoluene
+          - Hydroxytoluene
+          - ILEX
+          - ilex
+          - Ilex
+          - "ILLUMINATING GAS"
+          - "illuminating gas"
+          - "Illuminating Gas"
+          - "Illuminating gas"
+          - "INGESTED SUBSTANCE NEC"
+          - "ingested substance nec"
+          - "Ingested Substance Nec"
+          - "Ingested substance nec"
+          - "INORGANIC SUBSTANCE NEC"
+          - "inorganic substance nec"
+          - "Inorganic Substance Nec"
+          - "Inorganic substance nec"
+          - INSECT
+          - insect
+          - Insect
+          - "INSECTICIDE NEC"
+          - "insecticide nec"
+          - "Insecticide Nec"
+          - "Insecticide nec"
+          - ISOBENZAN
+          - isobenzan
+          - Isobenzan
+          - "ISOBUTYL ACETATE"
+          - "isobutyl acetate"
+          - "Isobutyl Acetate"
+          - "Isobutyl acetate"
+          - ISOCYANATE
+          - isocyanate
+          - Isocyanate
+          - ISOPHORONE
+          - isophorone
+          - Isophorone
+          - ISOPROPANOL
+          - isopropanol
+          - Isopropanol
+          - JATROPHA
+          - jatropha
+          - Jatropha
+          - JELLYFISH
+          - jellyfish
+          - Jellyfish
+          - JEQUIRITY
+          - jequirity
+          - Jequirity
+          - "JIMSON WEED"
+          - "jimson weed"
+          - "Jimson Weed"
+          - "Jimson weed"
+          - KELEVAN
+          - kelevan
+          - Kelevan
+          - KEROSENE
+          - kerosene
+          - Kerosene
+          - KETOBEMIDONE
+          - ketobemidone
+          - Ketobemidone
+          - KETOLS
+          - ketols
+          - Ketols
+          - "KETONE OILS"
+          - "ketone oils"
+          - "Ketone Oils"
+          - "Ketone oils"
+          - KHAT
+          - khat
+          - Khat
+          - "KILN GAS OR VAPOR"
+          - "kiln gas or vapor"
+          - "Kiln Gas Or Vapor"
+          - "Kiln gas or vapor"
+          - "KOSAM SEED"
+          - "kosam seed"
+          - "Kosam Seed"
+          - "Kosam seed"
+          - KRAIT
+          - krait
+          - Krait
+          - KWELL
+          - kwell
+          - Kwell
+          - LABURNUM
+          - laburnum
+          - Laburnum
+          - LACQUER
+          - lacquer
+          - Lacquer
+          - "LACRIMOGENIC GAS"
+          - "lacrimogenic gas"
+          - "Lacrimogenic Gas"
+          - "Lacrimogenic gas"
+          - LARKSPUR
+          - larkspur
+          - Larkspur
+          - LATEX
+          - latex
+          - Latex
+          - LATHYRUS
+          - lathyrus
+          - Lathyrus
+          - LAUREL
+          - laurel
+          - Laurel
+          - LEAD
+          - lead
+          - Lead
+          - LEPTOPHOS
+          - leptophos
+          - Leptophos
+          - LEWISITE
+          - lewisite
+          - Lewisite
+          - "LIGHTER FLUID"
+          - "lighter fluid"
+          - "Lighter Fluid"
+          - "Lighter fluid"
+          - LIGROIN
+          - ligroin
+          - Ligroin
+          - "LIGUSTRUM VULGARE"
+          - "ligustrum vulgare"
+          - "Ligustrum Vulgare"
+          - "Ligustrum vulgare"
+          - "LILY OF THE VALLEY"
+          - "lily of the valley"
+          - "Lily Of The Valley"
+          - "Lily of the valley"
+          - LIME
+          - lime
+          - Lime
+          - LIMONENE
+          - limonene
+          - Limonene
+          - "LIQUEFIED PETROLEUM GASES"
+          - "liquefied petroleum gases"
+          - "Liquefied Petroleum Gases"
+          - "Liquefied petroleum gases"
+          - "LIQUOR CREOSOLIS COMPOSITUS"
+          - "liquor creosolis compositus"
+          - "Liquor Creosolis Compositus"
+          - "Liquor creosolis compositus"
+          - LIZARD
+          - lizard
+          - Lizard
+          - LOBELIA
+          - lobelia
+          - Lobelia
+          - "LOLIUM TEMULENTUM"
+          - "lolium temulentum"
+          - "Lolium Temulentum"
+          - "Lolium temulentum"
+          - "LUBRICATING OIL NEC"
+          - "lubricating oil nec"
+          - "Lubricating Oil Nec"
+          - "Lubricating oil nec"
+          - "LUNG IRRITANT"
+          - "lung irritant"
+          - "Lung Irritant"
+          - "Lung irritant"
+          - "LYSERGIC ACID DIETHYLAMIDE"
+          - "lysergic acid diethylamide"
+          - "Lysergic Acid Diethylamide"
+          - "Lysergic acid diethylamide"
+          - LYSERGIDE
+          - lysergide
+          - Lysergide
+          - LYSOL
+          - lysol
+          - Lysol
+          - MACE
+          - mace
+          - Mace
+          - "MAGIC MUSHROOM"
+          - "magic mushroom"
+          - "Magic Mushroom"
+          - "Magic mushroom"
+          - "MAGNESIUM NEC"
+          - "magnesium nec"
+          - "Magnesium Nec"
+          - "Magnesium nec"
+          - MARINE
+          - marine
+          - Marine
+          - "MARSH GAS"
+          - "marsh gas"
+          - "Marsh Gas"
+          - "Marsh gas"
+          - MCPA
+          - mcpa
+          - Mcpa
+          - MDMA
+          - mdma
+          - Mdma
+          - "MEADOW SAFFRON"
+          - "meadow saffron"
+          - "Meadow Saffron"
+          - "Meadow saffron"
+          - MEAT
+          - meat
+          - Meat
+          - MECOPROP
+          - mecoprop
+          - Mecoprop
+          - MEDETOMIDINE
+          - medetomidine
+          - Medetomidine
+          - "MELIA AZEDARACH"
+          - "melia azedarach"
+          - "Melia Azedarach"
+          - "Melia azedarach"
+          - MEPHOSFOLAN
+          - mephosfolan
+          - Mephosfolan
+          - MERCURY
+          - mercury
+          - Mercury
+          - "MESCAL BUTTONS"
+          - "mescal buttons"
+          - "Mescal Buttons"
+          - "Mescal buttons"
+          - MESCALINE
+          - mescaline
+          - Mescaline
+          - METALDEHYDE
+          - metaldehyde
+          - Metaldehyde
+          - METALS
+          - metals
+          - Metals
+          - METAPHOS
+          - metaphos
+          - Metaphos
+          - METHANE
+          - methane
+          - Methane
+          - METHANETHIOL
+          - methanethiol
+          - Methanethiol
+          - "METHOXY DDT"
+          - "methoxy ddt"
+          - "Methoxy Ddt"
+          - "Methoxy ddt"
+          - METHOXY-DDT
+          - methoxy-ddt
+          - Methoxy-Ddt
+          - Methoxy-ddt
+          - METHOXYANILINE
+          - methoxyaniline
+          - Methoxyaniline
+          - METHOXYCHLOR
+          - methoxychlor
+          - Methoxychlor
+          - "METHYLATED SPIRIT"
+          - "methylated spirit"
+          - "Methylated Spirit"
+          - "Methylated spirit"
+          - "METHYLCHLOROPHENOXY ACETIC ACID"
+          - "methylchlorophenoxy acetic acid"
+          - "Methylchlorophenoxy Acetic Acid"
+          - "Methylchlorophenoxy acetic acid"
+          - "METHYLCHLOROPHENOXY-ACETIC ACID"
+          - "methylchlorophenoxy-acetic acid"
+          - "Methylchlorophenoxy-Acetic Acid"
+          - "Methylchlorophenoxy-acetic acid"
+          - METHYLENEDIOXYMETHAMPHETAMINE
+          - methylenedioxymethamphetamine
+          - Methylenedioxymethamphetamine
+          - METRIFONATE
+          - metrifonate
+          - Metrifonate
+          - MEVINPHOS
+          - mevinphos
+          - Mevinphos
+          - MEZEREON
+          - mezereon
+          - Mezereon
+          - MILLIPEDE
+          - millipede
+          - Millipede
+          - MIPAFOX
+          - mipafox
+          - Mipafox
+          - MIREX
+          - mirex
+          - Mirex
+          - MONKSHOOD
+          - monkshood
+          - Monkshood
+          - "MONOCHLOROACETIC ACID"
+          - "monochloroacetic acid"
+          - "Monochloroacetic Acid"
+          - "Monochloroacetic acid"
+          - MONOCHLOROBENZENE
+          - monochlorobenzene
+          - Monochlorobenzene
+          - "MONOSODIUM GLUTAMATE"
+          - "monosodium glutamate"
+          - "Monosodium Glutamate"
+          - "Monosodium glutamate"
+          - MONURON
+          - monuron
+          - Monuron
+          - "MORNING GLORY SEEDS"
+          - "morning glory seeds"
+          - "Morning Glory Seeds"
+          - "Morning glory seeds"
+          - MORPHOLINYLETHYLMORPHINE
+          - morpholinylethylmorphine
+          - Morpholinylethylmorphine
+          - "MOTH BALLS"
+          - "moth balls"
+          - "Moth Balls"
+          - "Moth balls"
+          - "MOTOR EXHAUST GAS"
+          - "motor exhaust gas"
+          - "Motor Exhaust Gas"
+          - "Motor exhaust gas"
+          - MUSHROOM
+          - mushroom
+          - Mushroom
+          - MUSSEL
+          - mussel
+          - Mussel
+          - MYCOTOXINS
+          - mycotoxins
+          - Mycotoxins
+          - "MYRISTICA FRAGRANS"
+          - "myristica fragrans"
+          - "Myristica Fragrans"
+          - "Myristica fragrans"
+          - MYRISTICIN
+          - myristicin
+          - Myristicin
+          - "NAIL POLISH REMOVER"
+          - "nail polish remover"
+          - "Nail Polish Remover"
+          - "Nail polish remover"
+          - NALED
+          - naled
+          - Naled
+          - NAPHTHA
+          - naphtha
+          - Naphtha
+          - NAPHTHALENE
+          - naphthalene
+          - Naphthalene
+          - NAPHTHENES
+          - naphthenes
+          - Naphthenes
+          - NAPHTHOL
+          - naphthol
+          - Naphthol
+          - NAPHTHYLAMINE
+          - naphthylamine
+          - Naphthylamine
+          - NAPHTHYLTHIOUREA
+          - naphthylthiourea
+          - Naphthylthiourea
+          - NEMATOCYST
+          - nematocyst
+          - Nematocyst
+          - "NERIUM OLEANDER"
+          - "nerium oleander"
+          - "Nerium Oleander"
+          - "Nerium oleander"
+          - "NERVE GAS"
+          - "nerve gas"
+          - "Nerve Gas"
+          - "Nerve gas"
+          - "NEUTRAL SPIRITS"
+          - "neutral spirits"
+          - "Neutral Spirits"
+          - "Neutral spirits"
+          - NICKEL
+          - nickel
+          - Nickel
+          - NICKELOCENE
+          - nickelocene
+          - Nickelocene
+          - NICOMORPHINE
+          - nicomorphine
+          - Nicomorphine
+          - NICOTIANA
+          - nicotiana
+          - Nicotiana
+          - NIGHTSHADE
+          - nightshade
+          - Nightshade
+          - NITRAMINE
+          - nitramine
+          - Nitramine
+          - NITROANILINE
+          - nitroaniline
+          - Nitroaniline
+          - NITROBENZENE
+          - nitrobenzene
+          - Nitrobenzene
+          - NITROCELLULOSE
+          - nitrocellulose
+          - Nitrocellulose
+          - NITRODIPHENYL
+          - nitrodiphenyl
+          - Nitrodiphenyl
+          - NITROGLYCOL
+          - nitroglycol
+          - Nitroglycol
+          - "NITROHYDROCHLORIC ACID"
+          - "nitrohydrochloric acid"
+          - "Nitrohydrochloric Acid"
+          - "Nitrohydrochloric acid"
+          - NITRONAPHTHALENE
+          - nitronaphthalene
+          - Nitronaphthalene
+          - NITROPHENOL
+          - nitrophenol
+          - Nitrophenol
+          - NITROPROPANE
+          - nitropropane
+          - Nitropropane
+          - NITROSODIMETHYLAMINE
+          - nitrosodimethylamine
+          - Nitrosodimethylamine
+          - NITROTOLUENE
+          - nitrotoluene
+          - Nitrotoluene
+          - NORBORMIDE
+          - norbormide
+          - Norbormide
+          - NORMORPHINE
+          - normorphine
+          - Normorphine
+          - "NOXIOUS FOODSTUFF"
+          - "noxious foodstuff"
+          - "Noxious Foodstuff"
+          - "Noxious foodstuff"
+          - "NUX VOMICA"
+          - "nux vomica"
+          - "Nux Vomica"
+          - "Nux vomica"
+          - "OCTAMETHYL PYROPHOS PHORAMIDE"
+          - "octamethyl pyrophos phoramide"
+          - "Octamethyl Pyrophos Phoramide"
+          - "Octamethyl pyrophos phoramide"
+          - "OCTAMETHYL PYROPHOS-PHORAMIDE"
+          - "octamethyl pyrophos-phoramide"
+          - "Octamethyl Pyrophos-Phoramide"
+          - "Octamethyl pyrophos-phoramide"
+          - OLEANDER
+          - oleander
+          - Oleander
+          - OMPA
+          - ompa
+          - Ompa
+          - ORGANOPHOSPHATES
+          - organophosphates
+          - Organophosphates
+          - ORTHODICHLOROBENZENE
+          - orthodichlorobenzene
+          - Orthodichlorobenzene
+          - ORTHOTOLIDINE
+          - orthotolidine
+          - Orthotolidine
+          - "OSMIC ACID"
+          - "osmic acid"
+          - "Osmic Acid"
+          - "Osmic acid"
+          - "OXALIC ACID"
+          - "oxalic acid"
+          - "Oxalic Acid"
+          - "Oxalic acid"
+          - "OXIDIZING AGENT NEC"
+          - "oxidizing agent nec"
+          - "Oxidizing Agent Nec"
+          - "Oxidizing agent nec"
+          - OZONE
+          - ozone
+          - Ozone
+          - "PAINT NEC"
+          - "paint nec"
+          - "Paint Nec"
+          - "Paint nec"
+          - PALFIUM
+          - palfium
+          - Palfium
+          - PARAFORMALDEHYDE
+          - paraformaldehyde
+          - Paraformaldehyde
+          - PARAOXON
+          - paraoxon
+          - Paraoxon
+          - PARAQUAT
+          - paraquat
+          - Paraquat
+          - PARATHION
+          - parathion
+          - Parathion
+          - "PARIS GREEN"
+          - "paris green"
+          - "Paris Green"
+          - "Paris green"
+          - "PEARLY GATES"
+          - "pearly gates"
+          - "Pearly Gates"
+          - "Pearly gates"
+          - PENTACHLOROETHANE
+          - pentachloroethane
+          - Pentachloroethane
+          - PENTACHLORONAPHTHALENE
+          - pentachloronaphthalene
+          - Pentachloronaphthalene
+          - PENTACHLOROPHENOL
+          - pentachlorophenol
+          - Pentachlorophenol
+          - PENTALIN
+          - pentalin
+          - Pentalin
+          - PENTANOL
+          - pentanol
+          - Pentanol
+          - PERCHLOROETHYLENE
+          - perchloroethylene
+          - Perchloroethylene
+          - PERMANGANATE
+          - permanganate
+          - Permanganate
+          - PERONINE
+          - peronine
+          - Peronine
+          - PESTICIDE
+          - pesticide
+          - Pesticide
+          - PETROL
+          - petrol
+          - Petrol
+          - PETROLEUM
+          - petroleum
+          - Petroleum
+          - PEYOTE
+          - peyote
+          - Peyote
+          - PHENADOXONE
+          - phenadoxone
+          - Phenadoxone
+          - PHENOMORPHAN
+          - phenomorphan
+          - Phenomorphan
+          - PHENOPERIDINE
+          - phenoperidine
+          - Phenoperidine
+          - PHENYLENEDIAMINE
+          - phenylenediamine
+          - Phenylenediamine
+          - PHENYLSULFTHION
+          - phenylsulfthion
+          - Phenylsulfthion
+          - PHORATE
+          - phorate
+          - Phorate
+          - PHOSDRIN
+          - phosdrin
+          - Phosdrin
+          - PHOSFOLAN
+          - phosfolan
+          - Phosfolan
+          - PHOSGENE
+          - phosgene
+          - Phosgene
+          - PHOSPHAMIDON
+          - phosphamidon
+          - Phosphamidon
+          - PHOSPHINE
+          - phosphine
+          - Phosphine
+          - PHTHALATES
+          - phthalates
+          - Phthalates
+          - "PHTHALIC ANHYDRIDE"
+          - "phthalic anhydride"
+          - "Phthalic Anhydride"
+          - "Phthalic anhydride"
+          - "PHYSOSTIGMA VENENOSUM"
+          - "physostigma venenosum"
+          - "Physostigma Venenosum"
+          - "Physostigma venenosum"
+          - "PHYTOLACCA DECANDRA"
+          - "phytolacca decandra"
+          - "Phytolacca Decandra"
+          - "Phytolacca decandra"
+          - PICRIC
+          - picric
+          - Picric
+          - "PIMELIC KETONE"
+          - "pimelic ketone"
+          - "Pimelic Ketone"
+          - "Pimelic ketone"
+          - PINDONE
+          - pindone
+          - Pindone
+          - "PINE OIL"
+          - "pine oil"
+          - "Pine Oil"
+          - "Pine oil"
+          - PIPADONE
+          - pipadone
+          - Pipadone
+          - "PIPER CUBEBA"
+          - "piper cubeba"
+          - "Piper Cubeba"
+          - "Piper cubeba"
+          - PITCH
+          - pitch
+          - Pitch
+          - "POISON NEC"
+          - "poison nec"
+          - "Poison Nec"
+          - "Poison nec"
+          - "POISONOUS BERRIES"
+          - "poisonous berries"
+          - "Poisonous Berries"
+          - "Poisonous berries"
+          - POKEWEED
+          - pokeweed
+          - Pokeweed
+          - POLISH
+          - polish
+          - Polish
+          - "POLYCHLORINATED BIPHENYL"
+          - "polychlorinated biphenyl"
+          - "Polychlorinated Biphenyl"
+          - "Polychlorinated biphenyl"
+          - "POLYESTER FUMES"
+          - "polyester fumes"
+          - "Polyester Fumes"
+          - "Polyester fumes"
+          - "POLYESTER RESIN HARDENER"
+          - "polyester resin hardener"
+          - "Polyester Resin Hardener"
+          - "Polyester resin hardener"
+          - POTASH
+          - potash
+          - Potash
+          - PRESERVATIVE
+          - preservative
+          - Preservative
+          - "PRIDE OF CHINA"
+          - "pride of china"
+          - "Pride Of China"
+          - "Pride of china"
+          - PRIMULA
+          - primula
+          - Primula
+          - PRIVET
+          - privet
+          - Privet
+          - "PRODUCER GAS"
+          - "producer gas"
+          - "Producer Gas"
+          - "Producer gas"
+          - PROMEDOL
+          - promedol
+          - Promedol
+          - PROPACHLOR
+          - propachlor
+          - Propachlor
+          - PROPANE
+          - propane
+          - Propane
+          - PROPANIL
+          - propanil
+          - Propanil
+          - PROPOXUR
+          - propoxur
+          - Propoxur
+          - PROPYLENE
+          - propylene
+          - Propylene
+          - PROTHOATE
+          - prothoate
+          - Prothoate
+          - "PRUSSIC ACID"
+          - "prussic acid"
+          - "Prussic Acid"
+          - "Prussic acid"
+          - PSILOCIN
+          - psilocin
+          - Psilocin
+          - PSILOCYBIN
+          - psilocybin
+          - Psilocybin
+          - PSILOCYBINE
+          - psilocybine
+          - Psilocybine
+          - PSORALENE
+          - psoralene
+          - Psoralene
+          - PULSATILLA
+          - pulsatilla
+          - Pulsatilla
+          - PUREX
+          - purex
+          - Purex
+          - PYRETHRIN
+          - pyrethrin
+          - Pyrethrin
+          - PYRIDINE
+          - pyridine
+          - Pyridine
+          - PYRIMINIL
+          - pyriminil
+          - Pyriminil
+          - "PYRROLIZIDINE ALKALOIDS"
+          - "pyrrolizidine alkaloids"
+          - "Pyrrolizidine Alkaloids"
+          - "Pyrrolizidine alkaloids"
+          - QUICKLIME
+          - quicklime
+          - Quicklime
+          - QUINALPHOS
+          - quinalphos
+          - Quinalphos
+          - RACEMORAMIDE
+          - racemoramide
+          - Racemoramide
+          - "RADIATOR ALCOHOL"
+          - "radiator alcohol"
+          - "Radiator Alcohol"
+          - "Radiator alcohol"
+          - RANUNCULUS
+          - ranunculus
+          - Ranunculus
+          - "RAT POISON NEC"
+          - "rat poison nec"
+          - "Rat Poison Nec"
+          - "Rat poison nec"
+          - RATTLESNAKE
+          - rattlesnake
+          - Rattlesnake
+          - REALGAR
+          - realgar
+          - Realgar
+          - "RED SQUILL"
+          - "red squill"
+          - "Red Squill"
+          - "Red squill"
+          - "REDUCING AGENT"
+          - "reducing agent"
+          - "Reducing Agent"
+          - "Reducing agent"
+          - "REFRIGERANT GAS"
+          - "refrigerant gas"
+          - "Refrigerant Gas"
+          - "Refrigerant gas"
+          - RESORCIN
+          - resorcin
+          - Resorcin
+          - RICIN
+          - ricin
+          - Ricin
+          - "RICINUS COMMUNIS"
+          - "ricinus communis"
+          - "Ricinus Communis"
+          - "Ricinus communis"
+          - "RODENTICIDE NEC"
+          - "rodenticide nec"
+          - "Rodenticide Nec"
+          - "Rodenticide nec"
+          - ROTENONE
+          - rotenone
+          - Rotenone
+          - "ROUGH ON RATS"
+          - "rough on rats"
+          - "Rough On Rats"
+          - "Rough on rats"
+          - ROUGH-ON-RATS
+          - rough-on-rats
+          - Rough-On-Rats
+          - Rough-on-rats
+          - "RUBBING ALCOHOL"
+          - "rubbing alcohol"
+          - "Rubbing Alcohol"
+          - "Rubbing alcohol"
+          - RUTA
+          - ruta
+          - Ruta
+          - SABADILLA
+          - sabadilla
+          - Sabadilla
+          - "SAMBUCUS CANADENSIS"
+          - "sambucus canadensis"
+          - "Sambucus Canadensis"
+          - "Sambucus canadensis"
+          - "SANGUINARIA CANADENSIS"
+          - "sanguinaria canadensis"
+          - "Sanguinaria Canadensis"
+          - "Sanguinaria canadensis"
+          - SANIFLUSH
+          - saniflush
+          - Saniflush
+          - "SCHEELE GREEN"
+          - "scheele green"
+          - "Scheele Green"
+          - "Scheele green"
+          - "SCHEELE'S GREEN"
+          - "scheele's green"
+          - "Scheele'S Green"
+          - "Scheele's green"
+          - SCHRADAN
+          - schradan
+          - Schradan
+          - "SCHWEINFURTH GREEN"
+          - "schweinfurth green"
+          - "Schweinfurth Green"
+          - "Schweinfurth green"
+          - SCILLA
+          - scilla
+          - Scilla
+          - SCILLAREN
+          - scillaren
+          - Scillaren
+          - SCOMBROTOXIN
+          - scombrotoxin
+          - Scombrotoxin
+          - "SCOURING POWDER"
+          - "scouring powder"
+          - "Scouring Powder"
+          - "Scouring powder"
+          - SEAFOOD
+          - seafood
+          - Seafood
+          - "SEED DISINFECTANT OR DRESSING"
+          - "seed disinfectant or dressing"
+          - "Seed Disinfectant Or Dressing"
+          - "Seed disinfectant or dressing"
+          - SEEDS
+          - seeds
+          - Seeds
+          - "SELENIUM NEC"
+          - "selenium nec"
+          - "Selenium Nec"
+          - "Selenium nec"
+          - "SEWER GAS"
+          - "sewer gas"
+          - "Sewer Gas"
+          - "Sewer gas"
+          - SHAMPOO
+          - shampoo
+          - Shampoo
+          - SHELLFISH
+          - shellfish
+          - Shellfish
+          - "SILICONE NEC"
+          - "silicone nec"
+          - "Silicone Nec"
+          - "Silicone nec"
+          - SIMAZINE
+          - simazine
+          - Simazine
+          - "SMELTER FUMES NEC"
+          - "smelter fumes nec"
+          - "Smelter Fumes Nec"
+          - "Smelter fumes nec"
+          - SMOG
+          - smog
+          - Smog
+          - "SMOKE NEC"
+          - "smoke nec"
+          - "Smoke Nec"
+          - "Smoke nec"
+          - "SNAIL KILLER NEC"
+          - "snail killer nec"
+          - "Snail Killer Nec"
+          - "Snail killer nec"
+          - "SNAKE VENOM OR BITE"
+          - "snake venom or bite"
+          - "Snake Venom Or Bite"
+          - "Snake venom or bite"
+          - SNUFF
+          - snuff
+          - Snuff
+          - SOAP
+          - soap
+          - Soap
+          - SODA
+          - soda
+          - Soda
+          - "SOFT SOAP"
+          - "soft soap"
+          - "Soft Soap"
+          - "Soft soap"
+          - SOLANINE
+          - solanine
+          - Solanine
+          - "SOLANUM DULCAMARA"
+          - "solanum dulcamara"
+          - "Solanum Dulcamara"
+          - "Solanum dulcamara"
+          - "SOLDERING FLUID"
+          - "soldering fluid"
+          - "Soldering Fluid"
+          - "Soldering fluid"
+          - "SOLID SUBSTANCE"
+          - "solid substance"
+          - "Solid Substance"
+          - "Solid substance"
+          - SPIDER
+          - spider
+          - Spider
+          - SPIRIT
+          - spirit
+          - Spirit
+          - SPRAY
+          - spray
+          - Spray
+          - "SPURGE FLAX"
+          - "spurge flax"
+          - "Spurge Flax"
+          - "Spurge flax"
+          - SPURGES
+          - spurges
+          - Spurges
+          - STAINS
+          - stains
+          - Stains
+          - "STERNUTATOR GAS"
+          - "sternutator gas"
+          - "Sternutator Gas"
+          - "Sternutator gas"
+          - STIBINE
+          - stibine
+          - Stibine
+          - "STORAGE BATTERY"
+          - "storage battery"
+          - "Storage Battery"
+          - "Storage battery"
+          - STRIPPER
+          - stripper
+          - Stripper
+          - STROBANE
+          - strobane
+          - Strobane
+          - STRYCHNINE
+          - strychnine
+          - Strychnine
+          - STYRENE
+          - styrene
+          - Styrene
+          - "SULFURIC ACID"
+          - "sulfuric acid"
+          - "Sulfuric Acid"
+          - "Sulfuric acid"
+          - "SYM DICHLOROETHYL ETHER"
+          - "sym dichloroethyl ether"
+          - "Sym Dichloroethyl Ether"
+          - "Sym dichloroethyl ether"
+          - "SYM-DICHLOROETHYL ETHER"
+          - "sym-dichloroethyl ether"
+          - "Sym-Dichloroethyl Ether"
+          - "Sym-dichloroethyl ether"
+          - TANSY
+          - tansy
+          - Tansy
+          - "TAR NEC"
+          - "tar nec"
+          - "Tar Nec"
+          - "Tar nec"
+          - TARANTULA
+          - tarantula
+          - Tarantula
+          - TCDD
+          - tcdd
+          - Tcdd
+          - TELLURIUM
+          - tellurium
+          - Tellurium
+          - TEPP
+          - tepp
+          - Tepp
+          - TERBUFOS
+          - terbufos
+          - Terbufos
+          - TETRACHLOROETHANE
+          - tetrachloroethane
+          - Tetrachloroethane
+          - TETRACHLOROETHYLENE
+          - tetrachloroethylene
+          - Tetrachloroethylene
+          - TETRADIFON
+          - tetradifon
+          - Tetradifon
+          - TETRADOTOXIN
+          - tetradotoxin
+          - Tetradotoxin
+          - TETRAHYDROFURAN
+          - tetrahydrofuran
+          - Tetrahydrofuran
+          - TETRAHYDRONAPHTHALENE
+          - tetrahydronaphthalene
+          - Tetrahydronaphthalene
+          - TETRALIN
+          - tetralin
+          - Tetralin
+          - TETRAMETHRIN
+          - tetramethrin
+          - Tetramethrin
+          - TETRAMETHYLTHIURAM
+          - tetramethylthiuram
+          - Tetramethylthiuram
+          - TETRYL
+          - tetryl
+          - Tetryl
+          - THALLIUM
+          - thallium
+          - Thallium
+          - THIOCARBAMATE
+          - thiocarbamate
+          - Thiocarbamate
+          - THIOFOS
+          - thiofos
+          - Thiofos
+          - "THIOGLYCOLIC ACID"
+          - "thioglycolic acid"
+          - "Thioglycolic Acid"
+          - "Thioglycolic acid"
+          - THIONAZIN
+          - thionazin
+          - Thionazin
+          - THIRAM
+          - thiram
+          - Thiram
+          - THORNAPPLE
+          - thornapple
+          - Thornapple
+          - TITANOCENE
+          - titanocene
+          - Titanocene
+          - TMTD
+          - tmtd
+          - Tmtd
+          - TOADSTOOL
+          - toadstool
+          - Toadstool
+          - "TOBACCO NEC"
+          - "tobacco nec"
+          - "Tobacco Nec"
+          - "Tobacco nec"
+          - "TOILET DEODORIZER"
+          - "toilet deodorizer"
+          - "Toilet Deodorizer"
+          - "Toilet deodorizer"
+          - TOLUENE
+          - toluene
+          - Toluene
+          - TOLUIDINE
+          - toluidine
+          - Toluidine
+          - TOLUOL
+          - toluol
+          - Toluol
+          - TOLUYLENEDIAMINE
+          - toluylenediamine
+          - Toluylenediamine
+          - "TOLYLENE 2"
+          - "tolylene 2"
+          - "Tolylene 2"
+          - TOLYLENE-2
+          - tolylene-2
+          - Tolylene-2
+          - TOXAPHENE
+          - toxaphene
+          - Toxaphene
+          - "TRACTOR FUEL NEC"
+          - "tractor fuel nec"
+          - "Tractor Fuel Nec"
+          - "Tractor fuel nec"
+          - TRIAZINE
+          - triazine
+          - Triazine
+          - TRIAZOLE
+          - triazole
+          - Triazole
+          - TRICHLORETHANE
+          - trichlorethane
+          - Trichlorethane
+          - TRICHLORETHYLENE
+          - trichlorethylene
+          - Trichlorethylene
+          - TRICHLORFON
+          - trichlorfon
+          - Trichlorfon
+          - "TRICHLOROACETIC ACID"
+          - "trichloroacetic acid"
+          - "Trichloroacetic Acid"
+          - "Trichloroacetic acid"
+          - TRICHLOROETHANE
+          - trichloroethane
+          - Trichloroethane
+          - TRICHLOROETHYLENE
+          - trichloroethylene
+          - Trichloroethylene
+          - "TRICHLOROFLUOROMETHANE NEC"
+          - "trichlorofluoromethane nec"
+          - "Trichlorofluoromethane Nec"
+          - "Trichlorofluoromethane nec"
+          - TRICHLORONATE
+          - trichloronate
+          - Trichloronate
+          - TRICHLOROPROPANE
+          - trichloropropane
+          - Trichloropropane
+          - "TRICRESYL PHOSPHATE"
+          - "tricresyl phosphate"
+          - "Tricresyl Phosphate"
+          - "Tricresyl phosphate"
+          - "TRIETHANOLAMINE NEC"
+          - "triethanolamine nec"
+          - "Triethanolamine Nec"
+          - "Triethanolamine nec"
+          - TRIMETHYLCARBINOL
+          - trimethylcarbinol
+          - Trimethylcarbinol
+          - TRINITROBENZOL
+          - trinitrobenzol
+          - Trinitrobenzol
+          - TRINITROPHENOL
+          - trinitrophenol
+          - Trinitrophenol
+          - TRINITROTOLUENE
+          - trinitrotoluene
+          - Trinitrotoluene
+          - "TRIORTHOCRESYL PHOSPHATE"
+          - "triorthocresyl phosphate"
+          - "Triorthocresyl Phosphate"
+          - "Triorthocresyl phosphate"
+          - "TRIOXIDE OF ARSENIC"
+          - "trioxide of arsenic"
+          - "Trioxide Of Arsenic"
+          - "Trioxide of arsenic"
+          - TRIPHENYLPHOSPHATE
+          - triphenylphosphate
+          - Triphenylphosphate
+          - TURPENTINE
+          - turpentine
+          - Turpentine
+          - URTICA
+          - urtica
+          - Urtica
+          - VANADIUM
+          - vanadium
+          - Vanadium
+          - VAPOR
+          - vapor
+          - Vapor
+          - VARNISH
+          - varnish
+          - Varnish
+          - VENOM
+          - venom
+          - Venom
+          - VERDIGRIS
+          - verdigris
+          - Verdigris
+          - "VINYLIDENE CHLORIDE"
+          - "vinylidene chloride"
+          - "Vinylidene Chloride"
+          - "Vinylidene chloride"
+          - VIPER
+          - viper
+          - Viper
+          - WASP
+          - wasp
+          - Wasp
+          - "WEED KILLERS NEC"
+          - "weed killers nec"
+          - "Weed Killers Nec"
+          - "Weed killers nec"
+          - WHITEWASH
+          - whitewash
+          - Whitewash
+          - "WINDOW CLEANING FLUID"
+          - "window cleaning fluid"
+          - "Window Cleaning Fluid"
+          - "Window cleaning fluid"
+          - WISTERINE
+          - wisterine
+          - Wisterine
+          - "WOOD ALCOHOL OR SPIRIT"
+          - "wood alcohol or spirit"
+          - "Wood Alcohol Or Spirit"
+          - "Wood alcohol or spirit"
+          - XYLAZINE
+          - xylazine
+          - Xylazine
+          - XYLENE
+          - xylene
+          - Xylene
+          - XYLOL
+          - xylol
+          - Xylol
+          - ZERONE
+          - zerone
+          - Zerone
+          - ZINEB
+          - zineb
+          - Zineb
+          - ZYGADENUS
+          - zygadenus
+          - Zygadenus
       - column: F
         comparison: ne
         comparator: HYPERSENSITIVITY
@@ -1158,6 +3609,8 @@ template:
         - resource_id: "infores:dailymed"
           resource_role: supporting_data_source
         - resource_id: "infores:canada-vigilance"
+          resource_role: supporting_data_source
+        - resource_id: "infores:icd10cm"
           resource_role: supporting_data_source
       knowledge_level: observation
       agent_type: manual_validation_of_automated_agent
