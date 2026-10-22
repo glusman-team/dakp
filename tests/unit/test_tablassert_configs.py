@@ -767,11 +767,48 @@ def test_off_label_subject_denylist_reindex() -> None:
     denylisted = tablassert_configs._TABLE_SUBJECT_DENYLIST[table]
 
     # The hand-written names lead the comparator list in denylist order, each expanded into its
-    # casing renderings: four for a multi-word name, three when title and sentence case coincide,
-    # and the leading-'*' entry dedups capitalize into lower (the first character is not a letter).
-    junk = ("METHYL ALCHOL", "METHANOL", "GENERIC DRUG", "GENERIC DRUGS", "PLACEBO", "*PLACEBO")
-    head = [variant for name in junk for variant in tablassert_configs._casing_variants(name)]
-    assert comparators[: len(head)] == head
+    # casing renderings: four for a multi-word name, three when title and sentence case coincide
+    # (single-word entries), and the leading-'*' entry dedups capitalize into lower (the first
+    # character is not a letter).
+    junk = ("METHYL ALCHOL", "METHANOL", "GENERIC DRUG", "GENERIC DRUGS", "PLACEBO", "*PLACEBO", "WATER PILL", "WATER PILLS", "EYE", "CLEAR")
+    expected = [
+        "METHYL ALCHOL",
+        "methyl alchol",
+        "Methyl Alchol",
+        "Methyl alchol",
+        "METHANOL",
+        "methanol",
+        "Methanol",  # single word: title == sentence case, deduplicated to one filter
+        "GENERIC DRUG",
+        "generic drug",
+        "Generic Drug",
+        "Generic drug",
+        "GENERIC DRUGS",
+        "generic drugs",
+        "Generic Drugs",
+        "Generic drugs",
+        "PLACEBO",
+        "placebo",
+        "Placebo",
+        "*PLACEBO",
+        "*placebo",  # leading '*': capitalize == lower (first char is the '*'), so lower dedups it
+        "*Placebo",
+        "WATER PILL",
+        "water pill",
+        "Water Pill",
+        "Water pill",
+        "WATER PILLS",
+        "water pills",
+        "Water Pills",
+        "Water pills",
+        "EYE",  # single word: title == sentence case, deduplicated
+        "eye",
+        "Eye",
+        "CLEAR",
+        "clear",
+        "Clear",
+    ]
+    assert comparators[: len(expected)] == expected
     assert list(denylisted[: len(junk)]) == list(junk)
 
     # The comparator list is exactly the denylist's casings, in order and without repeats:
@@ -990,6 +1027,27 @@ def test_object_denylist_reindex() -> None:
         "accidental overdose",
     ):
         assert wording not in denied
+    # Group (5) — the bare eye/clear strings the v1.24.1 audit denied (user request: deny only
+    # where the string IS the whole original mention), plus their kept QUALIFIED relatives.
+    for wording in ("eye", "eyes", "clear"):
+        assert wording in denied
+    for wording in (
+        "eye disorder",
+        "dry eye",
+        "eye pain",
+        "eye infection",
+        "eyelid pain",
+        "clear cell renal cell carcinoma",
+        "clear cell sarcoma of soft tissue",
+        "excessive tearing",
+    ):
+        assert wording not in denied
+    # Group (6) — the water-string object wordings (user request: nothing carrying the string
+    # "water" survives), plus the kept non-water and accidental-substring relatives.
+    for wording in ("water intoxication", "watery eyes", "blackwater fever", "water-electrolyte imbalance"):
+        assert wording in denied
+    for wording in ("electrolyte imbalance", "waterhouse-friderichsen syndrome", "dextrose in water"):
+        assert wording not in denied
 
 
 def test_object_exclude_regex_on_all_tables() -> None:
@@ -1022,11 +1080,35 @@ def test_subject_exclude_regex_on_all_tables() -> None:
     # polars-compatibility validator on each pattern.
     from tablassert.models import Section
 
-    expected = [r"^UMLS:C1314429$", r"^UMLS:C0812740$"]
+    expected = [
+        r"^UMLS:C1314429$",
+        r"^UMLS:C0812740$",
+        # water-as-substance family (v1.24.1 audit): every excipient/solvent wording resolves
+        # into this family and nothing else, so excluding all members leaves the wordings
+        # unresolved and the rows drop; UMLS:C1550678/C5981420 are the fall-through twins.
+        r"^CHEBI:15377$",
+        r"^UMLS:C0359299$",
+        r"^UMLS:C0790233$",
+        r"^UMLS:C0991883$",
+        r"^UMLS:C1163679$",
+        r"^UMLS:C5981420$",
+        r"^UMLS:C1550678$",
+        r"^MESH:D008900$",
+        # GHB/GBL identifiers mis-resolving sodium oxybate (v1.24.1 audit): "sodium oxybate"
+        # wordings resolve to CHEBI:30830 ONLY (rows drop); "4-HYDROXYBUTANOIC ACID" falls
+        # through to UMLS:C0673093 and survives under the correct Drug identifier.
+        r"^CHEBI:30830$",
+        r"^CHEBI:42639$",
+    ]
     assert list(tablassert_configs._SUBJECT_EXCLUDE_REGEX) == expected
     for table in TABLES:
         section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
         assert list(section.statement.subject.exclude_regex or []) == expected
+    # The drug-class and product CURIEs the water/GHB families share channels with are
+    # deliberately NOT excluded: "diuretic" keeps UMLS:C0012798 (the "WATER PILL" wording is
+    # denied at load instead) and "dextrose in water" keeps UMLS:C0719841.
+    assert not any("C0012798" in pattern for pattern in tablassert_configs._SUBJECT_EXCLUDE_REGEX)
+    assert not any("C0719841" in pattern for pattern in tablassert_configs._SUBJECT_EXCLUDE_REGEX)
 
 
 # --- graph config structure -------------------------------------------------------

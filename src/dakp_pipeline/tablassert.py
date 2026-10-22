@@ -826,6 +826,14 @@ _TABLE_ORDER = ("approved_treats_assertions", "faers_applied_to_treat_assertions
 # a polars anti hash join against the whole deny set, sub-second on a 1,705,626-row subject_text
 # column (wenceslaus) where the 2,700 sequential literal ``ne`` compares it replaces measured 13.9 s.
 _TABLE_SUBJECT_DENYLIST: dict[str, tuple[str, ...]] = {
+    # v1.24.1 audit additions beyond the placeholders: "WATER PILL"/"WATER PILLS" are FAERS
+    # reporter wordings for an UNNAMED diuretic (UMLS:C0012798 Diuretics, 2 edges in 1.24.1) --
+    # the class CURIE itself is legitimate ("diuretic" resolves to it and CHEBI:35498), so the
+    # wording is denied at load rather than the CURIE excluded. "EYE" and "CLEAR" (bare-eye
+    # subjects occur twice in the FAERS drugname channel) are load-time insurance: the 2026jul22
+    # fullmap ties them only to anatomy/ICE concepts (UBERON:0000970, UMLS:C1550003/C2963144)
+    # that the subject category allow-list already drops, and the filters guard against fullmap
+    # source churn re-ranking them into an allowed category.
     "faers_applied_to_treat_assertions": (
         "METHYL ALCHOL",
         "METHANOL",
@@ -833,6 +841,10 @@ _TABLE_SUBJECT_DENYLIST: dict[str, tuple[str, ...]] = {
         "GENERIC DRUGS",
         "PLACEBO",
         "*PLACEBO",
+        "WATER PILL",
+        "WATER PILLS",
+        "EYE",
+        "CLEAR",
         *icd10cm_denylist.SUBJECT_DENYLIST,
     )
 }
@@ -961,6 +973,34 @@ _TABLE_OBJECT_DENYLIST: tuple[str, ...] = (
     # allow-lists happened to drop all of those, and the emitted KG carries 0 crying objects.
     # Denying the wording at load keeps that guarantee against fullmap source churn.
     "CRYING",
+    # (5) BARE anatomy/finding strings (v1.24.1 audit, user request: deny "eye"/"eyes"/"clear"
+    #     only where one IS the whole original string): "eye"/"eyes" resolve to MONDO:0004659
+    #     (eye carcinoma in situ) AND MONDO:0005328 (eye disorder) and "clear" to NCIT:C48621
+    #     (Negative Surgical Margin) without naming a condition -- 20 eye/eyes + 3 clear
+    #     contraindicated_in edges in 1.24.1 -- while the very same MONDO:0005328 carries 1,309+
+    #     legitimate "Eye disorder" observed-use rows and NCIT:C48621 is a real oncology finding,
+    #     so the denial is wording-level ONLY; no CURIE is excluded and every QUALIFIED relative
+    #     ("Dry eye", "Eye pain", "Clear cell renal cell carcinoma", ...) keeps its own edges by
+    #     the exact whole-cell ``ne`` compare. Qualifier values are untouched by construction:
+    #     ``reindex`` filters the object_text column (F) alone, so an anatomical_context_qualifier
+    #     cell holding "eye" survives.
+    "EYE",
+    "EYES",
+    "CLEAR",
+    # (6) WATER-string object wordings (v1.24.1 audit, user request: nothing carrying the string
+    #     "water" survives): "water intoxication" (MONDO:0022007, 3 edges), "watery eyes"
+    #     (MONDO:0001793 excessive tearing, 1 edge), "blackwater fever" (MONDO:0005670, 2 edges)
+    #     and "Water-Electrolyte Imbalance" (UMLS:C0043065, 1 edge; the DISTINCT wording
+    #     "electrolyte imbalance" resolves to UMLS:C0342579 and is KEPT). Wording-level only:
+    #     these CURIEs are real diseases reachable through non-water synonyms ("excessive
+    #     tearing" -> MONDO:0001793 is kept), so a CURIE exclusion would over-reach.
+    #     "Waterhouse-Friderichsen syndrome" (MONDO:0006015, 12 FAERS rows) is deliberately KEPT:
+    #     a real named syndrome whose "Water" is an accidental substring, absent from the
+    #     1.24.1 graph, and not a water wording.
+    "WATER INTOXICATION",
+    "WATERY EYES",
+    "BLACKWATER FEVER",
+    "WATER-ELECTROLYTE IMBALANCE",
 )
 
 # CURIEs dropped from the OBJECT side during entity resolution via the object NodeEncoding's
@@ -992,8 +1032,39 @@ _OBJECT_EXCLUDE_REGEX: tuple[str, ...] = (r"^UMLS:C0812393$",)
 # SODIUM/TAZOBACTAM SODIUM, 1 GRAM/0.125 GRAMS (1.125 GRAMS) ADMINISTERED", which carried an
 # unbacked approved_for_condition edge in the v1.13.1 build). Exact-CURIE anchors: the
 # concepts share wording with their ingredient, so no class-wide wording filter can express
-# "drop this CURIE, keep that one".
-_SUBJECT_EXCLUDE_REGEX: tuple[str, ...] = (r"^UMLS:C1314429$", r"^UMLS:C0812740$")
+# "drop this CURIE, keep that one". Two more families from the v1.24.1 audit (user request):
+# the water-as-substance concepts -- FAERS excipient/solvent wordings ("water", "sterile
+# water", "purified water", "water for injection", "water, distilled", "water, mineral",
+# ...) resolve into this family and nothing else, so excluding every member leaves the wordings
+# UNRESOLVED and the rows drop (verified against the production 2026jul22 fullmap with
+# ``tablassert quick-map``: every substance wording resolves to a family CURIE only, and each
+# member is included because it is some wording's fall-through once the higher-PR members are
+# excluded -- UMLS:C1550678 "Water Specimen" for "water"/"WATER"/"Water", UMLS:C5981420
+# "Purified water (specimen)" for "purified water") -- and the GHB/GBL pair mis-resolving the
+# sodium oxybate subject family ("sodium oxybate" wordings resolve to CHEBI:30830 ONLY, so
+# those 14 of 17 v1.24.1 edges drop, while "4-HYDROXYBUTANOIC ACID" falls through to
+# UMLS:C0673093 (4-hydroxybutyric acid, biolink:Drug) and its 3 edges survive under the correct
+# identifier; CHEBI:42639 gamma-Butyrolactone shares the same wording channel and never wins
+# ranking today). NOT excluded: UMLS:C0012798 "Diuretics" (a real drug-class CURIE whose
+# "WATER PILL"/"WATER PILLS" wording is denied at load instead), UMLS:C0719841 "Dextrose and
+# Water" and the seawater concepts (UMLS:C0036499/C0939938/C1161329) -- reached by wordings
+# that resolve to real products, absent from the 1.24.1 graph.
+_SUBJECT_EXCLUDE_REGEX: tuple[str, ...] = (
+    r"^UMLS:C1314429$",
+    r"^UMLS:C0812740$",
+    # water-as-substance family (74 v1.24.1 subject edges across the family)
+    r"^CHEBI:15377$",
+    r"^UMLS:C0359299$",
+    r"^UMLS:C0790233$",
+    r"^UMLS:C0991883$",
+    r"^UMLS:C1163679$",
+    r"^UMLS:C5981420$",
+    r"^UMLS:C1550678$",
+    r"^MESH:D008900$",
+    # GHB/GBL identifiers mis-resolving sodium oxybate (17 v1.24.1 subject edges)
+    r"^CHEBI:30830$",
+    r"^CHEBI:42639$",
+)
 
 # Deliberately KEPT — the outcome/exposure relatives that name REAL conditions: "sensory loss"
 # (the real phenotype NCIT:C182234 wrongly also carries the procedure wording "anaesthesia"; its
