@@ -5,7 +5,7 @@ CARRY the ``source.reindex`` ``ne`` filters; this test runs a real build so a Ta
 change to ``reindex``/``idxname`` semantics fails loudly here instead of silently shipping
 denied rows to the KG.
 
-Seven FAERS observed-use rows go in, exactly three edges come out:
+Ten FAERS observed-use rows go in, exactly four edges come out:
 
 1. ``Advil`` / ``headache`` SURVIVES — both terms resolve (CHEBI:5855 / HP:0002315).
 2. ``Ibuprofen`` / ``hypersensitivity`` is DROPPED by the object denylist's allergy/hypersensitivity
@@ -26,6 +26,14 @@ Seven FAERS observed-use rows go in, exactly three edges come out:
    both the real depressive disorder and the junk phrase concept UMLS:C0812393 ("Cancer patients
    and suicide and depression"), and the object ``exclude_regex`` must drop the junk CURIE while
    the real disease's edge survives (without it, tied-CURIE retention emits the junk edge too).
+8. ``Soap`` / ``headache`` is DROPPED by the ICD-10-CM subject screen (generated, not hand-listed:
+   ``icd10cm_denylist.SUBJECT_DENYLIST``), and exercises the TITLE rendering of a screened name.
+9. ``HEROIN`` / ``headache`` is DROPPED by the same screen, exercising the UPPERCASE rendering that
+   dominates FAERS reporter text.
+10. ``Lithium`` / ``bipolar disorder`` SURVIVES — the Table indexes lithium as a poison with no
+    Adverse-effect code, but DAKP's label corpus names it as a medicine, so the label-backed
+    exemption must keep it assertable. This is the screen's negative control: a denylist that
+    over-matches would silently delete real treatment knowledge.
 
 The fullmap intentionally makes every denied row resolvable; without the denylist filters the
 build would emit seven edges, and each assertion below fails.
@@ -77,6 +85,13 @@ def test_denylisted_rows_are_dropped_at_load_time(tmp_path: Path, monkeypatch: p
         "MONDO:0005044",
         "MONDO:0002050",
         "UMLS:C0812393",
+        # Synthetic-only ids for the ICD-screen rows: they exist so the new subjects and the lithium
+        # object RESOLVE in this throwaway fullmap, which is what makes each drop attributable to a
+        # filter rather than to a resolution miss. They assert no ontology fact.
+        "CHEBI:90001",
+        "CHEBI:90002",
+        "CHEBI:90003",
+        "MONDO:0004984",
     )
     classes.write_text("\n".join(json.dumps(_class(curie)) for curie in curies) + "\n")
     synonyms.write_text(
@@ -96,6 +111,11 @@ def test_denylisted_rows_are_dropped_at_load_time(tmp_path: Path, monkeypatch: p
                 # the object exclude_regex must eliminate.
                 _synonym("MONDO:0002050", "depressive disorder", ["depression"], "Disease"),
                 _synonym("UMLS:C0812393", "Cancer patients and suicide and depression", ["depression"], "Disease"),
+                # ICD-screened subjects, resolvable on purpose (rows 8-10 above).
+                _synonym("CHEBI:90001", "soap", ["Soap", "SOAP"], "ChemicalEntity"),
+                _synonym("CHEBI:90002", "heroin", ["HEROIN", "Heroin"], "ChemicalEntity"),
+                _synonym("CHEBI:90003", "lithium", ["Lithium", "LITHIUM"], "ChemicalEntity"),
+                _synonym("MONDO:0004984", "bipolar disorder", ["bipolar disorder"], "Disease"),
             )
         )
         + "\n"
@@ -112,6 +132,9 @@ def test_denylisted_rows_are_dropped_at_load_time(tmp_path: Path, monkeypatch: p
         ("Advil", "disease progression", "6", "41|42|43|44|45|46"),
         ("Advil", "high blood pressure", "4", "51|52|53|54"),
         ("Advil", "depression", "5", "61|62|63|64|65"),
+        ("Soap", "headache", "2", "71|72"),
+        ("HEROIN", "headache", "1", "81"),
+        ("Lithium", "bipolar disorder", "7", "91|92|93|94|95|96|97"),
     ):
         row = dict.fromkeys(schemas.FAERS_APPLIED_TO_TREAT_COLUMNS, "")
         row.update(
@@ -145,12 +168,17 @@ def test_denylisted_rows_are_dropped_at_load_time(tmp_path: Path, monkeypatch: p
     edges_path = tmp_path / "kgx" / f"{dakp_tablassert.GRAPH_NAME}_{version}.edges.ndjson"
     edges = [json.loads(line) for line in edges_path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
-    # FOUR denied rows never arrive; the three undenied rows do. Every denied row resolved fine
+    # SIX denied rows never arrive; the four undenied rows do. Every denied row resolved fine
     # against the fullmap, so a Tablassert reindex regression (or an over-matching one) shows up
     # as extra or missing edges here.
-    assert len(edges) == 3
+    assert len(edges) == 4
     by_object = {edge["object"]: edge for edge in edges}
-    assert set(by_object) == {"HP:0002315", "MONDO:0005044", "MONDO:0002050"}
+    assert set(by_object) == {"HP:0002315", "MONDO:0005044", "MONDO:0002050", "MONDO:0004984"}
+    # The ICD screen denied both poison spellings while the label-backed lithium row survived:
+    # exactly one subject resolves to the synthetic soap/heroin concepts, and none to lithium's
+    # survivor would appear twice, so the counts below pin the screen in both directions.
+    assert {edge["subject"] for edge in edges} == {"CHEBI:5855", "CHEBI:90003"}
+    assert not {edge["subject"] for edge in edges} & {"CHEBI:90001", "CHEBI:90002"}
     assert "UMLS:C0812393" not in by_object  # the junk tied CURIE is excluded, never emitted
     edge = by_object["HP:0002315"]
     assert (edge["subject"], edge["predicate"]) == ("CHEBI:5855", "biolink:applied_to_treat")
@@ -165,3 +193,7 @@ def test_denylisted_rows_are_dropped_at_load_time(tmp_path: Path, monkeypatch: p
     depression = by_object["MONDO:0002050"]
     assert depression["original_object"] == "depression"
     assert int(depression["number_of_cases"]) == 5
+    # The label-backed exemption survivor: screened by the release, kept by the corpus evidence.
+    lithium = by_object["MONDO:0004984"]
+    assert lithium["original_subject"] == "Lithium"
+    assert int(lithium["number_of_cases"]) == 7

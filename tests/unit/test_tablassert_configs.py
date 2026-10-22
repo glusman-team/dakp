@@ -32,6 +32,7 @@ from dakp_pipeline.io import schemas
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
+from dakp_pipeline.sources import icd10cm as icd10cm_source
 from dakp_pipeline.tablassert import (
     OBJECT_PRIORITIZE,
     SUBJECT_PRIORITIZE,
@@ -102,6 +103,10 @@ EXPECTED_SOURCES = {
         # the dataset URL lives on the section source.url + the RIG, and per-report record ids
         # stay in the TSV's supporting_faers_records debug column.
         {"resource_id": "infores:canada-vigilance", "resource_role": "supporting_data_source"},
+        # The ICD-10-CM supporting entry carries NO source_record_urls and NO upstreams: the subject
+        # screen contributes no assertion text, so it is neither DAKP's upstream nor a per-edge
+        # record pointer. It records that every released observed-use edge passed the screen.
+        {"resource_id": "infores:icd10cm", "resource_role": "supporting_data_source"},
     ],
     "contraindication_assertions": [
         {
@@ -213,7 +218,11 @@ EXPECTED_SOURCE_URLS = {
         EMA_MEDICINES_XLSX_URL,
         EMA_EPAR_DOCUMENTS_JSON_URL,
     ],
-    "faers_applied_to_treat_assertions": ["https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html", CANADA_VIGILANCE_EXTRACTS_URL],
+    "faers_applied_to_treat_assertions": [
+        "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html",
+        CANADA_VIGILANCE_EXTRACTS_URL,
+        icd10cm_source.ICD10CM_DRUG_TABLE_ZIP_URL,
+    ],
     "contraindication_assertions": ["https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm", EMA_EPAR_DOCUMENTS_JSON_URL],
 }
 
@@ -738,51 +747,41 @@ def test_off_label_subject_denylist_reindex() -> None:
     # "METHYL ALCHOL") must never become applied_to_treat edges — the chemical is the exposure,
     # not a treatment. "GENERIC DRUG"/"GENERIC DRUGS" are FAERS verbatim placeholders naming no
     # real substance, and "PLACEBO" is the control arm, which by definition treats nothing.
-    # Emitted as ANDed ``source.reindex`` ``ne`` filters on the subject_text column (A) so
-    # Tablassert drops the rows at load time, before entity resolution. Tablassert's ``ne`` is an
-    # exact case-SENSITIVE compare, so every entry ships one filter per casing rendering (upper /
-    # lower / title / sentence, deduplicated) — the denylist is case-insensitive in effect. Also
-    # exercises the Reindex model through Section validation (comparator must be a str for ne).
+    # Emitted as ONE ``source.reindex`` ``antijoin`` membership filter on the subject_text column
+    # (A) so Tablassert drops the rows at load time, before entity resolution: a polars anti hash
+    # join against the whole deny set (Tablassert >= 22.2.0), where the old one-``ne``-per-casing
+    # shape measured 13.9 s on a 1.7M-row column. Both compare RAW cell values, so the comparator
+    # list still ships every casing rendering (upper / lower / title / sentence, deduplicated).
+    # Also exercises the Reindex model through Section validation (an antijoin comparator must be
+    # a list of identifiers).
     from tablassert.models import Section
 
     table = "faers_applied_to_treat_assertions"
     section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(table))["template"])
-    filters = [(entry.column, str(entry.comparison), str(entry.comparator)) for entry in section.source.reindex or [] if entry.column == "A"]
     # No stray columns: the FAERS table filters exactly subject (A) and object (F).
     assert {entry.column for entry in section.source.reindex or []} == {"A", "F"}
-    expected = [
-        "METHYL ALCHOL",
-        "methyl alchol",
-        "Methyl Alchol",
-        "Methyl alchol",
-        "METHANOL",
-        "methanol",
-        "Methanol",  # single word: title == sentence case, deduplicated to one filter
-        "GENERIC DRUG",
-        "generic drug",
-        "Generic Drug",
-        "Generic drug",
-        "GENERIC DRUGS",
-        "generic drugs",
-        "Generic Drugs",
-        "Generic drugs",
-        "PLACEBO",
-        "placebo",
-        "Placebo",
-        "*PLACEBO",
-        "*placebo",  # leading '*': capitalize == lower (first char is the '*'), so lower dedups it
-        "*Placebo",
-    ]
-    assert filters == [("A", "ne", comparator) for comparator in expected]
-
-    # Every denylisted name is covered in all four renderings a FAERS reporter may have typed:
-    # casefolded, the emitted comparators are exactly the denylist (no entry left case-sensitive).
-    subject_filters = [comparator for _column, _comparison, comparator in filters]
+    (a_filter,) = [entry for entry in section.source.reindex or [] if entry.column == "A"]
+    assert str(a_filter.comparison) == "antijoin"
+    assert isinstance(a_filter.comparator, list)
+    comparators = list(a_filter.comparator)
     denylisted = tablassert_configs._TABLE_SUBJECT_DENYLIST[table]
-    assert {comparator.casefold() for comparator in subject_filters} == {name.casefold() for name in denylisted}
-    for name in denylisted:
-        renderings = {comparator for comparator in subject_filters if comparator.casefold() == name.casefold()}
-        assert renderings == {name.upper(), name.lower(), name.title(), name.capitalize()}
+
+    # The hand-written names lead the comparator list in denylist order, each expanded into its
+    # casing renderings: four for a multi-word name, three when title and sentence case coincide,
+    # and the leading-'*' entry dedups capitalize into lower (the first character is not a letter).
+    junk = ("METHYL ALCHOL", "METHANOL", "GENERIC DRUG", "GENERIC DRUGS", "PLACEBO", "*PLACEBO")
+    head = [variant for name in junk for variant in tablassert_configs._casing_variants(name)]
+    assert comparators[: len(head)] == head
+    assert list(denylisted[: len(junk)]) == list(junk)
+
+    # The comparator list is exactly the denylist's casings, in order and without repeats:
+    # casefolded it covers every entry (no name left case-sensitive), and a repeated key would
+    # hash the same row twice for nothing. The ICD-10-CM snapshot ships two spellings per
+    # substance whose renderings mostly coincide, so the dedup keeps the list near 2,500 rather
+    # than 5,000 entries.
+    assert comparators == list(dict.fromkeys(variant for name in denylisted for variant in tablassert_configs._casing_variants(name)))
+    assert {comparator.casefold() for comparator in comparators} == {name.casefold() for name in denylisted}
+    assert len(comparators) == len(set(comparators))
 
     # The subject denylist is off-label-only: the on-label and contraindication tables carry no
     # subject_text filters (the object denylist below covers their object_text column instead).
@@ -791,6 +790,71 @@ def test_off_label_subject_denylist_reindex() -> None:
             continue
         other_section = Section.model_validate(yaml.safe_load(tablassert_configs.table_yaml(other))["template"])
         assert all(entry.column != "A" for entry in other_section.source.reindex or [])
+
+
+def test_icd10cm_non_therapeutic_screen_ships_as_config() -> None:
+    """The ICD-10-CM poison screen is generated table config, and its exemption keeps medicines.
+
+    Three claims, each load-bearing for the QC: the generated snapshot drives the emitted subject
+    filters; known poisons are denied while label-backed substances stay assertable; and the release
+    is declared as provenance wherever the Translator contract reads provenance (section sources,
+    source URLs, RIG supporting source). The screen must never enter shaping - see
+    ``tests/integration/test_denylist_reindex.py`` for the load-time behaviour and
+    ``assertions/evidence.py`` for the pinned shape implementation version.
+    """
+    from dakp_pipeline import icd10cm_denylist
+
+    table = "faers_applied_to_treat_assertions"
+    denylisted = {name.casefold() for name in tablassert_configs._TABLE_SUBJECT_DENYLIST[table]}
+    screened = {name.casefold() for name in icd10cm_denylist.SUBJECT_DENYLIST}
+    assert screened <= denylisted
+    assert len(icd10cm_denylist.SCREENED_SUBJECTS) > 700  # a whole release, not a hand-picked list
+    assert icd10cm_denylist.ICD10CM_SOURCE_URL == icd10cm_source.ICD10CM_DRUG_TABLE_ZIP_URL
+    assert tablassert_configs._TABLE_SOURCE_URLS[table][-1] == icd10cm_denylist.ICD10CM_SOURCE_URL
+    assert icd10cm_denylist.ICD10CM_SOURCE_BLAKE3.startswith("b3:")
+    assert {tier for _key, tier, _title in icd10cm_denylist.SCREENED_SUBJECTS} == {"toxic_effect", "no_accepted_medical_use"}
+
+    # Known poisons the release screens with no Adverse-effect code: denied in every casing.
+    for poison in ("soap", "heroin", "ethanol", "isopropanol", "psilocybin", "lysergide", "chlorothalonil", "paraquat"):
+        assert poison in screened, poison
+        assert poison in denylisted, poison
+    # Both spellings ship per substance: the folded key catches case-only reporter variants, the
+    # published spelling catches punctuation the normalizer folds ("2 propanol" against "2-Propanol").
+    assert {name for name in icd10cm_denylist.SUBJECT_DENYLIST if name.casefold() == "paraquat"} == {"paraquat", "Paraquat"}
+
+    # Label-backed exemption: the Table indexes these as poisons too, and DAKP's own corpora name
+    # them as medicines, so they must stay assertable (dropping them would delete real treatment
+    # knowledge over a coding-table artifact). Each is recorded in LABEL_BACKED_EXCEPTIONS with its
+    # evidence, so the exemption is auditable rather than silent.
+    exempt = {name.casefold() for name, _evidence in icd10cm_denylist.LABEL_BACKED_EXCEPTIONS}
+    for medicine in (
+        "lithium",
+        "zinc",
+        "nicotine",
+        "permethrin",
+        "hydroquinone",
+        "arsenic",
+        "alcohol",
+        "paraffin",
+        "chromium",
+        "phosphorus",
+        "dihydromorphine",
+        "tilidine",
+    ):
+        assert medicine in exempt, medicine
+        assert medicine not in screened, medicine
+        assert medicine not in denylisted, medicine
+
+    # Provenance: exactly one ICD-10-CM entry on the table it screens, declared as a supporting
+    # source with no upstreams (DAKP retrieved no knowledge FROM it) and no record URL.
+    entries = [entry for entry in tablassert_configs._TABLE_SOURCES[table] if entry[0] == "infores:icd10cm"]
+    assert len(entries) == 1
+    assert entries[0] == ("infores:icd10cm", "supporting_data_source", (), ())
+    for other in TABLES:
+        if other == table:
+            continue
+        assert all(entry[0] != "infores:icd10cm" for entry in tablassert_configs._TABLE_SOURCES[other])
+    assert "infores:icd10cm" in [entry["infores_id"] for entry in tablassert_configs.graph_config()["rig"]["supporting_data_source_info"]]
 
 
 def test_object_denylist_reindex() -> None:
@@ -1014,10 +1078,18 @@ def test_graph_config_structure() -> None:
     assert rig["source_info"]["data_versioning_and_releases"]
     assert rig["source_info"]["terms_of_use_info"]
     assert all("https://" in location for location in rig["source_info"]["data_access_locations"])
-    # Supporting data sources: exactly the two edge-backed upstreams (no infores:medi — this
-    # rebuild text-mines contraindications from DailyMed SPL; no Drugs@FDA — it backs no edge).
+    # Supporting data sources: the edge-backed upstreams (no infores:medi — this rebuild text-mines
+    # contraindications from DailyMed SPL; no Drugs@FDA — it backs no edge) plus the ICD-10-CM
+    # subject screen, which is edge-backed in the set-defining sense: no observed-use edge survives
+    # the table config that does not first pass it.
     supporting = rig["supporting_data_source_info"]
-    assert [entry["infores_id"] for entry in supporting] == ["infores:dailymed", "infores:faers", "infores:ema", "infores:canada-vigilance"]
+    assert [entry["infores_id"] for entry in supporting] == [
+        "infores:dailymed",
+        "infores:faers",
+        "infores:ema",
+        "infores:canada-vigilance",
+        "infores:icd10cm",
+    ]
     # Each entry's file location is the URL constant the acquisition layer actually downloads.
     assert supporting[0]["relevant_files"][0]["location"] == tablassert_configs.dailymed_source.FULL_RELEASE_INDEX_URL
     assert supporting[1]["relevant_files"][0]["location"] == tablassert_configs.faers_source.FDA_FAERS_INDEX_URL
@@ -1071,6 +1143,7 @@ def test_rig_section_validates_directly_against_tablassert_rig_config() -> None:
         "infores:faers",
         "infores:ema",
         "infores:canada-vigilance",
+        "infores:icd10cm",
     ]
     assert source.name == "Drug Approvals Knowledge Provider (DAKP)"
     assert source.citations is not None
@@ -1116,18 +1189,21 @@ def test_tablassert_rig_config_rejects_unknown_keys_and_bad_source_status() -> N
 
 
 def test_rig_supporting_data_source_info_lists_only_edge_backed_upstreams() -> None:
-    """``supporting_data_source_info`` carries exactly the two edge-backed upstreams — never MEDI.
+    """``supporting_data_source_info`` carries the edge-backed upstreams — never MEDI or Drugs@FDA.
 
     The legacy pipeline's translator-ingests RIG also listed ``infores:medi``, but this rebuild
     has no MEDI source module (contraindications are text-mined from DailyMed SPL), so a MEDI
     entry would be fabricated provenance while a dropped entry would under-attribute the edges.
-    Pinning the exact id set through BOTH the raw config and the installed ``Graph`` model (i.e.
-    the committed YAML shape) makes either drift fail loudly.
+    ``infores:icd10cm`` is listed although it contributes no assertion text, because it decides
+    which observed-use subjects may be asserted at all; see
+    ``test_icd10cm_non_therapeutic_screen_ships_as_config``. Pinning the exact id set through BOTH
+    the raw config and the installed ``Graph`` model (i.e. the committed YAML shape) makes either
+    drift fail loudly.
     """
     from tablassert.models import Graph
 
     ids = [entry["infores_id"] for entry in tablassert_configs.graph_config()["rig"]["supporting_data_source_info"]]
-    assert ids == ["infores:dailymed", "infores:faers", "infores:ema", "infores:canada-vigilance"]
+    assert ids == ["infores:dailymed", "infores:faers", "infores:ema", "infores:canada-vigilance", "infores:icd10cm"]
     assert "infores:medi" not in ids  # legacy-pipeline source; no MEDI module backs it in this rebuild
 
     graph = Graph.model_validate(yaml.safe_load(tablassert_configs.graph_yaml()))
@@ -1156,6 +1232,8 @@ def test_rig_ingest_info_enrichment() -> None:
     assert ingest["utility"]
     assert ingest["scope"]
     assert all(not entry["file_name"].startswith("drug_approvals_kg") for entry in ingest["relevant_files"])
+    # The ICD-10-CM release is a relevant file: the table config's subject filters come from it.
+    assert any("ICD-10-CM" in entry["file_name"] for entry in ingest["relevant_files"])
     # Included content keeps the DailyMed entry (all FOUR mined section kinds), the FAERS
     # entry, the EMA medicines entry, and one entry per remaining edge-backed upstream.
     included = ingest["included_content"]
@@ -1179,7 +1257,16 @@ def test_rig_ingest_info_enrichment() -> None:
     # text-mined contraindications are not approval-gated), and only the four mined section
     # kinds survive the section filter.
     filtered = ingest["filtered_content"]
-    assert [entry["file_name"] for entry in filtered] == ["DailyMed SPL indication sections", "DailyMed SPL sections"]
+    assert [entry["file_name"] for entry in filtered] == [
+        "DailyMed SPL indication sections",
+        "DailyMed SPL sections",
+        "FAERS and Canada Vigilance observed-use subjects",
+    ]
+    # The third filter is the ICD-10-CM subject screen: name the tier rule and the exemption, so a
+    # silent narrowing of the screen (or of its label-backed exemption) fails here.
+    assert "Adverse-effect code" in filtered[2]["filtered_records"]
+    assert "extract/icd10cm" in filtered[2]["filtered_records"]
+    assert "biolink:applied_to_treat" in filtered[2]["rationale"]
     assert filtered[0]["filtered_records"] == "indication sections on SPL sets whose NDA lacks a DailyMed SPL approval"
     assert filtered[0]["rationale"] == (
         "approved-treats assertions require an FDA approval backing the indication; observed-use and "
@@ -1209,7 +1296,11 @@ def test_rig_ingest_info_enrichment() -> None:
         "Canada Vigilance data extract (zip)",
     ]
     assert info.filtered_content is not None
-    assert [entry.file_name for entry in info.filtered_content] == ["DailyMed SPL indication sections", "DailyMed SPL sections"]
+    assert [entry.file_name for entry in info.filtered_content] == [
+        "DailyMed SPL indication sections",
+        "DailyMed SPL sections",
+        "FAERS and Canada Vigilance observed-use subjects",
+    ]
     assert info.future_considerations is not None
     assert info.future_considerations[0].category == "edge_content"
 
