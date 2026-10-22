@@ -76,6 +76,30 @@ rig:
           description: >-
             Monthly full extract of the Canada Vigilance Adverse Reaction Online
             Database; suspect drug-indication pairs
+    - infores_id: "infores:icd10cm"
+      name: "ICD-10-CM Table of Drugs and Chemicals"
+      description: >-
+        CDC/NCHS's indexing reference for drugs, chemicals and noxious
+        substances, coding each substance by poisoning, adverse-effect and
+        underdosing code. DAKP uses its Adverse-effect column as the
+        non-therapeutic subject screen for observed-use edges: an entry with
+        no Adverse-effect code asserts no use under proper administration (FY
+        Official Guidelines section I.C.19.e), so a subject matching one is
+        dropped from the applied-to-treat table unless DAKP's own label corpus
+        already names it as a medicine. It contributes no assertion text;
+        every released observed-use edge is a claim that survived this screen.
+      terms_of_use_info:
+        terms_of_use_url: "https://www.cdc.gov/nchs/icd/icd10cm.htm"
+        terms_of_use_description: >-
+          ICD-10-CM classifications and indexing files are published by a U.S.
+          federal agency and are not subject to copyright; NCHS asks that the
+          source be acknowledged.
+      relevant_files:
+        - file_name: "ICD-10-CM Table of Drugs and Chemicals (FY2027)"
+          location: "https://ftp.cdc.gov/pub/Health_Statistics/NCHS/Publications/ICD10CM/2027/icd10cm-table-and-index-2027.zip"
+          description: >-
+            Release archive whose icd10cm-drug XML carries each substance's
+            poisoning / adverse-effect codes
   source_info:
     infores_id: "infores:drugapprovals-kp"
     name: "Drug Approvals Knowledge Provider (DAKP)"
@@ -104,6 +128,7 @@ rig:
       - "Drugs@FDA data files - https://www.fda.gov/media/89850/download"
       - "EMA medicines report - https://www.ema.europa.eu/en/documents/report/medicines-output-medicines-report_en.xlsx"
       - "EMA EPAR documents report - https://www.ema.europa.eu/en/documents/report/documents-output-epar_documents_json-report_en.json"
+      - "ICD-10-CM Table of Drugs and Chemicals - https://ftp.cdc.gov/pub/Health_Statistics/NCHS/Publications/ICD10CM/2027/icd10cm-table-and-index-2027.zip"
     data_provision_mechanisms:
       - file_download
     data_formats:
@@ -115,9 +140,12 @@ rig:
       FAERS quarterly ASCII extracts, DailyMed SPL releases, and the
       nightly-regenerated EMA medicines export. DailyMed, Drugs@FDA, and EMA
       re-downloads are freshness-gated to a 7-day cache window; FAERS
-      downloads are content-addressed and cache-first, with no age gate.
-      Each version's generated KGX pair and RIG are published to the Hugging
-      Face dataset SkyeAv/drug-approvals-kp under a per-version directory
+      downloads are content-addressed and cache-first, with no age gate. The
+      ICD-10-CM Table of Drugs and Chemicals release is pinned by fiscal
+      year in its URL, so a cached copy is canonical and only a new release
+      (a bumped URL constant) re-acquires it. Each version's generated KGX
+      pair and RIG are published to the Hugging Face dataset
+      SkyeAv/drug-approvals-kp under a per-version directory
       (<version>/DRUG_APPROVALS_KP_<version>.{nodes,edges}.ndjson), and
       every earlier version remains available there.
     source_status: maintained_regular_updates
@@ -162,6 +190,11 @@ rig:
         description: >-
           EMA EPAR documents bulk export; manifests the SmPC product-information
           PDFs mined for contraindication edges.
+      - file_name: "ICD-10-CM Table of Drugs and Chemicals (FY2027)"
+        location: "https://ftp.cdc.gov/pub/Health_Statistics/NCHS/Publications/ICD10CM/2027/icd10cm-table-and-index-2027.zip"
+        description: >-
+          CDC/NCHS release archive; its drug-table XML screens the observed-use
+          subjects DAKP is willing to assert.
     included_content:
       - file_name: "DailyMed SPL sections"
         included_records: >-
@@ -212,6 +245,22 @@ rig:
           warnings/precautions (LOINC 43685-7, legacy 34071-1/42232-9)
         rationale: >-
           the remaining sections carry no treatment or contraindication evidence
+      - file_name: "FAERS and Canada Vigilance observed-use subjects"
+        filtered_records: >-
+          rows whose subject name matches an ICD-10-CM Table of Drugs and
+          Chemicals (FY2027) entry with no Adverse-effect code, in the T51-T65
+          toxic-effect range or the T36-T50 drug range (extract/icd10cm tiers
+          toxic_effect / no_accepted_medical_use), unless the same name occurs
+          inside a DAKP approved-treats subject or a Drugs@FDA active-ingredient
+          name
+        rationale: >-
+          the empty Adverse-effect column is the coding authority's assertion
+          that the substance has no use under proper administration, so it must
+          not carry a biolink:applied_to_treat claim; the label-backed exemption
+          keeps substances whose poison and medicine identities coexist
+          (lithium, zinc, alcohol, permethrin), and only observed-use rows are
+          screened because approved-treats and contraindication subjects are
+          label ingredients by construction
     future_considerations:
       - category: edge_content
         consideration: >-

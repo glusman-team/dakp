@@ -78,6 +78,9 @@ INFORES_EMA = "infores:ema"
 INFORES_EPAR = "infores:epar"
 INFORES_FAERS = "infores:faers"
 INFORES_CANADA_VIGILANCE = "infores:canada-vigilance"
+#: CDC/NCHS ICD-10-CM Table of Drugs and Chemicals: the non-therapeutic subject screen that gates
+#: which observed-use edges exist at all (a supporting source, never an upstream of a claim).
+INFORES_ICD10CM = "infores:icd10cm"
 
 BIOLINK_PREFIX = "biolink:"
 
@@ -694,6 +697,7 @@ __all__ = [
     "INFORES_EMA",
     "INFORES_EPAR",
     "INFORES_FAERS",
+    "INFORES_ICD10CM",
     "INVALID_NODE_CATEGORY",
     "INVALID_PREDICATE",
     "INVALID_SUPPORTING_STUDIES",
