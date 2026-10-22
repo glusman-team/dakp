@@ -610,6 +610,81 @@ template:
       - column: F
         comparison: ne
         comparator: Crying
+      - column: F
+        comparison: ne
+        comparator: EYE
+      - column: F
+        comparison: ne
+        comparator: eye
+      - column: F
+        comparison: ne
+        comparator: Eye
+      - column: F
+        comparison: ne
+        comparator: EYES
+      - column: F
+        comparison: ne
+        comparator: eyes
+      - column: F
+        comparison: ne
+        comparator: Eyes
+      - column: F
+        comparison: ne
+        comparator: CLEAR
+      - column: F
+        comparison: ne
+        comparator: clear
+      - column: F
+        comparison: ne
+        comparator: Clear
+      - column: F
+        comparison: ne
+        comparator: "WATER INTOXICATION"
+      - column: F
+        comparison: ne
+        comparator: "water intoxication"
+      - column: F
+        comparison: ne
+        comparator: "Water Intoxication"
+      - column: F
+        comparison: ne
+        comparator: "Water intoxication"
+      - column: F
+        comparison: ne
+        comparator: "WATERY EYES"
+      - column: F
+        comparison: ne
+        comparator: "watery eyes"
+      - column: F
+        comparison: ne
+        comparator: "Watery Eyes"
+      - column: F
+        comparison: ne
+        comparator: "Watery eyes"
+      - column: F
+        comparison: ne
+        comparator: "BLACKWATER FEVER"
+      - column: F
+        comparison: ne
+        comparator: "blackwater fever"
+      - column: F
+        comparison: ne
+        comparator: "Blackwater Fever"
+      - column: F
+        comparison: ne
+        comparator: "Blackwater fever"
+      - column: F
+        comparison: ne
+        comparator: "WATER-ELECTROLYTE IMBALANCE"
+      - column: F
+        comparison: ne
+        comparator: "water-electrolyte imbalance"
+      - column: F
+        comparison: ne
+        comparator: "Water-Electrolyte Imbalance"
+      - column: F
+        comparison: ne
+        comparator: "Water-electrolyte imbalance"
   statement:
     subject:
       method: column
@@ -779,6 +854,16 @@ template:
       exclude_regex:
         - "^UMLS:C1314429$"
         - "^UMLS:C0812740$"
+        - "^CHEBI:15377$"
+        - "^UMLS:C0359299$"
+        - "^UMLS:C0790233$"
+        - "^UMLS:C0991883$"
+        - "^UMLS:C1163679$"
+        - "^UMLS:C5981420$"
+        - "^UMLS:C1550678$"
+        - "^MESH:D008900$"
+        - "^CHEBI:30830$"
+        - "^CHEBI:42639$"
     predicate: contraindicated_in
     object:
       method: column
