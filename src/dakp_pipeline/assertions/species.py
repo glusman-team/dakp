@@ -11,9 +11,14 @@ Derivation, in order (pure; no I/O):
    are human by construction: ``("NCBITaxon:9606",)``. Species words on a human label
    ("studies in rats") are study context, never the organism the assertion occurred in,
    so they are ignored there.
-2. **Animal DailyMed labels** (document type ``50578-4`` / ``50577-6``; see
-   :data:`dakp_pipeline.extract.spl_xml.ANIMAL_LABEL_TYPE_CODES`) carry no structured
-   species element, so species comes from the text:
+2. **Animal DailyMed labels** -- document type ``50578-4`` / ``50577-6`` (see
+   :data:`dakp_pipeline.extract.spl_xml.ANIMAL_LABEL_TYPE_CODES`) OR any NADA/ANADA/CNADA
+   approval on the set (see
+   :data:`dakp_pipeline.assertions.evidence.ANIMAL_APPLICATION_PREFIXES`). Production
+   ``spl_documents`` carries no type code at all for animal-approval sets, and a new animal
+   drug may only be marketed under one of those three application types (21 U.S.C.
+   360b(a)), so the application prefix is an authoritative animal signal, not a heuristic.
+   Animal labels carry no structured species element, so species comes from the text:
 
    - the row's own evidence sentence, matched against :data:`SPECIES_LEXICON`; else
    - the label-wide species (the union over the label's mined section texts); else
@@ -193,8 +198,20 @@ def row_species(label_type: str | None, sentence: str | None, label_wide: frozen
     """
     if not is_animal_label_type(label_type or ""):
         return (HUMAN_TAXON,)
+    return animal_row_species(sentence, label_wide)
+
+
+def animal_row_species(sentence: str | None, label_wide: frozenset[str]) -> tuple[str, ...]:
+    """Species CURIEs for a row known to be on an ANIMAL source; ``()`` = unattributable.
+
+    The row's own evidence sentence first, then the label's mined sections; an animal row
+    naming no species anywhere stays empty so the caller drops it (counted loudly), never
+    defaulting an animal edge onto the human taxon. Shared by the document-type gate in
+    :func:`row_species` and the application-type gate in
+    :meth:`~dakp_pipeline.assertions.evidence.DailyMedEvidence.species_context_for`.
+    """
     in_sentence = species_in_text(sentence)
     return tuple(sorted(in_sentence or label_wide))
 
 
-__all__ = ["HUMAN_TAXON", "SPECIES_LEXICON", "label_species", "row_species", "species_in_text"]
+__all__ = ["HUMAN_TAXON", "SPECIES_LEXICON", "animal_row_species", "label_species", "row_species", "species_in_text"]

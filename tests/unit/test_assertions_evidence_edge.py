@@ -382,7 +382,7 @@ def test_fda_approval_index_expands_faers_numbers_from_drugsfda(tmp_path: Path) 
     assert index.expand("not a number") == []
 
 
-def test_fda_approval_index_prefers_drugsfda_over_dailymed_and_keeps_ambiguous_spl_prefixes(tmp_path: Path) -> None:
+def test_fda_approval_index_prefers_drugsfda_over_dailymed_and_collapses_ambiguous_spl_prefixes(tmp_path: Path) -> None:
     # DailyMed embeds the prefix in the approval id itself and the <code> element holds an NCI
     # code, never a prefix: concatenating the two produced "C73584ANDA089160".
     approvals = _parquet(
@@ -402,10 +402,74 @@ def test_fda_approval_index_prefers_drugsfda_over_dailymed_and_keeps_ambiguous_s
 
     assert index.expand("89160") == ["ANDA089160"]  # Drugs@FDA wins; never the NCI code
     # One number, two label prefixes and no Drugs@FDA entry: legacy emitted every prefix it saw
-    # (Biolink's own example is ranitidine's ANADA200536/ANDA200536), and so does this.
-    assert index.expand("12345") == ["ANDA012345", "NDA012345"]
+    # (Biolink's own example is ranitidine's ANADA200536/ANDA200536). An approvals cell now
+    # carries ONE form per number -- the lexical minimum when no animal-application form is
+    # involved (the per-edge animal choice is expand_for_edge's job, tested below).
+    assert index.expand("12345") == ["ANDA012345"]
     # An id with no prefix of its own falls back to the NCI code's application type.
     assert index.expand("22329") == ["NDA022329"]
+
+
+def test_fda_approval_index_expands_one_form_per_number_for_the_edges_animalness(tmp_path: Path) -> None:
+    # A normalized number can carry a human prefix on one label and an animal prefix on
+    # another (production, 2026-10-22: 65-470 reads ANDA065470 / NADA065470; 41 animal numbers
+    # also carry a human prefix somewhere). The cited form must match the EDGE's animal-ness,
+    # one form per number either way.
+    approvals = _parquet(
+        tmp_path,
+        "spl_approvals.parquet",
+        {
+            "approval_id": ["ANDA065470", "NADA065470", "ANDA200752", "ANADA200752", "NADA200123", "NDA018780", "BLA018780"],
+            "approval_code": ["ANDA065470", "NADA065470", "ANDA200752", "ANADA200752", "NADA200123", "NDA018780", "BLA018780"],
+            "approval_type": ["C73584", "C73584", "C73584", "C73584", "C73584", "C73594", "C73585"],
+            "spl_set_id": ["SET-H470", "SET-A470", "SET-H752", "SET-A752", "SET-A123", "SET-H780", "SET-H780B"],
+        },
+    )
+    index = build_fda_approval_index([approvals])
+
+    # No Drugs@FDA register here: the non-animal edge takes the human form, the animal edge
+    # the NADA/ANADA form the label asserts.
+    assert index.expand("065470") == ["ANDA065470"]
+    assert index.expand_for_edge("065470", animal_edge=True) == ["NADA065470"]
+    assert index.expand("200752") == ["ANDA200752"]
+    assert index.expand_for_edge("200752", animal_edge=True) == ["ANADA200752"]
+    # BLA sorts before NDA lexically; on the human edge the register-less lexical minimum wins.
+    assert index.expand("018780") == ["BLA018780"]
+    # A purely animal number contributes nothing on a non-animal edge (an approvals cell must
+    # never cite an application the edge was not approved under) and the animal form on one.
+    assert index.expand("200123") == []
+    assert index.expand_for_edge("200123", animal_edge=True) == ["NADA200123"]
+    # Sorted-unique across many values; per-edge context honored per number.
+    assert index.expand_all_for_edge(["065470", "200123"], animal_edge=True) == ["NADA065470", "NADA200123"]
+    assert index.expand_all(["065470", "200123", "018780"]) == ["ANDA065470", "BLA018780"]
+
+
+def test_fda_approval_index_register_wins_on_human_edges_and_the_animal_form_rides_animal_edges(tmp_path: Path) -> None:
+    # The register form is authoritative for a human edge even when an animal label spells the
+    # number with an animal prefix; the animal edge still gets to cite the animal form.
+    approvals = _parquet(
+        tmp_path,
+        "spl_approvals.parquet",
+        {"approval_id": ["NADA065470"], "approval_code": ["NADA065470"], "approval_type": ["C73584"], "spl_set_id": ["SET-A470"]},
+    )
+    products = _parquet(
+        tmp_path, "products.parquet", {"appl_no": ["065470"], "appl_no_raw": ["ANDA065470"], "appl_no_stripped": ["65470"], "appl_type": ["ANDA"]}
+    )
+    index = build_fda_approval_index([approvals, products])
+
+    assert index.register == {"65470": "ANDA065470"}  # join keys are zero-stripped norms
+    assert index.expand("065470") == ["ANDA065470"]  # register form, not the animal spelling
+    assert index.expand_for_edge("065470", animal_edge=True) == ["NADA065470"]
+
+
+def test_fda_approval_index_fallback_respects_the_edges_animalness() -> None:
+    # A number no register or label knows: kept only when the value is already a well-formed
+    # <type><number> form, and only in a context the prefix supports.
+    index = build_fda_approval_index([])
+    assert index.expand_for_edge("CNADA141550", animal_edge=True) == ["CNADA141550"]
+    assert index.expand_for_edge("CNADA141550", animal_edge=False) == []
+    assert index.expand("CNADA141550") == []
+    assert index.expand_for_edge("125514", animal_edge=True) == []  # bare: no prefix to cite
 
 
 def test_dailymed_display_never_concatenates_the_nci_application_code(tmp_path: Path) -> None:
@@ -485,6 +549,7 @@ def test_is_fda_application_number_gates_the_regulatory_approvals_slot() -> None
     assert is_fda_application_number("BLA125514")
     assert is_fda_application_number("ANADA200536")
     assert is_fda_application_number("NADA140993")
+    assert is_fda_application_number("CNADA141550")  # conditional new animal drug application
     assert is_fda_application_number("BA010228")  # legacy biologics form openFDA still resolves
     assert is_fda_application_number("  NDA017977  ")  # surrounding whitespace is not a defect
     assert not is_fda_application_number("nda017977")  # case-sensitive: every producer uppercases

@@ -7,6 +7,8 @@ outputs where a frame is needed.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import polars as pl
 
 from dakp_pipeline.assertions.evidence import (
@@ -153,6 +155,8 @@ def test_build_dailymed_evidence_empty_without_tables() -> None:
     assert ev.indication_support("12345") == ([], [])
     assert ev.label_types == {}
     assert ev.species_by_set == {}
+    assert ev.animal_application_sets == set()
+    assert not ev.is_animal_set("setid-anything")
 
 
 def test_dailymed_evidence_indexes_animal_label_types_and_label_wide_species(animal_dailymed_refs: list[ArtifactRef]) -> None:
@@ -160,6 +164,10 @@ def test_dailymed_evidence_indexes_animal_label_types_and_label_wide_species(ani
     ev = build_dailymed_evidence(animal_dailymed_refs)
 
     assert ev.label_types == {"setid-fleawash-001": "50578-4", "setid-itchaway-002": "50577-6", "setid-unspecies-003": "50578-4"}
+    # The fixture's approvals carry the NADA prefix (in the curated approval_type column, as
+    # the real SPL <code> would for a prefix-less id), so all three sets are animal by
+    # application too -- the two gates agree.
+    assert ev.animal_application_sets == {"setid-fleawash-001", "setid-itchaway-002", "setid-unspecies-003"}
     # FLEAWASH's mined indication names dogs and cats; ITCHAWAY's species live only in its
     # contraindication section; UNSPECIES names no species anywhere (empty = unattributable).
     assert ev.species_by_set == {
@@ -173,6 +181,65 @@ def test_human_dailymed_fixture_has_no_label_types(dailymed_refs: list[ArtifactR
     ev = build_dailymed_evidence(dailymed_refs)
     assert ev.label_types == {}
     assert ev.species_by_set == {}
+
+
+# --- Animal application approvals gate the species context ---------------------
+
+
+def _parquet_ref(root: Path, name: str, data: dict[str, list[object]]) -> ArtifactRef:
+    from dakp_pipeline.io.content_hash import hash_file
+
+    path = root / name
+    pl.DataFrame(data).write_parquet(path)
+    return ArtifactRef(uri=path, blake3=hash_file(path), media_type="application/octet-stream")
+
+
+def test_animal_application_approval_sets_are_animal_without_any_document_type_code(tmp_path: Path) -> None:
+    """The production gate: spl_documents carries NO type code for animal-approval sets.
+
+    A NADA approval with a HUMAN document code, and a CNADA approval with NO document row at
+    all, must both derive species from the text -- never the human default. An NDA-approval
+    set with no document code stays human.
+    """
+    approvals = _parquet_ref(
+        tmp_path,
+        "spl_approvals.parquet",
+        {
+            "approval_id": ["NADA141459", "CNADA141550", "NDA018780"],
+            "approval_code": ["NADA141459", "CNADA141550", "NDA018780"],
+            "approval_type": ["C73584", "C73584", "C73594"],
+            "spl_set_id": ["set-nada", "set-cnada", "set-nda"],
+        },
+    )
+    documents = _parquet_ref(
+        tmp_path,
+        "spl_documents.parquet",
+        {
+            "spl_set_id": ["set-nada", "set-nda"],
+            "document_id": ["set-nada#34067-9", "set-nda#34067-9"],
+            "loinc": ["34067-9", "34067-9"],
+            "text": ["for use in dogs", "for the relief of headache"],
+            "label_type": ["34391-4", ""],  # NADA set carries a HUMAN Rx code; CNADA set has no row at all
+        },
+    )
+    ev = build_dailymed_evidence([approvals, documents])
+
+    assert ev.animal_application_sets == {"set-nada", "set-cnada"}
+    assert ev.is_animal_set("set-nada")  # animal by application, even with a human type code
+    assert ev.is_animal_set("set-cnada")  # animal by application, with no document row at all
+    assert not ev.is_animal_set("set-nda")
+    assert not ev.is_animal_set("set-unknown")
+    # Species come from the text on application-animal sets: sentence first...
+    assert ev.species_context_for("set-nada", "for use in dogs and cats") == ("NCBITaxon:9615", "NCBITaxon:9685")
+    assert ev.species_context_for("set-cnada", "for cats") == ("NCBITaxon:9685",)
+    # ...and a row naming no species anywhere is unattributable (caller drops it), NOT human.
+    assert ev.species_context_for("set-nada", "controls fleas") == ()
+    assert ev.species_context_for("set-cnada", "controls ticks") == ()
+    # The human NDA set is human by construction even with no document type code.
+    assert ev.species_context_for("set-nda", "for use in dogs") == ("NCBITaxon:9606",)
+    # The label-wide fallback is computed for application-animal sets too (empty here: no
+    # section tables in this build, mirroring what a sections-less snapshot yields).
+    assert ev.species_by_set.keys() == {"set-nada", "set-cnada"}
 
 
 # --- Drugs@FDA NDA -> ingredient map --------------------------------------------

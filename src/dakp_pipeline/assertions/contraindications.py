@@ -582,9 +582,12 @@ def build_contraindication_rows(
     ``(subject_text, object_text, disease_context_text, species)``. Every DailyMed row carries
     the species the contraindication occurred in, derived per
     :mod:`~dakp_pipeline.assertions.species`: the row's evidence sentence first, the label's
-    mined sections as fallback, the human taxon for every human label, and an animal row naming
+    mined sections as fallback, the human taxon for every human label, and an animal row (an
+    animal document type OR a NADA/ANADA/CNADA approval on the set) naming
     no species anywhere is DROPPED (``dropped_unattributable_species``) rather than defaulted
-    to human. SmPC rows are human by construction. When ``devices`` is provided
+    to human. Approval citations are expanded per edge: an animal set cites the animal form of
+    a shared application number, a human set never cites an animal form. SmPC rows are human
+    by construction. When ``devices`` is provided
     (production multi-device), work items from ALL passes are dispatched through ONE run-scoped
     :class:`~dakp_pipeline.assertions.ner_dispatch.MiningPool` across those devices - every pass
     shares this backend profile, and a per-pass device split would pin the dominant warnings
@@ -725,7 +728,9 @@ def build_contraindication_rows(
                 source = _SOURCE_SMPC
             else:
                 ingredients = evidence.active_ingredients_by_set.get(set_id, [])
-                row_approvals = approvals.expand_all(evidence.approval_ids_for_sets([set_id]))
+                # Per-edge prefix choice: an animal set (document type or NADA/ANADA/CNADA
+                # approval) cites the animal form of a shared number, a human set never does.
+                row_approvals = approvals.expand_all_for_edge(evidence.approval_ids_for_sets([set_id]), animal_edge=evidence.is_animal_set(set_id))
                 source = _SOURCE_DAILYMED
             all_mentions = mined[index]
             mentions = object_mentions(all_mentions)

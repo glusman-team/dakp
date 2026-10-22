@@ -36,11 +36,11 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import polars as pl
 
-from dakp_pipeline.assertions.species import label_species
+from dakp_pipeline.assertions.species import animal_row_species, label_species
 from dakp_pipeline.assertions.species import row_species as species_row_species
 from dakp_pipeline.extract.spl_xml import is_animal_label_type
 from dakp_pipeline.io import schemas
@@ -130,11 +130,23 @@ def split_application_number(value: Any) -> tuple[str, str]:
 
 #: FDA application types that identify a DRUG application. Each is verified against the register
 #: or API that mints it: ``NDA`` / ``ANDA`` / ``BLA`` are the only ``ApplType`` values Drugs@FDA
-#: ships (22,994 / 5,898 / 485 rows in the 2026-10-02 file); ``NADA`` / ``ANADA`` are the Animal
-#: Drugs@FDA counterparts DailyMed writes on animal labels; ``BA`` is the biologics form Drugs@FDA
-#: does not carry but openFDA does resolve in ``openfda.application_number`` (``BA010228`` = ACD A,
-#: ``BA720562`` = LMD in Dextrose), which is where DailyMed picks it up.
-FDA_APPLICATION_TYPES = ("NDA", "ANDA", "ANADA", "BLA", "NADA", "BA")
+#: ships (22,994 / 5,898 / 485 rows in the 2026-10-02 file); ``NADA`` / ``ANADA`` / ``CNADA`` are
+#: the Animal Drugs@FDA counterparts DailyMed writes on animal labels (a CNADA is a conditional
+#: new animal drug application, 21 U.S.C. 360ccc; none in the 2026-10-02 DailyMed snapshot, but
+#: the prefix is how a conditional approval rides the slot when a label carries one); ``BA`` is
+#: the biologics form Drugs@FDA does not carry but openFDA does resolve in
+#: ``openfda.application_number`` (``BA010228`` = ACD A, ``BA720562`` = LMD in Dextrose), which
+#: is where DailyMed picks it up.
+FDA_APPLICATION_TYPES = ("NDA", "ANDA", "ANADA", "BLA", "NADA", "CNADA", "BA")
+#: Application-type prefixes that mark an ANIMAL drug application. 21 U.S.C. 360b(a): a new
+#: animal drug may only be marketed under an approved NADA, an ANADA, or a conditional approval
+#: (CNADA), so there is no human NADA/ANADA/CNADA application to loosen for -- the prefix is an
+#: authoritative animal signal, not a heuristic. DailyMed writes it into the SPL approval id
+#: itself (``ANADA200007``); a set bearing one is animal even when its document-level type code
+#: is missing or human, and the 2026-10-22 production probe found ``spl_documents`` carries no
+#: type code at all for ANY of the 1,245 animal-approval sets, so for those sets this prefix is
+#: the only animal signal there is.
+ANIMAL_APPLICATION_PREFIXES: Final = frozenset({"NADA", "ANADA", "CNADA"})
 #: FDA application numbers are six digits, zero-padded in the display form (``NDA005845``).
 FDA_APPLICATION_NUMBER_DIGITS = 6
 
@@ -206,43 +218,90 @@ class FDAApprovalIndex:
     """
 
     displays: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    #: norm -> the authoritative Drugs@FDA display form for the number, when the human register
+    #: knows it. Kept separately from :attr:`displays` (which accumulates every label spelling)
+    #: so an edge can cite the prefix its own context supports: a non-animal edge takes the
+    #: register form, an animal edge takes the NADA/ANADA/CNADA form its label asserts.
+    register: dict[str, str] = field(default_factory=dict)
 
     def expand(self, value: Any) -> list[str]:
-        """Return the FDA display forms for one raw application number.
+        """Return the FDA display form for one raw application number on a NON-ANIMAL edge.
 
-        Every returned form passes :func:`is_fda_application_number`; anything else contributes
-        nothing, so the caller's edge simply carries no approval for that number. Dropping the
-        VALUE does not drop the evidence: the edge keeps its ``number_of_cases`` count and its
-        FAERS quarter URLs, which ship as ``sources[].source_record_urls`` (the per-case
-        ``supporting_case_ids`` carrier is stripped before the NDJSON is written), where the legacy
-        pipeline dropped the whole edge. The fallback keeps a number no register knows only when the
-        value itself is already a well-formed ``<type><number>`` form (a curated source, or a
-        register snapshot that lags the label); it never resurrects a bare or malformed one.
+        Context-free alias for ``expand_for_edge(value, animal_edge=False)``: every caller
+        without edge context (FAERS and Canada Vigilance observed-use edges carry no SPL
+        support) is a non-animal edge, and a non-animal edge never cites an animal
+        application. Every returned form passes :func:`is_fda_application_number`; anything
+        else contributes nothing, so the caller's edge simply carries no approval for that
+        number. Dropping the VALUE does not drop the evidence: the edge keeps its
+        ``number_of_cases`` count and its FAERS quarter URLs, which ship as
+        ``sources[].source_record_urls`` (the per-case ``supporting_case_ids`` carrier is
+        stripped before the NDJSON is written), where the legacy pipeline dropped the whole
+        edge.
+        """
+        return self.expand_for_edge(value, animal_edge=False)
+
+    def expand_for_edge(self, value: Any, *, animal_edge: bool) -> list[str]:
+        """One FDA display form for one raw number, prefixed to match the edge's animal-ness.
+
+        A normalized number can carry several label spellings -- 65-470 reads ``ANDA065470``
+        on human labels and ``NADA065470`` on animal labels -- so the form an edge cites is
+        chosen per edge, and exactly ONE form per number is ever returned:
+
+        * an ANIMAL edge (a supporting SPL set is animal) takes the NADA/ANADA/CNADA-prefixed
+          form when the index knows one; otherwise the register form, else the only form;
+        * a non-animal edge takes the register form (authoritative), else the
+          lexical-minimum human-prefixed form; an animal-prefixed form is never cited on a
+          non-animal edge -- that edge was not approved under an animal application -- and a
+          purely animal number contributes nothing rather than tagalong behind a human one.
+
+        ``["ANADA200752", "ANDA200752"]`` can therefore never reach an approvals cell. The
+        fallback keeps a number no register knows only when the value itself is already a
+        well-formed ``<type><number>`` form (a curated source, or a register snapshot that
+        lags the label); it never resurrects a bare or malformed one, and on a non-animal
+        edge it drops an animal-prefixed fallback outright.
         """
         norm = normalize_nda(value)
         if not norm:
             return []
         known = [form for form in self.displays.get(norm, ()) if is_fda_application_number(form)]
         if known:
-            return known
+            if animal_edge:
+                animal = sorted(form for form in known if split_application_number(form)[0] in ANIMAL_APPLICATION_PREFIXES)
+                if animal:
+                    return [animal[0]]
+                return [self.register[norm]] if norm in self.register else [sorted(known)[0]]
+            human = sorted(form for form in known if split_application_number(form)[0] not in ANIMAL_APPLICATION_PREFIXES)
+            if human:
+                return [self.register[norm]] if norm in self.register else [human[0]]
+            return []
         prefix, digits = split_application_number(value)
         form = canonical_application_number(prefix, digits)
-        return [form] if is_fda_application_number(form) else []
+        if not is_fda_application_number(form):
+            return []
+        if not animal_edge and split_application_number(form)[0] in ANIMAL_APPLICATION_PREFIXES:
+            return []
+        return [form]
+
+    def expand_all_for_edge(self, values: Iterable[Any], *, animal_edge: bool) -> list[str]:
+        """Sorted unique per-edge display forms for many raw application numbers."""
+        return merge_unique(display for value in values for display in self.expand_for_edge(value, animal_edge=animal_edge))
 
     def expand_all(self, values: Iterable[Any]) -> list[str]:
-        """Sorted unique display forms for many raw application numbers."""
-        return merge_unique(display for value in values for display in self.expand(value))
+        """Sorted unique non-animal-edge display forms for many raw application numbers."""
+        return self.expand_all_for_edge(values, animal_edge=False)
 
 
-def _index_display(displays: dict[str, list[str]], number: Any, prefix: str, *, authoritative: bool) -> str:
+def _index_display(displays: dict[str, list[str]], number: Any, prefix: str, *, authoritative: bool, register: dict[str, str] | None = None) -> str:
     """Record one ``<prefix><number>`` display form under its normalized join key.
 
-    Drugs@FDA is authoritative: its entry replaces anything DailyMed contributed for that
-    number. DailyMed entries accumulate, because a number genuinely can carry more than one
-    prefix across labels (Biolink's own example: ranitidine's ``ANADA200536``/``ANDA200536``);
-    legacy emitted every prefix it saw, and this emits every prefix that names a drug application.
+    Drugs@FDA is authoritative: its form is recorded in ``register`` (when given) and wins on
+    non-animal edges at selection time, while every DailyMed spelling ACCUMULATES in
+    ``displays`` -- a number genuinely carries different prefixes on different labels
+    (65-470 reads ``ANDA065470`` on human labels and ``NADA065470`` on animal labels), and
+    an animal edge must be able to cite the animal-application form its label asserts
+    (:meth:`FDAApprovalIndex.expand_for_edge`).
 
-    Returns ``""`` when the display form was recorded, else the reason it was refused —
+    Returns ``""`` when the display form was recorded, else the reason it was refused --
     ``no_number`` (no digits at all), ``untyped`` (digits but no application-type prefix), or
     ``not_a_drug_application`` (a prefix outside :data:`FDA_APPLICATION_TYPES`, or a digit count
     that is not six). Splitting the reasons is what makes the counts diagnostic: a missing
@@ -256,9 +315,9 @@ def _index_display(displays: dict[str, list[str]], number: Any, prefix: str, *, 
     display = canonical_application_number(prefix, digits)
     if not is_fda_application_number(display):
         return "untyped" if not prefix else "not_a_drug_application"
-    if authoritative:
-        displays[norm] = [display]
-    elif display not in displays.setdefault(norm, []):
+    if authoritative and register is not None:
+        register[norm] = display
+    if display not in displays.setdefault(norm, []):
         displays[norm].append(display)
     return ""
 
@@ -268,33 +327,38 @@ def build_fda_approval_index(inputs: Iterable[ArtifactRef]) -> FDAApprovalIndex:
 
     Two registers, in precedence order:
 
-    * **Drugs@FDA** (``applications.parquet``, then ``products.parquet``) — the authoritative
+    * **Drugs@FDA** (``applications.parquet``, then ``products.parquet``) -- the authoritative
       FDA application register: ``appl_type`` + ``appl_no`` are separate, curated columns, and
       in a full production build it covers ~94% of the distinct application numbers FAERS
-      reports with no number carrying two types.
-    * **DailyMed SPL** (``spl_approvals.parquet``) — the label's own ``approval/id/@extension``,
+      reports with no number carrying two types. Its form is recorded separately in
+      :attr:`FDAApprovalIndex.register` and wins on non-animal edges.
+    * **DailyMed SPL** (``spl_approvals.parquet``) -- the label's own ``approval/id/@extension``,
       which already embeds the prefix (``ANDA089160``). Covers ~26% of FAERS numbers, and 25 of
-      them carry conflicting prefixes (label typos: ``BN``, ``KGX``, ``NAD``), so it only fills
-      gaps Drugs@FDA leaves. The SPL ``<code>`` element is an NCI Thesaurus code
-      (``C73584``), NOT a letter prefix — :data:`_NCI_APPLICATION_TYPES` maps it for the rare
-      label whose id has no prefix of its own.
+      them carry conflicting prefixes (label typos: ``BN``, ``KGX``, ``NAD``), so it fills gaps
+      Drugs@FDA leaves and contributes the animal-application forms animal edges cite. The SPL
+      ``<code>`` element is an NCI Thesaurus code (``C73584``), NOT a letter prefix --
+      :data:`_NCI_APPLICATION_TYPES` maps it for the rare label whose id has no prefix of its
+      own.
     """
     displays: dict[str, list[str]] = {}
+    register: dict[str, str] = {}
     refusals: Counter[str] = Counter()
     approvals = find_table(inputs, "spl_approvals.parquet")
     if approvals is not None:
         for rec in approvals.iter_rows(named=True):
             raw = rec.get("approval_id") or rec.get("approval_code")
             prefix, _digits = split_application_number(raw)
-            refusals[_index_display(displays, raw, prefix or application_type_prefix(rec.get("approval_type")), authoritative=False)] += 1
+            refusals[
+                _index_display(displays, raw, prefix or application_type_prefix(rec.get("approval_type")), authoritative=False, register=register)
+            ] += 1
     for table in ("applications.parquet", "products.parquet"):
         frame = find_table(inputs, table)
         if frame is None or "appl_type" not in frame.columns:
             continue
         for rec in frame.iter_rows(named=True):
             number = rec.get("appl_no") or rec.get("appl_no_raw") or rec.get("appl_no_stripped")
-            refusals[_index_display(displays, number, str(rec.get("appl_type") or "").strip().upper(), authoritative=True)] += 1
-    index = FDAApprovalIndex({norm: tuple(sorted(set(forms))) for norm, forms in displays.items()})
+            refusals[_index_display(displays, number, str(rec.get("appl_type") or "").strip().upper(), authoritative=True, register=register)] += 1
+    index = FDAApprovalIndex({norm: tuple(sorted(set(forms))) for norm, forms in displays.items()}, register=register)
     # The refusal counts are the observability half of the drop: a missing or truncated Drugs@FDA
     # feed shows up here as a collapse of ``application_numbers`` rather than as silently
     # approval-less edges. ``refused_untyped`` has a structural floor — Drugs@FDA ``Products.txt``
@@ -305,6 +369,7 @@ def build_fda_approval_index(inputs: Iterable[ArtifactRef]) -> FDAApprovalIndex:
         logger,
         "fda_approval_index",
         application_numbers=len(index.displays),
+        register_numbers=len(index.register),
         refused_no_number=refusals["no_number"],
         refused_untyped=refusals["untyped"],
         refused_not_a_drug_application=refusals["not_a_drug_application"],
@@ -596,6 +661,13 @@ class DailyMedEvidence:
     #: (indication/contraindication/boxed-warning/warnings): the fallback when a row's own sentence
     #: names no species. Human sets never gain an entry -- their rows are human by construction.
     species_by_set: dict[str, frozenset[str]] = field(default_factory=dict)
+    #: spl_set_id -> the set bears an animal drug application approval (NADA/ANADA/CNADA, from
+    #: the resolved approval prefix: the id's own prefix, else the approval_type column). Such
+    #: a set is animal REGARDLESS of its document-level type code, which production
+    #: spl_documents leaves empty for every animal-approval set (2026-10-22 probe: 1,245 of
+    #: 1,245), and 21 U.S.C. 360b(a) leaves no human NADA/ANADA/CNADA application to loosen
+    #: for.
+    animal_application_sets: set[str] = field(default_factory=set)
 
     def indication_support(self, norm_nda: str) -> tuple[list[str], list[str]]:
         """Sorted ``(spl_set_ids, spl_document_ids)`` supporting an approval via indication sections.
@@ -611,12 +683,21 @@ class DailyMedEvidence:
         """Return sorted unique FDA application IDs attached to the supplied SPL sets."""
         return merge_unique(approval_id for set_id in set_ids for approval_id in self.approval_ids_by_set.get(set_id, set()))
 
+    def is_animal_set(self, set_id: str) -> bool:
+        """True when the set is animal: document type 50578-4/50577-6 OR an animal application approval."""
+        return set_id in self.animal_application_sets or is_animal_label_type(self.label_types.get(set_id, ""))
+
     def species_context_for(self, set_id: str, sentence: str | None) -> tuple[str, ...]:
         """Species CURIEs for one assertion row on ``set_id`` (empty tuple = unattributable).
 
-        Thin wrapper over :func:`~dakp_pipeline.assertions.species.row_species` binding the
-        evidence index's label type and label-wide species fallback for the set.
+        An animal set (document type OR a NADA/ANADA/CNADA approval -- production spl_documents
+        carries no type code for animal-approval sets, so the application prefix is the only
+        signal those sets have) takes its species from the row's evidence sentence, else the
+        label's mined sections; a row naming no species anywhere stays empty so the caller
+        drops it. Every other set is human by construction.
         """
+        if self.is_animal_set(set_id):
+            return animal_row_species(sentence, self.species_by_set.get(set_id, frozenset()))
         return species_row_species(self.label_types.get(set_id, ""), sentence, self.species_by_set.get(set_id, frozenset()))
 
     def contraindication_sets_for_drug(self, drug_text: str) -> list[str]:
@@ -662,6 +743,8 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
             base = approval_id or approval_code
             prefix, digits = split_application_number(base)
             prefix = prefix or application_type_prefix(approval_type)
+            if prefix in ANIMAL_APPLICATION_PREFIXES:
+                evidence.animal_application_sets.add(set_id)
             display = f"{prefix}{digits}" if digits else (base or norm)
             evidence.approval_display.setdefault(norm, display)
             evidence.approval_ids_by_set.setdefault(set_id, set()).add(display)
@@ -717,9 +800,8 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
             # attributed to the human taxon by a stale human code.
             if not current or (not is_animal_label_type(current) and is_animal_label_type(label_type)):
                 evidence.label_types[set_id] = label_type
-        for set_id, label_type in evidence.label_types.items():
-            if not is_animal_label_type(label_type):
-                continue
+        document_animal_sets = {set_id for set_id, label_type in evidence.label_types.items() if is_animal_label_type(label_type)}
+        for set_id in sorted(document_animal_sets | evidence.animal_application_sets):
             # Label-wide species come from the sections the shapers actually mine, not every
             # section: an unrelated mention in a dosage or storage section would otherwise
             # attribute rows to a species the label does not treat.
@@ -747,6 +829,7 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
         boxed_warning_sets=len(evidence.boxed_warning_docs),
         warning_sets=len(evidence.warning_docs),
         label_type_sets=len(evidence.label_types),
+        animal_application_sets=len(evidence.animal_application_sets),
         animal_label_sets=len(evidence.species_by_set),
         animal_sets_with_species=sum(1 for species in evidence.species_by_set.values() if species),
     )
@@ -758,7 +841,7 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
 #: Operation name under which the serialized :class:`DailyMedEvidence` is registered.
 EVIDENCE_OPERATION = "build_dailymed_evidence"
 #: Bump when the evidence structure or builder logic changes (invalidates cached evidence).
-EVIDENCE_BUILDER_VERSION = "v3"
+EVIDENCE_BUILDER_VERSION = "v4"
 #: Synthetic input id folding the builder version into the operation-index key.
 _EVIDENCE_VERSION_INPUT = hash_bytes(f"dailymed_evidence_builder:{EVIDENCE_BUILDER_VERSION}".encode())
 
@@ -804,7 +887,7 @@ def load_or_build_dailymed_evidence(inputs: Iterable[ArtifactRef], ctx: TaskCont
 
 # Increment when assertion shaping semantics change without a schema/config change.
 # Mention-cache material stays independent: a new shaper can reuse valid mined spans.
-SHAPE_IMPLEMENTATION_VERSION = 3
+SHAPE_IMPLEMENTATION_VERSION = 4
 
 
 def shape_config_fingerprint(ctx: TaskContext) -> str:
@@ -921,6 +1004,7 @@ def write_assertion_table(
 
 
 __all__ = [
+    "ANIMAL_APPLICATION_PREFIXES",
     "BOXED_WARNING_LOINC",
     "CONTRAINDICATION_LOINC",
     "DAILYMED_SET_CURIE_PREFIX",

@@ -101,4 +101,4 @@ def test_lexicon_values_are_species_level_ncbitaxon_curies() -> None:
     assert all(re.fullmatch(r"NCBITaxon:\d+", curie) for curie in SPECIES_LEXICON.values())
     assert all(key == key.lower().strip() for key in SPECIES_LEXICON)
     assert HUMAN_TAXON not in SPECIES_LEXICON.values()
-    assert species.__all__ == ["HUMAN_TAXON", "SPECIES_LEXICON", "label_species", "row_species", "species_in_text"]
+    assert species.__all__ == ["HUMAN_TAXON", "SPECIES_LEXICON", "animal_row_species", "label_species", "row_species", "species_in_text"]

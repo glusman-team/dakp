@@ -69,10 +69,14 @@ pure lexical behavior (the historical direct-call test surface).
 Species context (``species_context_text``, an NCBITaxon CURIE): every row carries the species
 the relationship occurred in, derived per :mod:`~dakp_pipeline.assertions.species`. Human
 corpora (DailyMed human labels, FAERS, EMA registry, EPAR, SmPC) are human by construction and
-carry :data:`~dakp_pipeline.assertions.species.HUMAN_TAXON`; an animal DailyMed label takes its
+carry :data:`~dakp_pipeline.assertions.species.HUMAN_TAXON`; an animal DailyMed label (document
+type or a NADA/ANADA/CNADA approval on the set) takes its
 species from the row's own sentence, else from the label's mined sections, and a row that names
 no species anywhere is DROPPED and counted (``dropped_unattributable_species``) rather than
-defaulted to human. Species joins the aggregation key, so a dog row and a cat row for the same
+defaulted to human. Approval citations follow the same gate: each application number expands
+to the ONE display form matching the edge (the animal form on an animal edge, the
+register/human form on a human edge), so a number shared across human and animal labels never
+appears twice and an animal form never cites a human edge. Species joins the aggregation key, so a dog row and a cat row for the same
 (drug, condition, sentence) never fold onto one another.
 
 Provenance (``FDA_regulatory_approvals``, ``supporting_spl_sets``, ``supporting_spl_documents``) is
@@ -624,7 +628,12 @@ def build_approved_treats_rows(
                         "qualifier_scores": {},
                     },
                 )
-                agg["FDA_regulatory_approvals"].extend(approvals.expand(dailymed.approval_display.get(norm) or norm))
+                # The expansion cites the prefix the EDGE's context supports: a set with an
+                # animal label type or a NADA/ANADA/CNADA approval resolves the animal form,
+                # a human set the register/human form -- one form per number either way.
+                agg["FDA_regulatory_approvals"].extend(
+                    approvals.expand_for_edge(dailymed.approval_display.get(norm) or norm, animal_edge=dailymed.is_animal_set(observation["set_id"]))
+                )
                 agg["sets"].append(observation["set_id"])
                 agg["docs"].append(observation["doc_id"])
                 agg["faers_source_records"].extend(cand.get("faers_source_records", []))

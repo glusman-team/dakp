@@ -651,8 +651,11 @@ def build_observed_use_rows(
         # FDA display form(s) for that key. A number that expands to nothing is reporter junk, not
         # an application; the edge keeps its case-id and URL provenance either way.
         approval_values: list[str] = []
+        # Observed-use edges carry no SPL support, so the expansion is always the non-animal
+        # form: a NADA/ANADA/CNADA-prefixed number is reporter context, not an application the
+        # human edge was approved under, and contributes nothing to this cell.
         for raw_values in approval_values_by_norm.values():
-            if displays := approvals.expand(min(raw_values)):
+            if displays := approvals.expand_for_edge(min(raw_values), animal_edge=False):
                 approval_values.extend(displays)
             else:
                 unresolved_numbers += 1
