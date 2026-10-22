@@ -1252,7 +1252,7 @@ def test_context_not_attached_to_rejected_object(tmp_path: Path) -> None:
 def test_accumulate_skips_blank_evidence_text() -> None:
     """Blank evidence must not enter the evidence union — the sorted-pipe evidence column may
     only contain real sentences, while support/scores still accumulate."""
-    aggregated: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    aggregated: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     mention = Mention(text="asthma", start=0, end=6, type="Disease", score=0.9)
     _accumulate(aggregated, "SET-A", "DOC-A", "DrugX", "UNII:X", "asthma", mention, evidence_text="   ")
     agg = next(iter(aggregated.values()))
@@ -1262,7 +1262,7 @@ def test_accumulate_skips_blank_evidence_text() -> None:
 
 
 def test_accumulate_qualifier_merge_keeps_highest_score_and_deterministic_tie() -> None:
-    aggregated: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    aggregated: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     mention = Mention(text="asthma", start=0, end=6, type="Disease", score=0.9)
     _accumulate(
         aggregated,
@@ -1306,7 +1306,7 @@ def test_accumulate_sanitizes_pipe_delimiters_in_label_prose() -> None:
     """Regression: mined label sentences legitimately contain ``|`` bullets and line breaks (real
     DailyMed warnings prose crashed ``shape_contraindication_tables`` when the pipe reached the
     sorted-pipe evidence encoder). Free-form text is sanitized, not rejected."""
-    aggregated: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    aggregated: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     mention = Mention(text="asthma", start=0, end=6, type="Disease", score=0.9)
     _accumulate(
         aggregated,
@@ -1323,3 +1323,54 @@ def test_accumulate_sanitizes_pipe_delimiters_in_label_prose() -> None:
     assert row["evidence_text"] == "Do not use■Prohibited use for ethanol allergy When using this product avoid open flames"
     assert row["disease_context_text"] == "patients with asthma severe"
     assert "|" not in row["evidence_text"]
+
+
+def test_accumulate_partitions_aggregates_by_species() -> None:
+    """Species joins the aggregation key: a dog row and a cat row for the same (subject,
+    object, context) must never fold into one aggregate, while a repeated species does."""
+    aggregated: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    mention = Mention(text="asthma", start=0, end=6, type="Disease", score=0.9)
+    _accumulate(aggregated, "SET-A", "DOC-A", "DrugX", "UNII:X", "asthma", mention, species_context_text="NCBITaxon:9615")
+    _accumulate(aggregated, "SET-B", "DOC-B", "DrugX", "UNII:X", "asthma", mention, species_context_text="NCBITaxon:9685")
+    _accumulate(aggregated, "SET-A", "DOC-A", "DrugX", "UNII:X", "asthma", mention, species_context_text="NCBITaxon:9615")
+
+    assert len(aggregated) == 2
+    assert sorted(key[4] for key in aggregated) == ["NCBITaxon:9615", "NCBITaxon:9685"]
+    dog = next(agg for key, agg in aggregated.items() if key[4] == "NCBITaxon:9615")
+    assert dog["sets"] == ["SET-A", "SET-A"]
+    assert dog["species_context_text"] == "NCBITaxon:9615"
+
+
+def test_accumulate_defaults_to_the_human_taxon() -> None:
+    """A caller that passes no species gets the human constant, never a blank cell."""
+    aggregated: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    mention = Mention(text="asthma", start=0, end=6, type="Disease", score=0.9)
+    _accumulate(aggregated, "SET-A", "DOC-A", "DrugX", "UNII:X", "asthma", mention)
+
+    agg = next(iter(aggregated.values()))
+    assert agg["species_context_text"] == "NCBITaxon:9606"
+    assert _finalize_row(agg)["species_context_text"] == "NCBITaxon:9606"
+
+
+def test_accumulate_never_lets_attached_species_text_override_the_curie() -> None:
+    """species_context_text is CURIE-valued: an NER-attached OrganismTaxon mention text
+    ("dogs") is dropped from the qualifier merge, the derived CURIE wins."""
+    aggregated: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    mention = Mention(text="asthma", start=0, end=6, type="Disease", score=0.9)
+    _accumulate(
+        aggregated,
+        "SET-A",
+        "DOC-A",
+        "DrugX",
+        "UNII:X",
+        "asthma",
+        mention,
+        qualifier_fields={"species_context_text": "dogs", "sex_text": "men"},
+        qualifier_scores={"species_context_text": (0.99, "dogs"), "sex_text": (0.8, "men")},
+        species_context_text="NCBITaxon:9615",
+    )
+
+    agg = next(iter(aggregated.values()))
+    assert agg["qualifiers"] == {"sex_text": "men"}
+    assert agg["species_context_text"] == "NCBITaxon:9615"
+    assert _finalize_row(agg)["species_context_text"] == "NCBITaxon:9615"

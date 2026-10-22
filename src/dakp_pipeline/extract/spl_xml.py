@@ -73,6 +73,14 @@ _APPL_CODE_SYSTEM = "2.16.840.1.113883.3.26.1.1"  # subjectOf/approval/code[@cod
 _LOINC_CODE_SYSTEM = "2.16.840.1.113883.6.1"  # section/code[@codeSystem] -> LOINC section code
 _HL7V3_NS = "{urn:hl7-org:v3}"
 
+#: DailyMed document-type LOINC codes that mark ANIMAL drug labels (the full-release
+#: "ANIMAL LABELS" category: ``50578-4`` PRESCRIPTION ANIMAL DRUG LABEL, ``50577-6`` OTC
+#: ANIMAL DRUG LABEL -- both verified against real DailyMed SPLs; human counterparts are
+#: e.g. ``34390-5`` HUMAN OTC DRUG LABEL). Animal SPLs carry NO structured species
+#: element, so this document-level code is the authoritative animal/human signal the
+#: species derivation gates on (see assertions/species.py).
+ANIMAL_LABEL_TYPE_CODES = frozenset({"50578-4", "50577-6"})
+
 # Column contracts for the new normalized tables (spl_documents stays in io.schemas).
 SPL_SETS_COLUMNS: list[str] = ["source_record_id", "spl_set_id", "release_file", "xml_path"]
 SPL_APPROVALS_COLUMNS: list[str] = ["source_record_id", "spl_set_id", "approval_id", "approval_code", "approval_type", "release_file", "xml_path"]
@@ -123,6 +131,9 @@ class DocumentRecord:
     ingredients: list[IngredientRecord] = field(default_factory=list)
     sections: list[SectionRecord] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: Document-level LOINC type code (``34391-4`` human Rx, ``50578-4`` Rx animal, ...);
+    #: empty when the document carries no code element.
+    label_type: str = ""
 
 
 class SPLXMLExtractor:
@@ -281,7 +292,12 @@ def _parse_mock_document(elem: ET.Element) -> DocumentRecord:
         ingredients.append(IngredientRecord(name=_attr(ing, "name"), unii=_unii(_attr(ing, "unii")), role="inactive"))
 
     sections = _collect_sections([s for s in elem.iter() if _local(s.tag) == "section"], warnings)
-    return DocumentRecord(set_id=set_id, approvals=approvals, ingredients=ingredients, sections=sections, warnings=warnings)
+    label_type = ""
+    for code in _direct_children(elem, "code"):
+        label_type = _attr(code, "code")
+        if label_type:
+            break
+    return DocumentRecord(set_id=set_id, approvals=approvals, ingredients=ingredients, sections=sections, warnings=warnings, label_type=label_type)
 
 
 # --- HL7 v3 (real DailyMed) document parse -------------------------------------
@@ -305,7 +321,41 @@ def _parse_hl7v3_document(elem: ET.Element) -> DocumentRecord:
     approvals = _hl7v3_approvals(elem)
     ingredients = _hl7v3_ingredients(elem)
     sections = _collect_sections(list(_descendants(elem, "section")), warnings)
-    return DocumentRecord(set_id=set_id, approvals=approvals, ingredients=ingredients, sections=sections, warnings=warnings)
+    return DocumentRecord(
+        set_id=set_id, approvals=approvals, ingredients=ingredients, sections=sections, warnings=warnings, label_type=_hl7v3_document_label_type(elem)
+    )
+
+
+def _hl7v3_document_label_type(elem: ET.Element) -> str:
+    """Document-level LOINC type code (e.g. ``50578-4`` = PRESCRIPTION ANIMAL DRUG LABEL).
+
+    Only DIRECT children of ``<document>`` count: ``<code>`` elements appear throughout
+    an SPL (ingredient UNIIs, section codes, approval types), so a descendant search
+    would pick up the wrong one. Preference mirrors :func:`_collect_sections`: a LOINC
+    codeSystem match wins outright, else the first LOINC-shaped code (digit-dash-digit),
+    else the first ``<code>`` carrying any ``code`` attribute. Empty string when the
+    document has no usable code.
+    """
+    shaped = ""
+    any_code = ""
+    for child in elem:
+        if _local(child.tag) != "code":
+            continue
+        candidate = _attr(child, "code")
+        if not candidate:
+            continue
+        if _attr(child, "codeSystem") == _LOINC_CODE_SYSTEM:
+            return candidate
+        if _looks_loinc(candidate):
+            shaped = shaped or candidate
+        else:
+            any_code = any_code or candidate
+    return shaped or any_code
+
+
+def is_animal_label_type(label_type: str) -> bool:
+    """True when a document-level LOINC type code marks an animal drug label."""
+    return label_type.strip().upper() in ANIMAL_LABEL_TYPE_CODES
 
 
 def _hl7v3_approvals(elem: ET.Element) -> list[ApprovalRecord]:
@@ -418,6 +468,7 @@ def _document_rows(record: DocumentRecord, release_file: str) -> list[dict[str, 
                 "spl_set_id": record.set_id,
                 "xml_path": release_file,
                 "release_file": release_file,
+                "label_type": record.label_type,
                 "approval_code": ap_code,
                 "approval_type": ap_type,
                 "loinc_code": sec.loinc,
@@ -622,6 +673,7 @@ def _write_tsv(
 
 
 __all__ = [
+    "ANIMAL_LABEL_TYPE_CODES",
     "SECTION_CODE_NAMES",
     "SPL_APPROVALS_COLUMNS",
     "SPL_INGREDIENTS_COLUMNS",
@@ -631,4 +683,5 @@ __all__ = [
     "DocumentRecord",
     "SPLXMLExtractor",
     "extract",
+    "is_animal_label_type",
 ]

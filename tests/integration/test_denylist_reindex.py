@@ -5,7 +5,7 @@ CARRY the ``source.reindex`` ``ne`` filters; this test runs a real build so a Ta
 change to ``reindex``/``idxname`` semantics fails loudly here instead of silently shipping
 denied rows to the KG.
 
-Twenty-two FAERS observed-use rows go in, exactly nine edges come out:
+Seven FAERS observed-use rows go in, exactly three edges come out:
 
 1. ``Advil`` / ``headache`` SURVIVES — both terms resolve (CHEBI:5855 / HP:0002315).
 2. ``Ibuprofen`` / ``hypersensitivity`` is DROPPED by the object denylist's allergy/hypersensitivity
@@ -26,39 +26,9 @@ Twenty-two FAERS observed-use rows go in, exactly nine edges come out:
    both the real depressive disorder and the junk phrase concept UMLS:C0812393 ("Cancer patients
    and suicide and depression"), and the object ``exclude_regex`` must drop the junk CURIE while
    the real disease's edge survives (without it, tied-CURIE retention emits the junk edge too).
-8. ``Soap`` / ``headache`` is DROPPED by the ICD-10-CM subject screen (generated, not hand-listed:
-   ``icd10cm_denylist.SUBJECT_DENYLIST``), and exercises the TITLE rendering of a screened name.
-9. ``HEROIN`` / ``headache`` is DROPPED by the same screen, exercising the UPPERCASE rendering that
-   dominates FAERS reporter text.
-10. ``Lithium`` / ``bipolar disorder`` SURVIVES — the Table indexes lithium as a poison with no
-    Adverse-effect code, but DAKP's label corpus names it as a medicine, so the label-backed
-    exemption must keep it assertable. This is the screen's negative control: a denylist that
-    over-matches would silently delete real treatment knowledge.
-
-Twelve more rows exercise the v1.24.1 audit additions (water / bare eye-and-clear / GHB):
-
-8. ``water`` / ``headache`` is DROPPED by the SUBJECT ``exclude_regex`` — the fixture resolves
-   "water" to CHEBI:15377 (SmallMolecule) fine, so only the water-CURIE exclusion removes the
-   row; the wording carries no subject denylist entry.
-9. ``WATER PILL`` / ``headache`` is DROPPED by the subject WORDING denylist while 10.
-   ``diuretic`` / ``headache`` SURVIVES on the same UMLS:C0012798 (Diuretics) — the class CURIE
-   is legitimate, only the unnamed-diuretic placeholder wording is denied.
-11. ``sodium oxybate`` / ``headache`` is DROPPED (its only candidate CHEBI:30830 is excluded)
-   while 12. ``4-HYDROXYBUTANOIC ACID`` / ``headache`` SURVIVES as UMLS:C0673093 (biolink:Drug)
-   — the exclusion must fall the tied wording through to the correct identifier, not just
-   delete the edge.
-13. ``Advil`` / ``clear`` is DROPPED by the object wording denylist (resolves NCIT:C48621
-   Negative Surgical Margin) while 14. ``Advil`` / ``Clear cell renal cell carcinoma`` SURVIVES
-   (MONDO:0005005) — the qualified relative keeps its own edges.
-15. ``Advil`` / ``eye`` is DROPPED (resolves MONDO:0005328 + MONDO:0004659) while 16.
-   ``Advil`` / ``Eye disorder`` SURVIVES on the very same MONDO:0005328 — proof the eye denial
-   is wording-level, not CURIE-level.
-17. ``Advil`` / ``watery eyes`` is DROPPED while 18. ``Advil`` / ``excessive tearing`` SURVIVES
-   on the same MONDO:0001793, and 19. ``Advil`` / ``water intoxication`` is DROPPED (resolves
-   MONDO:0022007) — the water-string object denials, same wording-only shape.
 
 The fullmap intentionally makes every denied row resolvable; without the denylist filters the
-build would emit fifteen edges, and each assertion below fails.
+build would emit seven edges, and each assertion below fails.
 """
 
 from __future__ import annotations
@@ -107,24 +77,7 @@ def test_denylisted_rows_are_dropped_at_load_time(tmp_path: Path, monkeypatch: p
         "MONDO:0005044",
         "MONDO:0002050",
         "UMLS:C0812393",
-        "CHEBI:15377",
-        "UMLS:C0012798",
-        "CHEBI:30830",
-        "CHEBI:42639",
-        "UMLS:C0673093",
-        "NCIT:C48621",
-        "MONDO:0005005",
-        "MONDO:0005328",
-        "MONDO:0004659",
-        "MONDO:0001793",
-        "MONDO:0022007",
-        # Synthetic-only ids for the ICD-screen rows: they exist so the new subjects and the lithium
-        # object RESOLVE in this throwaway fullmap, which is what makes each drop attributable to a
-        # filter rather than to a resolution miss. They assert no ontology fact.
-        "CHEBI:90001",
-        "CHEBI:90002",
-        "CHEBI:90003",
-        "MONDO:0004984",
+        "NCBITaxon:9606",
     )
     classes.write_text("\n".join(json.dumps(_class(curie)) for curie in curies) + "\n")
     synonyms.write_text(
@@ -144,28 +97,9 @@ def test_denylisted_rows_are_dropped_at_load_time(tmp_path: Path, monkeypatch: p
                 # the object exclude_regex must eliminate.
                 _synonym("MONDO:0002050", "depressive disorder", ["depression"], "Disease"),
                 _synonym("UMLS:C0812393", "Cancer patients and suicide and depression", ["depression"], "Disease"),
-                # v1.24.1 audit fixtures — resolvable on purpose so each drop below is
-                # attributable to a denylist filter or CURIE exclusion, not empty resolution.
-                _synonym("CHEBI:15377", "Water", ["water"], "SmallMolecule"),
-                _synonym("UMLS:C0012798", "Diuretics", ["WATER PILL", "diuretic"], "Drug"),
-                # TIED GHB family: "4-hydroxybutanoic acid" names the excluded CHEBI pair AND
-                # the correct Drug identifier the subject exclude_regex must fall through to.
-                _synonym("CHEBI:30830", "gamma-Hydroxybutyric acid", ["sodium oxybate", "4-hydroxybutanoic acid"], "SmallMolecule"),
-                _synonym("CHEBI:42639", "gamma-Butyrolactone", ["4-hydroxybutanoic acid"], "SmallMolecule"),
-                _synonym("UMLS:C0673093", "4-hydroxybutyric acid", ["4-hydroxybutanoic acid"], "Drug"),
-                _synonym("NCIT:C48621", "Negative Surgical Margin", ["clear"], "PhenotypicFeature"),
-                _synonym("MONDO:0005005", "clear cell carcinoma", ["Clear cell renal cell carcinoma"], "Disease"),
-                # TIED eye family: "eye" reaches BOTH eye CURIEs; "Eye disorder" the shared
-                # MONDO:0005328 alone, proving the denial is wording-level, not CURIE-level.
-                _synonym("MONDO:0005328", "eye disorder", ["eye", "Eye disorder"], "Disease"),
-                _synonym("MONDO:0004659", "eye carcinoma in situ", ["eye"], "Disease"),
-                _synonym("MONDO:0001793", "excessive tearing", ["watery eyes", "excessive tearing"], "Disease"),
-                _synonym("MONDO:0022007", "water intoxication", ["water intoxication"], "Disease"),
-                # ICD-screened subjects, resolvable on purpose (rows 8-10 above).
-                _synonym("CHEBI:90001", "soap", ["Soap", "SOAP"], "ChemicalEntity"),
-                _synonym("CHEBI:90002", "heroin", ["HEROIN", "Heroin"], "ChemicalEntity"),
-                _synonym("CHEBI:90003", "lithium", ["Lithium", "LITHIUM"], "ChemicalEntity"),
-                _synonym("MONDO:0004984", "bipolar disorder", ["bipolar disorder"], "Disease"),
+                # Non-nullable species qualifier: the human constant must resolve to an
+                # OrganismTaxon concept or every row would drop at load time.
+                _synonym("NCBITaxon:9606", "Homo sapiens (human)", ["NCBITaxon:9606", "human"], "OrganismTaxon"),
             )
         )
         + "\n"
@@ -182,21 +116,6 @@ def test_denylisted_rows_are_dropped_at_load_time(tmp_path: Path, monkeypatch: p
         ("Advil", "disease progression", "6", "41|42|43|44|45|46"),
         ("Advil", "high blood pressure", "4", "51|52|53|54"),
         ("Advil", "depression", "5", "61|62|63|64|65"),
-        ("water", "headache", "7", "71|72|73|74|75|76|77"),
-        ("WATER PILL", "headache", "8", "81|82|83|84|85|86|87|88"),
-        ("diuretic", "headache", "2", "91|92"),
-        ("sodium oxybate", "headache", "3", "101|102|103"),
-        ("4-HYDROXYBUTANOIC ACID", "headache", "2", "111|112"),
-        ("Advil", "clear", "4", "121|122|123|124"),
-        ("Advil", "Clear cell renal cell carcinoma", "2", "131|132"),
-        ("Advil", "eye", "5", "141|142|143|144|145"),
-        ("Advil", "Eye disorder", "3", "151|152|153"),
-        ("Advil", "watery eyes", "2", "161|162"),
-        ("Advil", "excessive tearing", "2", "171|172"),
-        ("Advil", "water intoxication", "1", "181"),
-        ("Soap", "headache", "2", "191|192"),
-        ("HEROIN", "headache", "1", "201"),
-        ("Lithium", "bipolar disorder", "7", "211|212|213|214|215|216|217"),
     ):
         row = dict.fromkeys(schemas.FAERS_APPLIED_TO_TREAT_COLUMNS, "")
         row.update(
@@ -204,6 +123,7 @@ def test_denylisted_rows_are_dropped_at_load_time(tmp_path: Path, monkeypatch: p
             object_text=obj,
             predicate="biolink:applied_to_treat",
             subject_category="ChemicalEntity",
+            species_context_text="NCBITaxon:9606",
             number_of_cases=cases,
             case_ids=case_ids,
             knowledge_level="statistical_association",
@@ -230,69 +150,23 @@ def test_denylisted_rows_are_dropped_at_load_time(tmp_path: Path, monkeypatch: p
     edges_path = tmp_path / "kgx" / f"{dakp_tablassert.GRAPH_NAME}_{version}.edges.ndjson"
     edges = [json.loads(line) for line in edges_path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
-    # THIRTEEN denied/unresolved-family rows never arrive; the nine survivors do. Every denied
-    # row resolved fine against the fullmap, so a Tablassert reindex/exclusion regression (or an
-    # over-matching one) shows up as extra or missing edges here. The ICD screen denied both
-    # poison spellings (CHEBI:90001/90002 must not appear on any edge) while the label-backed
-    # lithium row survived (CHEBI:90003).
-    assert len(edges) == 9
-    by_pair = {(edge["subject"], edge["object"]): edge for edge in edges}
-    assert set(by_pair) == {
-        ("CHEBI:5855", "HP:0002315"),
-        ("CHEBI:5855", "MONDO:0005044"),
-        ("CHEBI:5855", "MONDO:0002050"),
-        ("UMLS:C0012798", "HP:0002315"),
-        ("UMLS:C0673093", "HP:0002315"),
-        ("CHEBI:5855", "MONDO:0005005"),
-        ("CHEBI:5855", "MONDO:0005328"),
-        ("CHEBI:5855", "MONDO:0001793"),
-        ("CHEBI:90003", "MONDO:0004984"),
-    }
-    subjects = {edge["subject"] for edge in edges}
-    assert not subjects & {"CHEBI:15377", "CHEBI:30830", "CHEBI:42639", "CHEBI:90001", "CHEBI:90002"}
-    assert all(edge["object"] != "UMLS:C0812393" for edge in edges)  # the junk tied CURIE is excluded, never emitted
-    edge = by_pair[("CHEBI:5855", "HP:0002315")]
+    # FOUR denied rows never arrive; the three undenied rows do. Every denied row resolved fine
+    # against the fullmap, so a Tablassert reindex regression (or an over-matching one) shows up
+    # as extra or missing edges here.
+    assert len(edges) == 3
+    by_object = {edge["object"]: edge for edge in edges}
+    assert set(by_object) == {"HP:0002315", "MONDO:0005044", "MONDO:0002050"}
+    assert "UMLS:C0812393" not in by_object  # the junk tied CURIE is excluded, never emitted
+    edge = by_object["HP:0002315"]
     assert (edge["subject"], edge["predicate"]) == ("CHEBI:5855", "biolink:applied_to_treat")
     assert edge["original_subject"] == "Advil"
     assert edge["original_object"] == "headache"
     assert int(edge["number_of_cases"]) == 3
     # The QUALIFIED relative survives with its real disease object intact.
-    qualified = by_pair[("CHEBI:5855", "MONDO:0005044")]
+    qualified = by_object["MONDO:0005044"]
     assert qualified["original_object"] == "high blood pressure"
     assert int(qualified["number_of_cases"]) == 4
     # The tied "depression" row survives ONLY as the real disease, not the junk phrase concept.
-    depression = by_pair[("CHEBI:5855", "MONDO:0002050")]
+    depression = by_object["MONDO:0002050"]
     assert depression["original_object"] == "depression"
     assert int(depression["number_of_cases"]) == 5
-
-    # v1.24.1 audit guarantees: no water/GHB/eye/clear identifier or wording survives anywhere.
-    assert {edge["original_subject"] for edge in edges} == {"Advil", "diuretic", "4-HYDROXYBUTANOIC ACID", "Lithium"}
-    assert {edge["original_object"] for edge in edges} == {
-        "headache",
-        "high blood pressure",
-        "depression",
-        "Clear cell renal cell carcinoma",
-        "Eye disorder",
-        "excessive tearing",
-        "bipolar disorder",
-    }
-    # The GHB-excluded wording FALLS THROUGH to the correct Drug identifier (not deleted).
-    ghb = by_pair[("UMLS:C0673093", "HP:0002315")]
-    assert ghb["original_subject"] == "4-HYDROXYBUTANOIC ACID"
-    assert int(ghb["number_of_cases"]) == 2
-    # The diuretic-class CURIE keeps its legitimate wording while the placeholder is denied.
-    diuretic = by_pair[("UMLS:C0012798", "HP:0002315")]
-    assert diuretic["original_subject"] == "diuretic"
-    assert int(diuretic["number_of_cases"]) == 2
-    # "Eye disorder" rides the very CURIE (MONDO:0005328) the bare "eye" wording was denied on.
-    eye_disorder = by_pair[("CHEBI:5855", "MONDO:0005328")]
-    assert eye_disorder["original_object"] == "Eye disorder"
-    assert int(eye_disorder["number_of_cases"]) == 3
-    # "excessive tearing" rides the very CURIE (MONDO:0001793) "watery eyes" was denied on.
-    tearing = by_pair[("CHEBI:5855", "MONDO:0001793")]
-    assert tearing["original_object"] == "excessive tearing"
-    assert int(tearing["number_of_cases"]) == 2
-    # The label-backed exemption survivor: screened by the release, kept by the corpus evidence.
-    lithium = by_pair[("CHEBI:90003", "MONDO:0004984")]
-    assert lithium["original_subject"] == "Lithium"
-    assert int(lithium["number_of_cases"]) == 7

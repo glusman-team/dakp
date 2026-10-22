@@ -79,15 +79,24 @@ class StageResult:
         return self.tables[name]
 
 
-def install_fixture_fetchers(monkeypatch: pytest.MonkeyPatch) -> None:
+def install_fixture_fetchers(monkeypatch: pytest.MonkeyPatch, *, include_animal_spl: bool = False) -> None:
     """Route the three source fetchers to the tiny pipeline fixtures via ``ctx.fixture()``.
 
     Offline stand-in for real acquisition: fetchers always run their real (download) branches now,
     so integration tests that want the fixture pipeline monkeypatch the module-level ``fetch``
     boundaries (exactly as the unit tests do). Loads the pipeline fixture set: one DailyMed SPL,
     the three Drugs@FDA tables, and every FAERS ``.txt`` family under ``fixture_root/faers``.
+
+    ``include_animal_spl`` adds the veterinary SPL fixture
+    (``dailymed/dailymed_spl_animal.xml.gz``) to the DailyMed set. It is opt-in because most
+    integration expectations are pinned to the human-only corpus; the KGX end-to-end test uses it
+    to prove the animal-label path (label type -> derived species -> ``species_context_qualifier``
+    on the emitted edge) through the real pipeline and the real ``build-kg``.
     """
-    monkeypatch.setattr(dailymed, "fetch", lambda ctx: [ctx.fixture("dailymed/dailymed_spl.xml.gz")])
+    spl_fixtures = ["dailymed/dailymed_spl.xml.gz"]
+    if include_animal_spl:
+        spl_fixtures.append("dailymed/dailymed_spl_animal.xml.gz")
+    monkeypatch.setattr(dailymed, "fetch", lambda ctx: [ctx.fixture(name) for name in spl_fixtures])
     monkeypatch.setattr(ema, "fetch", lambda ctx: [ctx.fixture("ema/medicines-output-medicines-report_en.xlsx")])
     monkeypatch.setattr(
         drugsfda,

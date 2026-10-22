@@ -52,6 +52,7 @@ from tablassert import rs
 from dakp_pipeline import legacy_tsv
 from dakp_pipeline import tablassert as dakp_tablassert_module
 from dakp_pipeline.assertions.evidence import DAILYMED_SET_CURIE_PREFIX
+from dakp_pipeline.assertions.species import HUMAN_TAXON
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.tablassert import EDGE_LINKOUT_URL_TEMPLATE, FAERS_SOURCE_RECORD_URL, TablassertRunner
@@ -104,15 +105,17 @@ def _ref(path: Path, media_type: str) -> ArtifactRef:
     return ArtifactRef(uri=path, blake3=hash_file(path), media_type=media_type)
 
 
-@pytest.fixture(scope="module")
-def kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
-    """Run the offline fixture pipeline + a REAL ``tablassert build-kg`` once; return the KGX."""
-    work = tmp_path_factory.mktemp("dakp-kgx-e2e") / "work"
+def _build_kgx(work: Path, *, include_animal_spl: bool) -> KgxBuild:
+    """Run the offline fixture pipeline + a REAL ``tablassert build-kg`` into ``work``; return the KGX.
 
+    Shared body of the two module-scoped builds: ``include_animal_spl`` adds the veterinary SPL
+    fixture to the DailyMed set, everything else is the identical path, so the animal expectations
+    cannot drift from the human ones.
+    """
     # (1) Hermetic offline pipeline -> assertion TSVs (tabular/) + generated tables/*.yaml.
     # Fetchers always run their real branches; route them to the fixtures for this hermetic build.
     monkeypatch = pytest.MonkeyPatch()
-    install_fixture_fetchers(monkeypatch)
+    install_fixture_fetchers(monkeypatch, include_animal_spl=include_animal_spl)
     try:
         run_stages(fixture_root=_FIXTURE_ROOT, workdir=work)
     finally:
@@ -174,6 +177,18 @@ def kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
     return KgxBuild(workdir=work, report=report, nodes=read_kgx_jsonl(node_files[0]), edges=read_kgx_jsonl(edge_files[0]), legacy_refs=legacy_refs)
 
 
+@pytest.fixture(scope="module")
+def kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
+    """The human-only fixture corpus: offline pipeline + a REAL ``tablassert build-kg``, built once."""
+    return _build_kgx(tmp_path_factory.mktemp("dakp-kgx-e2e") / "work", include_animal_spl=False)
+
+
+@pytest.fixture(scope="module")
+def animal_kgx_build(tmp_path_factory: pytest.TempPathFactory) -> KgxBuild:
+    """The same pipeline and build, with the veterinary SPL fixture added to the DailyMed set."""
+    return _build_kgx(tmp_path_factory.mktemp("dakp-kgx-e2e-animal") / "work", include_animal_spl=True)
+
+
 def test_build_kg_handoff_succeeds(kgx_build: KgxBuild) -> None:
     """The DAKP TablassertRunner ran the REAL build-kg CLI and it exited cleanly."""
     assert kgx_build.report["mode"] == "real"
@@ -212,6 +227,57 @@ def test_three_edge_families_present(kgx_build: KgxBuild) -> None:
     assert predicates == {_TREATS, _APPLIED, _CONTRA}
 
 
+# The veterinary SPL fixture's resolved vocabulary in the tiny fullmap (see tiny_fullmap.TERMS):
+# Fipronil contraindicated in renal disease under dog and cat. Both CURIEs were probed against
+# the production fullmap (quick_map, 2026-10-21): fipronil -> CHEBI:83394, renal disease ->
+# MONDO:0005240.
+_FIPRONIL = "CHEBI:83394"
+_RENAL_DISEASE = "MONDO:0005240"
+_DOG = "NCBITaxon:9615"
+_CAT = "NCBITaxon:9685"
+
+
+def _edges_for(kgx: KgxBuild, subject: str, predicate: str, obj: str) -> list[dict[str, Any]]:
+    return [edge for edge in kgx.edges if (edge["subject"], edge["predicate"], edge["object"]) == (subject, predicate, obj)]
+
+
+def test_every_edge_carries_a_species_qualifier(kgx_build: KgxBuild) -> None:
+    """The human-only corpus: the non-nullable species slot lands on every emitted edge.
+
+    ``species_context_qualifier`` is declared ``nullable: false``, so a row whose species cell
+    resolved nothing drops the whole edge instead of shipping a species-less association. An edge
+    arriving without the slot (or with anything but an NCBITaxon CURIE) means that contract broke.
+    Non-animal sources are human by source fact, so every edge here carries 9606.
+    """
+    assert kgx_build.edges
+    for edge in kgx_build.edges:
+        species = edge.get("species_context_qualifier")
+        assert species == HUMAN_TAXON, f"edge {edge.get('id')} carries {species!r}"
+
+
+def test_animal_label_edges_carry_species_and_never_fold(animal_kgx_build: KgxBuild) -> None:
+    """The veterinary SPL reaches KGX: its contraindication lands under the derived taxon, and one
+    drug/condition under two species is TWO edges.
+
+    End-to-end proof through the real stage sequence (extract -> document label type -> derived
+    species -> assertion TSV -> ``build-kg``): the ``dogs`` and ``kittens`` contraindication
+    sentences both resolve to the same Fipronil + kidney disorder triple, and because
+    ``species_context_qualifier`` joins the graph ``uuid_fields`` the cross-species pair can never
+    collapse onto one edge id. A regression that drops the species slot from identity leaves one
+    id here and fails.
+
+    The veterinary product produces NO ``treats`` edge, and that is correct: approved-treats
+    requires a Drugs@FDA application linkage, which this fixture set does not give Fipronil.
+    Absence is the approval gate working, not a species regression.
+    """
+    animal = _edges_for(animal_kgx_build, _FIPRONIL, _CONTRA, _RENAL_DISEASE)
+    assert {edge["species_context_qualifier"] for edge in animal} == {_DOG, _CAT}
+    assert len({edge["id"] for edge in animal}) == 2
+    # The animal label never overwrites the human corpus: both taxa coexist in one build.
+    species = {edge["species_context_qualifier"] for edge in animal_kgx_build.edges}
+    assert {HUMAN_TAXON, _DOG, _CAT} <= species
+
+
 # predicate -> the DAKP-primary ``sources`` shape the explicit ``override.sources`` template
 # (Tablassert >= 14.0, SkyeAv/Tablassert#116) stamps on every edge of that family:
 # (resource_id, resource_role, upstream_resource_ids-or-None) in template order. The DAKP
@@ -232,15 +298,12 @@ EXPECTED_SOURCES_BY_PREDICATE: dict[str, list[tuple[str, str, list[str] | None]]
     ],
     # The observed-use table unions FAERS quarterly ASCII extracts and Health Canada Vigilance
     # reports, so its TABLE-level template names all three upstreams on every applied_to_treat
-    # edge; per-row attribution lives in the assertion TSV provenance, not in `sources`. The
-    # ICD-10-CM screen entry rides along as a supporting source (it contributes no assertion
-    # text, but every released observed-use edge survived its subject screen).
+    # edge; per-row attribution lives in the assertion TSV provenance, not in `sources`.
     _APPLIED: [
         (INFORES_DAKP, "primary_knowledge_source", ["infores:dailymed", "infores:faers", "infores:canada-vigilance"]),
         ("infores:faers", "supporting_data_source", None),
         ("infores:dailymed", "supporting_data_source", None),
         ("infores:canada-vigilance", "supporting_data_source", None),
-        ("infores:icd10cm", "supporting_data_source", None),
     ],
     # The contraindication table unions DailyMed (US SPL contraindication sections) and EMA SmPC
     # (EU section 4.2/4.3 mined rows), so its TABLE-level template names both upstreams on the

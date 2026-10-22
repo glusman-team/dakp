@@ -98,6 +98,22 @@ classifiers = [
 # CURIE-ranged and entity-resolved through the fullmap), so the audit cannot fire on a DAKP build,
 # and `tests/unit/test_tablassert_configs.py::test_dakp_qualifiers_are_not_enum_ranged` keeps it
 # that way. 19.5.0 adds `parquet` as a table source kind; DAKP ships TSV.
+# 20.0.0 removes the experimental agent / GEPA-optimize / distillation surfaces (DAKP never
+# invoked them: the runner shells out to `build-kg` only) and swaps the QC stage-4 checkpoint to
+# RENCI's Babel-fine-tuned SapBERT, moving its cache dir `.tablassert/sapbert/` ->
+# `.tablassert/sapbert-babel/` (one re-download; stale `sapbert/` dirs can be deleted).
+# 21.0.0 folds `validate-infores` into `validate-kgx` (no DAKP change: the runner contract gate
+# invokes `validate` / `validate-kgx`, never the removed command), re-homes DERIVED-path
+# `source_record_urls` onto the supporting entry matching the publication repository (DAKP
+# declares an explicit `provenance.override` per section, and override sections stay
+# byte-identical), and renames the inlined supporting Study to `<config.yaml> SECTION <n>` (KG
+# content only, no config change). 22.0.0 removes the `no_map` node mode DAKP never declared and
+# blocks the generic probe-key blocklist in its NORMALIZED forms, so a cell holding `expression`,
+# `variable`, `exposure`, `not applicable`, or `p_value` no longer resolves to a UMLS concept.
+# 22.0.1 stages the dedup output before publishing, so a failed `build-kg` dedup pass can no
+# longer destroy the previously published graph. 22.1.0 re-enables `species_context_qualifier`
+# as a declarable CURIE-ranged qualifier on every association class and adds
+# `NodeEncoding.taxon_from`; DAKP's species context wiring depends on both.
 dependencies = [
     # Bundles a statically-linked aria2c binary (PyPI dist `aria2`, import name `aria2c`) so the
     # FAERS + Drugs@FDA fetchers get multi-connection downloads with no separate system install.
@@ -155,8 +171,11 @@ dependencies = [
     # shells out to now preflights the `[cli]` extra (cyclopts + rich) and exits before importing
     # the app without it, and logging is a silent no-op without `[log]` (loguru), so a build would
     # emit no progress or warning logs at all. Both are load-bearing for `run_tablassert`, hence
-    # explicit. `[qc]` still backs the `--qc` audit.
-    "tablassert[cli,log,qc]>=22.2.0,<23",
+    # explicit. `[qc]` still backs the `--qc` audit. 22.1.0 is the floor because the species
+    # context qualifier DAKP emits (`species_context_qualifier`, a CURIE-ranged slot on every
+    # association) is declarable only from there, and `NodeEncoding.taxon_from` (per-row
+    # taxon-scoped resolution) lands in the same release; see the version-coupling notes above.
+    "tablassert[cli,log,qc]>=22.1.0,<23",
     # torch is transitive (sentence-transformers via tablassert[qc]; gliner2 needs it too but
     # only declares it under the `[local]`/`[train]` extras we do not use) but pinned here so
     # the CUDA wheel selection is explicit. Two hardware constraints of the build host

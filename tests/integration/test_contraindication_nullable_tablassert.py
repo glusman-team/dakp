@@ -54,7 +54,7 @@ def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_
     fullmap_root.mkdir()
     classes = fullmap_root / "classes.ndjson"
     synonyms = fullmap_root / "synonyms.ndjson"
-    classes.write_text("\n".join(json.dumps(_class(curie)) for curie in ("UNII:GOLD", "MONDO:0004979", "MONDO:0005148")) + "\n")
+    classes.write_text("\n".join(json.dumps(_class(curie)) for curie in ("UNII:GOLD", "MONDO:0004979", "MONDO:0005148", "NCBITaxon:9606")) + "\n")
     synonyms.write_text(
         "\n".join(
             json.dumps(row)
@@ -62,6 +62,16 @@ def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_
                 _synonym("UNII:GOLD", "DrugGold", "Drug"),
                 _synonym("MONDO:0004979", "asthma", "Disease"),
                 _synonym("MONDO:0005148", "hypertension", "Disease"),
+                # The species qualifier is NON-nullable, so the human constant must resolve to an
+                # OrganismTaxon concept or every row drops at load time. TAXON_ID 0 mirrors the
+                # production fullmap, where OrganismTaxon rows carry no taxon of their own.
+                {
+                    "curie": "NCBITaxon:9606",
+                    "preferred_name": "Homo sapiens (human)",
+                    "names": ["NCBITaxon:9606", "human"],
+                    "types": ["OrganismTaxon"],
+                    "taxa": ["NCBITaxon:0"],
+                },
             )
         )
         + "\n"
@@ -82,6 +92,7 @@ def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_
             evidence_text=evidence,
             predicate="biolink:contraindicated_in",
             subject_category="ChemicalEntity",
+            species_context_text="NCBITaxon:9606",
             knowledge_level="knowledge_assertion",
             agent_type="manual_validation_of_automated_agent",
             primary_knowledge_source="infores:drugapprovals-kp",
@@ -103,6 +114,8 @@ def test_generated_contraindication_config_separates_context_and_blank_rows(tmp_
     assert len(edges) == 2
     for edge in edges:
         assert (edge["subject"], edge["object"]) == ("UNII:GOLD", "MONDO:0004979")
+        # Species rides every edge as a resolved CURIE qualifier (part of the graph uuid_fields).
+        assert edge["species_context_qualifier"] == "NCBITaxon:9606"
     qualified = [edge for edge in edges if "disease_context_qualifier" in edge]
     assert len(qualified) == 1
     assert qualified[0]["disease_context_qualifier"] == "MONDO:0005148"

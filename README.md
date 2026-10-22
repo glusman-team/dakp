@@ -135,6 +135,32 @@ category allow-list.
 | observed-use | `biolink:applied_to_treat` | drug → disease/phenotype | FAERS (`infores:faers`) and Canada Vigilance (`infores:canada-vigilance`) |
 | contraindication | `biolink:contraindicated_in` | drug → disease/phenotype | DailyMed (`infores:dailymed`) and EMA SmPC sections (`infores:epar`) |
 
+### Species context
+
+Every edge carries `species_context_qualifier`, an NCBITaxon CURIE naming the species the
+assertion is about. Human rows carry the constant `NCBITaxon:9606` as a source fact.
+
+DailyMed veterinary SPLs have no structured species element, so DAKP derives species from
+the label itself. The document-level LOINC label type gates the path: `50578-4`
+(prescription animal drug label) and `50577-6` (OTC animal drug label) mark a label as
+animal; human labels and every non-DailyMed source stay human. On an animal label, each
+assertion sentence is matched against a curated species lexicon (`dog`, `cattle`, `cat`,
+...), falling back to label-wide context, and a sentence naming several species emits one
+row per species. Sentences with no attributable species drop loudly instead of masquerading
+as human. The lexicon holds literal NCBITaxon CURIEs, not free text: a production-fullmap
+probe showed species words resolve unreliably (`dogs` resolves to a fly gene, `cattle` to
+MESH), while every lexicon CURIE round-trips as an OrganismTaxon (re-verified by
+`tests/eval/species_lexicon_audit.py` against the production fullmap).
+
+Species joins the graph `uuid_fields`, so the same drug and condition under two species
+derive two edge ids and can never fold onto one edge under `uuid_on_collision: merge`.
+DAKP deliberately does NOT scope entity resolution per row by taxon (Tablassert
+`taxon_from`): the production fullmap tags OrganismTaxon rows with `TAXON_ID 0`, so a
+species column cannot supply a scope, and its disease and phenotype concepts carry the
+human taxon, so a dog-scoped probe returns nothing for `asthma` and would delete animal
+edges instead of partitioning them. The full rationale, with the probe results, is
+recorded in `src/dakp_pipeline/tablassert.py`.
+
 ### Observed-use approval status
 
 `applied_to_treat` edges retain `number_of_cases`, including exact distinct-case unions when

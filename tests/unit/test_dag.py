@@ -22,7 +22,6 @@ _EXPECTED_TASK_IDS = {
     "acquire_ema",
     "acquire_ema_smpc",
     "acquire_canada_vigilance",
-    "acquire_icd10cm",
     "acquire_ner_models",
     "extract_dailymed",
     "extract_faers",
@@ -30,7 +29,6 @@ _EXPECTED_TASK_IDS = {
     "extract_ema",
     "extract_ema_smpc",
     "extract_canada_vigilance",
-    "extract_icd10cm",
     "shape_treatment_tables",
     "shape_faers_use_tables",
     "shape_contraindication_tables",
@@ -49,12 +47,11 @@ _ACQUIRE_IDS = {
     "acquire_ema",
     "acquire_ema_smpc",
     "acquire_canada_vigilance",
-    "acquire_icd10cm",
     "acquire_ner_models",
 }
 _EXPECTED_GROUP_MEMBERS = {
     "acquire": _ACQUIRE_IDS,
-    "extract": _GO_STUB_IDS | {"extract_ema", "extract_ema_smpc", "extract_canada_vigilance", "extract_icd10cm"},
+    "extract": _GO_STUB_IDS | {"extract_ema", "extract_ema_smpc", "extract_canada_vigilance"},
     "shape": {"shape_treatment_tables", "shape_faers_use_tables", "shape_contraindication_tables"},
     "tablassert": {"generate_tablassert_configs", "run_tablassert"},
     "export": {"export_legacy_tsv", "publish_release_artifacts"},
@@ -147,14 +144,11 @@ def test_dag_task_graph(dakp_build) -> None:
     assert upstream("extract_ema") == {"acquire_ema"}
     assert upstream("extract_ema_smpc") == {"acquire_ema_smpc"}
     assert upstream("extract_canada_vigilance") == {"acquire_canada_vigilance"}
-    assert upstream("extract_icd10cm") == {"acquire_icd10cm"}
 
     # Shapers join the extracts (treatment: dm+drugsfda+faers+ema + NER models; uses: faers+dm+drugsfda
     # + the produced approved-treats table + NER models; contraindication: dm+drugsfda+smpc+ema + NER
     # models). Every shaper takes Drugs@FDA: it is the FDA application register that expands the
     # prefix-stripped application numbers into their FDA form for FDA_regulatory_approvals.
-    # extract_icd10cm is deliberately NOT a shaper input: the ICD screen ships as a generated
-    # denylist in the table config, so an ICD release bump must not invalidate the shape stage.
     assert upstream("shape_treatment_tables") == {
         "extract_dailymed",
         "extract_drugsfda",

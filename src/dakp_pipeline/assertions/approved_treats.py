@@ -66,6 +66,15 @@ contraindication shaper (:mod:`~dakp_pipeline.assertions.ner_dispatch`). The men
 degrade gracefully: calling :func:`build_approved_treats_rows` without a ``ner`` keeps the
 pure lexical behavior (the historical direct-call test surface).
 
+Species context (``species_context_text``, an NCBITaxon CURIE): every row carries the species
+the relationship occurred in, derived per :mod:`~dakp_pipeline.assertions.species`. Human
+corpora (DailyMed human labels, FAERS, EMA registry, EPAR, SmPC) are human by construction and
+carry :data:`~dakp_pipeline.assertions.species.HUMAN_TAXON`; an animal DailyMed label takes its
+species from the row's own sentence, else from the label's mined sections, and a row that names
+no species anywhere is DROPPED and counted (``dropped_unattributable_species``) rather than
+defaulted to human. Species joins the aggregation key, so a dog row and a cat row for the same
+(drug, condition, sentence) never fold onto one another.
+
 Provenance (``FDA_regulatory_approvals``, ``supporting_spl_sets``, ``supporting_spl_documents``) is
 aggregated per ``(subject, object)`` as deduplicated, sorted, pipe-joined lists, restricted to
 the sets whose indication text actually mentions the condition (the legacy "SPLs containing
@@ -123,6 +132,7 @@ from dakp_pipeline.assertions.evidence import (
 )
 from dakp_pipeline.assertions.ner_dispatch import _resolve_devices, default_ner, dispatch_pool, mine_with_cache
 from dakp_pipeline.assertions.observed_uses import is_non_disease_indication
+from dakp_pipeline.assertions.species import HUMAN_TAXON
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text, normalize_with_map
@@ -290,6 +300,10 @@ def _indication_observations(
                     if field not in merged_scores or score > merged_scores[field]:
                         merged_scores[field] = score
                         merged_qualifiers[field] = attached[host_index][field]
+                # species_context_text is CURIE-valued (derived below), so the mention text an
+                # OrganismTaxon span would attach is dropped rather than mixed into the column.
+                merged_qualifiers.pop("species_context_text", None)
+                merged_scores.pop("species_context_text", None)
                 # Explicit patient-clause disease context ("for treatment of A in patients
                 # with B" -> B qualifies A), the treats-polarity reading of the template the
                 # contraindication shaper and the NER training export also classify. Generic
@@ -302,12 +316,14 @@ def _indication_observations(
                         merged_qualifiers["disease_context_text"] = context_text
                         merged_scores["disease_context_text"] = (1.0, context_text)
                 context = assertion_context("dailymed", "34067-9", sentence)
+                species = dailymed.species_context_for(set_id, sentence)
                 best_model = max((m for m in host if m.context_model), key=lambda m: (m.context_model_score, m.context_model), default=None)
                 observations.append(
                     {
                         "set_id": set_id,
                         "doc_id": doc_id,
                         "context": context,
+                        "species": species,
                         "qualifiers": merged_qualifiers,
                         "qualifier_scores": merged_scores,
                         "model": best_model.context_model if best_model else "",
@@ -546,13 +562,14 @@ def build_approved_treats_rows(
         else _dailymed_candidates(dailymed, disease_map, spl_mentions)
     )
 
-    aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
+    aggregated: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     preparations = _PreparationCache()
     candidates_seen = 0
     dropped_no_ingredient_map = 0
     dropped_no_spl_support = 0
     dropped_no_label_term_support = 0
     dropped_no_subject = 0
+    dropped_unattributable_species = 0
     for cand in candidates:
         candidates_seen += 1
         norm = cand["norm_nda"]
@@ -576,46 +593,54 @@ def build_approved_treats_rows(
             dropped_no_subject += 1
             continue
         for observation in observations:
+            if not observation["species"]:
+                # Animal label naming no species in the sentence or anywhere in its mined
+                # sections: unattributable, and defaulting it to human would put an animal
+                # assertion on the human edge.
+                dropped_unattributable_species += 1
+                continue
             context = observation["context"]
-            key = (subject_text, cand["object_text"], context)
-            agg = aggregated.setdefault(
-                key,
-                {
-                    "subject_text": subject_text,
-                    "subject_curie": subject_curie,
-                    "object_text": cand["object_text"],
-                    "object_curie": cand["object_curie"],
-                    "object_name": cand["object_name"],
-                    "object_category": cand["object_category"],
-                    "FDA_regulatory_approvals": [],
-                    "sets": [],
-                    "docs": [],
-                    "faers_source_records": [],
-                    "faers_urls": [],
-                    "assertion_context": context,
-                    "assertion_context_model": "",
-                    "assertion_context_model_score": 0.0,
-                    "qualifiers": {},
-                    "qualifier_scores": {},
-                },
-            )
-            agg["FDA_regulatory_approvals"].extend(approvals.expand(dailymed.approval_display.get(norm) or norm))
-            agg["sets"].append(observation["set_id"])
-            agg["docs"].append(observation["doc_id"])
-            agg["faers_source_records"].extend(cand.get("faers_source_records", []))
-            agg["faers_urls"].extend(cand.get("faers_urls", []))
-            model_score = float(observation["model_score"])
-            if model_score > float(agg["assertion_context_model_score"]):
-                agg["assertion_context_model"] = observation["model"]
-                agg["assertion_context_model_score"] = model_score
-            for field, value in observation["qualifiers"].items():
-                score = observation.get("qualifier_scores", {}).get(field, (0.0, value))
-                previous = agg["qualifier_scores"].get(field)
-                if previous is None or score > previous:
-                    agg["qualifier_scores"][field] = score
-                    agg["qualifiers"][field] = value
-            if not agg["subject_curie"] and subject_curie:
-                agg["subject_curie"] = subject_curie
+            for species_curie in observation["species"]:
+                key = (subject_text, cand["object_text"], context, species_curie)
+                agg = aggregated.setdefault(
+                    key,
+                    {
+                        "subject_text": subject_text,
+                        "subject_curie": subject_curie,
+                        "object_text": cand["object_text"],
+                        "object_curie": cand["object_curie"],
+                        "object_name": cand["object_name"],
+                        "object_category": cand["object_category"],
+                        "FDA_regulatory_approvals": [],
+                        "sets": [],
+                        "docs": [],
+                        "faers_source_records": [],
+                        "faers_urls": [],
+                        "assertion_context": context,
+                        "assertion_context_model": "",
+                        "assertion_context_model_score": 0.0,
+                        "species_context_text": species_curie,
+                        "qualifiers": {},
+                        "qualifier_scores": {},
+                    },
+                )
+                agg["FDA_regulatory_approvals"].extend(approvals.expand(dailymed.approval_display.get(norm) or norm))
+                agg["sets"].append(observation["set_id"])
+                agg["docs"].append(observation["doc_id"])
+                agg["faers_source_records"].extend(cand.get("faers_source_records", []))
+                agg["faers_urls"].extend(cand.get("faers_urls", []))
+                model_score = float(observation["model_score"])
+                if model_score > float(agg["assertion_context_model_score"]):
+                    agg["assertion_context_model"] = observation["model"]
+                    agg["assertion_context_model_score"] = model_score
+                for field, value in observation["qualifiers"].items():
+                    score = observation.get("qualifier_scores", {}).get(field, (0.0, value))
+                    previous = agg["qualifier_scores"].get(field)
+                    if previous is None or score > previous:
+                        agg["qualifier_scores"][field] = score
+                        agg["qualifiers"][field] = value
+                if not agg["subject_curie"] and subject_curie:
+                    agg["subject_curie"] = subject_curie
         # object_curie needs no back-fill: it is a deterministic function of object_text (the
         # aggregation key), so every candidate for a key carries the same value already set above.
 
@@ -627,6 +652,7 @@ def build_approved_treats_rows(
         dropped_no_spl_support=dropped_no_spl_support,
         dropped_no_label_term_support=dropped_no_label_term_support,
         dropped_no_subject=dropped_no_subject,
+        dropped_unattributable_species=dropped_unattributable_species,
         assertions=len(aggregated),
     )
     fda_rows = [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]
@@ -662,6 +688,7 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         supporting_faers_urls=sorted_pipe(agg.get("faers_urls", [])),
         assertion_context_model=agg.get("assertion_context_model", ""),
         assertion_context_model_score=agg.get("assertion_context_model_score", ""),
+        species_context_text=agg.get("species_context_text", ""),
         **agg.get("qualifiers", {}),
         clinical_approval_status=_STATUS,
         knowledge_level=KL_ASSERTION,
@@ -845,6 +872,7 @@ def build_ema_treats_rows(ema_registry: pl.DataFrame, disease_map: Mapping[str, 
                 object_name=name,
                 object_category=category,
                 assertion_context="indication",
+                species_context_text=HUMAN_TAXON,
                 FDA_regulatory_approvals=sorted_pipe(agg["approval_ids"]),
                 supporting_spl_documents=sorted_pipe(agg["docs"]),
                 clinical_approval_status=_STATUS,
@@ -962,6 +990,7 @@ def build_epar_treats_rows(
                 supporting_spl_documents=sorted_pipe(agg["docs"]),
                 assertion_context_model=agg["assertion_context_model"],
                 assertion_context_model_score=agg["assertion_context_model_score"],
+                species_context_text=HUMAN_TAXON,
                 **agg["qualifiers"],
                 clinical_approval_status=_STATUS,
                 knowledge_level=KL_ASSERTION,
@@ -1088,6 +1117,7 @@ def build_smpc_treats_rows(
                 supporting_spl_documents=sorted_pipe(agg["docs"]),
                 assertion_context_model=agg["assertion_context_model"],
                 assertion_context_model_score=agg["assertion_context_model_score"],
+                species_context_text=HUMAN_TAXON,
                 **agg["qualifiers"],
                 clinical_approval_status=_STATUS,
                 knowledge_level=KL_ASSERTION,

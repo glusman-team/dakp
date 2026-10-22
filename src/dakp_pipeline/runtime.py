@@ -28,7 +28,7 @@ def build_context_from_config(cfg: Mapping[str, Any]) -> TaskContext:
     ``run_tablassert`` is DERIVED from fullmap presence (a fullmap path triggers the real Tablassert
     handoff; absent => deferred, never an error), and ``quarter_limit`` / ``release_limit`` /
     ``dailymed_max_age_days`` / ``drugsfda_max_age_days`` / ``ema_max_age_days`` / ``force`` /
-    ``release`` / ``qc`` / ``fullmap`` / ``drugsfda_url`` / ``icd10cm_url`` are forwarded when set.
+    ``release`` / ``qc`` / ``fullmap`` / ``drugsfda_url`` are forwarded when set.
     ``fullmap`` is resolved to an absolute path so relative paths passed at ``dakp up`` time are
     anchored to the caller's CWD, not the Airflow worker's CWD at task-run time.
     Delegates to :func:`build_context` so the disease map is loaded from the fixture root exactly
@@ -45,9 +45,6 @@ def build_context_from_config(cfg: Mapping[str, Any]) -> TaskContext:
         "dailymed_max_age_days": float(cfg["dailymed_max_age_days"]) if cfg.get("dailymed_max_age_days") is not None else None,
         "drugsfda_max_age_days": float(cfg["drugsfda_max_age_days"]) if cfg.get("drugsfda_max_age_days") is not None else None,
         "ema_max_age_days": float(cfg["ema_max_age_days"]) if cfg.get("ema_max_age_days") is not None else None,
-        # The ICD-10-CM Table of Drugs and Chemicals is pinned by fiscal year in its URL, so an age
-        # gate would only re-fetch a byte-identical artifact: absent => no gate (sources/icd10cm.py).
-        "icd10cm_max_age_days": float(cfg["icd10cm_max_age_days"]) if cfg.get("icd10cm_max_age_days") is not None else None,
         "force": bool(cfg["force"]) if cfg.get("force") is not None else False,
         # Tablassert `--release` (slim significant-only graph); absent => False, never an error.
         "release": bool(cfg["release"]) if cfg.get("release") is not None else False,
@@ -59,8 +56,6 @@ def build_context_from_config(cfg: Mapping[str, Any]) -> TaskContext:
         params["fullmap"] = str(Path(str(cfg["fullmap"])).resolve())
     if cfg.get("drugsfda_url") is not None:
         params["drugsfda_url"] = str(cfg["drugsfda_url"])
-    if cfg.get("icd10cm_url") is not None:
-        params["icd10cm_url"] = str(cfg["icd10cm_url"])
     return build_context(wd, cfg.get("fixture_root"), params)
 
 

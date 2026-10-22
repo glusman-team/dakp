@@ -239,6 +239,7 @@ def test_faers_label_and_status_behavior_preserved(faers_refs: list[ArtifactRef]
         assert row["agent_type"] == "manual_validation_of_automated_agent"
         assert row["primary_knowledge_source"] == "infores:drugapprovals-kp"
         assert row["upstream_resource_ids"] == "infores:faers|infores:dailymed"
+        assert row["species_context_text"] == "NCBITaxon:9606"  # FAERS is a human source by construction
         assert row["subject_curie"] == ""  # FAERS provides no drug id here (text-first)
 
 

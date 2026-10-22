@@ -151,6 +151,28 @@ def test_build_dailymed_evidence_empty_without_tables() -> None:
     ev = build_dailymed_evidence([])
     assert ev.approval_sets == {}
     assert ev.indication_support("12345") == ([], [])
+    assert ev.label_types == {}
+    assert ev.species_by_set == {}
+
+
+def test_dailymed_evidence_indexes_animal_label_types_and_label_wide_species(animal_dailymed_refs: list[ArtifactRef]) -> None:
+    """Animal sets gain their label type and the label-wide species fallback; human sets never."""
+    ev = build_dailymed_evidence(animal_dailymed_refs)
+
+    assert ev.label_types == {"setid-fleawash-001": "50578-4", "setid-itchaway-002": "50577-6", "setid-unspecies-003": "50578-4"}
+    # FLEAWASH's mined indication names dogs and cats; ITCHAWAY's species live only in its
+    # contraindication section; UNSPECIES names no species anywhere (empty = unattributable).
+    assert ev.species_by_set == {
+        "setid-fleawash-001": frozenset({"NCBITaxon:9615", "NCBITaxon:9685"}),
+        "setid-itchaway-002": frozenset({"NCBITaxon:9685"}),
+        "setid-unspecies-003": frozenset(),
+    }
+
+
+def test_human_dailymed_fixture_has_no_label_types(dailymed_refs: list[ArtifactRef]) -> None:
+    ev = build_dailymed_evidence(dailymed_refs)
+    assert ev.label_types == {}
+    assert ev.species_by_set == {}
 
 
 # --- Drugs@FDA NDA -> ingredient map --------------------------------------------

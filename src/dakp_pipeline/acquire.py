@@ -26,7 +26,7 @@ from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.ner import model_cache
 from dakp_pipeline.ner.ner import DEFAULT_MODEL
-from dakp_pipeline.sources import canada_vigilance, dailymed, drugsfda, ema, ema_documents, ema_smpc, faers, icd10cm
+from dakp_pipeline.sources import canada_vigilance, dailymed, drugsfda, ema, ema_documents, ema_smpc, faers
 
 #: Media type for a cached NER model directory (a tree artifact, not a single file).
 _MODEL_DIR_MEDIA_TYPE = "application/x-directory"
@@ -72,11 +72,6 @@ def acquire_ema_smpc(ctx: TaskContext) -> list[ArtifactRef]:
 def acquire_canada_vigilance(ctx: TaskContext) -> list[ArtifactRef]:
     """Acquire Health Canada's Canada Vigilance data-extract ZIP over the network."""
     return canada_vigilance.fetch(ctx)
-
-
-def acquire_icd10cm(ctx: TaskContext) -> list[ArtifactRef]:
-    """Acquire the CDC/NCHS ICD-10-CM Table of Drugs and Chemicals release ZIP over the network."""
-    return icd10cm.fetch(ctx)
 
 
 # --- NER model acquisition ------------------------------------------------------
@@ -150,12 +145,10 @@ def acquire_all(ctx: TaskContext, *, downloader: model_cache.Downloader | None =
 
 __all__ = [
     "acquire_all",
-    "acquire_canada_vigilance",
     "acquire_dailymed",
     "acquire_drugsfda",
     "acquire_ema",
     "acquire_faers",
-    "acquire_icd10cm",
     "acquire_ner_models",
     "default_ner_models",
     "model_ref_to_artifact",

@@ -15,7 +15,7 @@ import pytest
 from dakp_pipeline import acquire, runtime
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
-from dakp_pipeline.sources import canada_vigilance, dailymed, drugsfda, ema, ema_documents, ema_smpc, faers, icd10cm
+from dakp_pipeline.sources import canada_vigilance, dailymed, drugsfda, ema, ema_documents, ema_smpc, faers
 
 _FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "pipeline"
 
@@ -36,9 +36,8 @@ def _ctx(workdir: Path, *, params: dict[str, object] | None = None) -> TaskConte
         (acquire.acquire_drugsfda, drugsfda),
         (acquire.acquire_ema, ema),
         (acquire.acquire_canada_vigilance, canada_vigilance),
-        (acquire.acquire_icd10cm, icd10cm),
     ],
-    ids=["dailymed", "faers", "drugsfda", "ema", "canada_vigilance", "icd10cm"],
+    ids=["dailymed", "faers", "drugsfda", "ema", "canada_vigilance"],
 )
 def test_acquire_source_helpers_delegate_to_fetcher(helper, module, monkeypatch, tmp_path: Path) -> None:
     calls: list[TaskContext] = []
@@ -230,7 +229,6 @@ def test_dag_includes_acquisition_tasks_and_pools(dakp_build) -> None:
         "acquire_ema",
         "acquire_ema_smpc",
         "acquire_canada_vigilance",
-        "acquire_icd10cm",
         "acquire_ner_models",
     }
     assert acquire_ids <= {t.task_id for t in dag.tasks}
