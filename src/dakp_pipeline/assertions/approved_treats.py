@@ -965,6 +965,12 @@ def build_epar_treats_rows(
                         agg["assertion_context_model"] = host.context_model or ""
                         agg["assertion_context_model_score"] = model_score
                     for field, value in attached.get(host_index, {}).items():
+                        if field == "species_context_text":
+                            # EPAR is human by construction: a species mention near an indication
+                            # is study context ("in rats"), never the treated organism -- the row
+                            # stays HUMAN_TAXON, and letting the mined qualifier through would
+                            # collide with the explicit kwarg at the row_for call.
+                            continue
                         score = qualifier_scores.get((host_index, field), (0.0, value))
                         previous = agg["qualifier_scores"].get(field)
                         if previous is None or score > previous:
@@ -1090,6 +1096,10 @@ def build_smpc_treats_rows(
                         agg["assertion_context_model"] = host.context_model or ""
                         agg["assertion_context_model_score"] = model_score
                     for field, value in attached.get(host_index, {}).items():
+                        if field == "species_context_text":
+                            # Same human-by-construction guard as the EPAR path above: the SmPC
+                            # row stays HUMAN_TAXON; a mined species qualifier is study context.
+                            continue
                         score = qualifier_scores.get((host_index, field), (0.0, value))
                         previous = agg["qualifier_scores"].get(field)
                         if previous is None or score > previous:

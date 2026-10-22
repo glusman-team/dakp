@@ -207,6 +207,35 @@ def test_epar_qualifiers_are_populated_from_the_indication_sentence(disease_map:
     assert row["object_text"] == "severe pain"
 
 
+def test_epar_species_mentions_are_study_context_not_a_qualifier_collision(disease_map: dict[str, dict[str, str]]) -> None:
+    """A species mention near an EPAR indication must not crash the qualifier merge.
+
+    Production (2026-10-22): the mined mention stream carries ``OrganismTaxon`` mentions
+    since the species schema landed, the EPAR path turns every non-host mention into a
+    qualifier, and the row also passes ``species_context_text=HUMAN_TAXON`` explicitly, so
+    ``row_for`` raised "got multiple values for keyword argument 'species_context_text'" on
+    real EPAR text ("... in Beagle dogs"). EPAR is human by construction: the species
+    mention is study context and is dropped, leaving the row human.
+    """
+    frame = _ema_frame([_registry_row(therapeutic_indication="KemSu is indicated for the treatment of severe pain in Beagle dogs.")])
+    ner = DiseaseNER(offline=True, gazetteer={"severe pain": "disease", "Beagle dogs": "OrganismTaxon"})
+    rows = build_epar_treats_rows(frame, _mined_map(frame, ner), disease_map)
+
+    row = _rows_by_pair(rows)[("ketamine", "severe pain")]
+    assert row["species_context_text"] == "NCBITaxon:9606"
+    assert row["object_text"] == "severe pain"
+
+
+def test_smpc_species_mentions_are_study_context_not_a_qualifier_collision(disease_map: dict[str, dict[str, str]]) -> None:
+    """Same guard on the SmPC 4.1 rebase path (identical qualifier splat)."""
+    frame = _smpc_frame([_indication_section("KemSu is indicated for the treatment of severe pain in Beagle dogs.")])
+    ner = DiseaseNER(offline=True, gazetteer={"severe pain": "disease", "Beagle dogs": "OrganismTaxon"})
+    rows = build_smpc_treats_rows(frame, _ema_frame([_registry_row()]), _smpc_mined(frame, ner), disease_map)
+
+    row = _rows_by_pair(rows)[("ketamine", "severe pain")]
+    assert row["species_context_text"] == "NCBITaxon:9606"
+
+
 def test_epar_patient_clause_populates_disease_context(disease_map: dict[str, dict[str, str]]) -> None:
     """EPAR indication prose carries the same patient-clause template as FDA labels.
 
