@@ -127,6 +127,7 @@ def test_smpc_contraindication_row_provenance(tmp_path: Path) -> None:
     assert row["object_text"] == "asthma"
     assert row["assertion_context"] == "contraindication"
     assert row["FDA_regulatory_approvals"] == PRODUCT
+    assert row["species_context_text"] == "NCBITaxon:9606"  # SmPC rows are human by construction
     assert row["supporting_spl_documents"] == SMPD_URL
     assert row["supporting_spl_sets"] == ""
     assert row["supporting_spl_evidence"] == ""

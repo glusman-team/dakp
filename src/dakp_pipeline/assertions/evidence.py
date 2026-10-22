@@ -40,6 +40,9 @@ from typing import Any
 
 import polars as pl
 
+from dakp_pipeline.assertions.species import label_species
+from dakp_pipeline.assertions.species import row_species as species_row_species
+from dakp_pipeline.extract.spl_xml import is_animal_label_type
 from dakp_pipeline.io import schemas
 from dakp_pipeline.io.artifact_store import ArtifactStore
 from dakp_pipeline.io.content_hash import hash_bytes
@@ -586,6 +589,13 @@ class DailyMedEvidence:
     contraindication_docs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> [(doc_id, text)]
     boxed_warning_docs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> [(doc_id, text)]
     warning_docs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # set -> [(doc_id, text)] (warnings + precautions)
+    #: spl_set_id -> document-level LOINC label type code (``50578-4``/``50577-6`` mark animal
+    #: labels; human labels carry their own codes or none).
+    label_types: dict[str, str] = field(default_factory=dict)
+    #: animal spl_set_id -> label-wide NCBITaxon CURIEs named anywhere in the set's MINED sections
+    #: (indication/contraindication/boxed-warning/warnings): the fallback when a row's own sentence
+    #: names no species. Human sets never gain an entry -- their rows are human by construction.
+    species_by_set: dict[str, frozenset[str]] = field(default_factory=dict)
 
     def indication_support(self, norm_nda: str) -> tuple[list[str], list[str]]:
         """Sorted ``(spl_set_ids, spl_document_ids)`` supporting an approval via indication sections.
@@ -601,6 +611,14 @@ class DailyMedEvidence:
         """Return sorted unique FDA application IDs attached to the supplied SPL sets."""
         return merge_unique(approval_id for set_id in set_ids for approval_id in self.approval_ids_by_set.get(set_id, set()))
 
+    def species_context_for(self, set_id: str, sentence: str | None) -> tuple[str, ...]:
+        """Species CURIEs for one assertion row on ``set_id`` (empty tuple = unattributable).
+
+        Thin wrapper over :func:`~dakp_pipeline.assertions.species.row_species` binding the
+        evidence index's label type and label-wide species fallback for the set.
+        """
+        return species_row_species(self.label_types.get(set_id, ""), sentence, self.species_by_set.get(set_id, frozenset()))
+
     def contraindication_sets_for_drug(self, drug_text: str) -> list[str]:
         """Sorted SPL set ids whose active ingredient matches ``drug_text`` and that have a
         contraindication section (the "first-scope" contraindication-support link)."""
@@ -615,8 +633,9 @@ class DailyMedEvidence:
 def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
     """Index DailyMed SPL approvals, active ingredients, and consumed section types.
 
-    Reads the normalized interim tables (``spl_approvals``/``spl_ingredients``/``spl_sections``)
-    emitted by :mod:`dakp_pipeline.extract.spl_xml`, indexing the indication
+    Reads the normalized interim tables (``spl_approvals``/``spl_ingredients``/``spl_sections``
+    plus ``spl_documents`` for the document-level label type) emitted by
+    :mod:`dakp_pipeline.extract.spl_xml`, indexing the indication
     (:data:`INDICATION_LOINC`), contraindication (:data:`CONTRAINDICATION_LOINC`), boxed-warning
     (:data:`BOXED_WARNING_LOINC`), and warnings/precautions (:data:`WARNINGS_LOINCS`) sections.
     Missing tables yield empty indexes so the shapers degrade gracefully rather than failing.
@@ -685,6 +704,38 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
             elif loinc in WARNINGS_LOINCS:
                 evidence.warning_docs.setdefault(set_id, []).append((doc_id, text))
 
+    documents = _read_indexed_table(index, "spl_documents.parquet")
+    if documents is not None:
+        for rec in documents.iter_rows(named=True):
+            set_id = str(rec.get("spl_set_id") or "").strip()
+            label_type = str(rec.get("label_type") or "").strip()
+            if not set_id or not label_type:
+                continue
+            current = evidence.label_types.get(set_id, "")
+            # A set carries one label type; when its documents disagree (a reissued label whose
+            # type code changed), prefer the ANIMAL reading -- an animal row must never be
+            # attributed to the human taxon by a stale human code.
+            if not current or (not is_animal_label_type(current) and is_animal_label_type(label_type)):
+                evidence.label_types[set_id] = label_type
+        for set_id, label_type in evidence.label_types.items():
+            if not is_animal_label_type(label_type):
+                continue
+            # Label-wide species come from the sections the shapers actually mine, not every
+            # section: an unrelated mention in a dosage or storage section would otherwise
+            # attribute rows to a species the label does not treat.
+            evidence.species_by_set[set_id] = label_species(
+                [
+                    text
+                    for docs in (
+                        evidence.indication_docs.get(set_id, []),
+                        evidence.contraindication_docs.get(set_id, []),
+                        evidence.boxed_warning_docs.get(set_id, []),
+                        evidence.warning_docs.get(set_id, []),
+                    )
+                    for _doc_id, text in docs
+                ]
+            )
+
     stats(
         logger,
         "dailymed_evidence",
@@ -695,6 +746,9 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
         contraindication_sets=len(evidence.contraindication_docs),
         boxed_warning_sets=len(evidence.boxed_warning_docs),
         warning_sets=len(evidence.warning_docs),
+        label_type_sets=len(evidence.label_types),
+        animal_label_sets=len(evidence.species_by_set),
+        animal_sets_with_species=sum(1 for species in evidence.species_by_set.values() if species),
     )
     return evidence
 
@@ -704,12 +758,12 @@ def build_dailymed_evidence(inputs: Iterable[ArtifactRef]) -> DailyMedEvidence:
 #: Operation name under which the serialized :class:`DailyMedEvidence` is registered.
 EVIDENCE_OPERATION = "build_dailymed_evidence"
 #: Bump when the evidence structure or builder logic changes (invalidates cached evidence).
-EVIDENCE_BUILDER_VERSION = "v2"
+EVIDENCE_BUILDER_VERSION = "v3"
 #: Synthetic input id folding the builder version into the operation-index key.
 _EVIDENCE_VERSION_INPUT = hash_bytes(f"dailymed_evidence_builder:{EVIDENCE_BUILDER_VERSION}".encode())
 
 #: Interim tables ``build_dailymed_evidence`` consumes; their artifact ids key the cache.
-_EVIDENCE_TABLES = ("spl_approvals.parquet", "spl_ingredients.parquet", "spl_sections.parquet")
+_EVIDENCE_TABLES = ("spl_approvals.parquet", "spl_ingredients.parquet", "spl_sections.parquet", "spl_documents.parquet")
 
 
 def load_or_build_dailymed_evidence(inputs: Iterable[ArtifactRef], ctx: TaskContext | None = None) -> DailyMedEvidence:
@@ -750,7 +804,7 @@ def load_or_build_dailymed_evidence(inputs: Iterable[ArtifactRef], ctx: TaskCont
 
 # Increment when assertion shaping semantics change without a schema/config change.
 # Mention-cache material stays independent: a new shaper can reuse valid mined spans.
-SHAPE_IMPLEMENTATION_VERSION = 2
+SHAPE_IMPLEMENTATION_VERSION = 3
 
 
 def shape_config_fingerprint(ctx: TaskContext) -> str:

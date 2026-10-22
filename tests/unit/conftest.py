@@ -61,6 +61,18 @@ def dailymed_refs(ctx: TaskContext) -> list[ArtifactRef]:
 
 
 @pytest.fixture
+def animal_dailymed_refs(ctx: TaskContext) -> list[ArtifactRef]:
+    """Three HL7 v3 ANIMAL drug labels (50578-4 x2, 50577-6) on Fipronil/NADA approvals.
+
+    SETID-FLEAWASH-001 names dogs and cats in its indication sentence; SETID-ITCHAWAY-002
+    names no species in its indication but "kittens" in its contraindication section (the
+    label-wide fallback); SETID-UNSPECIES-003 names no species anywhere (unattributable rows
+    are dropped, never defaulted to the human taxon).
+    """
+    return spl_xml.extract([_ref(FIXTURE_ROOT / "dailymed" / "dailymed_spl_animal.xml.gz")], ctx)
+
+
+@pytest.fixture
 def drugsfda_refs(ctx: TaskContext) -> list[ArtifactRef]:
     return drugsfda_products.extract(
         [_ref(FIXTURE_ROOT / "drugsfda" / "drugsfda_products.tsv"), _ref(FIXTURE_ROOT / "drugsfda" / "drugsfda_applications.tsv")], ctx

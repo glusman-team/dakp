@@ -31,7 +31,7 @@ Mentions from all passes are paired with the set's active ingredient to form a
 combination product's contraindication section applies to the mixture, so pairing a mention with
 every one of its actives would over-attribute the contraindication to each component. Sets with
 zero or multiple active ingredients are skipped (``skipped_multi_ingredient_sets`` counts the
-latter). Rows are aggregated by ``(subject_text, object_text, disease_context_text)``:
+latter). Rows are aggregated by ``(subject_text, object_text, disease_context_text, species)``:
 ``supporting_spl_sets``, ``supporting_spl_documents``, and evidence sentences are unioned within
 that key, and ``ner_confidence_score`` takes the max NER span score — confidence that the disease
 MENTION was recognized, not confidence that the statement is true (see the annotation note in
@@ -99,6 +99,7 @@ from dakp_pipeline.assertions.ner_dispatch import _mine_chunk as _mine_chunk
 from dakp_pipeline.assertions.ner_dispatch import _shard_by_text_length as _shard_by_text_length
 from dakp_pipeline.assertions.ner_dispatch import _spawn_safe_main as _spawn_safe_main
 from dakp_pipeline.assertions.ner_dispatch import _worker_backend as _worker_backend
+from dakp_pipeline.assertions.species import HUMAN_TAXON
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, progress, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
@@ -578,7 +579,12 @@ def build_contraindication_rows(
     become edges only when their sentence carries hard prohibition language.
 
     Mentions from all passes are paired with the set's single active ingredient and aggregated by
-    ``(subject_text, object_text, disease_context_text)``. When ``devices`` is provided
+    ``(subject_text, object_text, disease_context_text, species)``. Every DailyMed row carries
+    the species the contraindication occurred in, derived per
+    :mod:`~dakp_pipeline.assertions.species`: the row's evidence sentence first, the label's
+    mined sections as fallback, the human taxon for every human label, and an animal row naming
+    no species anywhere is DROPPED (``dropped_unattributable_species``) rather than defaulted
+    to human. SmPC rows are human by construction. When ``devices`` is provided
     (production multi-device), work items from ALL passes are dispatched through ONE run-scoped
     :class:`~dakp_pipeline.assertions.ner_dispatch.MiningPool` across those devices - every pass
     shares this backend profile, and a per-pass device split would pin the dominant warnings
@@ -703,8 +709,9 @@ def build_contraindication_rows(
     # Work items are singleton-only, so each set contributes exactly one subject ingredient;
     # the local source sentence is retained on the aggregate for the evidence column.
     with step(logger, "shape_contraindications.aggregate"):
-        aggregated: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        aggregated: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
         mentions_mined = 0
+        dropped_unattributable_species = 0
         for index, item in enumerate(all_work_items):
             set_id, doc_id, _text = _work_item_parts(item)
             ingredients: list[tuple[str, str]]
@@ -774,29 +781,48 @@ def build_contraindication_rows(
                 object_text = normalize_text(mention.text)
                 if not object_text or not decision.accepted:
                     continue
-                for ingredient_name, ingredient_unii in ingredients:
-                    _accumulate(
-                        aggregated,
-                        set_id,
-                        doc_id,
-                        ingredient_name,
-                        ingredient_unii,
-                        object_text,
-                        mention,
-                        decision.evidence_text,
-                        decision.context_text,
-                        row_approvals,
-                        qualifier_fields.get(mention_index, {}),
-                        qualifier_scores.get(mention_index, {}),
-                        source,
-                    )
+                # Species context: SmPC is human by construction; a DailyMed row takes its
+                # species from its evidence sentence, else the label's mined sections. An
+                # animal row naming no species anywhere is unattributable and dropped --
+                # defaulting it to the human taxon would put an animal edge on the human row.
+                if source == _SOURCE_SMPC:
+                    species_tuple: tuple[str, ...] = (HUMAN_TAXON,)
+                else:
+                    species_tuple = evidence.species_context_for(set_id, decision.evidence_text)
+                    if not species_tuple:
+                        dropped_unattributable_species += 1
+                        continue
+                for species_curie in species_tuple:
+                    for ingredient_name, ingredient_unii in ingredients:
+                        _accumulate(
+                            aggregated,
+                            set_id,
+                            doc_id,
+                            ingredient_name,
+                            ingredient_unii,
+                            object_text,
+                            mention,
+                            decision.evidence_text,
+                            decision.context_text,
+                            row_approvals,
+                            qualifier_fields.get(mention_index, {}),
+                            qualifier_scores.get(mention_index, {}),
+                            source,
+                            species_curie,
+                        )
 
-    stats(logger, "shape_contraindications", mentions_mined=mentions_mined, assertions=len(aggregated))
+    stats(
+        logger,
+        "shape_contraindications",
+        mentions_mined=mentions_mined,
+        dropped_unattributable_species=dropped_unattributable_species,
+        assertions=len(aggregated),
+    )
     return [_finalize_row(agg) for _key, agg in sorted(aggregated.items())]
 
 
 def _accumulate(
-    aggregated: dict[tuple[str, str, str, str], dict[str, Any]],
+    aggregated: dict[tuple[str, str, str, str, str], dict[str, Any]],
     set_id: str,
     doc_id: str,
     ingredient_name: str,
@@ -809,8 +835,9 @@ def _accumulate(
     qualifier_fields: Mapping[str, str] | None = None,
     qualifier_scores: Mapping[str, tuple[float, str]] | None = None,
     source: str = _SOURCE_DAILYMED,
+    species_context_text: str = HUMAN_TAXON,
 ) -> None:
-    """Add one observation to the ``(source, subject, object, disease-context)`` aggregate.
+    """Add one observation to the ``(source, subject, object, disease-context, species)`` aggregate.
 
     The subject carries the label-provided ingredient text + UNII ("" for EMA rows); the object
     and optional context are mined mention text with CURIE/name/category left empty for
@@ -825,7 +852,7 @@ def _accumulate(
     # they enter pipe-encoded TSV cells — and before keying, so delimiter-only variants aggregate
     # together instead of fragmenting rows.
     context = pipe_safe_text(context_text)
-    key = (source, ingredient_name, object_text, context)
+    key = (source, ingredient_name, object_text, context, species_context_text)
     agg = aggregated.setdefault(
         key,
         {
@@ -838,6 +865,7 @@ def _accumulate(
             "object_name": "",
             "object_category": "",
             "disease_context_text": context,
+            "species_context_text": species_context_text,
             "sets": [],
             "docs": [],
             "FDA_regulatory_approvals": [],
@@ -855,6 +883,9 @@ def _accumulate(
     if evidence:
         agg["evidence_texts"].append(evidence)
     for field, value in (qualifier_fields or {}).items():
+        if field == "species_context_text":
+            # CURIE-valued column: the derived NCBITaxon CURIE above wins, never mention text.
+            continue
         score = (qualifier_scores or {}).get(field, (0.0, value))
         previous = agg["qualifier_scores"].get(field)
         if previous is None or score > previous:
@@ -879,6 +910,7 @@ def _finalize_row(agg: dict[str, Any]) -> dict[str, str]:
         disease_context_text=agg.get("disease_context_text", ""),
         assertion_context="contraindication",
         evidence_text=sorted_pipe(agg.get("evidence_texts", [])),
+        species_context_text=agg.get("species_context_text", HUMAN_TAXON),
         **agg.get("qualifiers", {}),
         supporting_spl_sets=sorted_pipe(dailymed_set_url(set_id) for set_id in agg["sets"]),
         supporting_spl_documents=sorted_pipe(dailymed_document_url(doc_id) for doc_id in agg["docs"]),
@@ -918,6 +950,7 @@ def _finalize_smpc_row(agg: dict[str, Any]) -> dict[str, str]:
         disease_context_text=agg.get("disease_context_text", ""),
         assertion_context="contraindication",
         evidence_text=sorted_pipe(agg.get("evidence_texts", [])),
+        species_context_text=HUMAN_TAXON,
         **agg.get("qualifiers", {}),
         supporting_spl_documents=sorted_pipe(agg["docs"]),
         FDA_regulatory_approvals=sorted_pipe(agg.get("FDA_regulatory_approvals", [])),

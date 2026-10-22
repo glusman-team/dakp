@@ -52,6 +52,7 @@ def test_canada_rows_use_ingredient_subject_and_report_counts() -> None:
     assert row["assertion_context"] == "indication"
     assert row["knowledge_level"] == "statistical_association"
     assert row["upstream_resource_ids"] == "infores:canada-vigilance|infores:dailymed"
+    assert row["species_context_text"] == "NCBITaxon:9606"  # human spontaneous-report source
     assert row["supporting_faers_records"].startswith("cv:")
     assert row["supporting_faers_urls"] == CANADA_VIGILANCE_EXTRACTS_URL
     assert row["primary_knowledge_source"] == "infores:drugapprovals-kp"

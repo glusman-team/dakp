@@ -371,6 +371,7 @@ def test_approved_qualifier_merge_keeps_highest_score_and_deterministic_tie(monk
             "set_id": "SET-A",
             "doc_id": "DOC-A",
             "context": "indication",
+            "species": ("NCBITaxon:9606",),
             "qualifiers": {"sex_text": "men"},
             "qualifier_scores": {"sex_text": (0.8, "men")},
             "model": "",
@@ -380,6 +381,7 @@ def test_approved_qualifier_merge_keeps_highest_score_and_deterministic_tie(monk
             "set_id": "SET-A",
             "doc_id": "DOC-B",
             "context": "indication",
+            "species": ("NCBITaxon:9606",),
             "qualifiers": {"sex_text": "women"},
             "qualifier_scores": {"sex_text": (0.9, "women")},
             "model": "",
@@ -389,6 +391,7 @@ def test_approved_qualifier_merge_keeps_highest_score_and_deterministic_tie(monk
             "set_id": "SET-A",
             "doc_id": "DOC-C",
             "context": "indication",
+            "species": ("NCBITaxon:9606",),
             "qualifiers": {"sex_text": "adults"},
             "qualifier_scores": {"sex_text": (0.9, "adults")},
             "model": "",
@@ -404,8 +407,24 @@ def test_approved_qualifier_merge_keeps_highest_score_and_deterministic_tie(monk
 
 def test_approved_aggregation_handles_empty_observations_and_upgrades_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """The aggregator must drop empty observations and retain the highest context-model score."""
-    first = {"set_id": "SET-A", "doc_id": "DOC-A", "context": "indication", "qualifiers": {}, "model": "indication", "model_score": 0.2}
-    second = {"set_id": "SET-A", "doc_id": "DOC-B", "context": "indication", "qualifiers": {}, "model": "contraindication", "model_score": 0.9}
+    first = {
+        "set_id": "SET-A",
+        "doc_id": "DOC-A",
+        "context": "indication",
+        "species": ("NCBITaxon:9606",),
+        "qualifiers": {},
+        "model": "indication",
+        "model_score": 0.2,
+    }
+    second = {
+        "set_id": "SET-A",
+        "doc_id": "DOC-B",
+        "context": "indication",
+        "species": ("NCBITaxon:9606",),
+        "qualifiers": {},
+        "model": "contraindication",
+        "model_score": 0.9,
+    }
     monkeypatch.setattr(approved_treats, "_condition_corroborated_sets", lambda *args: ["SET-A"])
     monkeypatch.setattr(approved_treats, "_indication_observations", lambda *args: [first, second])
     cases = _cases("asthma")

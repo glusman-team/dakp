@@ -20,6 +20,7 @@ DAILYMED_SPL_DOCUMENTS_COLUMNS = [
     "spl_set_id",
     "xml_path",
     "release_file",
+    "label_type",
     "approval_code",
     "approval_type",
     "loinc_code",

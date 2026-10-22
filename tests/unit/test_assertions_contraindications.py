@@ -145,3 +145,38 @@ def test_shaper_writes_uncompressed_tsv_with_contract_columns(dailymed_refs: lis
     assert row["evidence_text"] == "Contraindicated in patients with asthma or known hypersensitivity to ibuprofen."
     assert row["agent_type"] == "manual_validation_of_automated_agent"
     assert row["upstream_resource_ids"] == "infores:dailymed"
+
+def test_human_contraindication_rows_carry_the_human_taxon_constant(
+    dailymed_refs: list[ArtifactRef], fixture_root: Path
+) -> None:
+    """The human fixture labels carry no label-type code: every row is human by construction."""
+    rows = build_contraindication_rows(dailymed_refs, _fixture_ner(fixture_root))
+
+    assert rows
+    assert all(row["species_context_text"] == "NCBITaxon:9606" for row in rows)
+
+def test_animal_contraindication_rows_partition_by_species_and_drop_unattributable(
+    animal_dailymed_refs: list[ArtifactRef],
+) -> None:
+    """Same drug+condition contraindicated in two species is two rows, never one folded edge.
+
+    FLEAWASH's contraindication names dogs and ITCHAWAY's names kittens, both against "renal
+    disease": the (Fipronil, renal disease) pair must yield one dog row and one cat row with
+    their own supporting sets. UNSPECIES contraindicates "renal disease" naming no species
+    anywhere: its row is dropped and counted, never defaulted onto the human taxon.
+    """
+    ner = DiseaseNER(gazetteer={"renal disease": "disease"})
+
+    rows = build_contraindication_rows(animal_dailymed_refs, ner)
+
+    pairs = sorted((row["object_text"], row["species_context_text"]) for row in rows)
+    assert pairs == [("renal disease", "NCBITaxon:9615"), ("renal disease", "NCBITaxon:9685")]
+    by_species = {row["species_context_text"]: row for row in rows}
+    assert by_species["NCBITaxon:9615"]["supporting_spl_sets"] == (
+        "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=setid-fleawash-001"
+    )
+    assert by_species["NCBITaxon:9685"]["supporting_spl_sets"] == (
+        "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=setid-itchaway-002"
+    )
+    for row in rows:  # the unattributable label contributes no row at all
+        assert "setid-unspecies-003" not in row["supporting_spl_sets"]

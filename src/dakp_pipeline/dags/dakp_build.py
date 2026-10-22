@@ -98,7 +98,6 @@ class AcquireOutputs:
     ema: Any
     smpc: Any
     canada_vigilance: Any
-    icd10cm: Any
     ner_models: Any
 
 
@@ -112,7 +111,6 @@ class ExtractOutputs:
     ema: Any
     smpc: Any
     canada_vigilance: Any
-    icd10cm: Any
 
 
 @dataclass(frozen=True)
@@ -268,20 +266,6 @@ def _build_acquire_stage() -> AcquireOutputs:
                 stats(logger, "task acquire_ner_models", output_refs=len(refs))
                 return _refs_to_xcom(refs)
 
-        @task(
-            pool=DOWNLOAD_POOL,
-            execution_timeout=_ACQUIRE_TIMEOUT,
-            doc_md="Download/cache the CDC/NCHS ICD-10-CM Table of Drugs and Chemicals release ZIP (the non-therapeutic subject screen); returns `ArtifactRef` manifests only.",
-        )
-        def acquire_icd10cm() -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
-            from dakp_pipeline import acquire
-
-            ctx = _ctx()
-            with step(logger, "task acquire_icd10cm"):
-                refs = acquire.acquire_icd10cm(ctx)
-                stats(logger, "task acquire_icd10cm", output_refs=len(refs))
-                return _refs_to_xcom(refs)
-
         return AcquireOutputs(
             dailymed=acquire_dailymed(),
             faers=acquire_faers(),
@@ -289,7 +273,6 @@ def _build_acquire_stage() -> AcquireOutputs:
             ema=acquire_ema(),
             smpc=acquire_ema_smpc(),
             canada_vigilance=acquire_canada_vigilance(),
-            icd10cm=acquire_icd10cm(),
             ner_models=acquire_ner_models(),
         )
 
@@ -341,24 +324,6 @@ def _build_extract_stage(raw: AcquireOutputs) -> ExtractOutputs:
                 stats(logger, "task extract_canada_vigilance", output_refs=len(refs))
                 return _refs_to_xcom(refs)
 
-        @task(
-            pool=EXTRACT_POOL,
-            doc_md=(
-                "Parse the ICD-10-CM drug table into the interim `icd10cm_subject_tiers.tsv`. "
-                "A DAG leaf: shaping does NOT read it (a denylist change must not invalidate the "
-                "hours-long shape stage). It is the audit input that tests/eval/icd10cm_denylist.py "
-                "re-derives the shipped subject denylist from."
-            ),
-        )
-        def extract_icd10cm(raw_refs: Any) -> list[dict[str, Any]]:  # pragma: no cover - body executes only under the Airflow task runtime
-            from dakp_pipeline.extract import icd10cm
-
-            ctx = _ctx()
-            with step(logger, "task extract_icd10cm"):
-                refs = icd10cm.extract(_refs_from_xcom(raw_refs), ctx)
-                stats(logger, "task extract_icd10cm", output_refs=len(refs))
-                return _refs_to_xcom(refs)
-
         return ExtractOutputs(
             dailymed=extract_dailymed(raw.dailymed),
             faers=extract_faers(raw.faers),
@@ -366,7 +331,6 @@ def _build_extract_stage(raw: AcquireOutputs) -> ExtractOutputs:
             ema=extract_ema(raw.ema),
             smpc=extract_ema_smpc(raw.smpc),
             canada_vigilance=extract_canada_vigilance(raw.canada_vigilance),
-            icd10cm=extract_icd10cm(raw.icd10cm),
         )
 
 

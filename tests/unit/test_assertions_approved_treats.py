@@ -354,3 +354,45 @@ def test_section_mentions_condition_with_preparation_matches_without(
         section_text, cand, local_map, section_mentions, preparation=cache.prepare(section_text, local_map)
     )
     assert cached == repeated == uncached == expected
+
+
+# --- species context (animal labels) ---------------------------------------------
+
+
+def test_animal_label_rows_carry_species_and_do_not_fold(animal_dailymed_refs: list[ArtifactRef], disease_map: dict[str, dict[str, str]]) -> None:
+    """Animal-label rows fan out one row per named species and never fold across species.
+
+    SETID-FLEAWASH-001 names dogs and cats in its indication sentence -> a dog row and a cat
+    row; SETID-ITCHAWAY-002 names no species in its indication sentence but "kittens" in
+    its contraindication section -> the label-wide cat fallback, which MERGES with the
+    FLEAWASH cat row (same species, same aggregation semantics as human labels);
+    SETID-UNSPECIES-003 names no species anywhere -> dropped, never defaulted onto the human
+    taxon ("dropped_unattributable_species" counts it loudly).
+    """
+    ev = build_dailymed_evidence(animal_dailymed_refs)
+    mapping = {"141459": {"FIPRONIL"}, "141460": {"FIPRONIL"}, "141461": {"FIPRONIL"}}
+
+    rows = build_approved_treats_rows(None, ev, mapping, disease_map)
+
+    triples = sorted((r["subject_text"], r["object_text"], r["species_context_text"]) for r in rows)
+    assert triples == [("Fipronil", "pain", "NCBITaxon:9615"), ("Fipronil", "pain", "NCBITaxon:9685")]
+    by_species = {r["species_context_text"]: r for r in rows}
+    # The dog edge carries only the label that names dogs.
+    assert by_species["NCBITaxon:9615"]["supporting_spl_sets"] == "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=setid-fleawash-001"
+    # Both cat-bearing labels aggregate onto the cat edge: species joins identity, provenance
+    # merges within it -- exactly the human-label semantics, partitioned by species.
+    assert "setid-fleawash-001" in by_species["NCBITaxon:9685"]["supporting_spl_sets"]
+    assert "setid-itchaway-002" in by_species["NCBITaxon:9685"]["supporting_spl_sets"]
+    assert "setid-unspecies-003" not in by_species["NCBITaxon:9685"]["supporting_spl_sets"]
+
+
+def test_human_label_rows_carry_the_human_taxon_constant(dailymed_refs: list[ArtifactRef], disease_map: dict[str, dict[str, str]]) -> None:
+    """The human fixture carries no label-type code: every row is human by construction."""
+    ev = build_dailymed_evidence(dailymed_refs)
+    assert ev.label_types == {}
+    assert ev.species_by_set == {}
+
+    rows = build_approved_treats_rows(None, ev, {"12345": {"EXAMPLESTATIN"}}, disease_map)
+
+    assert rows
+    assert all(r["species_context_text"] == "NCBITaxon:9606" for r in rows)

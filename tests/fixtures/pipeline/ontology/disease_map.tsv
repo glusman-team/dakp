@@ -4,3 +4,4 @@ headache	HP:0002315	headache	PhenotypicFeature
 pain	MONDO:0020528	pain	Disease
 asthma	MONDO:0004979	asthma	Disease
 peptic ulcer disease	MONDO:0005194	peptic ulcer disease	Disease
+renal disease	MONDO:0005240	kidney disorder	Disease

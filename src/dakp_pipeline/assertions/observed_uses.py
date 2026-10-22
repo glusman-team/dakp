@@ -1,7 +1,9 @@
 """FAERS observed-use (applied_to_treat) assertion aggregation.
 
 Builds ``faers_applied_to_treat_assertions.tsv``: real-world drug→condition uses observed in
-FAERS adverse-event reports, without any approval claim.
+FAERS adverse-event reports, without any approval claim. Every row carries the human taxon
+constant in ``species_context_text``: FAERS and Canada Vigilance spontaneous reports are human
+sources by construction, so species never partitions the edge-identity key here.
 
 Aggregation rule (explicit and tested)
 ---------------------------------------
@@ -126,6 +128,7 @@ from dakp_pipeline.assertions.evidence import (
     sorted_pipe,
     write_assertion_table,
 )
+from dakp_pipeline.assertions.species import HUMAN_TAXON
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.logging_setup import logger, stats, step
 from dakp_pipeline.ner.dictionary import normalize_text
@@ -493,6 +496,7 @@ def _canada_vigilance_rows(
                 object_name=str(rec["object_name"]),
                 object_category=str(rec["object_category"]),
                 assertion_context=str(rec.get("assertion_context") or "indication"),
+                species_context_text=HUMAN_TAXON,
                 number_of_cases=int(rec["distinct_cases"]) + int(rec["anon_rows"]),
                 case_ids=sorted_pipe([*case_ids, *anon_tokens]),
                 FDA_regulatory_approvals="",
@@ -682,6 +686,7 @@ def build_observed_use_rows(
                 object_name=obj["name"],
                 object_category=obj["category"],
                 assertion_context=str(rec.get("assertion_context") or "indication"),
+                species_context_text=HUMAN_TAXON,
                 number_of_cases=int(rec["distinct_cases"]) + int(rec["anon_rows"]),
                 case_ids=sorted_pipe([*case_ids, *anon_tokens]),
                 FDA_regulatory_approvals=sorted_pipe(approval_values),

@@ -23,6 +23,7 @@ from pathlib import Path
 import polars as pl
 
 from dakp_pipeline.extract import spl_xml
+from dakp_pipeline.io import schemas
 from dakp_pipeline.io.content_hash import hash_file
 from dakp_pipeline.io.contracts import ArtifactRef, TaskContext
 from dakp_pipeline.paths import Workdir
@@ -306,3 +307,115 @@ def test_looks_like_spl_suffixes() -> None:
     assert spl_xml._looks_like_spl(Path("a.XML")) is True
     assert spl_xml._looks_like_spl(Path("a.txt")) is False
     assert spl_xml._looks_like_spl(Path("a.zip")) is False
+
+
+# --- document-level label type (US: animal-drug-labels) -------------------------
+
+_HL7V3_ANIMAL_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<splBatch xmlns="urn:hl7-org:v3">
+  <document>
+    <id root="DOC-1"/>
+    <code code="50578-4" codeSystem="2.16.840.1.113883.6.1" displayName="PRESCRIPTION ANIMAL DRUG LABEL"/>
+    <setId root="SET-ANIMAL-1"/>
+    <subjectOf>
+      <approval>
+        <id root="2.16.840.1.113883.3.150" extension="141459"/>
+        <code code="NADA" codeSystem="2.16.840.1.113883.3.26.1.1"/>
+      </approval>
+    </subjectOf>
+    <component><section>
+      <code code="34067-9" codeSystem="2.16.840.1.113883.6.1"/>
+      <title>INDICATIONS AND USAGE</title>
+      <text>For the treatment of flea infestations in dogs.</text>
+    </section></component>
+  </document>
+  <document>
+    <id root="DOC-2"/>
+    <setId root="SET-NOCODE-2"/>
+    <component><section>
+      <code code="34070-3" codeSystem="2.16.840.1.113883.6.1"/>
+      <title>CONTRAINDICATIONS</title>
+      <text>None known.</text>
+    </section></component>
+  </document>
+  <document>
+    <id root="DOC-3"/>
+    <code code="WRONGSYSTEM" codeSystem="9.9.9.9"/>
+    <code code="50577-6"/>
+    <setId root="SET-FALLBACK-3"/>
+    <component><section>
+      <code code="34067-9" codeSystem="2.16.840.1.113883.6.1"/>
+      <title>INDICATIONS AND USAGE</title>
+      <text>For use in cats.</text>
+    </section></component>
+  </document>
+</splBatch>
+"""
+
+_MOCK_ANIMAL_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<splBatch>
+  <document>
+    <code code="50577-6"/>
+    <setId>SETID-ANIMALMOCK-001</setId>
+    <activeIngredient name="Fipronil" unii="WQ96L45A7P"/>
+    <approval code="200001" type="NADA"/>
+    <section loinc="34067-9" name="INDICATIONS AND USAGE">
+      For the treatment of flea infestations in dogs and cats.
+    </section>
+  </document>
+  <document>
+    <setId>SETID-HUMANMOCK-002</setId>
+    <approval code="012345" type="NDA"/>
+    <section loinc="34070-3" name="CONTRAINDICATIONS">
+      Contraindicated in patients with active liver disease.
+    </section>
+  </document>
+</splBatch>
+"""
+
+
+def _extract_docs(tmp_path: Path, xml: str, name: str) -> pl.DataFrame:
+    ref = _write_xml(tmp_path, name, xml)
+    refs = spl_xml.extract([ref], _ctx(tmp_path))
+    docs = next(r for r in refs if r.uri.name == "spl_documents.parquet")
+    return pl.read_parquet(docs.uri)
+
+
+def test_hl7v3_label_type_from_document_code(tmp_path: Path) -> None:
+    """The document-level LOINC code lands in label_type on every section row.
+
+    This is the animal/human gate for species derivation: DailyMed animal SPLs carry
+    no structured species element, only this document-type code (50578-4 Rx animal,
+    50577-6 OTC animal). A LOINC-codeSystem match wins; a document without a code
+    stays empty; a publisher omitting the codeSystem falls back to the first direct
+    <code> child (the WRONGSYSTEM row proves section/ingredient codes are never
+    mistaken for the document type).
+    """
+    frame = _extract_docs(tmp_path, _HL7V3_ANIMAL_XML, "animal.xml")
+    by_set = {row["spl_set_id"]: row["label_type"] for row in frame.to_dicts()}
+    assert by_set["set-animal-1"] == "50578-4"
+    assert by_set["set-nocode-2"] == ""
+    assert by_set["set-fallback-3"] == "50577-6"
+
+
+def test_mock_label_type_from_document_code(tmp_path: Path) -> None:
+    """The namespace-free mock shape reads its optional <code> child into label_type."""
+    frame = _extract_docs(tmp_path, _MOCK_ANIMAL_XML, "mock_animal.xml")
+    by_set = {row["spl_set_id"]: row["label_type"] for row in frame.to_dicts()}
+    assert by_set["SETID-ANIMALMOCK-001"] == "50577-6"
+    assert by_set["SETID-HUMANMOCK-002"] == ""
+
+
+def test_is_animal_label_type_classification() -> None:
+    """Only the two animal document-type codes classify as animal; case/whitespace tolerant."""
+    assert spl_xml.is_animal_label_type("50578-4")
+    assert spl_xml.is_animal_label_type(" 50577-6 ")
+    assert not spl_xml.is_animal_label_type("34390-5")  # HUMAN OTC DRUG LABEL
+    assert not spl_xml.is_animal_label_type("")
+    assert "50578-4" in spl_xml.ANIMAL_LABEL_TYPE_CODES
+
+
+def test_documents_contract_carries_label_type() -> None:
+    """label_type is part of the locked spl_documents contract (additive, after release_file)."""
+    assert "label_type" in schemas.DAILYMED_SPL_DOCUMENTS_COLUMNS
+    assert schemas.DAILYMED_SPL_DOCUMENTS_COLUMNS.index("label_type") == schemas.DAILYMED_SPL_DOCUMENTS_COLUMNS.index("release_file") + 1
