@@ -1,5 +1,20 @@
 # DAKP
 
+> **Deprecated: this repository has moved.**
+>
+> DAKP is no longer developed here. The Drug Approvals Knowledge Provider now lives in
+> the [glusman-team/graph-monorepo](https://github.com/glusman-team/graph-monorepo)
+> monorepo, which carries the current code, issue tracker, releases and dataset
+> publications.
+>
+> - All new work, bug reports and pull requests belong in
+>   [glusman-team/graph-monorepo](https://github.com/glusman-team/graph-monorepo).
+> - This repo (`glusman-team/dakp`) is retained for historical reference only and will
+>   not receive fixes, version bumps or new KGX builds.
+> - The badges below and any links to `glusman-team/dakp` point at the retired repo.
+>
+> Everything below describes the last state of the standalone pipeline.
+
 [![CI](https://github.com/glusman-team/dakp/actions/workflows/ci.yml/badge.svg)](https://github.com/glusman-team/dakp/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/glusman-team/dakp/blob/main/LICENSE)
 [![Stars](https://img.shields.io/github/stars/glusman-team/dakp.svg)](https://github.com/glusman-team/dakp/stargazers)
